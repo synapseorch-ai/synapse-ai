@@ -139,7 +139,9 @@ from core.native_builder import prompt_lint, seed
 #: `vault_write`), 97b141a1… (computed by CI2 on 79e0a58b's tree).
 #: F1302: # Structure's rules 1–2 are for a workflow's fixed steps; an agent people ask things of holds every tool and
 #: knowledge base its questions need (an exception, the numbering unchanged), 1024bb50….
-BUNDLE_SHA256 = "33648aee50814e201a839a9ffb9a8b20b3e7b65bacd4c6b0b563ef9411d2f866"
+#: F1300: "# What you are given" names `signed_in_sites`, and # Structure's rule 1 says a site there is read by a browser
+#: agent with that kept session (an exception, the numbering unchanged), 0c0cb79d….
+BUNDLE_SHA256 = "ba13a0c01976b36f7289ae2f0fae566caef5fbfc5d9dd6c7ff7ddd8831984914"
 
 
 def _sha(definitions) -> str:

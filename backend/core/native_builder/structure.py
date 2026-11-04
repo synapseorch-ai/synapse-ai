@@ -15,6 +15,11 @@ never from its words:
 * **Code's work is a Transform** (F1291, CAP3's cap-04): a new agent holding `execute_python`, where code steps run,
   does with a model what a `transform` step (or a Python tool) does exactly. Where code steps do not run, it is the
   only way, and left alone.
+* **A site the person is signed in to is read by a browser agent with that session** (F1300, cap-01): a step that
+  reads it with an anonymous read (a Tool step's `scrape_url`, `read_web_page` or a GET HTTP tool here; or an agent
+  holding one) reaches it as no one, so a portal gives no orders; a browser agent with the kept session reads it
+  signed in. Matched by site (`core.sites.same_site`, the rule kept sessions use), said only when the plan can run a
+  browser agent (the host's `browser_check`), and left to F1301's finding where that one covers the agent.
 * **An agent that works a named site is a browser agent** (F1301, cap-05): a new agent of type agent holding the in-app
   browser's tools, on steps whose words name an http(s) site, has no sites, so its first keystroke there is the
   person's turn; a browser agent with that site in `browser.sites` types there without one (read_only to look,
@@ -58,11 +63,12 @@ async def issues(plan: O.Plan, ws: Workspace, asked: dict | None = None) -> list
     classify's request, as the run holds it."""
     from core.store.resources import load_tools
 
-    if not plan.agents:
-        return []
     custom = {t.get("name"): t for t in await load_tools()}
-    out = []
     steps = [s for s in (*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)) if s.type != "end"]
+    # A plan of Tool steps alone can read a signed-in site too (F1300), so this comes before the agents' findings.
+    out = await _kept_session_reads(plan, ws, steps, custom)
+    if not plan.agents:
+        return out
     for a in plan.agents:
         # Code's work is a Transform (F1291, cap-04): a new agent computing with `execute_python`, where code steps run.
         if ws.code_steps and any(str(t).split("__")[-1] == CODE_TOOL for t in a.tools):
@@ -109,6 +115,67 @@ async def _kept_sites() -> list[str]:
         return sorted({r["site"] for r in await site_sessions.listed(_acting_caller()) if r.get("usable")})
     except Exception:  # noqa: BLE001 — no kept sessions read: the finding names none
         return []
+
+
+#: The reads that reach a page as no one: the built-in page reads and the web reader (F1300).
+_ANONYMOUS_READS = (*PAGE_READS, "read_web_page")
+
+
+def _anonymous(name: str, custom: dict[str, dict]) -> bool:
+    return name in _ANONYMOUS_READS or _reads(name, custom)
+
+
+def _urls(step: O.Step, custom: dict[str, dict]) -> list[str]:
+    """The addresses a step reads: in its arguments and words, and a GET HTTP tool's own address."""
+    found = _SITE.findall(f"{json.dumps(step.config or {}, default=str)} {step.prompt or ''} {step.does or ''}")
+    tool = custom.get(step.tool or "") or {}
+    return [*found, *([str(tool["url"])] if tool.get("url") else [])]
+
+
+async def _kept_session_reads(plan: O.Plan, ws: Workspace, steps: list[O.Step],
+                              custom: dict[str, dict]) -> list[str]:
+    """Each step that reads a site the person keeps a signed-in session for with an anonymous read (F1300): said as a
+    browser agent with that site and session, reading only. Never where the plan can't have a browser agent (cloud's
+    Free plan: no fix it can't run), never for a browser agent (its sessions are its own say), and never where
+    F1301's finding already names the agent (`covered_by_browser_agent`)."""
+    from core.builder_tools import _browser_refused
+    from core.sites import same_site
+
+    kept = await _kept_sites()
+    if not kept or await _browser_refused("agent"):
+        return []
+    new = {a.name: a for a in plan.agents}
+    out: list[str] = []
+    for s in steps:
+        covered: set[str] = set()
+        if s.type == "tool" and s.tool and _anonymous(s.tool, custom):
+            reader = s.tool
+        elif s.type == "agent" and s.agent:
+            agent = new.get(s.agent)
+            if agent is not None:
+                if agent.type == "browser":
+                    continue
+                tools, covered = list(agent.tools), covered_by_browser_agent(agent, steps)
+            else:
+                here = next((x for i, x in ws.agents.items() if s.agent in (i, x.get("name"))), {})
+                if here.get("type") == "browser":
+                    continue
+                tools = list(here.get("tools") or [])
+            reader = next((t for t in tools if _anonymous(str(t), custom)), None)
+            if reader is None:
+                continue
+        else:
+            continue
+        for url in _urls(s, custom):
+            host = (urlsplit(url).hostname or "").lower()
+            site = next((k for k in kept if same_site(host, k)), None)
+            if site and host not in covered:
+                out.append(f"structure: step {s.id} reads {host} with `{reader}`, which reaches it as no one, but "
+                           f"the person keeps a signed-in session for {site}: read it with a browser agent (type "
+                           f"browser) with browser.sites {json.dumps([host])}, browser.sessions {json.dumps([site])} "
+                           f"and browser.mode read_only, told to read only")
+                break
+    return out
 
 
 async def _browser_agents(plan: O.Plan, steps: list[O.Step]) -> list[str]:
