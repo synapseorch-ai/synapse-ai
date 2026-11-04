@@ -54,15 +54,12 @@ async def list_orchestrations():
 async def list_runs(limit: int = 20):
     """List recent orchestration runs (newest first).
 
-    Runs whose orchestration has since been deleted are omitted — the UI
-    cannot open them (there is no definition to render), so listing them
-    would only produce rows that do nothing when clicked.
+    A run whose workflow has since been deleted is listed too: its page opens it from the definition it kept (F443),
+    named "Deleted workflow", and a history left out after an upgrade looked lost (F1337). Synapse AI's own runs and
+    nested runs are the store's to leave out, by their ids.
     """
     from core.orchestration.state import SharedState
-    known_ids = {o["id"] for o in await load_orchestrations() if o.get("id")}
-    runs = await SharedState.list_runs(
-        limit=max(1, min(limit, 200)), orchestration_ids=known_ids
-    )
+    runs = await SharedState.list_runs(limit=max(1, min(limit, 200)))
     return await _with_scores(runs)
 
 

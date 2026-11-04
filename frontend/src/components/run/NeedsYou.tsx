@@ -23,7 +23,7 @@ import { cn } from '@/lib/cn';
 
 import { ApprovalCard } from './ApprovalCard';
 import { useRunHost } from './host';
-import type { RunRecord } from './model';
+import { DELETED_WORKFLOW, type RunRecord } from './model';
 import { Took, useClock, When } from './When';
 
 
@@ -126,7 +126,7 @@ export function NeedsYou({ runs, more = [], tools = [], hrefOf, onChanged }: {
                     {more.map((m) => (
                         <li key={m.id} className="grid items-center gap-x-3.5 border-b border-border px-2.5 py-2.5 [grid-template-columns:14px_minmax(0,1fr)_auto] sm:[grid-template-columns:14px_minmax(0,14rem)_minmax(0,1fr)_auto_auto]">
                             <span aria-hidden className="size-2 rounded-full bg-person" />
-                            <span className="truncate text-sm font-medium text-text">{m.workflowName ?? 'Deleted workflow'}</span>
+                            <span className="truncate text-sm font-medium text-text">{m.workflowName ?? DELETED_WORKFLOW}</span>
                             <span className="hidden truncate text-sm text-text-muted sm:block">{m.prompt || 'Input required'}</span>
                             <span className="hidden whitespace-nowrap text-xs tabular-nums text-text-faint sm:block">
                                 {m.since ? <>waiting <Took start={m.since} end={null} /></> : null}

@@ -37,6 +37,7 @@ import { FailureCard } from './FailureCard';
 import { RunResult } from './RunResult';
 import { useRunHost } from './host';
 import {
+    DELETED_WORKFLOW,
     bucketOf, CHARGE_RULE, chargeWords, creditsText, followedLine, money, pathOrder, REMOVED_NOTE, removedLine, runTotals, runWarnings,
     when, type Followed, type NestedRun, type RunRecord,
 } from './model';
@@ -92,7 +93,7 @@ export function RunDetail({
     const { toast, show, dismiss } = useToast();
     const [busy, setBusy] = useState(false);
     const bucket = bucketOf(run.status, run.waitingForHuman);
-    const name = run.workflowName ?? 'Deleted workflow';
+    const name = run.workflowName ?? DELETED_WORKFLOW;
     const isNested = run.id.includes('__');
 
     async function act(action: () => Promise<string>) {
