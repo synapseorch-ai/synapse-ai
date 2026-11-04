@@ -504,11 +504,14 @@ class Installer:
 
     def _browser(self) -> str:
         path = _playwright_dir()
-        present = {p.name.split("-")[0] for p in path.iterdir()} if path.is_dir() else set()
         env = self._runtime_env()
         env["PLAYWRIGHT_BROWSERS_PATH"] = str(path)
         parts = Downloads(parts=1)   # the headless shell; FFmpeg's 2.3 MiB takes no share
-        if "chromium_headless_shell" not in present:
+        wanted = self._browser_folders(env)
+        # Here only when every folder this Playwright wants is: by its revision, as `synapse start` checks (F1106). A
+        # 1.x's older shell is not it (F1362), and an answer that could not be read installs, which Playwright skips
+        # for what it already has.
+        if not wanted or not all(folder.is_dir() for folder in wanted):
             run([self.s.tool_python, "-m", "playwright", "install", "--only-shell", "chromium"], self.log, env=env,
                 on_line=lambda line: self.screen.progress("browser", parts.feed(line)))
         # The browser component (BRW1) and the web reader launch headless Chromium, which runs on the headless shell.
@@ -516,6 +519,17 @@ class Installer:
         # Chrome for Testing (525 MB) is not needed either: neither is fetched here.
         self.s.answers.setdefault("playwright_browsers_path", str(path))
         return "Chromium"
+
+    def _browser_folders(self, env: dict) -> list[Path]:
+        """The folders the installed Playwright puts `--only-shell chromium` in, revision and all, from its own dry
+        run (the installer runs outside the tool's venv, so it cannot read Playwright's browsers.json itself). An
+        empty list when it could not say."""
+        try:
+            out = subprocess.run([str(self.s.tool_python), "-m", "playwright", "install", "--dry-run", "--only-shell",
+                                  "chromium"], env=env, capture_output=True, text=True, timeout=120).stdout or ""
+        except (OSError, subprocess.SubprocessError):
+            return []
+        return [Path(m.group(1).strip()) for m in re.finditer(r"Install location:\s*(\S.*)", out)]
 
     def _migrate_legacy(self) -> str:
         # The secrets first, so existing sessions and links keep working.

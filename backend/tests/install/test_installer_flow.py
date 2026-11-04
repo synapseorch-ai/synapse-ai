@@ -197,6 +197,20 @@ def test_a_fresh_install_ends_with_the_link(world):
     assert "Downloaded big" in log
 
 
+def _dry_run_names(monkeypatch, *folders):
+    """Playwright's own `install --dry-run --only-shell chromium`, printing the folders it wants as it does (F1362)."""
+    real = flow.subprocess.run
+
+    def fake(cmd, *a, **kw):
+        if "--dry-run" in [str(c) for c in cmd]:
+            out = "".join(f"browser: part\n  Install location:    {f}\n  Download url:        https://cdn.example/x.zip\n\n"
+                          for f in folders)
+            return flow.subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+        return real(cmd, *a, **kw)
+
+    monkeypatch.setattr(flow.subprocess, "run", fake)
+
+
 def test_the_browser_step_fetches_the_headless_shell_only(world, monkeypatch):
     """F1355: the browser component and the web reader launch headless Chromium, which runs on the headless shell;
     the full build (184 MiB, about 30 s of every install and upgrade) was WhatsApp Web's alone, and that is gone."""
@@ -211,9 +225,31 @@ def test_the_browser_step_fetches_the_headless_shell_only(world, monkeypatch):
     assert ran == [["/tool/python", "-m", "playwright", "install", "--only-shell", "chromium"]]
 
     ran.clear()
+    _dry_run_names(monkeypatch, browsers / "chromium_headless_shell-1234", browsers / "ffmpeg-1011")
     (browsers / "chromium_headless_shell-1234").mkdir(parents=True)
+    (browsers / "ffmpeg-1011").mkdir()
     _REAL_BROWSER(installer)
     assert ran == [], "the headless shell was there, and it was fetched again"
+
+
+def test_an_older_headless_shell_from_1x_does_not_make_the_browser_step_skip(world, monkeypatch):
+    """F1362 (REL3's rc4 upgrade of a real 1.9.3): 1.9's own start had left older shells (1234, 1252); the step saw a
+    `chromium_headless_shell` folder and fetched nothing, so 2.0's Playwright (1.64, which wants 1248) downloaded its
+    shell silently at Starting, with no bar. The step asks Playwright which build it wants, as `synapse start` does."""
+    ran = []
+    monkeypatch.setattr(flow, "run", lambda cmd, log, **kw: ran.append([str(a) for a in cmd]))
+    browsers = world["tmp"] / "ms-playwright"
+    monkeypatch.setattr(flow, "_playwright_dir", lambda: browsers)
+    for old in ("chromium-1234", "chromium_headless_shell-1234", "chromium_headless_shell-1252", "ffmpeg-1011"):
+        (browsers / old).mkdir(parents=True)
+    _dry_run_names(monkeypatch, browsers / "chromium_headless_shell-1248", browsers / "ffmpeg-1011")
+    installer = flow.Installer(flow.Options(uv="uv", yes=True, home=world["home"]), term=tui.Term(stream=io.StringIO()))
+    installer.s.tool_python = Path("/tool/python")
+
+    _REAL_BROWSER(installer)
+
+    assert ran == [["/tool/python", "-m", "playwright", "install", "--only-shell", "chromium"]], \
+        "only older shells were there, and the one this Playwright runs was not fetched"
 
 
 def test_the_browser_step_s_bar_is_full_when_the_shell_is(world, monkeypatch):
