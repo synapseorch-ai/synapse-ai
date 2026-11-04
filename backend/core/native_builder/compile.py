@@ -289,6 +289,43 @@ def _structure_reads(code: str, keys: set[str]) -> dict[str, str]:
     return out
 
 
+
+
+def text_reads(code: str, keys: set[str]) -> set[str]:
+    """The keys among `keys` a Transform's code uses as text (F1359): handed to one of `re`'s functions, a text method
+    called on it (`.split`, `.strip`, …), or added to a string literal. A name assigned from it counts as it, as
+    `_structure_reads` reads one; a field read out of it (`state.k.feedback`) is not it."""
+    import ast
+
+    from core.builder_tools import _state_key
+
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return set()
+    names: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and (key := _state_key(node.value)) in keys:
+            names.update({t.id: key for t in node.targets if isinstance(t, ast.Name)})
+
+    def read(node: Any) -> str | None:
+        key = _state_key(node)
+        if key in keys:
+            return key
+        return names.get(node.id) if isinstance(node, ast.Name) else None
+
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if isinstance(node.func.value, ast.Name) and node.func.value.id == "re":
+                out |= {key for arg in node.args if (key := read(arg))}
+            elif node.func.attr in TEXT_METHODS and (key := read(node.func.value)):
+                out.add(key)
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add) and any(
+                isinstance(side, ast.Constant) and isinstance(side.value, str) for side in (node.left, node.right)):
+            out |= {key for side in (node.left, node.right) if (key := read(side))}
+    return out
+
 def _typed_reads(orch: dict[str, Any], issues: list[str]) -> None:
     """Declare each model or Tool step's answer as the list or object a later step reads it as (F1287, brief 6;
     F1358, cap-04).

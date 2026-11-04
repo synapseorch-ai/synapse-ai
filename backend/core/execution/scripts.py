@@ -51,6 +51,12 @@ def declared_globals(tool: dict[str, Any], variables: dict[str, Any]) -> dict[st
 #: AttributeError that named `dict` rather than the step. Nested objects answer
 #: the same way; a key that shadows a dict method (`items`, `get`) still needs
 #: `state["items"]`. It is still a dict, so `result = state.x` prints as JSON.
+#: What only text has (F1359): a method of these called on a value read from `state` means the code read an object as
+#: text. The same names as the AI builder's plan check reads (`core.native_builder.compile.TEXT_METHODS`), which a test
+#: holds equal; kept here because a runner's script imports nothing of the builder.
+STATE_TEXT_METHODS = ("split", "rsplit", "strip", "lstrip", "rstrip", "lower", "upper", "casefold", "replace",
+                      "startswith", "endswith", "splitlines", "partition", "rpartition", "encode")
+
 _STATE_CLASS = '''class _SynapseState(dict):
     def __getattr__(self, name):
         if name.startswith("__"):
@@ -58,10 +64,13 @@ _STATE_CLASS = '''class _SynapseState(dict):
         try:
             return self[name]
         except KeyError:
-            raise AttributeError(
-                f"no key {name!r} here; the keys are: {', '.join(sorted(map(str, self))) or 'none'}"
-            ) from None
-'''
+            keys = ', '.join(sorted(map(str, self))) or 'none'
+            if name in {state_text_methods!r}:
+                raise AttributeError(
+                    f"this value from `state` is an object, not text, so it has no {name!r}; read one of its keys: {keys}"
+                ) from None
+            raise AttributeError(f"no key {name!r} here; the keys are: {keys}") from None
+'''.replace("{state_text_methods!r}", repr(STATE_TEXT_METHODS))
 
 
 #: `read_vault(path)` in a transform (F1227): a Vault file's text, read by the engine before the step ran — the
@@ -169,4 +178,9 @@ def transform_failure(stderr: str, code: str, offset: int, exit_code: int, *,
     if line is not None:
         source = lines[line - 1].strip()
         where = f" on line {line}" + (f" (`{_clip(source, 120)}`)" if source and "`" not in source else "")
-    return f"{label} failed{where}: {_clip(raised, 300) or f'exit {exit_code}'}"
+    said = f"{label} failed{where}: {_clip(raised, 300) or f'exit {exit_code}'}"
+    if "_SynapseState" in raised:
+        # A value read out of `state` is an object (a person's answer, parsed JSON) where the code wanted text (F1359:
+        # cap-05 ran re.search on a Human step's {approved, feedback}): say what to do, not the class's name alone.
+        said += " — a value read from `state` is an object here, not text: read one of its keys (`state.x.key`)"
+    return said
