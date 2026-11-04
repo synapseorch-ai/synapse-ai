@@ -108,6 +108,10 @@ PRIVATE_STATE_PREFIXES = (
     # The calls a step's reply made after its finish tool, which were not made (`steps.NOT_MADE_PREFIX`, F1242); and
     # the kinds a change named its new things as, within its step (`change_tools._KINDS_KEY`).
     "_not_made_", "_change_kinds",
+    # That a pasted curl was asked to be named once (`change_tools._CURL_NUDGED`, F1312b); a Python tool's fix's
+    # send-backs on its test (`change_tools._CODE_TRIES`, F1325); each agent and address the prompt writer went back
+    # for once (`build_save._ADDRESS_SAID_KEY`, F1341).
+    "_curl_nudged", "_code_tries", "_prompts_address_said",
 )
 
 
