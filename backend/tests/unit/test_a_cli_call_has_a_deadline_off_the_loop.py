@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import signal
 import stat
 import sys
 import time
@@ -40,6 +41,18 @@ ANSWER = """#!{python}
 import json, sys
 print(json.dumps({{"type": "result", "subtype": "success", "is_error": False, "num_turns": 1, "result": "hello"}}))
 """
+
+
+#: How long a test waits for a call that should end at its own deadline (2 s) or at once: past it, the call is said
+#: to be still running, and the test fails rather than waiting the fake CLI's 600 s (CI2, eb 11-04).
+BOUND = 10
+
+
+async def _bounded(call):
+    try:
+        return await asyncio.wait_for(call, BOUND)
+    except asyncio.TimeoutError:
+        raise AssertionError(f"still running {BOUND} s on, after its deadline") from None
 
 
 def _alive(pid: int) -> bool:
@@ -71,7 +84,13 @@ def fake_cli(monkeypatch, tmp_path):
         path.chmod(path.stat().st_mode | stat.S_IEXEC)
         return pids
 
-    return write
+    yield write
+    # Whatever the fake CLI started is ended here, whatever the code under test left running.
+    for pid in (pids.read_text().split() if pids.exists() else []):
+        try:
+            os.kill(int(pid), signal.SIGKILL)
+        except (ProcessLookupError, ValueError):
+            pass
 
 
 async def _pids_of(path: Path) -> list[int]:
@@ -87,7 +106,7 @@ class TestTheDeadline:
         pids = fake_cli(SLEEPER)
         started = time.monotonic()
         with pytest.raises(LLMError) as caught:
-            await P.call_cli_provider("cli.claude.claude-haiku-4-5", "hi", timeout=2)
+            await _bounded(P.call_cli_provider("cli.claude.claude-haiku-4-5", "hi", timeout=2))
         assert time.monotonic() - started < 20
         assert "didn't answer within" in str(caught.value), str(caught.value)
         parent, child = [int(p) for p in pids.read_text().split()]
@@ -109,13 +128,13 @@ class TestTheDeadline:
 
         beat = asyncio.create_task(ticker())
         with pytest.raises(LLMError):
-            await P.call_cli_provider("cli.claude.claude-haiku-4-5", "hi", timeout=2)
+            await _bounded(P.call_cli_provider("cli.claude.claude-haiku-4-5", "hi", timeout=2))
         beat.cancel()
         assert ticks >= 20, f"the loop ran {ticks} times in two seconds"
 
     async def test_its_answer_comes_back_as_before(self, fake_cli):
         fake_cli(ANSWER)
-        text, _, _ = await P.call_cli_provider("cli.claude.claude-haiku-4-5", "hi", timeout=30)
+        text, _, _ = await _bounded(P.call_cli_provider("cli.claude.claude-haiku-4-5", "hi", timeout=30))
         assert text == "hello"
 
     def test_the_deadline_is_the_llm_timeout_never_under_the_clis_floor(self, monkeypatch):
@@ -136,7 +155,7 @@ class TestAStoppedRunStopsIt:
         parent, child = await _pids_of(pids)
         call.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await call
+            await _bounded(call)
         for _ in range(50):
             if not (_alive(parent) or _alive(child)):
                 break
@@ -157,6 +176,16 @@ class TestATurnOfItsOwnEndsAtOnce:
         with pytest.raises(LLMError) as caught:
             P._read_cli_answer("cli.claude", "cli.claude.claude-haiku-4-5", 1, said, "", None)
         assert "ran its own tool" in str(caught.value), str(caught.value)
+
+    def test_its_own_words_come_after_ours(self):
+        # test_cli_auth_detection's pin ("max turns") holds beside this one: the CLI's result text, scrubbed, capped.
+        said = json.dumps({"type": "result", "subtype": "error_max_turns", "is_error": True, "num_turns": 2,
+                           "result": "Reached max turns sk-live-abcdefghijklmnopqrstuvwx1234"})
+        with pytest.raises(LLMError) as caught:
+            P._read_cli_answer("cli.claude", "cli.claude.claude-haiku-4-5", 1, said, "", None)
+        told = str(caught.value)
+        assert "ran its own tool" in told and "(Claude Code said: Reached max turns" in told, told
+        assert "sk-live" not in told, told
 
 
 class TestWindows:
