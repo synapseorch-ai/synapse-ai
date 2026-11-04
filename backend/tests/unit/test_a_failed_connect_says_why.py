@@ -60,13 +60,18 @@ def _transport(monkeypatch, error: BaseException | None):
     monkeypatch.setattr(mcp_client, "_http_opener", opener_for)
 
 
+def _handshake_error() -> ssl.SSLCertVerificationError:
+    """The error as a TLS handshake raises it: an error number and its text, so `strerror` is set."""
+    return ssl.SSLCertVerificationError(1, SSL_SAID)
+
+
 def _leaked(*texts) -> list[str]:
     return [s for s in SECRETS for t in texts if s in str(t)]
 
 
 class TestItSaysWhy:
     async def test_the_add_says_why_it_did_not_connect(self, client, manager, monkeypatch):
-        _transport(monkeypatch, ssl.SSLCertVerificationError(SSL_SAID))
+        _transport(monkeypatch, _handshake_error())
         added = await client.post("/api/mcp/servers", json={
             "name": "tracker", "label": "Tracker", "server_type": "remote", "url": URL, "token": TOKEN})
         assert added.status_code == 200, added.text
@@ -76,7 +81,7 @@ class TestItSaysWhy:
         assert manager.last_error("tracker") == SSL_SAID
 
     async def test_retry_and_the_list_say_the_same(self, client, manager, monkeypatch):
-        _transport(monkeypatch, ssl.SSLCertVerificationError(SSL_SAID))
+        _transport(monkeypatch, _handshake_error())
         await client.post("/api/mcp/servers", json={
             "name": "tracker", "label": "Tracker", "server_type": "remote", "url": URL, "token": TOKEN})
         retried = (await client.post("/api/mcp/servers/tracker/reconnect")).json()
@@ -86,7 +91,7 @@ class TestItSaysWhy:
         assert listed["last_error"] == SSL_SAID
 
     async def test_a_connect_that_succeeds_clears_it(self, client, manager, monkeypatch):
-        _transport(monkeypatch, ssl.SSLCertVerificationError(SSL_SAID))
+        _transport(monkeypatch, _handshake_error())
         await client.post("/api/mcp/servers", json={
             "name": "tracker", "label": "Tracker", "server_type": "remote", "url": URL, "token": TOKEN})
         assert manager.last_error("tracker") == SSL_SAID
@@ -124,4 +129,23 @@ class TestItNeverSaysACredential:
         said = connect_failure(ExceptionGroup("g", [self._quoting()]),
                                {"name": "tracker", "url": WITH_SECRETS, "token": TOKEN})
         assert "401 Unauthorized" in said and _leaked(said) == []
-        assert connect_failure(ExceptionGroup("g", [ssl.SSLCertVerificationError(SSL_SAID)]), {}) == SSL_SAID
+        assert connect_failure(ExceptionGroup("g", [_handshake_error()]), {}) == SSL_SAID
+
+    def test_every_shape_of_error_says_its_own_text(self):
+        """An OSError's own text is its `strerror` once one is set; `str()` of one built with a single argument is that
+        argument's tuple on some Pythons (3.14 with OpenSSL 3.5: "('…',)"). Each shape says its text, never a tuple."""
+        from core.mcp_client import connect_failure
+
+        verify_only = ssl.SSLCertVerificationError()
+        verify_only.verify_message = SSL_SAID
+        shapes = {
+            "the handshake's (errno, text)": (_handshake_error(), SSL_SAID),
+            "a single text": (ssl.SSLCertVerificationError(SSL_SAID), SSL_SAID),
+            "only the verify message": (verify_only, SSL_SAID),
+            "a refused connection": (ConnectionRefusedError(111, "Connection refused"), "Connection refused"),
+            "an OSError of one text": (OSError("Network is unreachable"), "Network is unreachable"),
+            "any other error": (RuntimeError("the server said no"), "the server said no"),
+        }
+        for shape, (error, said) in shapes.items():
+            got = connect_failure(ExceptionGroup("g", [error]), {})
+            assert got == said, (shape, got)
