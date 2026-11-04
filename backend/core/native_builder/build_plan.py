@@ -562,6 +562,7 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     errors += await own_api.server_parts(plan, server_module)
     # And the server the person gave is in it (F1290, cap-03 A2: given in an answer, planned without it).
     errors += await _given_server_left_out(plan, state)
+    errors += addresses_as_given(plan, ws, state)
     errors += await _agent_switches(plan, ws, server_module)
     # Its eval (F1255, D340 F): only where this host offers Evals' tools (cloud withholds them until its own Evals
     # host is in: D3ASM), else left out and said, never a save that fails; then held to the Evals forms' own rules.
@@ -2139,6 +2140,56 @@ GIVEN_KEYS = ("user_message", "chat_history", "org_profile", "plan_context", "ex
 
 #: A URL in the person's words, up to the first space, quote or bracket.
 _URL = re.compile(r"https?://[^\s\"'<>()\[\]{}`]+")
+
+
+def persons_texts(state: dict) -> list[str]:
+    """The person's own words, as they wrote them (F1341): their message, their earlier turns (never the
+    assistant's), and their answers and replies, F1290's set."""
+    from core.native_builder.change_tools import _TURN, HEARD_KEY, _with_answers
+
+    history = str(state.get("chat_history") or "")
+    theirs = [m.group("said") for m in _TURN.finditer(history) if m.group("role") == "user"]
+    words = [state.get("user_message"), *theirs, state.get("plan_answers"), *(state.get(HEARD_KEY) or []),
+             *(a.get("answer") for a in _with_answers(state)), *turn_texts(state)]
+    return [w if isinstance(w, str) else json.dumps(w, default=str, ensure_ascii=False) for w in words if w]
+
+
+def addresses_as_given(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
+    """The person's addresses as they gave them, in the plan (F1341: cap-01's http://portal.localhost:9411 opened as
+    portal.localhost, its kept session's site, on port 80). Every address the plan writes on a host they gave is at
+    the scheme and port they gave it; and a step a browser agent runs on such a host says it, in its prompt or its
+    new agent's purpose (an existing agent's own instructions count), since its sites and sessions name hosts."""
+    from urllib.parse import urlsplit
+
+    from core.native_builder import addresses
+
+    given = addresses.given_urls(persons_texts(state))
+    if not given:
+        return []
+    out: list[str] = []
+    for found in addresses.in_plan(plan.model_dump(mode="json", exclude_none=True), every=True):
+        if found.kind == "url" and (theirs := addresses.another_origin(found.value, given)):
+            out.append(f"{found.where} opens {addresses.as_given(found.value)}, but the person gave {theirs}: write "
+                       "it as the person gave it, its scheme and port with it")
+    new = {a.name: a for a in plan.agents}
+    for s in (*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)):
+        if s.type != "agent" or not s.agent:
+            continue
+        if (agent := new.get(s.agent)) is not None:
+            if agent.type != "browser" or agent.browser is None:
+                continue
+            sites, own = list(agent.browser.sites), agent.purpose or ""
+        else:
+            here = next((x for i, x in ws.agents.items() if s.agent in (i, x.get("name"))), {})
+            if here.get("type") != "browser":
+                continue
+            sites, own = list((here.get("browser") or {}).get("sites") or []), str(here.get("system_prompt") or "")
+        for url in addresses.missing(f"{s.prompt or ''} {own}", sites, given):
+            host = (urlsplit(url).hostname or "").lower()
+            out.append(f'step {s.id}: its agent "{s.agent}" opens {host}: put {url} in the step\'s prompt, as the '
+                       f"person gave it. browser.sites keeps the host and browser.sessions its kept sign-in ({host}), "
+                       "and neither is the address to open")
+    return list(dict.fromkeys(out))
 
 
 async def _given_server_left_out(plan: O.Plan, state: dict) -> list[str]:
