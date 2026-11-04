@@ -82,8 +82,10 @@ TEAM_SETTINGS = ("add", "remove", "mode", "at_once", "task_budget", "spend_limit
 BROWSER_SETTINGS = ("sites", "sessions", "mode", "recordings", "action_budget")
 
 #: What a new HTTP tool is made from (F1322): `create_http_tool`'s own facts, in a change's words. `key` says where its
-#: key goes, {header, scheme}, never the key, which the person gives on its Connect card after the yes.
-HTTP_TOOL_FIELDS = ("description", "method", "url", "headers", "body", "input_schema", "group", "key")
+#: key goes, {header, scheme}, never the key, which the person gives on its Connect card after the yes. `from` names
+#: where code reads them (F1312a): {curl: n}, a curl the person pasted this turn, or {spec, operation}, an operation of
+#: a spec the conversation read.
+HTTP_TOOL_FIELDS = ("description", "method", "url", "headers", "body", "input_schema", "group", "key", "from")
 HTTP_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
 #: What a key may be sent after, as the Connect card saves it (`routes.tools.connect_made_tools`): or nothing.
 KEY_SCHEMES = ("Bearer", "Token")
@@ -348,6 +350,14 @@ def _http_tool_field_issue(key: str, value: Any) -> str | None | bool:
         return None if ok else "`input_schema` is a JSON Schema object, {type: object, properties: {…}}"
     if key == "body":
         return None if isinstance(value, (str, dict, list)) else "`body` is the request's text, or its JSON"
+    if key == "from":
+        curl = value.get("curl") if isinstance(value, dict) else None
+        ok = isinstance(value, dict) and (
+            (set(value) == {"curl"} and isinstance(curl, int) and not isinstance(curl, bool) and curl >= 1)
+            or (set(value) == {"spec", "operation"} and all(isinstance(value[k], str) and value[k].strip()
+                                                           for k in ("spec", "operation"))))
+        return None if ok else ("`from` is {curl: n}, a curl the person pasted (the context's `curls`), or {spec, "
+                                "operation}, an operation of a spec you read with read_api_spec")
     if key == "key":
         header, scheme = (value.get("header"), value.get("scheme", "")) if isinstance(value, dict) else (None, None)
         ok = (isinstance(value, dict) and set(value) <= {"header", "scheme"} and isinstance(header, str)
@@ -494,12 +504,13 @@ def issues(op_name: str, target: dict[str, Any], fields: dict[str, Any], *, inte
 
 
 def as_planned(ops: list[Any]) -> list[Any]:
-    """The ops as code reads them (F1322): `create` of an HTTP tool with its url is `create_tool`, and each new tool
-    comes before the ops that give it to an agent, the rest in the planner's order."""
+    """The ops as code reads them (F1322): `create` of an HTTP tool with its url, or with where code reads it from
+    (`from`, F1312a), is `create_tool`, and each new tool comes before the ops that give it to an agent, the rest in
+    the planner's order."""
     out: list[Any] = []
     for raw in ops:
         if isinstance(raw, dict) and raw.get("op") == "create" and (raw.get("target") or {}).get("kind") == "tool" \
-                and isinstance(raw.get("fields"), dict) and "url" in raw["fields"]:
+                and isinstance(raw.get("fields"), dict) and ({"url", "from"} & set(raw["fields"])):
             raw = {**raw, "op": "create_tool"}
         out.append(raw)
     return sorted(out, key=lambda o: not (isinstance(o, dict) and o.get("op") == "create_tool"))

@@ -150,7 +150,9 @@ from core.native_builder import prompt_lint, seed
 #: F1308: rule 12 under # Changing splits a range or a list so the rest reads as it did (TRI1), 7888cfe6….
 #: F1322: the planner's rule 5 (an HTTP tool whose address it knows is made in the change, by its own fields), on
 #: F1310 and F1308 together, e9b9dcbe….
-BUNDLE_SHA256 = "8270965471e29f1ad5fccc52a381bd9880a040a253ce776108a77241fce9c1df"
+#: F1312a: # Changing rule 23 (an HTTP tool's facts from what the person gives: `from` a curl or a spec, a docs
+#: link through research_questions, the ask in words), c665edb5… (on fix-forward 17).
+BUNDLE_SHA256 = "c665edb5c4e9ee017e00c7666ca5f652b93a1e5701f755d194f0f8eed5dd1631"
 
 
 def _sha(definitions) -> str:

@@ -131,8 +131,10 @@ SUBMIT = {"type": "function", "function": {
         "{path}; channel_connect {platform, agent}; channel_agents {agents, agent}; edit_steps, create "
         "and use_recording {what}; create (an HTTP tool whose address you know: target {kind: tool, name: its "
         "snake_case name}) {description, url with {{ placeholders }} for what it reads, method: GET | POST | PUT | "
-        "PATCH | DELETE, headers, body, input_schema, group, key: {header, scheme} where its key goes, never the key}, "
-        "before the ops that give it to an agent. Deletes and the other acts take none. For \"undo that\", send "
+        "PATCH | DELETE, headers, body, input_schema, group, key: {header, scheme} where its key goes, never the key; "
+        "or from: {curl: n}, a curl in the context's curls, or from: {spec, operation}, an operation of a spec you "
+        "read with read_api_spec, and code fills its fields, your url and body marking only what varies with "
+        "{{ }}}, before the ops that give it to an agent. Deletes and the other acts take none. For \"undo that\", send "
         "undo_of with no ops."
     ),
     "parameters": {"type": "object", "properties": {
@@ -264,6 +266,13 @@ async def submit_change(args: dict, server_module: Any, events: list[dict]) -> d
             found.append(f"op {n} is not an object")
             continue
         fields = op.get("fields") if isinstance(op.get("fields"), dict) else {}
+        if op.get("op") == "create_tool" and isinstance(fields.get("from"), dict):
+            # What the person pasted or the conversation read, filled in by code (F1312a): never retyped.
+            fields, why = await _from_source(fields, run.shared_state if run is not None else {})
+            if why:
+                found.append(f"op {n}: {why}")
+                continue
+            op["fields"] = fields
         found += [f"op {n}: {line}" for line in C.issues(str(op.get("op") or ""), op.get("target") or {}, fields)]
         if op.get("op") in ("create", "create_tool") and (switched := _kind_switch(kinds, op.get("target") or {})):
             found.append(f"op {n}: {switched}")
@@ -277,6 +286,63 @@ async def submit_change(args: dict, server_module: Any, events: list[dict]) -> d
 
 #: The kind each new thing of this step's change was first submitted as, by name (F1242), engine-private.
 _KINDS_KEY = "_change_kinds"
+
+
+async def _from_source(fields: dict, state: dict) -> tuple[dict, str | None]:
+    """A new HTTP tool's fields from where its `from` says (F1312a): the n-th curl the person pasted this turn
+    (`build_plan.curls`), or an operation of a spec this conversation read (`own_api.SPECS_KEY`). The source's method,
+    URL, headers, body, inputs and where its key goes are the tool's; the planner's own url and body may only mark
+    what varies, in the curl's shape. The fields, or why not, in words the planner can act on."""
+    from core import http_facts
+
+    source = fields["from"]
+    if "curl" in source:
+        from core.native_builder.build_plan import curls
+
+        found, n = curls(state), source.get("curl")
+        if not isinstance(n, int) or not 1 <= n <= len(found):
+            held = f"{len(found)} curl{'' if len(found) == 1 else 's'}" if found else "no curl"
+            return fields, f"`from` names curl {n}, and this turn holds {held}" + (
+                "" if found else ": give the tool's fields from the person's words instead")
+        facts = found[n - 1]
+        if facts.get("problem"):
+            return fields, f"curl {n} can't be a tool: {facts['problem']}"
+        if fields.get("url") and (why := http_facts.same_shape(fields["url"], facts["url"])):
+            return fields, f"its url is the curl's ({facts['url']}) with {{{{ }}}} only where a value varies: {why}"
+        if fields.get("body") and facts.get("body") and (why := http_facts.same_body(fields["body"], facts["body"])):
+            return fields, f"curl {n}: {why}"
+        out = {**fields, "url": fields.get("url") or facts["url"], "method": facts["method"]}
+        for name in ("headers", "key"):
+            if facts.get(name):
+                out[name] = facts[name]
+        if facts.get("body") is not None:
+            out["body"] = fields.get("body") or facts["body"]
+        return out, None
+    from core.native_builder import own_api
+
+    read = state.get(own_api.SPECS_KEY) if isinstance(state.get(own_api.SPECS_KEY), dict) else {}
+    spec = read.get(str(source.get("spec") or "").strip().lower())
+    if not spec:
+        named = ", ".join(str(v.get("name")) for v in read.values() if isinstance(v, dict)) or "none"
+        return fields, (f"`from` names the spec {_quoted(source.get('spec'))}, and the specs this conversation read are "
+                        f"{named}: read it with read_api_spec first")
+    got = await own_api.read_spec(spec)
+    if got.get("problem"):
+        return fields, f"{spec['name']}'s spec can't be read: {got['problem']}"
+    operation = str(source.get("operation") or "").strip()
+    tool = next((t for t in got.get("tools") or [] if t.get("name") == operation), None)
+    if tool is None:
+        names = ", ".join(t["name"] for t in (got.get("tools") or [])[:20])
+        return fields, f"{spec['name']}'s spec has no operation {_quoted(operation)}: its operations are {names}"
+    out = {**fields, "url": tool["url"], "method": tool.get("method") or "GET",
+           "description": fields.get("description") or tool.get("description") or ""}
+    if isinstance(tool.get("inputSchema"), dict):
+        out["input_schema"] = tool["inputSchema"]
+    if tool.get("body"):
+        out["body"] = tool["body"]
+    if (auth := got.get("auth")) and auth.get("in") == "header" and auth.get("name"):
+        out["key"] = {"header": auth["name"], "scheme": auth.get("scheme") or ""}
+    return out, None
 
 
 def _kind_switch(kinds: dict, target: dict) -> str | None:
@@ -1378,7 +1444,17 @@ def _new_tool_detail(name: str, fields: dict) -> str:
     its call sends as it sends it (its inputs, body, headers, group, what it does), and where its key goes, to which
     host only; the person approves what is made (MCP2's finding 2)."""
     args = C.http_tool_args(name, fields)
-    parts = [f"an HTTP tool: {args['method']} {args['url']}", f"inputs: {args['input_schema_json']}"]
+    parts = [f"an HTTP tool: {args['method']} {args['url']}"]
+    source = fields.get("from") if isinstance(fields.get("from"), dict) else {}
+    if "curl" in source:
+        parts.append("from the curl you pasted")
+    elif source.get("spec"):
+        parts.append(f"from {source['spec']}'s {source.get('operation')}")
+    # A key in its query is a workspace variable the person sets (F1312a), never a value in the tool or the chat.
+    if variables := re.findall(r"\{\{\s*global\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}", args["url"]):
+        parts.append(f"it reads the workspace variable{'s' if len(variables) > 1 else ''} {', '.join(variables)}: set "
+                     f"{'them' if len(variables) > 1 else 'it'} in Settings, never in the chat")
+    parts.append(f"inputs: {args['input_schema_json']}")
     parts += [f"{label}: {args[arg]}" for label, arg in (("body", "body_template"), ("headers", "headers_json"),
                                                          ("group", "group")) if arg in args]
     parts.append(f"does: {args['description']}")

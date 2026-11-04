@@ -263,17 +263,41 @@ def _request_words(state: dict) -> str:
 _SITE_FIELDS = ("url", "final_url", "title", "what", "kind", "api_spec", "api", "why_not")
 
 
+def turn_texts(state: dict) -> list[str]:
+    """What the person wrote this turn, as the door kept it: their message, and their reply to what the run last
+    asked, typed or a form's answers (F1312a: a reply is read as a message is, chat first)."""
+    from core.native_builder.change_tools import reply_of
+
+    said, form = reply_of(state)
+    answers = " ".join(str(v) for v in (form or {}).values() if isinstance(v, str) and v.strip())
+    return [t for t in (str(state.get("user_message") or ""), said or "", answers) if t.strip()]
+
+
+def curls(state: dict) -> list[dict]:
+    """Every curl the person pasted this turn, read by code (`http_facts.from_curl`), numbered from 1 as `from:
+    {curl: n}` names it: the tool's facts, or why it can't be one (F1312a)."""
+    from core import http_facts
+
+    found: list[dict] = []
+    seen: set[str] = set()
+    for text in turn_texts(state):
+        for command in http_facts.curls_in(text):
+            if command not in seen and len(found) < http_facts.MAX_CURLS:  # a reply that repeats the message
+                seen.add(command)
+                found.append({"n": len(found) + 1, **http_facts.from_curl(command)})
+    return found
+
+
 async def _named_sites(state: dict) -> list[dict]:
-    """The sites the person's message names, as read (`named_sites.read_named`), each kept in the run's state so this
-    conversation never reads it again (D340 D2). A read that fails is a fact in the list, and one that raises is none:
-    never a pack that fails."""
+    """The sites the person's message names, and their reply (F1312a), as read (`named_sites.read_named`), each kept
+    in the run's state so this conversation never reads it again (D340 D2). A read that fails is a fact in the list,
+    and one that raises is none: never a pack that fails."""
     from core.native_builder import named_sites
 
     kept = state.get(named_sites.PAGES_KEY)
     already = kept if isinstance(kept, dict) else {}
     try:
-        pages = await named_sites.read_named(str(state.get("user_message") or ""),
-                                             already=named_sites.settled(already))
+        pages = await named_sites.read_named("\n".join(turn_texts(state)), already=named_sites.settled(already))
     except Exception as exc:  # noqa: BLE001 — sites unread are a plan without them, as before D340
         _log.warning("the sites the message names were not read: %s", exc)
         return []
@@ -356,6 +380,10 @@ async def read_plan_context(args: dict, server_module: Any, events: list[dict]) 
     # The sites the message names, read through the guarded read once a conversation (D340 B, D2): typed facts, never
     # the page. Always present, empty when it names none.
     pack["named_sites"] = await _named_sites(state)
+    # Each curl the person pasted this turn, as its tool's facts (F1312a): `from: {curl: n}` names one, and code fills
+    # the tool's fields from it; its key is never here, only where it goes.
+    if found := curls(state):
+        pack["curls"] = found
     # A bare "build it" after findings: their goal is the request (F1064); the person's words stay theirs. Always
     # present, empty when there is none, so the planner's template never shows an unfilled reference.
     pack["request"] = go_ahead_request(state) or ""

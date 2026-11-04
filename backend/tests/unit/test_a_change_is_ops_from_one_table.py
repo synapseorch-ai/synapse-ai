@@ -283,7 +283,9 @@ _EVERY = {"language": "english", "visitor_access": True, "budget_monthly_usd": 2
           # A new HTTP tool's (F1322): `description` and `body` above serve it too.
           "method": "PATCH", "url": "https://hooks.example.org/v1/orders/{{ order_id }}",
           "headers": {"X-Trace": "TRACE ON"}, "input_schema": {"type": "object", "properties": {"order_id": {
-              "type": "string"}}}, "group": "ORDERS GROUP", "key": {"header": "X-Api-Key", "scheme": "Bearer"}}
+              "type": "string"}}}, "group": "ORDERS GROUP", "key": {"header": "X-Api-Key", "scheme": "Bearer"},
+          # Where code reads a new tool's facts from (F1312a): a curl the person pasted, by its number.
+          "from": {"curl": 1}}
 
 
 def _every_field(op_name):

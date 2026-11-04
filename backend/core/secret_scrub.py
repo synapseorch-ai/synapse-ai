@@ -90,6 +90,42 @@ _CREDENTIALS: tuple[re.Pattern[str], ...] = (
 )
 
 
+#: A curl command in a text: its key-carrying parts are a key by their name, whatever they look like (F1312a).
+_CURL = re.compile(r"(?i)(?:^|[\s`$>(])curl\s")
+#: Naveen's list (11-04): every part of a curl that carries a key, masked at any length. A `{{ }}` reference, a `$` one
+#: or a value already marked is left as it is, anywhere in it (a scheme word skipped never lets one through). The flags
+#: are curl's own case: `-B` is no `-b`. Each pattern's last group is what is replaced.
+#: A docs page's stand-in is no key: `<token>`, `[key]`, `{api_key}`, `YOUR_API_KEY`, `xxx`, `***`, `…`, whole. A board
+#: card or a log quoting an API's docs keeps it, as before the curl rule.
+_PLACEHOLDER = (r"(?:<[^>\"'\r\n]*>|\[[^\]\"'\r\n]*\]|\{[^}\"'\r\n]*\}|YOUR[\w-]*|[Yy]our[\w-]*|[xX]{3,}|\*{3,}|"
+                r"\.{3,}|…)")
+#: A quoted value is read to its closing quote, a reference or a stand-in anywhere in it (however the pattern backs
+#: off: a scheme word or a space skipped never lets one through); a bare one (no spaces) by how it starts and ends.
+_NOT_A_QUOTED_VALUE = (r"(?![^\"'\r\n]*(?:\{\{|‹|\$))(?!\s*(?i:(?:bearer|token|basic)\s+)?" + _PLACEHOLDER +
+                       r"\s*[\"'])")
+_NOT_A_BARE_VALUE = r"(?!\{\{|\$|‹)(?!" + _PLACEHOLDER + r"(?:[\s\"'&#]|$))"
+_KEY_HEADER_NAME = r"(?:authorization|proxy-authorization|cookie|[\w-]*(?:key|token|secret|auth)[\w-]*)"
+_CURL_PARTS: tuple[re.Pattern[str], ...] = (
+    # -H 'Authorization: Bearer …', --header "X-Api-Key: …", -H 'Cookie: …': the value, its scheme word kept.
+    re.compile(r"(?i)((?<![\w-])(?-i:-H|--header)(?=[\s=])\s*=?\s*[\"']\s*" + _KEY_HEADER_NAME +
+               r"\s*:\s*(?:(?:bearer|token|basic)\s+)?)" + _NOT_A_QUOTED_VALUE + r"([^\"'\r\n]+)"),
+    # -u user:password, --user=…, --oauth2-bearer …: the whole value.
+    re.compile(r"(?i)((?<![\w-])(?-i:-u|--user|--oauth2-bearer)(?=[\s=])\s*=?\s*[\"']?)" + _NOT_A_BARE_VALUE +
+               r"([^\s\"']+)"),
+    # -b 'sid=…; …' (quoted) and -b sid=… (bare): the cookies.
+    re.compile(r"(?i)((?<![\w-])(?-i:-b|--cookie)(?=[\s=])\s*=?\s*[\"'])" + _NOT_A_QUOTED_VALUE + r"([^\"'\r\n]+)"),
+    re.compile(r"(?i)((?<![\w-])(?-i:-b|--cookie)\s+)(?![\"'{$‹])([^\s\"']+)"),
+    # A key-named query parameter in the curl's URL: its value.
+    re.compile(r"(?i)([?&](?:api[_-]?key|apikey|key|token|access[_-]?token|auth|secret|client[_-]?secret|signature|sig)"
+               r"=)" + _NOT_A_BARE_VALUE + r"([^&\s\"'#]+)"),
+)
+
+
+def _parts_of(text: str) -> tuple[re.Pattern[str], ...]:
+    """The patterns `text` is read with: the credential shapes, and a curl's key-carrying parts when it holds one."""
+    return _CREDENTIALS + _CURL_PARTS if _CURL.search(text or "") else _CREDENTIALS
+
+
 def scrub_credentials(text: str) -> tuple[str, int]:
     """`text` with each credential replaced by `CREDENTIAL_MARK`, and how many."""
     removed = 0
@@ -105,14 +141,14 @@ def scrub_credentials(text: str) -> tuple[str, int]:
         prefix, quote, _ = groups  # (prefix, quote, secret)
         return f"{prefix}{quote}{CREDENTIAL_MARK}{quote}"
 
-    for pattern in _CREDENTIALS:
+    for pattern in _parts_of(text):
         text = pattern.sub(_mark, text)
     return text, removed
 
 
 def holds_credential(text: str) -> bool:
     """Whether `text` holds anything `scrub_credentials` would take out."""
-    return bool(text) and any(pattern.search(text) for pattern in _CREDENTIALS)
+    return bool(text) and any(pattern.search(text) for pattern in _parts_of(text))
 
 
 # ── Secret variables, by value (F854) ────────────────────────────────────────

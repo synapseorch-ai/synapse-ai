@@ -84,6 +84,15 @@ def test_a_curls_other_parts_are_as_they_were():
     assert _masked(text) == text
 
 
+@pytest.mark.parametrize("part", ["-H 'Authorization: Bearer YOUR_TOKEN'", "-H 'X-Api-Key: <your key>'",
+                                  "-H \"Cookie: xxx\"", "--header 'X-Auth-Token: ***'", "-u YOUR_KEY",
+                                  "'https://api.example.com/items?api_key={api_key}'"])
+def test_a_docs_pages_stand_in_is_no_key(part):
+    # A board card or a log quoting an API's docs keeps its example, as it did before the curl rule.
+    text = f"From their docs: curl {part} https://api.example.com/items"
+    assert _masked(text) == text and not holds_credential(text)
+
+
 def test_prose_with_no_curl_is_as_it_was():
     text = f"Our lookup is at {BILLING}/items?key={SHORT} and the docs say -u is for users."
     assert _masked(text) == text
