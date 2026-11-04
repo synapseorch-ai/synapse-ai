@@ -32,9 +32,10 @@ import { useBrowserFrames, useKeptLog, type FrameMemory } from './useBrowserFram
  * theirs (amber, Naveen's pick of the prototype's A), their input reaches the
  * page, the address bar takes an address, and Hand back carries a note.
  */
-/** The height a pane's own bars take around its picture: the address and driver strips above, the fold below
- *  (F1376: the picture fits the screen under them). */
-const HERO_CHROME = '9rem';
+/** The height around a run page's picture when its browser is in view: its heading, the address and driver strips
+ *  above, the fold below (F1376: the picture fits the screen under them). The enlarged dialog's is the same, so
+ *  Enlarge is never smaller than the column's picture. */
+const HERO_CHROME = '12rem';
 /** The enlarged dialog's title and footer around its picture (F1376). */
 const ENLARGED_CHROME = '12rem';
 

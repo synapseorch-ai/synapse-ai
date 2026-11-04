@@ -13668,9 +13668,9 @@ async def _brw_hero(page, region) -> list[str]:
               summary: details ? details.querySelector('summary').innerText : null,
               wide: document.documentElement.scrollWidth <= window.innerWidth + 1};
     }""")
-    # (1) As large as fits: the column's width, or the screen's height under the pane's own bars at 16:10.
-    under = got["vh"] - (got["boxTop"] - got["top"]) - 48  # the strips above it, the fold's line below
-    fits = min(got["pane"] or 0, under * 16 / 10)
+    # (1) As large as fits: the column's width, or the screen's height at 16:10 less what is around the picture when
+    # the browser is in view (its heading, strips and fold: 12rem, 192 px, BrowserPane's HERO_CHROME).
+    fits = min(got["pane"] or 0, (got["vh"] - 192) * 16 / 10)
     if not got["w"] or got["w"] < 0.95 * fits:
         bad.append(f"the live picture is not as large as the screen allows: {got} against {fits:.0f}")
     elif abs(got["h"] - got["w"] * 10 / 16) > 6:
@@ -13700,7 +13700,7 @@ async def _brw_hero(page, region) -> list[str]:
     if not large["img"] or large["img"] < 0.95 * room:
         bad.append(f"Enlarge does not show the page as large as the dialog allows: {large} against {room:.0f}")
     # (3) Never smaller than the column's; on a phone the screen's width (eb 11-04).
-    if large["img"] and large["img"] < got["w"] * (1.0 if large["vw"] > 600 else 0.85):
+    if large["img"] and large["img"] < got["w"] * (0.995 if large["vw"] > 600 else 0.85):  # equal, to the sub-pixel
         bad.append(f"Enlarge shows the page smaller than the column does: {large} against {got['w']}")
     if large["left"] < 0 or large["right"] > large["vw"] + 1 or not large["wide"]:
         bad.append(f"the enlarged page does not fit the screen: {large}")
