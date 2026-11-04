@@ -71,6 +71,12 @@ class _Tools:
     async def latest_replay(self, key):
         return None
 
+    async def hand_to_person(self, *args, **kwargs):
+        raise AssertionError("hand_to_person is not reached in these tests: a test that reaches it gives it an answer")
+
+    async def park_turn(self, *args, **kwargs):
+        raise AssertionError("park_turn is not reached in these tests: a test that reaches it gives it an answer")
+
 
 @pytest.fixture
 def tools(monkeypatch):

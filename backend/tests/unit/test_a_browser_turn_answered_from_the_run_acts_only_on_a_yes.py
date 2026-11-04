@@ -45,6 +45,16 @@ class _Browser:
         self.calls.append(("park", key, handover.get("kind")))
         self.parked = {**handover, **where}
 
+    def take_events(self, key):
+        """The pane's events, which the step hands the run page as its replay goes (F1356): none queued here."""
+        return []
+
+    async def hand_to_person(self, *args, **kwargs):
+        raise AssertionError("hand_to_person is not reached in these tests: a test that reaches it gives it an answer")
+
+    async def latest_replay(self, *args, **kwargs):
+        raise AssertionError("latest_replay is not reached in these tests: a test that reaches it gives it an answer")
+
     async def take_parked(self, key):
         self.calls.append(("taken", key))
         parked, self.parked = self.parked, None

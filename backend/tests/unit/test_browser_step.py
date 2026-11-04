@@ -44,6 +44,10 @@ class _Browser:
     async def park_turn(self, key, handover, **where):
         self.calls.append(("park", key, handover.get("kind")))
 
+    def take_events(self, key):
+        """The pane's events, which the step hands the run page as its replay goes (F1356): none queued here."""
+        return []
+
 
 def _server():
     return types.SimpleNamespace(agent_sessions={}, memory_store=None, tool_router={})
