@@ -96,6 +96,31 @@ _HELP = re.compile(
     r"typescript|webhooks?|can synapse|does synapse|can it|does it support|"
     r"supports?|feature|features|pricing|price|plans?|tutorial|guide|where do i|where is the)\b")
 
+#: A question about a failure that has happened (F1378): "why did my run fail", "why is it failing", "what went wrong".
+#: Never a change that only names one ("this keeps failing, add a retry").
+_CAUSE = re.compile(
+    r"\bwhy (?:did|didn t|was|wasn t|were|has|hasn t|have|had|is|isn t|are)\b(?:\s+\w+){0,6}?\s+"
+    r"(?:fail|failed|failing|break|broke|broken|stop|stopped|error|errored|crash|crashed|stuck|"
+    r"not work\w*|not run\w*)\b"
+    r"|\bwhat went wrong\b")
+#: The fix half's words when the message gave none of its own beside the question.
+FIX_IT = "fix what made it fail"
+
+
+def asks_why_it_failed(text: str) -> bool:
+    """Whether a message asks why something of this workspace failed (F1378): the answer says it first."""
+    return bool(_CAUSE.search(_words(text)))
+
+
+def _fix_half(message: str, said: str | None) -> str:
+    """The rest of a message whose first ask is why something failed: the model's own second ask unless that is the
+    question itself, else what follows the question, else `FIX_IT`."""
+    if said and said.strip() and not asks_why_it_failed(said):
+        return said.strip()
+    rest = message.split("?", 1)[1].strip(" .!") if "?" in message else ""
+    return rest or FIX_IT
+
+
 _KINDS = {"schedule": ("schedule", "schedules"), "agent": ("agent", "agents"),
           "workflow": ("workflow", "workflows", "orchestration"), "recording": ("recording", "recordings")}
 _STOP = frozenset("the a an my our this that for to of and on off in at with every each daily nightly".split())
@@ -166,9 +191,14 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
 
     recording = _recording_named(text, things, inventory)
     asked = _QUESTION.match(text) or (_QUESTION_IF_ASKED.match(text) and message.rstrip().endswith("?"))
+    also = request.also
+    # Why something failed is said before it is fixed (F1378, prod-07): the answer reads the failed run, and the fix
+    # waits for after it. The quick model's order of the two asks never decides it.
+    if kind in ("change", "build") and by is None and _CAUSE.search(text):
+        kind, by, also = "answer", "cause_first", _fix_half(message, request.also)
     # A request to run, schedule or repeat a recording builds the workflow whose Browser step replays it; a name that
     # is a workflow's too is asked about first, on the change route (F1231). An edit of the recording is the app's.
-    if recording and kind in ("change", "build") and not asked and not _CHANGE_ONLY.search(text):
+    elif recording and kind in ("change", "build") and not asked and not _CHANGE_ONLY.search(text):
         kind, by = ("change", "recording_or_workflow") if recording == "both" else ("build", "recording_named")
     # An act on something that exists is a change; P2 decides card or review (F755/act).
     elif _ACT.search(text) and things and kind != "change":
@@ -211,8 +241,8 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
         needs = "workspace"  # two workflows match: the answer asks which, from the list
     if route not in ("step_answer", "step_research") and not _may(kind, state):
         route = "step_not_yours"
-    return Routed(**{**request.model_dump(), "kind": kind, "needs": needs}, route=route, overridden_by=by,
-                  model_kind=request.kind, model_needs=request.needs)
+    return Routed(**{**request.model_dump(), "kind": kind, "needs": needs, "also": also}, route=route,
+                  overridden_by=by, model_kind=request.kind, model_needs=request.needs)
 
 
 def _needs(kind: str, said: str | None, text: str, things: dict) -> str:

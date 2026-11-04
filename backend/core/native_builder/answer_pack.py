@@ -134,9 +134,30 @@ WORKFLOW_RULE = ("What these workflows do, in code's words from their parts. Say
                  "question.")
 
 
+#: How the answer is given a failed run (F1378): what code read of it, said in this order.
+FAILURE_LEAD = "The run that failed, as code read it. Say the failing step and its error first, then what fixes it:"
+
+
+def failure_said(block: dict | None) -> str:
+    """A failed run's block (`triage.latest`) in the pack's words; empty when there is none."""
+    if not block:
+        return ""
+    step = block.get("step") or {}
+    lines = [FAILURE_LEAD, f'- workflow "{block.get("workflow")}", run {block.get("run_id")}, failed at '
+                           f'{block.get("failed_at") or "an unrecorded time"}',
+             f'- step "{step.get("name") or step.get("id")}" ({step.get("type") or "a"} step)'
+             + (f', agent "{step["agent"]}"' if step.get("agent") else ""),
+             f"- error: {block.get('error') or '(none recorded)'}",
+             f"- what it means: {block.get('means')}",
+             "- what fixes it, each a change you may offer: " + ", then ".join(block.get("fixes") or [])]
+    lines.append("- once fixed it can resume from that step" if block.get("resumes")
+                 else f"- it cannot resume: {block.get('resume_refused') or 'it would start again'}")
+    return "\n".join(lines)
+
+
 def build_pack(*, routed: dict, workspace_name: str, profile: str, asker_name: str, asker_role: Role, last: str,
                capabilities: str, help_hits: list[dict], named: list[dict], connect: str = "",
-               workflows: list[str] | None = None) -> str:
+               workflows: list[str] | None = None, failure: str = "") -> str:
     """The pack's text, section by section."""
     needs = routed.get("needs") or "none"
     described = describe_workspace(workspace_name, "" if profile.strip().startswith(_NOT_RECORDED) else profile)
@@ -173,6 +194,8 @@ def build_pack(*, routed: dict, workspace_name: str, profile: str, asker_name: s
         else:
             parts.append(f"A {asker_role.label} may read and ask about this workspace here, and nothing more: no "
                          "card, no change and no build is theirs to ask for.")
+        if failure:
+            parts.append(failure)
         if named:
             parts.append("What the message names here:\n" + "\n".join(
                 f'- {n["kind"]} "{n["name"]}" ({n["id"]})' + (f" — {n['detail']}" if n.get("detail") else "")
@@ -317,6 +340,17 @@ async def answer_pack(args: dict, server_module: Any, events: list[dict]) -> dic
     except Exception as exc:  # noqa: BLE001 — the answer goes on without the card, which it never promises
         _log.warning("answer pack: no connect card: %s", exc)
     named = await _named_things(message)
+    from core.native_builder.classify import asks_why_it_failed
+
+    failed = ""
+    if needs == "workspace" and asks_why_it_failed(message):
+        # Why something failed is answered from the failed run as code reads it (F1378), never only if asked for.
+        from core.orchestration.triage import latest
+
+        try:
+            failed = failure_said(await latest())
+        except Exception as exc:  # noqa: BLE001 — the answer goes on reading for itself
+            _log.warning("answer pack: the failed run not read: %s", exc)
     pack = build_pack(
         routed=routed, workspace_name=str(state.get("workspace_name") or ""),
         profile=str(state.get("org_profile") or ""), asker_name=str(state.get("asker_name") or ""),
@@ -324,7 +358,7 @@ async def answer_pack(args: dict, server_module: Any, events: list[dict]) -> dic
         capabilities=builder_help._capabilities or builder_help.SELF_HOSTED_CAPABILITIES,
         help_hits=builder_help.search(message) if needs == "help" else [],
         named=named if needs == "workspace" else [], connect=connect,
-        workflows=await _workflows_said(turn, named, server_module))
+        workflows=await _workflows_said(turn, named, server_module), failure=failed)
     return {"needs": needs, "pack": pack}
 
 

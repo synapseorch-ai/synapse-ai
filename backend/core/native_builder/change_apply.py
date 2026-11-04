@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -24,6 +26,8 @@ from core.native_builder import change_ops as C, one_writer
 from core.native_builder.change_tools import (_NEW, CHANGED, SET_ASIDE, _caller, _card, _quoted, _run, _text,
                                               candidates, read, reviewed_of)
 from core.product_tools.errors import AlreadySpent, ToolRefusal
+
+_log = logging.getLogger(__name__)
 
 #: The run-state keys the route reads: the check's answer and the review's.
 CHECKED_KEY, REVIEW_ANSWER_KEY = "change_checked", "manage_review"
@@ -45,9 +49,38 @@ def _newest(cards: list) -> list:
     return sorted(cards, key=lambda c: c.updated_at.timestamp() if c.updated_at else 0.0, reverse=True)
 
 
+#: A message asking for something to be made to work again (F1378): its change reads the failed run first.
+_FIX = re.compile(r"\b(?:fix|fixing|repair|sort (?:it|this|that) out|make it work|working again|work again)\b",
+                  re.IGNORECASE)
+
+
+async def _failed_run() -> dict | None:
+    """The failed run a fix is for, as the answer before it read it (`triage.latest`), when the message asks for one."""
+    from core.native_builder.change_tools import _run
+
+    _, run = _run()
+    message = str((run.shared_state.get("user_message") if run is not None else "") or "")
+    if not _FIX.search(message):
+        return None
+    from core.orchestration.triage import latest
+
+    try:
+        return await latest()
+    except Exception as exc:  # noqa: BLE001 — the change is planned without it, as before
+        _log.warning("change context: the failed run not read: %s", exc)
+        return None
+
+
+async def _with_failed_run() -> dict:
+    """`failed_run`, only when a fix is asked for and a run failed: the context is as before for every other message."""
+    failed = await _failed_run()
+    return {"failed_run": failed} if failed else {}
+
+
 async def read_change_context(args: dict, server_module: Any, events: list[dict]) -> dict:
     """The person's last applied change and a pick list still waiting, from their cards: what the planner needs to
-    undo a change or to read "the second one" (P4's `read_turn` takes the pick over)."""
+    undo a change or to read "the second one" (P4's `read_turn` takes the pick over); and, for a fix, the failed run
+    it is for, its step, error and the changes that fix it (F1378)."""
     from core.boards import assistant
 
     person = _caller().user_id
@@ -56,7 +89,7 @@ async def read_change_context(args: dict, server_module: Any, events: list[dict]
         done = mine(await assistant.cards_for(person, admin=True, closed=True))
         open_ = mine(await assistant.cards_for(person, admin=True))
     except Exception:  # noqa: BLE001 — no board yet, or a store that cannot read it: nothing to remember
-        return {"last_change": None, "waiting_pick": None}
+        return {"last_change": None, "waiting_pick": None, **await _with_failed_run()}
     last = next((c for c in _newest(done) if c.stage == CHANGED and (c.data or {}).get("applied")), None)
     waiting = next((c for c in _newest(open_) if ((c.data or {}).get("change") or {}).get("picks")), None)
     # What `read_turn` chose from that list in code (SAI2-P4, F978), when it is this conversation's own card; a pick
@@ -79,6 +112,7 @@ async def read_change_context(args: dict, server_module: Any, events: list[dict]
             "question": waiting.data["change"].get("question"), "picks": waiting.data["change"]["picks"],
             **({"chosen": chosen} if chosen and waiting.key == turn.get("previous_run_id") else {}),
         },
+        **await _with_failed_run(),
     }
 
 
