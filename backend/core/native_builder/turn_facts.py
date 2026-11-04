@@ -62,6 +62,32 @@ async def keep(run_id: str | None, owner_id: str | None, **facts: Any) -> None:
         _log.warning("turn %s: facts not kept: %s", run_id, exc)
 
 
+async def card_up(run_id: str | None) -> bool:
+    """Whether turn `run_id` put up a Connect card, by its own card: a lone key the person answers it with is the
+    card's (F1345: cap-03's token, pasted as feedback on the plan's review while its card was up, reached the run)."""
+    if not run_id:
+        return False
+    from core.boards import assistant
+
+    try:
+        return bool((await assistant.turn(run_id)).get("connects"))
+    except Exception as exc:  # noqa: BLE001 — unread, the shapes and the held values still run
+        _log.warning("turn %s: its cards not read (%s)", run_id, type(exc).__name__)
+        return False
+
+
+async def card_up_before(session_id: str | None) -> bool:
+    """Whether this conversation's latest turn put up a Connect card: a lone key typed next is the card's (F1345)."""
+    from core.native_builder.read_turn import previous_turns
+
+    try:
+        latest = await previous_turns(session_id, "", limit=1)
+    except Exception as exc:  # noqa: BLE001 — unread, the shapes and the held values still run
+        _log.warning("conversation's turns not read (%s)", type(exc).__name__)
+        return False
+    return await card_up(latest[0]) if latest else False
+
+
 async def keep_press(run_id: str | None, user_id: str | None, tool: str, arguments: dict, *, done: bool,
                      say: str) -> None:
     """Keep a press on the card of the turn that showed it, when it is that turn's: its person pressed it, and it is a

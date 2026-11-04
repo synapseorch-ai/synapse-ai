@@ -538,6 +538,10 @@ def check_api_spec(raw: Any, provider: str, own_domains: list[str], own_pages: l
 
     if not isinstance(raw, dict):
         return None, "it was not a spec"
+    # A login in its base URL is said as a login, before the key check reads its password as a key (F1343's shape):
+    # the reason names it, never the URL, and nothing of the spec is kept either way.
+    if re.match(r"(?i)^\s*[a-z][a-z0-9+.-]*://[^/?#\s]*@", str(raw.get("base_url") or "")):
+        return None, "its base URL carries a login, which I can't keep safely"
     if holds_credential(_json.dumps(raw, ensure_ascii=False)):
         return None, "it held a key, so I kept none of it"
     auth = raw.get("auth") if isinstance(raw.get("auth"), dict) else {}

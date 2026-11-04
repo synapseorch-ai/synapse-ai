@@ -53,6 +53,10 @@ _CREDENTIALS: tuple[re.Pattern[str], ...] = (
     # `Bearer <token>`: the token only. A reference — `Bearer ${process.env.X}`,
     # `Bearer {{ global.X }}` — starts with a character the class leaves out.
     re.compile(r"(?i)(\bBearer\s+)([A-Za-z0-9._~+/=-]{16,})"),
+    # A URL's password, in its user part (`scheme://user:password@host`, F1343: a pasted `https://ops:…@host:9411/x`
+    # reached the model, its password of no shape we know). The password only: the user names the connection, never
+    # its secret. One holding "@" or ":" runs to the last "@" before the host; with no scheme it is not read as a URL.
+    re.compile(r"(?i)(\b[a-z][a-z0-9+.-]{1,30}://[^\s:/@?#]*:)([^\s/?#]+)(?=@[^\s@/?#]+)"),
     # A value right after a credential label, said in prose ("the API key is X", "token: X", "client secret = X"),
     # whatever its shape: a vendor's own key matched no shape above and reached a run (F896, SAI2-P2's chg-09). It
     # must read like one: letters with digits, 8+ characters, starting with neither a quote nor a reference's `{`,
@@ -156,6 +160,53 @@ def scrub_credentials(text: str) -> tuple[str, int]:
 def holds_credential(text: str) -> bool:
     """Whether `text` holds anything `scrub_credentials` would take out."""
     return bool(text) and any(pattern.search(text) for pattern in _parts_of(text))
+
+
+# ── Lookalikes (F1280, F1339) ────────────────────────────────────────────────
+#
+# Smart punctuation (macOS, Word, a shared doc) pastes a key's hyphens as U+2011 and its spaces as no-break spaces, and
+# a copy from the web can carry zero-width characters. The door folds them before its patterns read a message (F1280:
+# such a key went past every pattern), and a held value is matched through the same fold (F1339: cap-02's held key,
+# pasted with U+2011, matched no exact text and reached the planner's logs), masked as it was written.
+
+#: Characters that look like a dash, a space or like nothing: dashes become "-", no-break spaces " ", zero-width ones go.
+LOOKALIKES = {**{ord(c): "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d"},
+              **{ord(c): " " for c in "\u00a0\u2007\u202f"},
+              **{ord(c): None for c in "\u200b\u200c\u200d\u2060\ufeff"}}
+
+
+def fold(text: str) -> str:
+    """`text` with its lookalikes folded."""
+    return text.translate(LOOKALIKES)
+
+
+def written_as(text: str, values: Any) -> list[tuple[str, str]]:
+    """(value, as written) for each of `values` that `text` holds, its lookalikes folded on both sides (F1339): the
+    span of `text` as it stands, so replacing it takes out exactly what was written. In the order of `values`."""
+    folded = fold(text)
+    where = None
+    if folded != text:  # where each folded character stands in `text`, the dropped ones skipped
+        where = [i for i, c in enumerate(text) if LOOKALIKES.get(ord(c), c) is not None]
+    out: dict[tuple[str, str], None] = {}
+    for value in values:
+        want = fold(value) if isinstance(value, str) else ""
+        at = folded.find(want) if want else -1
+        while at >= 0:
+            end = at + len(want)
+            span = text[at:end] if where is None else text[where[at]:where[end - 1] + 1]
+            out.setdefault((value, span), None)
+            at = folded.find(want, end)
+    return list(out)
+
+
+def _named_out(text: str, pairs: Any) -> str:
+    """`text` with each held secret (name, value) replaced by its name, written as it may be (F1339)."""
+    names: dict[str, str] = {}
+    for name, value in pairs:
+        names.setdefault(value, name)
+    for value, span in written_as(text, list(names)):
+        text = text.replace(span, secret_mark(names[value]))
+    return text
 
 
 # ── Secret variables, by value (F854) ────────────────────────────────────────
@@ -313,9 +364,8 @@ def scrub_secrets(text: str) -> str:
     if not isinstance(text, str):
         return text
     held = _HELD.get()
-    for name, value in held:
-        if value in text:
-            text = text.replace(value, secret_mark(name))
+    if held:
+        text = _named_out(text, held)
     return _without_held(text)
 
 
@@ -358,9 +408,8 @@ def for_storage(value: Any, held: dict[str, str] | None = None) -> Any:
 
     def kept(item: Any, key: Any = None) -> Any:
         if isinstance(item, str):
-            for name, secret in pairs:
-                if secret in item:
-                    item = item.replace(secret, secret_mark(name))
+            if pairs:
+                item = _named_out(item, pairs)
             item = _without_held(item)
             return without_cards(item) if _words_under(key) else item
         if isinstance(item, dict):

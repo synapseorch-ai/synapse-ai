@@ -94,6 +94,16 @@ async def test_a_base_url_off_the_providers_own_host_is_never_used(base_url, why
     assert why in found["detail"]
 
 
+
+async def test_a_login_in_its_base_url_is_said_as_one_and_its_password_never_shown():
+    """F1343 reads a URL's password as a key (`scrub_credentials`); a base URL's login is still said as a login."""
+    import json
+
+    password = "Tr0ub4dor" + "&3x"
+    found = await _report({**MAILCHIMP, "base_url": f"https://user:{password}@api.mailchimp.com/3.0"})
+    assert found["how"] == "api" and "api" not in found and "login" in found["detail"]
+    assert password not in json.dumps(found, default=str)
+
 @pytest.mark.parametrize("path", ["/lists/../../admin", "//evil.com/lists", "/lists%2F..%2Fadmin", "lists",
                                   "https://evil.com/lists", "/lists?apikey=abc"])
 async def test_an_endpoint_never_climbs_out_of_its_base(path):

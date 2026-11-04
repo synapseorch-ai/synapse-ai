@@ -846,7 +846,11 @@ async def builder_chat(request: BuilderChatRequest, http_request: Request):
     # model or a log sees it; a key is masked and the rest still runs.
     from core.secret_scrub import held_in
 
-    checked = door.check(request.message, await held_in(request.message or ""))
+    from core.native_builder.turn_facts import card_up_before
+
+    # A lone key typed right after a turn that put up a Connect card is the card's (F1345).
+    checked = door.check(request.message, await held_in(request.message or ""),
+                         card_up=await card_up_before(_session_id(request.client_session_id, panel=True)))
     if checked.refused:
         return _one(checked.event())
     request = request.model_copy(update={"message": checked.text})
@@ -902,7 +906,10 @@ async def builder_resume(request: BuilderResumeRequest, http_request: Request):
         from core.secret_scrub import held_in
 
         held = await held_in(json.dumps(request.response, default=str, ensure_ascii=False))
-        response, removed = door.check_answer(request.response, question=question, step=step, held=held)
+        from core.native_builder.turn_facts import card_up
+
+        response, removed = door.check_answer(request.response, question=question, step=step, held=held,
+                                              card_up=await card_up(request.run_id))
     except door.Refused as exc:
         return _one(door.notice(exc.reason, door.NOT_KEPT, final=False))
     # A build that fails after its answer (making its tools, saving) ends as any turn does: said plainly, then
@@ -997,7 +1004,10 @@ async def run_builder_stream_compat(request, server_module):
     # not even as this conversation's turn.
     from core.secret_scrub import held_in
 
-    checked = door.check(request.message or "", await held_in(request.message or ""))
+    from core.native_builder.turn_facts import card_up_before
+
+    checked = door.check(request.message or "", await held_in(request.message or ""),
+                         card_up=await card_up_before(_session_id(str(getattr(request, "session_id", "") or "chat"))))
     if checked.refused:
         yield _sse({"type": "response", "content": checked.notice, "intent": "chat", "data": None,
                     "tool_name": None})
