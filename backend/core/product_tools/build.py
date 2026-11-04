@@ -94,6 +94,10 @@ OVERWRITES: frozenset[str] = frozenset({
 #: tool is code that will run with the internet, so its preview shows the code.
 CONFIRMED: frozenset[str] = frozenset({"create_python_tool", "update_python_tool"})
 
+#: Acts the app keeps to itself (F1325, Naveen 11-04): never served to an MCP client. `test_code_change` tests a Synapse
+#: AI change's fix by that run's own id, which means nothing to a client.
+APP_ONLY: frozenset[str] = frozenset({"test_code_change"})
+
 #: Acts that reach outside the workspace.
 OPEN_WORLD: frozenset[str] = frozenset({"import_openapi", "test_python_tool", "test_code_change"})
 
@@ -296,7 +300,7 @@ def entries() -> list[ProductTool]:
                     handler=_handler(n), kind="act", area="build", min_role=Role.BUILDER, scope="build",
                     destructive=n in OVERWRITES, open_world=n in OPEN_WORLD, audit_action=action,
                     target=_target(action), offered=_offered(n), confirmed=n in CONFIRMED,
-                    preview=_PREVIEWS.get(n))
+                    preview=_PREVIEWS.get(n), app_only=n in APP_ONLY)
         for n, action in ACTS.items()
     ]
     tools += [
@@ -326,7 +330,28 @@ async def _preview_python_tool(caller: Any, args: dict[str, Any]) -> dict:
     }
 
 
-_PREVIEWS = {"create_python_tool": _preview_python_tool}
+async def _preview_python_update(caller: Any, args: dict[str, Any]) -> dict:
+    """What `update_python_tool` would save (F1325): its new code whole and a diff from its code now, or its refusal now
+    in the tool's own words."""
+    from core.builder_tools import python_code_issues
+    from core.python_edits import diff
+    from core.store.resources import load_tools
+
+    name = str(args.get("name") or "").strip()
+    before = next((t for t in await load_tools() if t.get("name") == name), None)
+    if refused := await python_code_issues(before, args):
+        raise ToolRefusal(str(refused["error"]))
+    new = str(args.get("code") or "")
+    return {
+        "will_change": {"type": "tool", "name": name, "tool_type": "python", "code": new},
+        "diff": diff(str(before.get("code") or ""), new),
+        "reads_variables": list(before.get("globals") or []),
+        "note": "Its code runs in the sandbox with the internet and the Vault read-only, whenever an agent calls it. "
+                "The variables a person gave it stay; it reads no other.",
+    }
+
+
+_PREVIEWS = {"create_python_tool": _preview_python_tool, "update_python_tool": _preview_python_update}
 
 
 def _preview(name: str):
