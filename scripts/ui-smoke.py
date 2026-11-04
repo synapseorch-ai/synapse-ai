@@ -13647,25 +13647,38 @@ _BRW_PICTURE = 'img[src^="data:"]'
 
 
 async def _brw_hero(page, region) -> list[str]:
-    """What the run page's live browser must be (F1356): the picture fills the column at the page's own shape, what
-    the agent did is folded and closed, and Enlarge shows it large, Esc closing it, Take over in reach where the pane
-    has it. Returns what is not so."""
+    """What the run page's live browser must be (F1356, F1376): the picture fills the column at the page's own shape,
+    as large as the screen allows under the pane's own bars, so the whole page is seen without scrolling (eb 11-04: on
+    a wide desktop it is height-bound, centred); what the agent did is folded and closed; Enlarge shows it as large as
+    its dialog allows and never smaller than the column's, Esc closing it, Take over in reach where the pane has it.
+    Returns what is not so."""
     bad: list[str] = []
     await region.locator(_BRW_PICTURE).first.wait_for(timeout=8_000)
+    await region.evaluate("(r) => r.scrollIntoView({block: 'start'})")
     await asyncio.sleep(0.5)
     got = await region.evaluate("""(r) => {
       const pane = r.querySelector('section[aria-label="Browser"]');
       const box = pane && pane.querySelector('div[style*="aspect-ratio"]');
+      const img = box && box.querySelector('img[src^="data:"]');
       const details = pane && pane.querySelector('details');
       const p = pane ? pane.getBoundingClientRect() : null, b = box ? box.getBoundingClientRect() : null;
-      return {pane: p && p.width, w: b && b.width, h: b && b.height, folded: !!details && !details.open,
+      return {pane: p && p.width, top: p && p.top, w: b && b.width, h: b && b.height, bottom: b && b.bottom,
+              boxTop: b && b.top, iw: img && img.clientWidth, ih: img && img.clientHeight,
+              vw: window.innerWidth, vh: window.innerHeight, folded: !!details && !details.open,
               summary: details ? details.querySelector('summary').innerText : null,
               wide: document.documentElement.scrollWidth <= window.innerWidth + 1};
     }""")
-    if not got["w"] or got["w"] < 0.9 * got["pane"]:
-        bad.append(f"the live picture does not fill the column: {got}")
+    # (1) As large as fits: the column's width, or the screen's height under the pane's own bars at 16:10.
+    under = got["vh"] - (got["boxTop"] - got["top"]) - 48  # the strips above it, the fold's line below
+    fits = min(got["pane"] or 0, under * 16 / 10)
+    if not got["w"] or got["w"] < 0.95 * fits:
+        bad.append(f"the live picture is not as large as the screen allows: {got} against {fits:.0f}")
     elif abs(got["h"] - got["w"] * 10 / 16) > 6:
         bad.append(f"the live picture is not at the page's 16:10: {got}")
+    if got["iw"] and (abs(got["iw"] - got["w"]) > 4 or abs(got["ih"] - got["h"]) > 4):
+        bad.append(f"the live picture is letterboxed inside its box: {got}")
+    if got["bottom"] and got["bottom"] > got["vh"] + 1:
+        bad.append(f"the page's foot is below the screen: {got}")
     if not got["folded"] or not re.search(r"What the agent did · \d", got["summary"] or ""):
         bad.append(f"what the agent did is not folded and closed under the picture: {got}")
     if not got["wide"]:
@@ -13677,15 +13690,18 @@ async def _brw_hero(page, region) -> list[str]:
     await asyncio.sleep(0.4)
     large = await dialog.evaluate("""(d) => {
       const img = d.querySelector('img'), r = img ? img.getBoundingClientRect() : null, dr = d.getBoundingClientRect();
-      return {img: r && r.width, left: dr.left, right: dr.right, vw: window.innerWidth, vh: window.innerHeight,
+      return {img: r && r.width, left: dr.left, right: dr.right, top: dr.top, bottom: dr.bottom, dw: dr.width,
+              ih: r && r.height, vw: window.innerWidth, vh: window.innerHeight,
               wide: document.documentElement.scrollWidth <= window.innerWidth + 1};
     }""")
-    # At 1600×900 the column's picture is near the most a 16:10 page can be under the dialog's height (1268), so
-    # Enlarge is never smaller there; on a wider screen (1920×1080) it is larger, by 5% at least; on a phone it is
-    # the screen's width (eb 11-04).
-    need = 1.05 if large["vw"] >= 1900 else 1.0 if large["vw"] > 600 else 0.85
-    if not large["img"] or large["img"] < got["w"] * need:
-        bad.append(f"Enlarge does not show the page large: {large} against {got['w']}")
+    # (2) As large as its dialog allows at 16:10: the screen's height less the dialog's own title, footer and margins
+    # (12rem, 192 px, BrowserPane's ENLARGED_CHROME), or the dialog's width.
+    room = min(large["dw"] - 32, (large["vh"] - 192) * 16 / 10)
+    if not large["img"] or large["img"] < 0.95 * room:
+        bad.append(f"Enlarge does not show the page as large as the dialog allows: {large} against {room:.0f}")
+    # (3) Never smaller than the column's; on a phone the screen's width (eb 11-04).
+    if large["img"] and large["img"] < got["w"] * (1.0 if large["vw"] > 600 else 0.85):
+        bad.append(f"Enlarge shows the page smaller than the column does: {large} against {got['w']}")
     if large["left"] < 0 or large["right"] > large["vw"] + 1 or not large["wide"]:
         bad.append(f"the enlarged page does not fit the screen: {large}")
     if pane_has_take_over:
@@ -13750,7 +13766,7 @@ async def check_brwrunpage(browser) -> str:
         # Live: the stream stays open, as a running run's does.
         _M2B_STREAM = events
         live = {**_M2B_RUNS["run_smoke_m2b_done"], "status": "running", "ended_at": None}
-        for width in (WIDE, (1920, 1080)):  # on a wider screen Enlarge must enlarge (eb 11-04)
+        for width in ((1440, 900), WIDE, (1920, 1080)):  # the column's width, and height-bound wider (eb 11-04)
             ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done", width=width,
                                            runs={"run_smoke_m2b_done": live}, before=_held_frames("bsR"))
             try:
