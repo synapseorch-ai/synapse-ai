@@ -1,4 +1,5 @@
-"""The vault's four read-only tools, for whichever process serves them (F1118).
+"""The vault's four read-only tools, for whichever process serves them (F1118), and its write where a host offers
+one (`vault_write`, F1289: cloud's fleet; self-hosted, the sandbox server's is the one).
 
 `tools/vault_fs.py` serves them as a tool subprocess, told its tenant on
 `SYNAPSE_TENANT_ID` and bootstrapped by `core/tool_server.py`. A multi-tenant
@@ -13,7 +14,9 @@ and the blob store adds the tenant (`core/storage/base.py::tenant_key`).
 """
 
 import asyncio
+import hashlib
 import json
+from typing import Any, Awaitable, Callable
 
 import mcp.types as types
 from mcp.server import Server
@@ -197,13 +200,132 @@ def tools() -> list[types.Tool]:
                 "required": ["path"],
             },
         ),
+        *([_WRITE_TOOL] if _writer is not None else []),
     ]
+
+
+# ── the write (F1289) ────────────────────────────────────────────────────────
+
+#: The Vault's write, by the sandbox server's own name: offered only where a host installs a writer (`set_writer`,
+#: cloud's fleet, which serves the Vault's reads alone). Self-hosted, the sandbox's `vault_write` is the one, so two
+#: never share a name in one router.
+WRITE = "vault_write"
+#: What it writes: plain text and the tables the Vault draws (the Vault screen's create rule, `routes/vault.py`).
+WRITE_TYPES = (".json", ".md", ".txt", ".csv", ".tsv")
+#: The engine's own folders (`routes/vault._ENGINE_OWNED`): what the engine writes there, an agent never does.
+ENGINE_FOLDERS = ("tool_outputs", "playwright", "compaction_archives")
+#: The largest text written (the Vault editor's `MAX_TEXT_BYTES`).
+WRITE_MAX_BYTES = 5 * 1024 * 1024
+
+_WRITE_TOOL = types.Tool(
+    name=WRITE,
+    annotations=types.ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True),
+    description=(
+        "Write a text file into the vault: a CSV the vault draws as a chart, a report, a note. Creates it, or writes "
+        "over a file this tool wrote before (a chart each run rewrites). Only .json, .md, .txt, .csv or .tsv, at most "
+        "5 MB, never in a knowledge base's folder (change its documents with edit_knowledge_document) or the "
+        "engine's own folders. A board card's note can link it as @[path]."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Where in the vault, relative, e.g. 'reports/sales.csv'."},
+            "content": {"type": "string", "description": "The file's whole text."},
+        },
+        "required": ["path", "content"],
+    },
+)
+
+
+class WriteRefused(Exception):
+    """A write the agent is told it cannot make, in these words."""
+
+
+#: `(vault path, text) -> answer`: how this host writes, once the engine's checks have passed. None: no write here.
+Writer = Callable[[str, str], Awaitable[dict]]
+_writer: Writer | None = None
+
+
+def set_writer(writer: Writer | None) -> None:
+    """Offer `vault_write` with this host's way of writing; None takes it away."""
+    global _writer
+    _writer = writer
+
+
+async def knowledge_base_of(path: str) -> str | None:
+    """The name of the knowledge base whose folder holds `path`, on or off; None outside every base (or with
+    Knowledge off)."""
+    try:
+        from core.knowledge import bases
+        from core.knowledge.kb_settings import _components
+
+        kbs = await bases.list_bases()
+    except Exception:  # noqa: BLE001 — Knowledge off or not set up here: no base follows any folder
+        return None
+    parts = _components(path)
+    for kb in kbs:
+        folder = _components(kb.folder)
+        if folder and parts[:len(folder)] == folder and len(parts) > len(folder):
+            return kb.name
+    return None
+
+
+async def checked(path: str, content: Any) -> tuple[str, bytes]:
+    """`(vault path, its bytes)` once the engine's rules hold, else `WriteRefused` saying which."""
+    from core.vault import mention_key
+
+    rel = str(path or "").strip()
+    if mention_key(rel) is None:
+        raise WriteRefused(f"Not a Vault path: {path!r}. Give a relative path like 'reports/sales.csv'.")
+    if rel.split("/", 1)[0].casefold() in ENGINE_FOLDERS:
+        raise WriteRefused(f"{rel.split('/', 1)[0]}/ is the engine's own folder: write somewhere else.")
+    if not rel.casefold().endswith(WRITE_TYPES):
+        raise WriteRefused(f"Only a text file is written here: {', '.join(WRITE_TYPES)}.")
+    text = content if isinstance(content, str) else ""
+    if "\x00" in text:
+        raise WriteRefused("That is not text: it contains a NUL byte.")
+    data = text.encode("utf-8", errors="strict")
+    if len(data) > WRITE_MAX_BYTES:
+        raise WriteRefused(f"A file written here is at most {WRITE_MAX_BYTES // (1024 * 1024)} MB.")
+    if (base := await knowledge_base_of(rel)) is not None:
+        raise WriteRefused(f'That folder feeds the knowledge base "{base}": change its documents with '
+                           "edit_knowledge_document.")
+    return rel, data
+
+
+async def engine_writer(path: str, content: str) -> dict:
+    """The engine's own write, for a host whose Vault is the engine's blob store: the host's room asked first
+    (`step_refs`' write hook, which a host sets to its plan's cap), the file written, its followers told (Knowledge).
+    The blob store keeps no metadata, so this creates or writes over: a self-hosted Vault is the person's own."""
+    from core import step_refs, vault_events
+    from core.vault import mention_key
+
+    key = mention_key(path)
+    before = await asyncio.to_thread(_store().get, key)
+    data = content.encode("utf-8")
+    if step_refs._write_hook is not None:
+        try:
+            step_refs._write_hook(len(data) - len((before or "").encode("utf-8")))
+        except Exception as exc:  # noqa: BLE001 — the host's refusal, in its words
+            raise WriteRefused(str(exc)) from None
+    await asyncio.to_thread(_store().put, key, content)
+    await vault_events.notify_vault_change(path, "write", sha256=hashlib.sha256(data).hexdigest(), size=len(data),
+                                           source="tool")
+    return {"path": path, "size": len(data), "written_over": before is not None}
 
 
 async def call(name: str, arguments: dict) -> list[types.TextContent]:
     from core.vault import json_slice, read_cap, search_text, slice_lines
 
     try:
+        if name == WRITE:
+            if _writer is None:
+                return _err("Writing the vault is not offered here.")
+            try:
+                rel, data = await checked(arguments.get("path"), arguments.get("content"))
+                return _ok(await _writer(rel, data.decode("utf-8")))
+            except WriteRefused as exc:
+                return _err(str(exc))
         if name == "list_files":
             prefix = str(arguments.get("prefix", "") or "")
             paths, error = _listing(prefix)

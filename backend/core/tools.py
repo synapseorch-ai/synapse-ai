@@ -217,6 +217,17 @@ def tool_hints(tool, *, trusted: bool = True) -> ToolHints:
 #: call a breach rather than a waste.
 OPT_IN_SERVERS: frozenset[str] = frozenset({"sql"})
 
+#: One tool of a server `"all"` otherwise reaches, by `(server, tool)`: the same floor, for a tool whose server's other
+#: tools are every agent's. Cloud's fleet serves the Vault's write on its `vault` server beside the reads (F1289,
+#: `vault_tools.set_writer`): a new write an agent holds only by naming it (79, least privilege). Self-hosted, the
+#: sandbox server's own `vault_write` (`vault_sandbox`) is as it was.
+OPT_IN_TOOLS: frozenset[tuple[str, str]] = frozenset({("vault", "vault_write")})
+
+
+def opt_in(server: str, tool: str) -> bool:
+    """Whether `"all"` leaves `tool` of `server` out: its server is opted in whole, or this one tool of it is."""
+    return server in OPT_IN_SERVERS or (server, tool) in OPT_IN_TOOLS
+
 
 #: How many tokens of declarations `"all"` may add to one turn from the servers a
 #: workspace connected, for tools the agent did not name (F483).
@@ -270,7 +281,7 @@ def permits(allowed_tools, name: str, *, opt_in: bool = False) -> bool:
     replaces. Those were identical by convention, and a rule applied in five
     places and forgotten in the sixth is exactly what this exists to prevent.
 
-    `opt_in` marks a tool from a server in `OPT_IN_SERVERS`, which `"all"`
+    `opt_in` marks a tool `opt_in()` names (a server in `OPT_IN_SERVERS`, or one tool in `OPT_IN_TOOLS`), which `"all"`
     deliberately does not reach. Naming it explicitly always works — that is
     what opting in is.
     """
@@ -361,8 +372,7 @@ async def resolve_one_tool(server_module, name: str, active_agent: dict, custom_
         for t in (await _session_tools_for(server_module, session_key)) or []:
             if t.name != actual:
                 continue
-            opt_in = session_key in OPT_IN_SERVERS
-            if key in allowed or permits(allowed, name, opt_in=opt_in):
+            if key in allowed or permits(allowed, name, opt_in=opt_in(session_key, actual)):
                 # An external server's hints are a claim: untrusted, exactly as
                 # `aggregate_all_tools` declares them. Without the mark a Tool
                 # step's policy check believed a third party's "I only read".
@@ -480,9 +490,8 @@ async def aggregate_all_tools(server_module, active_agent, custom_tools_list, *,
         # Whether `"all"` reaches this server's tools at all. Decided per
         # session rather than per tool, because it is a property of what the
         # server connects to, not of any one call.
-        opt_in = session_name in OPT_IN_SERVERS
-
         for t in session_tools:
+            named_only = opt_in(session_name, t.name)
             key = tool_router.key_for(session_name, t.name)
 
             if is_external:
@@ -491,7 +500,7 @@ async def aggregate_all_tools(server_module, active_agent, custom_tools_list, *,
                 # array holds. Unchanged deliberately: renaming them would make
                 # every existing agent's list silently stop matching.
                 name = key or f"{session_name[len('ext_mcp_'):]}{SEP}{t.name}"
-                if permits(allowed_tools, name, opt_in=opt_in):
+                if permits(allowed_tools, name, opt_in=named_only):
                     declared = VirtualTool(name, t.description, t.inputSchema,
                                            getattr(t, "annotations", None),
                                            trusted=False)
@@ -513,7 +522,7 @@ async def aggregate_all_tools(server_module, active_agent, custom_tools_list, *,
             # by the server a bare call actually reaches, so the LLM sees the
             # schema of the implementation that runs — and Gemini never receives
             # a duplicate function declaration.
-            if permits(allowed_tools, t.name, opt_in=opt_in):
+            if permits(allowed_tools, t.name, opt_in=named_only):
                 if key is not None and not tool_router.declares(session_name, t.name):
                     continue
                 all_tools.append(t)
