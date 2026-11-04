@@ -65,6 +65,8 @@ export interface PlanStep {
     role: StepRole;
     /** A change plan's line: what the action does. */
     detail?: string;
+    /** A change plan's op as the planner described it (F1308): shown under its line, said as whose it is. */
+    says?: string;
     /** A change plan's `⚠️ DELETES:` line. */
     deletes?: boolean;
     /** The model an agent step runs on, when code picked its new agent's (F966): the estimate prices it. */
@@ -384,6 +386,8 @@ export interface ChangeOpView {
     target?: { kind?: string; id?: string | null; name?: string | null };
     /** Code's words for it: "<what> — <how>". */
     line?: string;
+    /** The planner's own words for it (F1308): the card shows them beside code's, so a change that does more is seen. */
+    says?: string;
     /** For a delete: what uses its target, by name. */
     used_by?: string[];
     /** The op's values as proposed, what the target reads after it, and before: the card says them in words (F1010). */
@@ -502,7 +506,11 @@ export function planFromChange(change: ChangeView, prompt: string): Plan | null 
     const count = (name: string) =>
         new Set(ready.filter((o) => (o.target?.name ?? '') === name).map((o) => o.target?.id ?? '')).size;
     const steps: PlanStep[] = ready.map((o, i) => {
-        const [what, ...how] = (o.line as string).split(' — ');
+        // Code's words are the line's first line ("<what> — <how>"); a knowledge note's or a memory item's before and
+        // after follow on lines of their own: the exact change, the row's detail (F1308).
+        const [first, ...below] = (o.line as string).split('\n');
+        const exact = below.map((part) => part.trim()).filter(Boolean).join('\n');
+        const [what, ...how] = first.replace(/\s+—\s*$/, '').split(' — ');
         const name = o.target?.name ?? '';
         // Two of one name are told apart by id (F760's class).
         const id = count(name) > 1 && o.target?.id ? ` (${o.target.id})` : '';
@@ -511,15 +519,20 @@ export function planFromChange(change: ChangeView, prompt: string): Plan | null 
             ? `${o.used_by?.length ? `Used by ${o.used_by.join(', ')}.` : 'Nothing uses it.'} It can come back only as a new copy.`
             : '';
         const rows = !deletes && o.rows?.length ? o.rows : null;
-        const [heading] = what.split(/:\s*\n/);
-        const detail = rows ? '' : [deletes ? how.join(' — ') : (valueWords(o) ?? how.join(' — ')), uses]
+        // A settings change's rows (F1264): its name is the line's heading, as code wrote it.
+        const [heading] = (o.line as string).split(' — ')[0].split(/:\s*\n/);
+        const detail = rows ? '' : [deletes ? how.join(' — ') : (valueWords(o) ?? how.join(' — ')), exact, uses]
             .filter(Boolean).join(' ');
+        // The planner's words for it, as the review shows them (F1308): none when the line already says them (an undo's).
+        const said = o.says?.trim() ?? '';
+        const says = said && !first.toLowerCase().includes(said.toLowerCase()) ? said : '';
         return {
             n: i + 1,
             name: deletes ? `Deletes: the ${o.target?.kind ?? ''} "${name}"${id}` : `${rows ? heading : what}${id}`,
             type: null,
             label: '',
             role: 'logic',
+            ...(says ? { says } : {}),
             ...(detail ? { detail } : {}),
             ...(deletes ? { deletes: true } : {}),
             ...(rows ? { rows } : {}),

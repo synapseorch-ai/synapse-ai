@@ -219,7 +219,12 @@ function Steps({ plan }: { plan: Plan }) {
                             {step.deletes && <AlertTriangle className="mr-1 inline size-3.5 -translate-y-px" aria-hidden />}
                             {step.name}
                         </span>
-                        {step.detail && <span className="block break-words text-xs text-text-muted">{step.detail}</span>}
+                        {step.says && (
+                            <span className="block break-words text-xs text-text-muted">
+                                <span className="text-text-faint">Described as: </span>{step.says}
+                            </span>
+                        )}
+                        {step.detail && <span className="block whitespace-pre-line break-words text-xs text-text-muted">{step.detail}</span>}
                         {step.rows && <ChangeRows rows={step.rows} className="mt-1.5" />}
                     </span>
                     {step.label ? (

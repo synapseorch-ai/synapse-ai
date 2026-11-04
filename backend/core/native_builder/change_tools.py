@@ -68,6 +68,9 @@ async def _carries_a_key(fields: dict, says: str = "") -> bool:
     return bool(await held_in(json.dumps({**fields, "says": says}, default=str, ensure_ascii=False)))
 
 
+#: The label of the planner's own words for a change, under code's line (F1308): the review's and the panel card's.
+DESCRIBED_AS = "Described as"
+
 #: The review's lead-in is the definition's (`step_manage_review`, F754's words); these are what code adds.
 DELETE_NOTE = ("It can come back only as a new copy: a new id, without its run history or an agent's memory; a "
                "schedule comes back paused, and a tool's key is entered again on a card.")
@@ -1233,7 +1236,7 @@ def _with_says(line: str, says: Any) -> str:
     head, _, rest = str(line).partition("\n")
     if not said or said.casefold() in head.casefold():
         return str(line)
-    return f"{head}\n  Described as: {said}" + (f"\n{rest}" if rest else "")
+    return f"{head}\n  {DESCRIBED_AS}: {said}" + (f"\n{rest}" if rest else "")
 
 
 def _said(ops: list[dict]) -> str:

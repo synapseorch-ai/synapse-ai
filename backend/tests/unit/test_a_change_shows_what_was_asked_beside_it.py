@@ -14,6 +14,7 @@ the before and after, so the person approved it. Code can't tell which part of a
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 
@@ -67,3 +68,44 @@ class TestRuleTwelve:
     def test_the_numbering_stands(self):
         numbers = [int(n) for n, _ in _changing_rules()]
         assert numbers == list(range(1, len(numbers) + 1)) and len(numbers) >= 21
+
+
+class TestTheCard:
+    """The panel's card is drawn from the change object, not the review's words (plan.ts `planFromChange`), so it
+    carries the op's `says` itself: under code's line, in the review's own label, told apart from the line (F1308's UI
+    half; Naveen 11-03: "the panel card and the text on the run page"). Read from the source, as the build card's gate
+    words are (test_a_builds_card_lists_every_approval_its_run_asks)."""
+
+    ROOT = Path(__file__).resolve().parents[3] / "frontend/src/components/assistant"
+
+    def test_the_label_is_one_and_the_review_writes_it(self):
+        from core.native_builder import change_tools
+
+        label = getattr(change_tools, "DESCRIBED_AS", None)
+        assert label == "Described as", "the review's label is code's one constant"
+        assert change_tools._with_says('Rename the agent "A" — to "B"', "rename it").endswith(f"\n  {label}: rename it")
+
+    def test_the_card_takes_says_from_the_op_and_shows_it_in_that_label(self):
+        plan_ts, cards = (self.ROOT / "plan.ts").read_text(), (self.ROOT / "cards.tsx").read_text()
+        op_view = plan_ts[plan_ts.index("export interface ChangeOpView"):plan_ts.index("const list =")]
+        step = plan_ts[plan_ts.index("export interface PlanStep"):plan_ts.index("export interface Plan {")]
+        build = plan_ts[plan_ts.index("export function planFromChange"):plan_ts.index("// ── A build, from its own object")]
+        assert "says?: string" in op_view and "says?: string" in step
+        assert "says" in build.split("return {", 1)[0] and "says" in build.split("return {", 1)[1]
+        assert "step.says" in cards and "Described as: " in cards
+        assert cards.index("step.says") < cards.index("step.detail"), "the words above the exact change, as the review"
+
+    def test_a_lines_exact_change_is_the_rows_detail_never_its_name(self):
+        """A knowledge note's or a memory item's line is "… —" and then its before and after on lines of their own
+        (`_before_after`); the row's name is the first line's words and the lines under it are its detail, so the
+        planner's words sit between the two as on the review (F1308's shot: the before/after was in the name, and
+        "Described as" came after it)."""
+        plan_ts = (self.ROOT / "plan.ts").read_text()
+        build = plan_ts[plan_ts.index("export function planFromChange"):plan_ts.index("// ── A build, from its own object")]
+        before_return = build.split("return {", 1)[0]
+        assert ".split('\\n')" in before_return, "the line's first line is read apart from the lines under it"
+        assert "exact" in before_return and "exact" in build.split("const detail", 1)[1].split(";", 1)[0]
+        # Its before and after keep a line each, as on the review: the row's detail shows the line break.
+        cards = (self.ROOT / "cards.tsx").read_text()
+        detail_span = cards[cards.index("{step.detail &&"):].split("</span>", 1)[0]
+        assert "whitespace-pre-line" in detail_span and "join('\\n')" in before_return
