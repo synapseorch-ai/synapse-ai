@@ -95,8 +95,9 @@ ANYWHERE: frozenset[str] = frozenset({
     "get_skill", "list_schedules", "list_repos", "list_db_configs", "list_knowledge_bases",
     "create_agent", "create_agents", "update_agent", "create_orchestration", "create_orchestration_skeleton",
     "add_steps", "add_single_step", "add_multiple_steps", "update_step", "remove_step", "update_orchestration",
-    "set_orchestration_meta", "deploy_orchestration", "create_http_tool", "create_python_tool", "test_python_tool",
-    "import_openapi", "create_skill", "update_skill", "attach_skills", "create_schedule", "update_schedule",
+    "set_orchestration_meta", "deploy_orchestration", "create_http_tool", "update_http_tool", "create_python_tool",
+    "update_python_tool", "test_python_tool", "import_openapi", "create_skill", "update_skill", "attach_skills",
+    "create_schedule", "update_schedule",
     "set_schedule_enabled", "delete_agent", "delete_orchestration", "delete_schedule", "delete_custom_tool",
     "list_variables", "list_recent_runs", "get_run_summary", "read_workspace", "search_help", "product_capabilities",
     "find_in_catalog", "search_mcp_registry", "search_the_web", "read_web_page", "look_up_providers", "read_api_spec",
@@ -111,6 +112,8 @@ OWN_RUN_ONLY: frozenset[str] = CARDS | frozenset({
     "read_change_context", "read_plan_context", "read_plan_answer", "check_plan", "check_answer", "check_draft",
     "answer_research", "settle_research",
     "approve_change", "apply_change", "approve_plan", "save_build", "finish_build", "read_connect_answer",
+    # A fix's test on its person's press, by its own run's id (F1325): the app's own, never served.
+    "test_code_change",
 })
 
 

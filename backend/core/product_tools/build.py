@@ -66,7 +66,6 @@ ACTS: dict[str, str] = {
     "create_http_tool": "tool.created",
     "update_http_tool": "tool.updated",
     "update_python_tool": "tool.updated",
-    "test_code_change": "tool.tested",
     "create_python_tool": "tool.created",
     "test_python_tool": "tool.tested",
     "import_openapi": "tool.created",
@@ -94,9 +93,11 @@ OVERWRITES: frozenset[str] = frozenset({
 #: tool is code that will run with the internet, so its preview shows the code.
 CONFIRMED: frozenset[str] = frozenset({"create_python_tool", "update_python_tool"})
 
-#: Acts the app keeps to itself (F1325, Naveen 11-04): never served to an MCP client. `test_code_change` tests a Synapse
-#: AI change's fix by that run's own id, which means nothing to a client.
-APP_ONLY: frozenset[str] = frozenset({"test_code_change"})
+#: Acts the app keeps to itself (F1325, Naveen 11-04), with the host's audit action for each: registered as acts but
+#: never served to an MCP client, so `ACTS` is exactly what MCP serves (F1315's guard reads it so). `test_code_change`
+#: tests a Synapse AI change's fix by that run's own id, which means nothing to a client.
+APP_ACTS: dict[str, str] = {"test_code_change": "tool.tested"}
+APP_ONLY: frozenset[str] = frozenset(APP_ACTS)
 
 #: Acts that reach outside the workspace.
 OPEN_WORLD: frozenset[str] = frozenset({"import_openapi", "test_python_tool", "test_code_change"})
@@ -176,7 +177,7 @@ async def audit_from_a_run(name: str, args: dict[str, Any], result: Any, caller:
     from core.product_tools import caller as current, hooks
     from core.product_tools.registry import _summary
 
-    action = ACTS.get(name) or (DELETES[name][2] if name in DELETES else None)
+    action = ACTS.get(name) or APP_ACTS.get(name) or (DELETES[name][2] if name in DELETES else None)
     if action is None or (isinstance(result, dict) and result.get("error")):
         return
     target = _target(action)(args or {}, result)
@@ -305,7 +306,7 @@ def entries() -> list[ProductTool]:
     from core.builder_tools import BUILDER_TOOL_SCHEMAS
 
     by_name = {s["function"]["name"]: s["function"] for s in BUILDER_TOOL_SCHEMAS}
-    missing = [n for n in (*READS, *ACTS, *DELETES) if n not in by_name]
+    missing = [n for n in (*READS, *ACTS, *APP_ACTS, *DELETES) if n not in by_name]
     if missing:
         # A renamed builder tool must fail loudly here, not vanish from MCP.
         raise RuntimeError(f"product tools name builder tools that do not exist: {missing}")
@@ -324,7 +325,7 @@ def entries() -> list[ProductTool]:
                     destructive=n in OVERWRITES, open_world=n in OPEN_WORLD, audit_action=action,
                     target=_target(action), offered=_offered(n), confirmed=n in CONFIRMED,
                     preview=_PREVIEWS.get(n), app_only=n in APP_ONLY)
-        for n, action in ACTS.items()
+        for n, action in {**ACTS, **APP_ACTS}.items()
     ]
     tools += [
         ProductTool(name=n, description=f"{_DELETE_WORDS[n]} {_TOKEN_CONFIRM}",
