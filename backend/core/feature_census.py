@@ -93,9 +93,10 @@ CENSUS: tuple[Screen, ...] = (
        ("create_knowledge_base", "add_knowledge_file", "add_knowledge_pages", "add_knowledge_note",
         "search_knowledge", "update_knowledge_base", "delete_knowledge_base", "list_knowledge_documents"),
        names=("knowledge base", "rag", "knowledge note", "knowledge documents")),
-    _s("boards", "Boards", "/boards", "makes boards, adds and updates cards, and gives a workflow a board to work",
+    _s("boards", "Boards", "/boards", "makes boards, renames and describes them, adds and updates cards and their "
+       "words, and says which agents, workflows and schedules may use one",
        ("create_board", "add_board_card", "update_board_card", "comment_on_card", "read_board", "list_boards",
-        "give_board_access", "delete_board"),
+        "give_board_access", "delete_board", "update_board"),
        names=("board", "kanban", "board card")),
     _s("chat", "Chat", "/", "talks to an agent for the person", ("chat_with_agent",), names=("conversation",)),
     _s("mcp_servers", "Apps", "/apps", "finds the app or MCP server for a service the person names, and connects it",

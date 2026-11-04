@@ -59,6 +59,11 @@ ACTIONS: dict[str, str] = {
     "board_comment": "comment on a card (`card_id`, `text`)",
     "board_create": "make a shared board (`name`, `text`: what it is for)",
     "board_delete": "delete a shared board (`board`)",
+    "board_rename": "rename a shared board (`board`, `name`)",
+    "board_describe": "say what a shared board is for (`board`, `text`)",
+    "board_access": "let an agent, a workflow or a schedule add cards to a shared board or work its cards, or take it "
+                    "off (`board`, `who`: its name, `access`: add, work or none)",
+    "board_card_text": "change a card's title or text (`card_id`, `title`, `text`)",
     "feature_on": "turn on Boards or Knowledge for this workspace (`feature`: boards or knowledge), when one is off",
     "eval_rubric": "score a workflow's runs by a rubric (`workflow`; `name`, `criteria`: [{name, weight, guidance}], "
                    "`floor`; or `rubric`: one that is here, to attach)",
@@ -127,6 +132,8 @@ SCHEMA = {
                 "card_id": {"type": "string", "description": "From topic `boards` with the board's name."},
                 "status": {"type": "string", "enum": ["open", "done", "failed"]},
                 "result": {"type": "string", "description": "board_update_card: what came of it."},
+                "who": {"type": "string", "description": "board_access: the agent, workflow or schedule, by name."},
+                "access": {"type": "string", "enum": ["add", "work", "none"]},
                 "feature": {"type": "string", "enum": ["boards", "knowledge"]},
                 "criteria": {"type": "array", "items": {"type": "object"},
                              "description": "eval_rubric: [{name, weight, guidance}]: what a good result is."},
@@ -767,9 +774,31 @@ async def _board(action: str, args: dict) -> dict:
         text = str(args.get("text") or "").strip()
         return _card(f'Make a shared board "{name}"', detail=text[:300],
                      buttons=[await _button("Make it", "create_board", {"name": name, "description": text})])
+    if action in ("board_rename", "board_describe", "board_access"):
+        return await _board_settings(action, args)
     card = await store.get_card(str(args.get("card_id") or ""))
     if card is None:
         raise _NotOffered("There is no such card. Topic `boards` with the board's name lists its cards.")
+    if action == "board_card_text":
+        # Written over the version read here, so one changed since is said (F1268). What the text may hold is F1307's
+        # board masking, where every card write goes, when it lands: no second check here.
+        title = str(args.get("title") or "").strip()
+        text = args.get("text")
+        changes = {**({"title": title} if title and title != card.title else {}),
+                   **({"body": str(text)} if isinstance(text, str) and str(text) != (card.body or "") else {})}
+        if not changes:
+            raise _NotOffered(f'"{card.title}" already reads that way.')
+        rows = [{"label": "Title", "before": card.title, "after": changes["title"]}] if "title" in changes else []
+        if "body" in changes:
+            from core.native_builder import rows as R
+
+            was, now = card.body or "", changes["body"]
+            long = len(was) > R.SHORT or len(now) > R.SHORT or "\n" in was + now
+            was, now = R.marked(was, now) if long and was and now else (was, now)
+            rows.append({"label": "Text", "before": was or None, "after": now or None})
+        return _card(f'Change the card "{card.title}"', rows=rows,
+                     buttons=[await _button("Save", "update_board_card",
+                                            {"card_id": card.id, "version": card.version, **changes})])
     if action == "board_comment":
         text = str(args.get("text") or "").strip()
         if not text:
@@ -786,6 +815,64 @@ async def _board(action: str, args: dict) -> dict:
         return _card(f'{verb}: "{card.title}"', detail=result[:300],
                      buttons=[await _button(verb, "update_board_card", call)])
     raise _NotOffered(f"action must be one of {', '.join(ACTIONS)}.")
+
+
+#: How each access reads on a card.
+_ACCESS_WORDS = {"add": "may add cards", "work": "may work its cards", None: "not on its list"}
+
+
+async def _board_settings(action: str, args: dict) -> dict:
+    """A shared board's name, what it is for, or who may use it (F1268): the Boards screen's own service, a builder's,
+    as on its routes. A workflow's or a schedule's own board is its owner's."""
+    from core.product_tools import boards
+    from core.store import boards as store
+
+    board = await _resolved(boards._board_named(str(args.get("board") or "")))
+    name = board.get("name") or board["id"]
+    if board.get("scope") != "shared":
+        raise _NotOffered(f"\"{name}\" is its workflow's or schedule's own board: only a shared board is renamed, "
+                          "described or given to others here.")
+    if action == "board_rename":
+        new = str(args.get("name") or "").strip()
+        if not new:
+            raise _NotOffered("Say the board's new name.")
+        if new == name:
+            raise _NotOffered(f'The board is already called "{name}".')
+        there = next((b for b in await store.list_boards("shared")
+                      if b.id != board["id"] and b.name.casefold() == new.casefold()), None)
+        if there is not None:
+            raise _NotOffered(f'There is a shared board called "{there.name}" already: say another name.')
+        return _card(f'Rename the board "{name}"', rows=[{"label": "Name", "before": name, "after": new}],
+                     buttons=[await _button("Rename", "update_board", {"board": board["id"], "name": new})])
+    if action == "board_describe":
+        text = str(args.get("text") or "").strip()
+        was = str(board.get("description") or "")
+        if text == was:
+            raise _NotOffered(f'"{name}" already says that.')
+        return _card(f'Say what "{name}" is for', rows=[{"label": "What it is for", "before": was or None,
+                                                         "after": text or None}],
+                     buttons=[await _button("Save", "update_board", {"board": board["id"], "description": text})])
+    access = str(args.get("access") or "").strip()
+    if access not in ("add", "work", "none"):
+        raise _NotOffered("access is add, work or none.")
+    directory = await boards._host.directory()
+    everyone = ([{"id": i, "name": n, "kind": "agent"} for i, n in directory.agents.items()]
+                + [{"id": i, "name": n, "kind": "workflow"} for i, n in directory.workflows.items()]
+                + [{"id": i, "name": str(r.get("name") or i), "kind": "schedule"} for i, r in directory.schedules.items()])
+    who = _pick(everyone, str(args.get("who") or ""), "agent, workflow or schedule",
+                "Topics `agents`, `workflows` and `schedules` list them.")
+    listed = await store.list_access(board["id"])
+    was = next((a.access for a in listed if (a.principal_kind, a.principal_id) == (who["kind"], who["id"])), None)
+    now = None if access == "none" else access
+    if was == now:
+        raise _NotOffered(f'The {who["kind"]} "{who["name"]}" is already {_ACCESS_WORDS[was]} on "{name}".')
+    return _card(f'Change who may use the board "{name}"',
+                 rows=[{"label": f'The {who["kind"]} "{who["name"]}"', "before": _ACCESS_WORDS[was],
+                        "after": _ACCESS_WORDS[now]}],
+                 detail="The people of this workspace keep the board as they have it: its list is for agents, "
+                        "workflows and schedules." if now is None else "",
+                 buttons=[await _button("Save", "give_board_access", {"board": board["id"], "kind": who["kind"],
+                                                                      "id": who["id"], "access": access})])
 
 
 # ── website widgets (F1262) ──────────────────────────────────────────────────────────────────────────────────────────
