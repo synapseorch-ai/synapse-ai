@@ -12,6 +12,9 @@ never from its words:
   reading another's through `{{ state.x }}`, in a build the quick classify itself gave the reason `team` (its closed
   list, `request.why`, as the effort offer reads it): one agent of type team, its lead, with them as its members. A
   pipeline of agents not asked for as a team is a plan like any other.
+* **Code's work is a Transform** (F1291, CAP3's cap-04): a new agent holding `execute_python`, where code steps run,
+  does with a model what a `transform` step (or a Python tool) does exactly. Where code steps do not run, it is the
+  only way, and left alone.
 
 A finding is sent back once, then said on the card: never a reason a plan cannot be built.
 """
@@ -25,6 +28,9 @@ from core.templating import STATE_REF, one_form
 if TYPE_CHECKING:
     from core.native_builder.build_plan import Workspace
 
+#: The sandbox's code tool an agent runs Python with: a new agent holding it, where code steps run, is a Transform's
+#: work done by a model (F1291).
+CODE_TOOL = "execute_python"
 #: The built-in page reads a workflow's agent can call (the scraper's, `build_plan._BUILT_IN_SCRAPE`).
 PAGE_READS = ("scrape_url", "scrape_structured", "search_page", "extract_links")
 
@@ -51,6 +57,11 @@ async def issues(plan: O.Plan, ws: Workspace, asked: dict | None = None) -> list
     out = []
     steps = [s for s in (*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)) if s.type != "end"]
     for a in plan.agents:
+        # Code's work is a Transform (F1291, cap-04): a new agent computing with `execute_python`, where code steps run.
+        if ws.code_steps and any(str(t).split("__")[-1] == CODE_TOOL for t in a.tools):
+            out.append(f"structure: agent \"{a.name}\" computes with `{CODE_TOOL}`: work that is code over the run's "
+                       "data (filtering, totals, a chart's CSV) is a `transform` step whose answer the next step reads, "
+                       "or a Python tool; keep an agent for what needs judgement")
         if a.type != "agent" or len(a.tools) != 1 or a.memory or a.knowledge or a.browser or a.servers:
             continue
         if not _reads(a.tools[0], custom):
