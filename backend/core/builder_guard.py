@@ -200,9 +200,10 @@ async def missing_in(workflows: list[dict], agents: dict[str, dict], server_modu
 async def argument_issues(workflows: list[dict], server_module: Any,
                           made: dict[str, dict] | None = None) -> list[str]:
     """Issues for Tool steps whose set arguments (E1) do not fit their tool's own schema: a name it does not take,
-    or a required one left out. With no model to repair them, either fails every run. A tool nothing provides is
-    `missing_in`'s to say; a tool whose schema names no properties takes anything. `made` is what each tool a build
-    makes after the yes will take, by name (F1295): held to that while it is not here yet."""
+    or a required one left out, and below the top level (F1357) what `_misfits` finds. With no model to repair them,
+    each fails every run. A tool nothing provides is `missing_in`'s to say; a tool whose schema names no properties
+    takes anything. `made` is what each tool a build makes after the yes will take, by name (F1295): held to that
+    while it is not here yet."""
     from core.routes.tools import load_custom_tools
     from core.tools import resolve_one_tool
 
@@ -232,7 +233,77 @@ async def argument_issues(workflows: list[dict], server_module: Any,
             if left_out:
                 issues.append(f"Step '{label}' leaves out {', '.join(repr(r) for r in left_out)}, which `{name}` "
                               "needs: set it on the step, or let the model write the arguments.")
+            issues += _misfits(label, name, schema, arguments)
     return issues
+
+
+#: What `_misfits` holds a step's arguments to: what a schema declares of them, never a `format` or a bound.
+_HELD_TO = ("required", "type", "additionalProperties")
+
+
+def _where(path) -> str:
+    """`steps[1].url` for jsonschema's path `["steps", 1, "url"]`."""
+    said = ""
+    for part in path:
+        said += f"[{part}]" if isinstance(part, int) else (f".{part}" if said else str(part))
+    return said
+
+
+def _json_type(value: Any) -> str:
+    if isinstance(value, bool):
+        return "a boolean"
+    if isinstance(value, (int, float)):
+        return "a number"
+    return {str: "a string", list: "an array", dict: "an object"}.get(type(value), "null")
+
+
+def _misfits(label: str, name: str, schema: dict, arguments: dict) -> list[str]:
+    """What in `arguments` does not fit `schema` below its top level (F1357, cap-01: a browser step in
+    `scrape_with_session`'s `steps` with no `url`, which every item needs), said with where it is. The top level is
+    `argument_issues`'s own two checks; here a required name left out, a value of the wrong type, and a name an
+    object setting `additionalProperties` does not take. A value that is or holds a state reference is state's to
+    fill, never held to a type. A `$ref` is followed within the schema only (an empty registry: nothing is fetched),
+    and a schema that is not one, or a reference it cannot follow, says nothing: never evidence a step is wrong."""
+    try:
+        import referencing
+        from jsonschema.exceptions import SchemaError
+        from jsonschema.validators import validator_for
+    except ImportError:  # mcp's own dependency; without it there is nothing to hold the arguments to
+        return []
+    from core.templating import _OLD_STATE_REF, STATE_REF
+
+    def filled_by_state(value: Any) -> bool:
+        return isinstance(value, str) and bool(STATE_REF.search(value) or _OLD_STATE_REF.search(value))
+
+    try:
+        cls = validator_for(schema)
+        cls.check_schema(schema)
+        errors = list(cls(schema, registry=referencing.Registry()).iter_errors(arguments))
+    except SchemaError:
+        return []
+    except Exception:  # noqa: BLE001 — a reference it cannot follow is not evidence either way
+        return []
+    said: list[str] = []
+    for error in errors:
+        path, rule = list(error.absolute_path), error.validator
+        if rule not in _HELD_TO or filled_by_state(error.instance):
+            continue
+        where = _where(path)
+        if rule == "required" and path and isinstance(error.instance, dict):
+            left_out = [r for r in error.validator_value if r not in error.instance]
+            said.append(f"Step '{label}' gives `{name}` {where} without {', '.join(repr(r) for r in left_out)}, "
+                        "which it needs there: set it on the step, or let the model write the arguments.")
+        elif rule == "type":
+            wanted = error.validator_value if isinstance(error.validator_value, list) else [error.validator_value]
+            said.append(f"Step '{label}' gives `{name}` {where or 'its arguments'} as {_json_type(error.instance)}, "
+                        f"where it takes {' or '.join(map(str, wanted))}: set it as one, or let the model write the "
+                        "arguments.")
+        elif rule == "additionalProperties" and path and isinstance(error.instance, dict):
+            known = (error.schema.get("properties") or {}) if isinstance(error.schema, dict) else {}
+            extra = [k for k in error.instance if k not in known]
+            said.append(f"Step '{label}' sets {', '.join(repr(k) for k in extra)} in {where}, which `{name}` does not "
+                        f"take there{': it takes ' + ', '.join(known) if known else ''}.")
+    return said
 
 
 # ── The plan, before the person approves it (F492) ──────────────────────────
