@@ -199,14 +199,15 @@ const NUMBER: Record<PlanStep['role'], string> = {
 };
 
 /**
- * A step's detail (F1328): its words as text, each fenced block as a box of code — monospace, its lines kept, scrolling
- * sideways on a phone, a diff's added and removed lines tinted with the design's own success and danger tokens.
+ * A step's detail (F1328): its words as text, each fenced block as a box of code — in the code font (font-code; font-mono
+ * is the UI font here), its lines kept, scrolling sideways on a phone, a diff's added and removed lines tinted with the
+ * design's own success and danger tokens.
  */
 function StepDetail({ text }: { text: string }) {
     return (
         <div className="text-xs text-text-muted">
             {detailParts(text).map((part, i) => part.kind === 'code' ? (
-                <pre key={i} className="my-1 max-w-full overflow-x-auto whitespace-pre rounded-md border border-border bg-surface-2 p-2 font-mono text-[11px] leading-snug text-text">
+                <pre key={i} className="my-1 max-w-full overflow-x-auto whitespace-pre rounded-md border border-border bg-surface-2 p-2 font-code text-[11px] leading-snug text-text">
                     <code>
                         {part.text.split('\n').map((line, j) => (
                             <span
