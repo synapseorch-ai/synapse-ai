@@ -312,6 +312,8 @@ async def submit_change(args: dict, server_module: Any, events: list[dict]) -> d
               if isinstance(op, dict) and asks_for_a_secret(_text(op.get("says")), strict=False)]
     if not found and run is not None and (nudge := _curl_unnamed(ops, run.shared_state)):
         found.append(nudge)
+    if not found and run is not None and (nudge := _curl_literal(ops, run.shared_state)):
+        found.append(nudge)
     asked = args.get("asked") if isinstance(args.get("asked"), list) else []
     if not found and ops and asked and (gaps := _unaccounted(ops, asked)) and _send_back(run):
         found += gaps
@@ -391,6 +393,34 @@ def _curl_unnamed(ops: list, state: dict) -> str | None:
     state[_CURL_NUDGED] = True
     listed = "; ".join(f"curl {c['n']}: {c['method']} {c['url']}" for c in found)
     return f"{CURL_UNNAMED} ({listed}), and mark only what varies with {{{{ }}}}; or send it again as it is"
+
+
+_CURL_LITERAL = "_curl_literal_nudged"
+
+
+def _curl_literal(ops: list, state: dict) -> str | None:
+    """A tool made or changed `from` a curl whose address keeps one call's value as written (F1377: fix-01's tool
+    fetched the curl's one id every time): sent back once, so a value that changes from call to call becomes an input;
+    sent again as it is, it is taken, so an address that is the same for every call still is."""
+    from core import http_facts
+    from core.native_builder.build_plan import curls
+
+    if state.get(_CURL_LITERAL):
+        return None
+    found = {c["n"]: c for c in curls(state) if not c.get("problem")}
+    for op in ops:
+        fields = (op.get("fields") or {}) if isinstance(op, dict) else {}
+        source = fields.get("from") if isinstance(fields.get("from"), dict) else {}
+        if op.get("op") not in ("create_tool", "update_tool") or source.get("curl") not in found:
+            continue
+        n = source["curl"]
+        url = _text(fields.get("url")) or found[n]["url"]
+        if "{{" in url or not (value := http_facts.one_calls_value(url)):
+            continue
+        state[_CURL_LITERAL] = True
+        return (f"curl {n}'s address keeps one call's value as written ({value} in {url}): give its url with {{{{ }}}} "
+                "where a value changes from call to call, or send it again as it is when that address is the same for every call")
+    return None
 
 
 #: The Python tools whose fix has failed its test once in this run (F1325): the next failure is said, not sent back.

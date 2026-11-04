@@ -200,6 +200,22 @@ def _same_part(template: str, literal: str) -> bool:
     return template == literal or bool(_PLACEHOLDER.match(template))
 
 
+#: What reads as one call's value in an address (F1377): a number of two digits or more, a UUID, a date.
+_ONE_CALLS = re.compile(r"^(?:\d{2,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+                        r"|\d{4}-\d{2}-\d{2})$")
+
+
+def one_calls_value(url: str) -> str | None:
+    """The first path segment or query value of `url` that reads as one call's value (`_ONE_CALLS`: an id, a date), or
+    None: what a tool made from a curl would otherwise fetch every time (F1377). A segment already marked with {{ }} is
+    no value."""
+    parts = urlsplit((url or "").strip())
+    for value in [*parts.path.split("/"), *(v for _, v in parse_qsl(parts.query, keep_blank_values=True))]:
+        if "{{" not in value and _ONE_CALLS.match(value):
+            return value
+    return None
+
+
 def same_shape(template: str, literal: str) -> str | None:
     """Why `template` (the planner's URL, {{ }} where a value varies) is not `literal` (the curl's), or None: the
     same scheme, host and port, the same path but its varied segments, the same query names."""
