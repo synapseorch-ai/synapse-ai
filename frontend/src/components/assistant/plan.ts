@@ -504,7 +504,7 @@ export function planFromChange(change: ChangeView, prompt: string): Plan | null 
         // Code's words are the line's first line ("<what> — <how>"); a knowledge note's or a memory item's before and
         // after follow on lines of their own: the exact change, the row's detail (F1308).
         const [first, ...below] = (o.line as string).split('\n');
-        const exact = below.map((part) => part.trim()).filter(Boolean).join(' ');
+        const exact = below.map((part) => part.trim()).filter(Boolean).join('\n');
         const [what, ...how] = first.replace(/\s+—\s*$/, '').split(' — ');
         const name = o.target?.name ?? '';
         // Two of one name are told apart by id (F760's class).

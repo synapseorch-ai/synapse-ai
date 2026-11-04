@@ -223,7 +223,7 @@ function Steps({ plan }: { plan: Plan }) {
                                 <span className="text-text-faint">Described as: </span>{step.says}
                             </span>
                         )}
-                        {step.detail && <span className="block break-words text-xs text-text-muted">{step.detail}</span>}
+                        {step.detail && <span className="block whitespace-pre-line break-words text-xs text-text-muted">{step.detail}</span>}
                     </span>
                     {step.label ? (
                         <span className={cn('text-right text-xs', step.role === 'person' ? 'font-medium text-person-ink' : 'text-text-faint')}>
