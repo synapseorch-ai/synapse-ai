@@ -50,7 +50,6 @@ import { RetrievalTrace } from "@/components/RetrievalTrace";
 import { Spinner } from "@/components/ui";
 import { DEGRADED, getQueryTrace, type SearchTrace } from "@/lib/knowledge";
 
-import { useRunHost } from "./host";
 import type { Task } from "./model";
 import { emptyTeam, foldTeam, isTeamEvent, type TeamState } from "@/components/team/team";
 
@@ -73,11 +72,12 @@ export type RetrievalEntry = {
   cost_usd: number;
   degraded: string[];
 };
-// One agent action in the browser inside Synapse (BRW2, F1074): its words and the screenshot after it.
-export type BrowserEntry = { kind: "browser" } & BrowserAction;
+// A browser's actions in this run, one line for its session (F1356; each action was its own line and thumbnail): the
+// line says how many, opens to their words, and points at the browser above, where the pictures are.
+export type BrowserGroupEntry = { kind: "browser_group"; session_id: string; actions: BrowserAction[] };
 export type LogEntry =
   | string
-  | BrowserEntry
+  | BrowserGroupEntry
   | ToolCallEntry
   | ToolResultEntry
   | StepResultEntry
@@ -426,7 +426,16 @@ export function applyRunEvent(state: RunLogState, data: any): RunLogState {
       };
     case "browser_action":
       if (typeof data.session_id !== "string") return state;
-      return add({ kind: "browser", ...actionOf(data) });
+      {
+        const action = actionOf(data);
+        const at = entries.findIndex(
+          (e) => typeof e !== "string" && e.kind === "browser_group" && e.session_id === action.session_id);
+        if (at < 0) return add({ kind: "browser_group", session_id: action.session_id, actions: [action] });
+        const group = entries[at] as BrowserGroupEntry;
+        const next = entries.slice();
+        next[at] = { ...group, actions: [...group.actions, action] };
+        return { ...state, entries: next };
+      }
     case "orchestration_error":
       state = { ...state, liveActivity: null };
       return { ...state, entries: append(entries, line("error", `Error: ${data.error}`)) };
@@ -510,13 +519,27 @@ function RetrievalRow({ entry }: { entry: RetrievalEntry }) {
   );
 }
 
-/** A browser action (BRW2): the line, with its screenshot where the product can show it. */
-function BrowserRow({ entry }: { entry: BrowserEntry }) {
-  const host = useRunHost().browser;
+/** A browser's actions, one line (F1356): "Browser · N actions", which opens to their words; the pictures are above. */
+function BrowserGroupRow({ entry }: { entry: BrowserGroupEntry }) {
+  const n = entry.actions.length;
   return (
-    <div className="pl-2 text-accent-ink">
-      <BrowserActionLine action={entry} shot={host && entry.shot_ref ? host.shotUrl(entry.session_id, entry.shot_ref) : null} />
-    </div>
+    <details className="pl-2 text-accent-ink">
+      <summary className="cursor-pointer select-none">
+        Browser <span className="text-text-faint">· {n} action{n === 1 ? "" : "s"}</span>
+      </summary>
+      <ol aria-label="What the agent did in the browser" className="mt-1 space-y-1 pl-4">
+        {entry.actions.map((a) => (
+          <li key={`${a.session_id}:${a.n}`}><BrowserActionLine action={a} dense /></li>
+        ))}
+      </ol>
+      <a href="#live-browser" className="mt-1 inline-block pl-4 text-xs underline underline-offset-2"
+         onClick={(e) => {
+           const there = document.getElementById("live-browser") ?? document.getElementById("run-browser");
+           if (there) { e.preventDefault(); there.scrollIntoView({ behavior: "smooth", block: "start" }); }
+         }}>
+        See it in the browser above
+      </a>
+    </details>
   );
 }
 
@@ -563,7 +586,7 @@ export function LogLine({ entry, onOpen }: { entry: LogEntry; onOpen: (e: StepRe
       );
     }
     if (entry.kind === "retrieval") return <RetrievalRow entry={entry} />;
-    if (entry.kind === "browser") return <BrowserRow entry={entry} />;
+    if (entry.kind === "browser_group") return <BrowserGroupRow entry={entry} />;
     if (entry.kind === "tool_result") {
       return (
         <div className="flex items-start gap-1.5 pl-4 text-[10px] text-text-faint">

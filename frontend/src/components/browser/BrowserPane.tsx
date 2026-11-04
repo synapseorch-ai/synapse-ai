@@ -1,9 +1,9 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Globe, Info, KeyRound, Square, X } from 'lucide-react';
+import { Globe, Info, KeyRound, Maximize2, Square, X } from 'lucide-react';
 
-import { Button, IconButton, Input, Spinner, usePersisted } from '@/components/ui';
+import { Button, IconButton, Input, Modal, Spinner, usePersisted } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
 import { BrowserActionLine } from './BrowserActionLine';
@@ -34,7 +34,7 @@ import { useBrowserFrames, useKeptLog, type FrameMemory } from './useBrowserFram
  */
 export function BrowserPane({
   host, sessionId, agentName, actions, memory, closedBefore = false, onClosed, onHide, onHandedBack, signIn, record, owner, signedIn, picks,
-  className, style, children,
+  hero = false, enlarge = false, className, style, children,
 }: {
   host: BrowserHost;
   sessionId: string;
@@ -78,6 +78,13 @@ export function BrowserPane({
    * last pick was not taken (the server's 422 for two on one site).
    */
   picks?: Omit<React.ComponentProps<typeof SessionPicker>, 'label'> & { label?: string; failed?: string | null };
+  /**
+   * The picture is the pane (F1356, the run page): it fills the column at the page's own aspect, never a fixed
+   * height, and what the agent did folds into a closed list under it. Off, the pane is as it always was.
+   */
+  hero?: boolean;
+  /** An Enlarge button: the live page in a large dialog, Esc to close, Take over still in reach (F1356). */
+  enlarge?: boolean;
   className?: string;
   style?: React.CSSProperties;
   /** The pane's own edge, such as its resize handle. */
@@ -110,6 +117,7 @@ export function BrowserPane({
   const canDrive = !closed && !!host.takeWheel && !!host.handBack && !!host.input;
   const driving = canDrive && wheel === 'person';
   const [nudge, setNudge] = useState(false);
+  const [enlarged, setEnlarged] = useState(false);
   const [note, setNote] = useState('');
   const [wheelFailed, setWheelFailed] = useState<string | null>(null);
 
@@ -241,6 +249,12 @@ export function BrowserPane({
             Stop
           </Button>
         )}
+        {enlarge && frame && (
+          <Button variant="ghost" size="sm" onClick={() => setEnlarged(true)} title="See the page large">
+            <Maximize2 className="size-3.5" aria-hidden />
+            Enlarge
+          </Button>
+        )}
         {onHide && <IconButton icon={X} label="Close the browser pane" size="sm" onClick={onHide} />}
       </header>
 
@@ -305,7 +319,12 @@ export function BrowserPane({
         </div>
       )}
 
-      <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-surface-2 p-3">
+      <div
+        className={cn('relative flex items-center justify-center overflow-hidden bg-surface-2',
+                      hero ? 'w-full shrink-0' : 'min-h-0 flex-1 p-3')}
+        // The page's own shape (F1356): the frame's, else the browser's 16:10.
+        style={hero ? { aspectRatio: `${frame?.w || 16} / ${frame?.h || 10}` } : undefined}
+      >
         {frame ? (
           <PageScreen
             frame={frame}
@@ -364,7 +383,7 @@ export function BrowserPane({
         </div>
       )}
 
-      {lines.length > 0 && (
+      {lines.length > 0 && !hero && (
         <ol ref={list} aria-label="What the agent did" className="max-h-36 shrink-0 space-y-1.5 overflow-y-auto border-t border-border px-3 py-2 text-xs text-text-muted">
           {lines.map(a => (
             <li key={`${a.session_id}:${a.n}`}>
@@ -372,6 +391,48 @@ export function BrowserPane({
             </li>
           ))}
         </ol>
+      )}
+      {lines.length > 0 && hero && (
+        // Folded under the picture, closed until asked for (F1356).
+        <details className="group shrink-0 border-t border-border text-xs text-text-muted">
+          <summary className="cursor-pointer select-none px-3 py-2 font-medium text-text hover:bg-surface-2">
+            What the agent did · {lines.length}
+          </summary>
+          <ol ref={list} aria-label="What the agent did" className="max-h-64 space-y-1.5 overflow-y-auto px-3 pb-2">
+            {lines.map(a => (
+              <li key={`${a.session_id}:${a.n}`}>
+                <BrowserActionLine action={a} dense shot={shotFor(a)} />
+              </li>
+            ))}
+          </ol>
+        </details>
+      )}
+      {enlarge && (
+        <Modal
+          open={enlarged && !!frame}
+          onClose={() => setEnlarged(false)}
+          title={url ? shortUrl(url) : 'The browser'}
+          size="full"
+          footer={
+            <div className="flex w-full flex-wrap items-center gap-2 text-xs text-text-muted">
+              <span className="flex-1">{driver}</span>
+              {canDrive && !driving && <Button variant="secondary" size="sm" onClick={takeOver}>Take over</Button>}
+            </div>
+          }
+        >
+          {frame && (
+            <div className="flex w-full items-center justify-center" style={{ aspectRatio: `${frame.w || 16} / ${frame.h || 10}` }}>
+              <PageScreen
+                frame={frame}
+                closed={closed}
+                driving={driving}
+                alt={url ? `The page the agent sees, large: ${shortUrl(url)}` : 'The page the agent sees, large'}
+                send={send}
+                onPressWhileWatching={() => { if (canDrive) setNudge(true); }}
+              />
+            </div>
+          )}
+        </Modal>
       )}
     </section>
   );
