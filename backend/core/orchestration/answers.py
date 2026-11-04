@@ -20,6 +20,7 @@ worker claims it with one conditional UPDATE (`state_store.claim_answer`).
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -193,20 +194,45 @@ def _waiting(status: Optional[str], waiting_for_human: Any) -> bool:
 _answering: set[str] = set()
 
 
-def _through_door(run_id: str, response: Any, question: Optional[str], step: Optional[str] = None) -> Any:
+async def _held_for(run_id: str, response: Any) -> list:
+    """The workspace's secrets in an answer to any run (F1307): a builder run's and a workflow's Human step's alike
+    (Naveen, 11-03: a held value pasted into a workflow's answer is a mistake, and the workflow has it as a variable or
+    a connection already)."""
+    from core.secret_scrub import held_in
+
+    return await held_in(json.dumps(response, default=str, ensure_ascii=False))
+
+
+def _held_out(value: Any, held: Any) -> Any:
+    """`value` with every held secret in its strings taken out by its exact value (F1307)."""
+    from core.native_builder.door import _without_held
+
+    if isinstance(value, str):
+        return _without_held(value, held)[0]
+    if isinstance(value, dict):
+        return {k: _held_out(v, held) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_held_out(v, held) for v in value]
+    return value
+
+
+def _through_door(run_id: str, response: Any, question: Optional[str], step: Optional[str] = None,
+                  held: Any = ()) -> Any:
     """An answer to an AI builder run goes through the builder's door (BWA1, D274), whichever way it arrives (the
     run page, v1, the MCP server, a channel): a card number or a password is refused as a bad answer, before
     anything is queued or kept, and a key is masked. Read with the question it answers, so a lone secret-looking
     word in reply to "what's the password?" counts as one, and one at a Connect card's wait (`step`) as a key
-    (F1280). Any other run's answer is untouched."""
+    (F1280); a secret the workspace holds is masked by its value (`held`, F1307). Any other run's answer — a
+    workflow's own Human step — loses only the held secrets (Naveen, 11-03): its other words are the workflow's
+    business, as F1100 keeps a workflow's own card digits."""
     from core.native_builder.seed import BUILDER_RUN_PREFIX
 
     if not str(run_id).startswith(BUILDER_RUN_PREFIX):
-        return response
+        return _held_out(response, held) if held else response
     from core.native_builder import door
 
     try:
-        masked, _removed = door.check_answer(response, question=question, step=step)
+        masked, _removed = door.check_answer(response, question=question, step=step, held=held)
     except door.Refused as exc:
         raise BadAnswer("answer", str(exc)) from None
     return masked
@@ -301,7 +327,7 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any, *,
             raise RunNotWaiting(run_id, row.status)
         check_question(row, question_id)
         response = _through_door(run_id, response, getattr(row, "human_prompt", None),
-                                 getattr(row, "current_step_id", None))
+                                 getattr(row, "current_step_id", None), await _held_for(run_id, response))
         response = check_answer(row.human_fields, response)
         await refuse_card_for_browser(row, response)
         from core.orchestration.pauses import pause_ordinal
@@ -347,7 +373,8 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any, *,
         if not _waiting(run.status, run.waiting_for_human):
             raise RunNotWaiting(run_id, run.status)
         check_question(run, question_id)
-        response = _through_door(run_id, response, run.human_prompt, run.current_step_id)
+        response = _through_door(run_id, response, run.human_prompt, run.current_step_id,
+                                 await _held_for(run_id, response))
         response = check_answer(run.human_fields, response)
         await refuse_card_for_browser(run, response)
         response = _named(response, question_id)

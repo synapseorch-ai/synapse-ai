@@ -45,8 +45,9 @@ WAITING, CHANGED, SET_ASIDE = "waiting", "changed", "set_aside"
 FALLBACK_CANNOT = "I couldn't turn that into something I can make or change here. Say it another way, or do it on its own page."
 
 #: A change whose new value holds a key (or the door's mark where one was taken out of the person's message).
-KEY_REFUSAL = ("Keys never go in a change: a key there would be kept with it. Add it on its own settings screen, "
-               "where it is stored encrypted, and if it was real, rotate it at the provider.")
+KEY_REFUSAL = ("Keys never go in a change: a key there would be kept with it. A tool's key goes on its Connect card "
+               "once the tool is made; any other on its own settings screen, where it is stored encrypted. If it was "
+               "real, rotate it at the provider.")
 
 
 def _holds_a_key(fields: dict) -> bool:
@@ -55,6 +56,16 @@ def _holds_a_key(fields: dict) -> bool:
 
     text = json.dumps(fields, default=str, ensure_ascii=False)
     return holds_credential(text) or CREDENTIAL_MARK in text
+
+
+async def _carries_a_key(fields: dict, says: str = "") -> bool:
+    """An op that carries a key in its fields or its `says`, by shape or as a value the workspace holds (F1309: prod-02's
+    "Make the HTTP tool … Authenticates with bearer token …" put a token pasted in chat into a made tool's header)."""
+    from core.secret_scrub import held_in
+
+    if _holds_a_key({**fields, "says": says}):
+        return True
+    return bool(await held_in(json.dumps({**fields, "says": says}, default=str, ensure_ascii=False)))
 
 
 #: The review's lead-in is the definition's (`step_manage_review`, F754's words); these are what code adds.
@@ -1137,8 +1148,22 @@ def _review(ops: list[dict]) -> str:
             uses = ("used by " + ", ".join(used)) if used else "nothing uses it"
             lines.append(f"- ⚠️ DELETES: {item['line']} — {uses}. {DELETE_NOTE}")
         else:
-            lines.append(f"- {item['line']}")
+            lines.append(f"- {_with_says(item['line'], item.get('says'))}")
     return "\n".join(lines)
+
+
+def _with_says(line: str, says: Any) -> str:
+    """An op's review line with the planner's own words for it under it, above the exact change (F1308): prod-04's
+    "Change Friday closing time from 7pm to 6pm" over a before/after that closed every weekday at 6pm, approved because
+    only the diff was shown. The line stays code's alone (MCP2's note 3): the gloss is on its own line, said as whose
+    it is, and scrubbed like the rest of the card (the shapes, and the workspace's held secrets)."""
+    from core.secret_scrub import scrub_credentials, scrub_secrets
+
+    said = scrub_secrets(scrub_credentials(_text(says))[0])
+    head, _, rest = str(line).partition("\n")
+    if not said or said.casefold() in head.casefold():
+        return str(line)
+    return f"{head}\n  Described as: {said}" + (f"\n{rest}" if rest else "")
 
 
 def _said(ops: list[dict]) -> str:
@@ -1326,6 +1351,14 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             return {**base, "outcome": "said", "say": refusal}
 
     handoffs = [o for o in ops if C.OPS.get(o.get("op", ""), C.OPS["create"]).kind == "handoff"]
+    goes_on_its_own = (len(ops) == 1 and ops[0].get("op") == "create") or (handoffs and len(handoffs) == len(ops)) or any(
+        o.get("op") == "create" and (o.get("target") or {}).get("kind") in C.BUILDS for o in ops)
+    if goes_on_its_own:
+        # A new thing, a build or a hand-over leaves before the check below, which refuses a key op by op: one that
+        # carries a key is refused here, with nothing of it kept (F1309: prod-02's made tool took a pasted token).
+        for o in ops:
+            if await _carries_a_key(dict(o.get("fields") or {}), o.get("says") or ""):
+                return {**base, "outcome": "said", "say": KEY_REFUSAL}
     if len(handoffs) > 1 and len(handoffs) == len(ops):
         # Each goes on as its own route for the rest of the run, so only one can be taken: say them, rather than
         # take the first and drop the rest (the branch review's finding 14).
@@ -1362,8 +1395,9 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
         fields = dict(raw.get("fields") or {})
         item = {"op": op.name, "kind": op.kind, "target": target, "fields": fields, "says": raw.get("says") or ""}
         checked.append(item)
-        if _holds_a_key(fields):
-            # Nothing keeps it: not the review, its event, the card or this answer (the branch review's finding 7).
+        if await _carries_a_key(fields, item["says"]):
+            # Nothing keeps it: not the review, its event, the card or this answer (the branch review's finding 7);
+            # its says too, and a value the workspace holds (F1309).
             item.update(fields={}, says="", status="refused", say=KEY_REFUSAL)
             continue
         if op.kind == "handoff":
@@ -1708,7 +1742,7 @@ async def _a_new_thing(base: dict, raw: dict) -> dict:
         return {**base, "outcome": "said", "ops": [item],
                 "say": f"{article} {said} is already called {_quoted(name)}: say another name."}
     item.update(status="ready", line=f"Make the {said} {_quoted(name)}" + (f" — {what}" if what else ""))
-    out = {**base, "outcome": "create", "ops": [item], "review": f"- {item['line']}"}
+    out = {**base, "outcome": "create", "ops": [item], "review": f"- {_with_says(item['line'], item['says'])}"}
     await _card(out, stage=WAITING)
     return out
 

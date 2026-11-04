@@ -46,6 +46,12 @@ MASKED_NOTICE = (
     "add the new key in Settings → Vault, where it is kept encrypted."
 )
 
+#: A secret the workspace already holds, not a connection's (a setting's or a variable's), taken out (F1307).
+HELD_NOTICE = (
+    "I took a secret this workspace already holds out of your message before reading it (it shows as ‹credential "
+    "removed›). It is still saved where it was, so there's no need to paste it here."
+)
+
 #: What a conversation keeps, and the panel shows, in place of a message the door refused.
 NOT_KEPT = "‹message not kept: it held a card number or a password›"
 
@@ -57,12 +63,17 @@ class Checked:
     text: str
     refused: Refusal | None = None
     removed: int = 0
+    #: "held" when all that was taken out is a secret the workspace holds that is no connection's (F1307): its notice
+    #: says it is still saved where it was; otherwise "masked", the key's notice (connect it on its card).
+    reason: Literal["masked", "held"] = "masked"
 
     @property
     def notice(self) -> str | None:
         if self.refused:
             return REFUSALS[self.refused]
-        return MASKED_NOTICE if self.removed else None
+        if not self.removed:
+            return None
+        return HELD_NOTICE if self.reason == "held" else MASKED_NOTICE
 
     def event(self) -> dict | None:
         """The panel's event for this check, or None when there is nothing to say.
@@ -72,7 +83,7 @@ class Checked:
         secret back."""
         if not self.notice:
             return None
-        return notice(self.refused or "masked", NOT_KEPT if self.refused else self.text, final=bool(self.refused))
+        return notice(self.refused or self.reason, NOT_KEPT if self.refused else self.text, final=bool(self.refused))
 
 
 # ── cards ────────────────────────────────────────────────────────────────────
@@ -171,15 +182,33 @@ _LOOKALIKES = {**{ord(c): "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2015\u22
                **{ord(c): None for c in "\u200b\u200c\u200d\u2060\ufeff"}}
 
 
-def check(text: str) -> Checked:
-    """A new message to the builder: refused (card, password), or the text to run with keys masked."""
-    text = (text or "").translate(_LOOKALIKES)
+def _without_held(text: str, held: Any) -> tuple[str, int, set[str]]:
+    """`text` with each secret the workspace holds taken out by its exact value (F1307), how many, and their kinds.
+    `held` is `secret_scrub.held_in(text)`'s answer: (value, kind) pairs, the longest first."""
+    removed, kinds = 0, set()
+    for value, kind in held or ():
+        if isinstance(value, str) and value and value in text:
+            removed += text.count(value)
+            kinds.add(str(kind))
+            text = text.replace(value, CREDENTIAL_MARK)
+    return text, removed, kinds
+
+
+def check(text: str, held: Any = ()) -> Checked:
+    """A new message to the builder: refused (card, password), or the text to run with keys masked. `held`: the
+    secrets the workspace holds that occur in it (`secret_scrub.held_in`), taken out by exact value first (F1307),
+    before the lookalikes are folded, so a held value is matched as it was saved."""
+    text, from_held, kinds = _without_held(text or "", held)
+    text = text.translate(_LOOKALIKES)
     if has_card(text):
         return Checked(text="", refused="card")
     if has_password(text):
         return Checked(text="", refused="password")
     masked, removed = scrub_credentials(text)
-    return Checked(text=masked, removed=removed)
+    # The held notice only when what came out is the workspace's own secret alone: a connection's, or a key by its
+    # shape, gets the key's notice (connect it on its card).
+    reason = "held" if from_held and not removed and kinds <= {"workspace"} else "masked"
+    return Checked(text=masked, removed=removed + from_held, reason=reason)
 
 
 #: A question that asks the person for a secret. Its answer is read in that light: a lone secret-looking word in
@@ -202,10 +231,10 @@ def _secret_looking(value: str) -> bool:
     return has_alpha and has_other
 
 
-def notice(reason: Refusal | Literal["masked"], kept: str, *, final: bool) -> dict:
+def notice(reason: Refusal | Literal["masked", "held"], kept: str, *, final: bool) -> dict:
     """A `builder_notice` event: the fixed sentence for `reason`, and the message as kept (omitted when empty)."""
-    event = {"type": "builder_notice", "reason": reason,
-             "message": MASKED_NOTICE if reason == "masked" else REFUSALS[reason], "final": final}
+    said = {"masked": MASKED_NOTICE, "held": HELD_NOTICE}.get(reason) or REFUSALS[reason]
+    event = {"type": "builder_notice", "reason": reason, "message": said, "final": final}
     return {**event, "kept": kept} if kept else event
 
 
@@ -221,7 +250,8 @@ class Refused(ValueError):
 CONNECT_WAITS = frozenset({"step_wait_connect"})
 
 
-def check_answer(response: Any, question: str | None = None, *, step: str | None = None) -> tuple[Any, int]:
+def check_answer(response: Any, question: str | None = None, *, step: str | None = None,
+                 held: Any = ()) -> tuple[Any, int]:
     """An answer to a builder run's question with every string checked: `(answer with keys masked, how many)`.
 
     Raises `Refused` for a card number or a password anywhere in it, before anything is resumed or kept.
@@ -229,7 +259,8 @@ def check_answer(response: Any, question: str | None = None, *, step: str | None
     refused as one; in reply to one that asks for a key or token, it is masked as one. `step`: the step the run waits
     at; at a Connect card's (`CONNECT_WAITS`), whose key belongs on the card, a lone secret-looking word is masked as a
     key whatever the card's words say (F1280: a key of no known shape, pasted alone at the wait, reached the run, its
-    events and logs). The run's own state, never a guess from words.
+    events and logs). The run's own state, never a guess from words. `held`: the secrets the workspace holds that
+    occur in it (`secret_scrub.held_in`), taken out by exact value (F1307).
     """
     removed = 0
     asks_password = bool(question and _ASKS_PASSWORD.search(question))
@@ -238,7 +269,7 @@ def check_answer(response: Any, question: str | None = None, *, step: str | None
     def walk(value: Any) -> Any:
         nonlocal removed
         if isinstance(value, str):
-            checked = check(value)
+            checked = check(value, held)
             if checked.refused:
                 raise Refused(checked.refused)
             removed += checked.removed
@@ -270,18 +301,19 @@ def kept_answer(response: Any) -> str:
     return ""
 
 
-def mask_history(history: list[dict] | None) -> list[dict]:
-    """Earlier turns the client sends back: a refused one is dropped, keys are masked in the rest."""
+def mask_history(history: list[dict] | None, held: Any = ()) -> list[dict]:
+    """Earlier turns the client sends back: a refused one is dropped, keys (and the workspace's held secrets, F1307)
+    are masked in the rest."""
     out = []
     for turn in history or []:
         if not isinstance(turn, dict):
             continue
-        checked = check(str(turn.get("content") or ""))
+        checked = check(str(turn.get("content") or ""), held)
         if checked.refused:
             continue
         out.append({**turn, "content": checked.text})
     return out
 
 
-__all__ = ["CONNECT_WAITS", "CREDENTIAL_MARK", "Checked", "MASKED_NOTICE", "NOT_KEPT", "REFUSALS", "Refused", "check",
+__all__ = ["CONNECT_WAITS", "CREDENTIAL_MARK", "Checked", "HELD_NOTICE", "MASKED_NOTICE", "NOT_KEPT", "REFUSALS", "Refused", "check",
            "check_answer", "has_card", "has_password", "kept_answer", "mask_history", "notice"]

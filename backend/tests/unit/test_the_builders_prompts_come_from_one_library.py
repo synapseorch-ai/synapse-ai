@@ -141,7 +141,8 @@ from core.native_builder import prompt_lint, seed
 #: knowledge base its questions need (an exception, the numbering unchanged), 1024bb50….
 #: F1300: "# What you are given" names `signed_in_sites`, and # Structure's rule 1 says a site there is read by a browser
 #: agent with that kept session (an exception, the numbering unchanged), 0c0cb79d….
-BUNDLE_SHA256 = "ba13a0c01976b36f7289ae2f0fae566caef5fbfc5d9dd6c7ff7ddd8831984914"
+#: F1308: rule 12 under # Changing splits a range or a list so the rest reads as it did (TRI1), 7888cfe6….
+BUNDLE_SHA256 = "a7b5fc9e656127a39d50ae4fe66830191c8be601d4e750baf09a5288da215a7f"
 
 
 def _sha(definitions) -> str:

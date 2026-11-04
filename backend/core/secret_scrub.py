@@ -37,12 +37,17 @@ _CREDENTIALS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,}"),
     re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}"),
+    # Slack's app-level token (Socket Mode, F1316): xapp-, its version, the app's id, a number, then the secret.
+    re.compile(r"\bxapp-\d{1,2}-[A-Z0-9]{8,12}-\d{10,16}-[A-Za-z0-9]{32,80}\b"),
     re.compile(r"\bAIza[0-9A-Za-z_-]{35}"),
     # A chat channel's token (F1286): rule 14 connects a channel on a card, and one pasted into the chat matched no
-    # shape. Telegram's bot token: the bot's id, a colon, 35 characters. Discord's: the bot's id in base64 (it starts
-    # M, N or O), a 6-character timestamp and a 27–38 character HMAC, dot-joined, held to those lengths so three dotted
-    # runs of any other size stay. Meta's access token (WhatsApp, the Graph API): EAA and 80+ letters and digits.
-    re.compile(r"(?<![\w:])\d{8,10}:[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])"),
+    # shape. Telegram's bot token: the bot's id, a colon, then 30–46 base64url characters with both cases in them —
+    # 35 is the usual length, not the only one (F1314: prod-10's had 30), and a run id's lower-case slug stays.
+    # Discord's: the bot's id in base64 (it starts M, N or O), a 6-character timestamp and a 27–38 character HMAC,
+    # dot-joined, held to those lengths so three dotted runs of any other size stay. Meta's access token (WhatsApp,
+    # the Graph API): EAA and 80+ letters and digits.
+    re.compile(r"(?<![\w:])\d{8,10}:(?=[A-Za-z0-9_-]*[A-Z])(?=[A-Za-z0-9_-]*[a-z])[A-Za-z0-9_-]{30,46}"
+               r"(?![A-Za-z0-9_-])"),
     re.compile(r"(?<![\w.-])[MNO][A-Za-z0-9_-]{23,27}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,38}(?![\w.-])"),
     re.compile(r"\bEAA[A-Za-z0-9]{80,}\b"),
     # `Bearer <token>`: the token only. A reference — `Bearer ${process.env.X}`,
@@ -64,6 +69,15 @@ _CREDENTIALS: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"(?i)(\b(?:api[\s_-]?key|access[\s_-]?token|auth(?:entication)?[\s_-]?token|client[\s_-]?secret|"
         r"secret[\s_-]?key|credential)s?\s+)"
+        r"(?![^\s]*://)(?=[A-Za-z0-9._~+/=-]*\d)(?=[A-Za-z0-9._~+/=-]*[A-Za-z])"
+        r"([A-Za-z0-9][A-Za-z0-9._~+/=-]{10,}[A-Za-z0-9=])"
+    ),
+    # A value after "bearer token" or "authorization token", which can only mean a credential, with or without is/: and
+    # a quote or paren before it (F1307: prod-02's "using the bearer token …" and "with a bearer token (…)", pasted
+    # before anything held them). Never after a bare "the token": "the token 'gpt-4.1-mini'" names a model, and "the
+    # token limit is 4096" a number. 12+ characters mixing letters and digits, never a URL.
+    re.compile(
+        r"(?i)(\b(?:bearer|authori[sz]ation)\s+token\s*(?:\bis\b|[:=])?\s*[(\"'`]?)"
         r"(?![^\s]*://)(?=[A-Za-z0-9._~+/=-]*\d)(?=[A-Za-z0-9._~+/=-]*[A-Za-z])"
         r"([A-Za-z0-9][A-Za-z0-9._~+/=-]{10,}[A-Za-z0-9=])"
     ),
@@ -136,21 +150,136 @@ def held_secrets() -> dict[str, str]:
     return dict(_HELD.get())
 
 
-def scrub_secrets(text: str) -> str:
-    """`text` with each held secret's value replaced by its name."""
-    held = _HELD.get()
-    if not held or not isinstance(text, str):
+# ── Secrets the workspace holds, found in what a person types (F1307) ────────
+#
+# A token pasted bare has no shape the patterns know, but a workspace that saved it on a Connect card holds the very
+# value. The builder's door asks `held_in` for the held values in a message and masks each, before anything stores,
+# logs or shows the text. A host puts its own finder (`set_held_finder`): cloud's matches fingerprints, never holding
+# plaintext; this install's reads its own store (`core.held_secrets`).
+
+#: A held value shorter than this, or one of letters alone, is never matched: it would mask ordinary words.
+HELD_MIN = 8
+
+_FINDER: Any = None
+
+
+def secret_like(value: Any) -> bool:
+    """Whether a held value is matched at all: 8+ characters with a digit or a symbol."""
+    return (isinstance(value, str) and len(value) >= HELD_MIN
+            and any(c.isdigit() or not c.isalnum() for c in value))
+
+
+def set_held_finder(finder: Any) -> None:
+    """A host's finder: async (text) -> [(value, kind)], each a held value that occurs in `text`."""
+    global _FINDER
+    _FINDER = finder
+
+
+async def held_in(text: str) -> list[tuple[str, str]]:
+    """The held secrets in `text`, as (value, kind), the longest first; [] when there are none or they could not be
+    read. A finder that fails lets the message through with the patterns alone, and its error is logged by type only:
+    an exception's words can carry a value."""
+    if not isinstance(text, str) or len(text) < HELD_MIN:
+        return []
+    finder = _FINDER
+    if finder is None:
+        from core.held_secrets import find as finder
+    try:
+        found = await finder(text)
+    except Exception as exc:  # noqa: BLE001 — the door never fails on this; the shapes still run
+        import logging
+
+        logging.getLogger(__name__).warning("held secrets could not be read (%s): the shape rules only",
+                                            type(exc).__name__)
+        return []
+    out = [(v, str(k)) for v, k in found or [] if secret_like(v) and v in text]
+    return sorted(dict(out).items(), key=lambda vk: -len(vk[0]))
+
+
+# ── The workspace's held secrets, in what a run stores or shows (F1307's output side) ────────────────────────────
+#
+# The door masks a held value in what a person types; a value pasted before anything held it, or one the model writes
+# back (prod-02's plan text: "Authenticates with bearer token …"), is caught on the way out instead. At each step's start
+# the engine refreshes a matcher (`refresh_held`): the host's loader (`set_held_loader`; cloud's matches fingerprints)
+# or this install's own values. Every scrub below applies it, as it applies the held variables, so events, logs,
+# checkpoints and run errors show the mark. A loader that fails leaves the shape rules only, logging its error's type.
+
+_MATCHER: ContextVar[Any] = ContextVar("held_matcher", default=None)
+_LOADER: Any = None
+
+
+def set_held_loader(loader: Any) -> None:
+    """A host's loader: async () -> an object whose sync `find(text)` names the held values in `text`."""
+    global _LOADER
+    _LOADER = loader
+
+
+async def refresh_held() -> None:
+    """Load this step's held-secret matcher (the engine calls it at each step's start)."""
+    loader = _LOADER
+    if loader is None:
+        from core.held_secrets import matcher as loader
+    try:
+        found = await loader()
+    except Exception as exc:  # noqa: BLE001 — never a failed step; the shapes still run
+        import logging
+
+        logging.getLogger(__name__).warning("held secrets could not be loaded (%s): the shape rules only",
+                                            type(exc).__name__)
+        found = None
+    _MATCHER.set(found)
+
+
+def _without_held(text: str) -> str:
+    matcher = _MATCHER.get()
+    if matcher is None or not isinstance(text, str) or len(text) < HELD_MIN:
         return text
+    try:
+        words = matcher.find(text)
+    except Exception:  # noqa: BLE001 — a matcher that fails masks nothing, and says nothing of the text
+        return text
+    for word in sorted(set(words or ()), key=len, reverse=True):
+        if secret_like(word):
+            text = text.replace(word, CREDENTIAL_MARK)
+    return text
+
+
+def holding() -> bool:
+    """Whether this step has held secrets to mark."""
+    return _MATCHER.get() is not None
+
+
+def scrub_held(value: Any) -> Any:
+    """`value` with the workspace's held secrets in its strings marked (the step's matcher only); the same object
+    when there is none. A checkpoint's copy goes through it (`SharedState.checkpoint`)."""
+    if _MATCHER.get() is None:
+        return value
+    if isinstance(value, str):
+        return _without_held(value)
+    if isinstance(value, dict):
+        return {k: scrub_held(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [scrub_held(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(scrub_held(v) for v in value)
+    return value
+
+
+def scrub_secrets(text: str) -> str:
+    """`text` with each held secret's value replaced by its name, and each of the workspace's held secrets marked."""
+    if not isinstance(text, str):
+        return text
+    held = _HELD.get()
     for name, value in held:
         if value in text:
             text = text.replace(value, secret_mark(name))
-    return text
+    return _without_held(text)
 
 
 def scrub_secrets_in(value: Any) -> Any:
     """`value` — an event, a snapshot — with every string in it scrubbed. The same object when nothing is held."""
     held = _HELD.get()
-    if not held:
+    if not held and _MATCHER.get() is None:
         return value
     if isinstance(value, str):
         return scrub_secrets(value)
@@ -182,12 +311,14 @@ def for_storage(value: Any, held: dict[str, str] | None = None) -> Any:
     pairs = (tuple(sorted(((k, v) for k, v in held.items() if isinstance(v, str) and len(v) >= SECRET_MIN),
                           key=lambda kv: -len(kv[1])))
              if held is not None else _HELD.get())
+    # And the workspace's held secrets, by this step's matcher (F1307).
 
     def kept(item: Any, key: Any = None) -> Any:
         if isinstance(item, str):
             for name, secret in pairs:
                 if secret in item:
                     item = item.replace(secret, secret_mark(name))
+            item = _without_held(item)
             return without_cards(item) if _words_under(key) else item
         if isinstance(item, dict):
             return {k: kept(v, k) for k, v in item.items()}

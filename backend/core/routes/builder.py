@@ -104,21 +104,29 @@ class BuilderResumeRequest(BaseModel):
 NOT_KEPT = door.NOT_KEPT
 
 
-def _as_kept(message: str) -> str:
+def _as_kept(message: str, held=()) -> str:
     """The message as a run or a conversation may keep it (BWA1, D274): one with a
     card number or a password is not kept at all, and every other loses its keys
     and tokens. SW1 took credentials only out of pasted Agents SDK code; the door
-    (`core/native_builder/door.py`) does it for every message."""
-    checked = door.check(message)
+    (`core/native_builder/door.py`) does it for every message. `held`: the
+    workspace's secrets in it (`secret_scrub.held_in`, F1307)."""
+    checked = door.check(message, held)
     return NOT_KEPT if checked.refused else checked.text
 
 
-def _format_history(history: list[dict]) -> str:
+def _format_history(history: list[dict], held=()) -> str:
     if not history:
         return ""
     # The panel sends every earlier message back, the paste with the
     # credentials its own turn took out among them.
-    return "\n".join(f"{m.get('role', 'user')}: {_as_kept(str(m.get('content', '')))}" for m in history)
+    return "\n".join(f"{m.get('role', 'user')}: {_as_kept(str(m.get('content', '')), held)}" for m in history)
+
+
+async def _held_in_history(history: list[dict] | None):
+    """The workspace's secrets in the earlier turns a client sends back (F1307): a client may send them raw."""
+    from core.secret_scrub import held_in
+
+    return await held_in("\n".join(str(m.get("content", "")) for m in history or [] if isinstance(m, dict)))
 
 
 async def _newest(session_id: str) -> tuple[str, str | None, dict, list]:
@@ -344,7 +352,7 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
         # A person watches this run in Synapse AI's panel: at a step's turn limit it is asked (F1219).
         turn_limit.ATTENDED_KEY: True,
         "user_message": message,
-        "chat_history": _format_history(request.history),
+        "chat_history": _format_history(request.history, await _held_in_history(request.history)),
         "selected_agent_ids": list(request.selected_agent_ids or []),
         "can_create_agents": bool(request.can_create_agents),
         "person_timezone": _person_timezone(request.timezone),
@@ -836,7 +844,9 @@ async def builder_chat(request: BuilderChatRequest, http_request: Request):
     await reject_unseeable_images(request)
     # The door (BWA1): a card number or a password ends here, before a run, a
     # model or a log sees it; a key is masked and the rest still runs.
-    checked = door.check(request.message)
+    from core.secret_scrub import held_in
+
+    checked = door.check(request.message, await held_in(request.message or ""))
     if checked.refused:
         return _one(checked.event())
     request = request.model_copy(update={"message": checked.text})
@@ -889,7 +899,10 @@ async def builder_resume(request: BuilderResumeRequest, http_request: Request):
     # leaves the question open, so the panel shows why and the person answers again.
     question, step = await _pending_question(request.run_id)
     try:
-        response, removed = door.check_answer(request.response, question=question, step=step)
+        from core.secret_scrub import held_in
+
+        held = await held_in(json.dumps(request.response, default=str, ensure_ascii=False))
+        response, removed = door.check_answer(request.response, question=question, step=step, held=held)
     except door.Refused as exc:
         return _one(door.notice(exc.reason, door.NOT_KEPT, final=False))
     # A build that fails after its answer (making its tools, saving) ends as any turn does: said plainly, then
@@ -949,11 +962,14 @@ async def _save_chat_turn(request, answer: str) -> None:
     saved, so a reopened conversation showed it only while its event log was
     held. Saved before it is shown, in the order `run_agent_step` keeps.
     """
+    from core.secret_scrub import held_in
     from core.session import _save_conversation_turn
     try:
+        # The chat page's adapter saves its own request's words: the workspace's held secrets come out here too (F1307).
+        held = await held_in(request.message or "")
         await _save_conversation_turn(
             session_id=getattr(request, "session_id", None) or "default",
-            agent_id=getattr(request, "agent_id", None), user=_as_kept(request.message or ""),
+            agent_id=getattr(request, "agent_id", None), user=_as_kept(request.message or "", held),
             assistant=answer,
         )
     except Exception as exc:  # noqa: BLE001 — the answer is still shown
@@ -979,7 +995,9 @@ async def run_builder_stream_compat(request, server_module):
     )
     # The door (BWA1): a refused message is answered here and kept nowhere,
     # not even as this conversation's turn.
-    checked = door.check(request.message or "")
+    from core.secret_scrub import held_in
+
+    checked = door.check(request.message or "", await held_in(request.message or ""))
     if checked.refused:
         yield _sse({"type": "response", "content": checked.notice, "intent": "chat", "data": None,
                     "tool_name": None})
