@@ -133,7 +133,8 @@ class TestTheAnswerIsGivenTheFailure:
 
     async def test_a_message_not_about_a_failure_is_given_none(self, client):
         await _failed_at(FETCH, NOT_FOUND)
-        assert "Fetch prices" not in await self._pack("what does my Daily price check do?")
+        pack = await self._pack("what does my Daily price check do?")  # its steps are said, as for any workflow named
+        assert "Say the failing step and its error first" not in pack and "HTTP 404" not in pack, pack
 
 
 class TestTheFixReadsTheSameFailure:
