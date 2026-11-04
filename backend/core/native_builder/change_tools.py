@@ -786,14 +786,18 @@ def carry_request(previous: dict | None, history: list[dict] | None = None, run_
       answer, and a question code asked itself is known by its entry (F1210's dates, by `means`).
 
     * `WAITING_PLAN` (F1241): the plan, when that run stopped waiting at its review (or parked one it did not take
-      up), so a message that continues the request changes it rather than starting over.
+      up), so a message that continues the request changes it rather than starting over; and when its save stopped
+      after the yes having made only its tools (F1375): the request is not done, and "Ask again" has a plan to show.
 
     The route stages this as `CARRY_KEY`; it is the run's only when classify says the new message continues the
     request (`adopt_carry`). `run_id` is that run's."""
     from core.native_builder.build_plan import CHECKED_KEY, checked_in
     from core.orchestration.run_writes import WRITES_KEY
 
-    if not isinstance(previous, dict) or not previous or previous.get(WRITES_KEY):
+    if not isinstance(previous, dict) or not previous:
+        return {}
+    stopped = _stopped_with_only_its_tools(previous)
+    if previous.get(WRITES_KEY) and not stopped:
         return {}
     shown = sum(1 for h in history or [] if isinstance(h, dict) and h.get("step_id") in _ASKING_STEPS)
     out: dict[str, Any] = {ASKED_KEY: [{**a, "carried": True} for a in _with_answers(previous)],
@@ -801,11 +805,22 @@ def carry_request(previous: dict | None, history: list[dict] | None = None, run_
     if asked := (checked_in(previous) or {}).get("asked"):
         out[CHECKED_KEY] = {"asked": [dict(a) for a in asked if isinstance(a, dict)]}
     last = next((h for h in reversed(history or []) if isinstance(h, dict) and h.get("step_id")), {})
-    if last.get("step_id") == PLAN_REVIEW_STEP and (checked_in(previous) or {}).get("outcome") == "review":
+    if stopped or (last.get("step_id") == PLAN_REVIEW_STEP and (checked_in(previous) or {}).get("outcome") == "review"):
         out[WAITING_PLAN] = {"run_id": run_id, "state": {k: previous[k] for k in _plan_keys() if k in previous}}
     elif isinstance(parked := previous.get(PARKED_PLAN_KEY), dict) and parked.get("state"):
         out[WAITING_PLAN] = parked
     return out
+
+
+def _stopped_with_only_its_tools(previous: dict) -> bool:
+    """Whether the run's save stopped after the yes having written nothing but the tools it made (F1375): the tools'
+    pass (`tools_made`) or the save (`build_saved`), each the step's output."""
+    from core.native_builder.build_plan import _obj
+    from core.orchestration.run_writes import WRITES_KEY
+
+    if not any((_obj(previous.get(k)) or {}).get("outcome") == "stopped" for k in ("tools_made", "build_saved")):
+        return False
+    return all(isinstance(w, dict) and w.get("kind") == "tool" for w in previous.get(WRITES_KEY) or [])
 
 
 async def ask_person(args: dict, server_module: Any, events: list[dict]) -> dict:
