@@ -131,6 +131,18 @@ def _inverse(applied: dict) -> tuple[dict | None, str | None]:
     if name == "create_tool":
         return {"op": "delete_tool", "target": _target(applied), "fields": {},
                 "says": "undo: the HTTP tool it made"}, None
+    if name == "update_tool":
+        # Its address, method and words as they were, and the inputs this change added taken out (F1312b): never one
+        # it had before, which the tool keeps.
+        from core import http_facts
+
+        back = {k: before[k] for k in ("url", "method", "description") if before.get(k) is not None}
+        if not back:
+            return None, f"{label}'s address was not kept, so it can't be put back from here."
+        added = http_facts.new_inputs(before.get("inputSchema"), str((applied.get("fields") or {}).get("url") or ""))[1]
+        return {"op": "update_tool", "target": _target(applied),
+                "fields": {**back, **({"drop_inputs": added} if added else {})},
+                "says": "undo: its address as it was"}, None
     if name == "delete_schedule":
         runs = {"kind": "workflow" if before.get("target_type") == "orchestration" else "agent",
                 "id": before.get("target_id")}

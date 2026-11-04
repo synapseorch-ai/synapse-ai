@@ -228,6 +228,9 @@ _WRITES = (
     # A new HTTP tool from its own facts (F1322; Naveen's pick, 11-04): `create` of a tool with its url is this op,
     # made by `create_http_tool` itself and held to that tool's own checks before the review.
     Op("create_tool", "create", "tool", "create_http_tool", HTTP_TOOL_FIELDS, ("description", "url"), verb="Make"),
+    # An HTTP tool's address, method or what it does, changed in place (F1312b): never its headers or its key.
+    Op("update_tool", "write", "tool", "update_http_tool", ("url", "method", "description", "from"), any_of=True,
+       verb="Change"),
     # The workspace's settings on Synapse AI's list (F1264; Naveen 10-30), each field a setting by its own name:
     # anything off the list is refused by name, with where it is done (`settings_allow`).
     Op("settings_set", "write", "settings", "set_settings", tuple(settings_allow.ALLOWED), any_of=True,
@@ -370,7 +373,7 @@ def _http_tool_field_issue(key: str, value: Any) -> str | None | bool:
 
 
 def _field_issue(op: Op, key: str, value: Any) -> str | None:
-    if op.name == "create_tool" and (said := _http_tool_field_issue(key, value)) is not False:
+    if op.name in ("create_tool", "update_tool") and (said := _http_tool_field_issue(key, value)) is not False:
         return said
     if op.target == "agent" and op.name.startswith("set_agent_") and \
             (said := _agent_field_issue(op, key, value)) is not False:
@@ -692,6 +695,15 @@ def expected(op: Op, fields: dict[str, Any], live: dict[str, Any] | None) -> dic
                 **{k: fields[k] for k in ("prompt", "description", "missed_run_policy") if k in fields}}
     if name == "retarget_schedule":
         return _starts(fields["runs"])
+    if name == "update_tool":
+        out = {}
+        if fields.get("url"):
+            out["url"] = str(fields["url"]).strip()
+        if fields.get("method"):
+            out["method"] = str(fields["method"]).strip().upper()
+        if fields.get("description") is not None:
+            out["description"] = str(fields["description"]).strip()
+        return out
     if name == "create_tool":
         args = http_tool_args("", fields)
         return {"tool_type": "http", "url": args["url"], "method": args["method"], "description": args["description"],
@@ -771,6 +783,10 @@ def call(op: Op, target_id: str, fields: dict[str, Any], live: dict[str, Any] | 
         return op.tool, {"name": name, **after}
     if op.name == "create_tool":
         return op.tool, http_tool_args(name, fields)
+    if op.name == "update_tool":
+        # An undo's `drop_inputs` (change_undo, never the planner's): the inputs this change added, taken out again.
+        return op.tool, {"name": target_id, **after,
+                         **({"drop_inputs": list(fields["drop_inputs"])} if fields.get("drop_inputs") else {})}
     if op.target == "schedule":
         return op.tool, {"schedule_id": target_id, **after}
     if op.name == "set_agent_skills":

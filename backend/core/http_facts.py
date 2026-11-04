@@ -234,3 +234,38 @@ def same_body(template: str, literal: str) -> str | None:
     except ValueError:
         return "its body is the curl's JSON with {{ }} only where a value varies"
     return None if _keys(got) == _keys(want) else "its body keeps the curl's keys, with {{ }} only where a value varies"
+
+
+def reads(text: str) -> list[str]:
+    """The arguments a URL, a header or a body reads (`{{ order_id }}`), as a call fills them; never a workspace
+    variable or the run's state."""
+    from core import http_tool, templating
+
+    found: list[str] = []
+    for reference in templating.references(text or ""):
+        if (name := http_tool._argument_of(reference)) and name not in found:
+            found.append(name)
+    return found
+
+
+def new_inputs(schema: dict | None, url: str) -> tuple[dict, list[str]]:
+    """A tool's input schema with each argument its new address reads that it lacks (F1312b): one in the path is
+    required, one only in the query may be left out, as a call drops an optional query value it isn't given. None is
+    ever taken away. The schema, and the names it gained."""
+    out = {"type": "object", **(schema if isinstance(schema, dict) else {})}
+    properties = dict(out.get("properties") or {})
+    required = list(out.get("required") or [])
+    got = urlsplit((url or "").strip())
+    in_path = set(reads(got.path)) | set(reads(got.netloc))
+    added: list[str] = []
+    for name in reads(url):
+        if name in properties:
+            continue
+        properties[name] = {"type": "string"}
+        added.append(name)
+        if name in in_path and name not in required:
+            required.append(name)
+    out["properties"] = properties
+    if required:
+        out["required"] = required
+    return out, added

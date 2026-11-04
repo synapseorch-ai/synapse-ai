@@ -184,6 +184,9 @@ def _samples():
         ("create_tool", {"description": "d", "url": "https://x.example/api/{{ id }}", "method": "POST",
                          "headers": {"Content-Type": "application/json"}, "body": {"id": "{{ id }}"},
                          "group": "X"}),
+        # An HTTP tool's address changed in place (F1312b), and an undo's taking out what it added.
+        ("update_tool", {"url": "https://x.example/api/{{ id }}", "method": "POST", "description": "d"}),
+        ("update_tool", {"url": "https://x.example/api", "drop_inputs": ["id"]}),
         # One that sends a key carries its lock (F1322): declared by the tool, so this pin holds it too.
         ("create_tool", {"description": "d", "url": "https://x.example/api", "key": {"header": "X-Api-Key",
                                                                                      "scheme": "Bearer"}}),

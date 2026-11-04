@@ -64,6 +64,7 @@ ACTS: dict[str, str] = {
     "set_orchestration_meta": "orchestration.updated",
     "deploy_orchestration": "orchestration.deployed",
     "create_http_tool": "tool.created",
+    "update_http_tool": "tool.updated",
     "create_python_tool": "tool.created",
     "test_python_tool": "tool.tested",
     "import_openapi": "tool.created",
@@ -81,6 +82,7 @@ OVERWRITES: frozenset[str] = frozenset({
     "update_orchestration",
     "remove_step",
     "create_http_tool",
+    "update_http_tool",
     "create_python_tool",
     "create_skill",
 })

@@ -70,7 +70,7 @@ CARDS: frozenset[str] = frozenset({"prepare_connection", "report_findings", "pre
 WRITES: frozenset[str] = frozenset({
     "deploy_orchestration", "create_agent", "create_agents", "update_agent", "create_orchestration",
     "update_orchestration", "create_orchestration_skeleton", "add_steps", "set_orchestration_meta", "update_step",
-    "remove_step", "add_single_step", "add_multiple_steps", "create_http_tool", "create_python_tool", "test_python_tool", "import_openapi",
+    "remove_step", "add_single_step", "add_multiple_steps", "create_http_tool", "update_http_tool", "create_python_tool", "test_python_tool", "import_openapi",
     "delete_custom_tool", "create_skill", "update_skill", "attach_skills", "finish_build", "create_schedule",
     "set_schedule_enabled", "update_schedule", "delete_schedule", "delete_agent", "delete_orchestration",
     "approve_change", "apply_change", "approve_plan", "save_build",

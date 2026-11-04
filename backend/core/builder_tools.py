@@ -155,6 +155,40 @@ async def http_tool_issues(args: dict) -> dict | None:
     return None
 
 
+async def http_tool_update_issues(before: dict | None, args: dict) -> dict | None:
+    """What `update_http_tool` refuses before it saves anything (F1312b), as it answers it, or None: no HTTP tool by
+    that name; its new address or method by create_http_tool's own check (never its headers, which keep its key); a
+    locked tool's address off its lock, in create_http_tool's words; a user part in the address, or a key in it."""
+    from urllib.parse import urlsplit
+
+    from core.secret_scrub import held_in, holds_credential
+
+    name = str(args.get("name") or "").strip()
+    if before is None:
+        return {"error": f"No custom tool is called `{name}`."}
+    if before.get("tool_type") != "http":
+        return {"error": f"`{name}` is a {before.get('tool_type') or 'custom'} tool, not an HTTP tool: its own editor "
+                         "changes it."}
+    url = str(args.get("url") or before.get("url") or "").strip()
+    method = str(args.get("method") or before.get("method") or "GET").strip().upper()
+    if method not in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+        return {"error": "method is GET, POST, PUT, PATCH or DELETE"}
+    if refused := await http_tool_issues({"name": "tool", "url": url, "method": method}):
+        return refused
+    from core.http_tool import under_lock
+
+    if (lock := str(before.get("base_lock") or "")) and not under_lock(url, lock):
+        return {"error": f"`{name}` was made for {lock}, and keeps to that API: a tool for another address is a new "
+                         "tool, under another name."}
+    got = urlsplit(url)
+    if got.username or got.password:
+        return {"error": "Its address holds a user and a password: a tool's key goes on its Connect card, never in "
+                         "its address."}
+    if holds_credential(url) or await held_in(url):
+        return {"error": "A key never goes in a tool's address here: its Connect card keeps it."}
+    return None
+
+
 async def _refuse_inward_url(url: str) -> dict | None:
     """Refuse a tool URL that points back inside our own network.
 
@@ -254,6 +288,8 @@ OPT_IN_BUILDER_TOOLS: set[str] = set(KNOWLEDGE_BUILDER_TOOLS)
 #: Python tools are code with the internet: offered to an agent that names them (the builder's maker), never through
 #: "all", as `create_http_tool` long was (F1198; F495's reason too: every "all" agent's prompt would grow).
 OPT_IN_BUILDER_TOOLS |= {"create_python_tool", "test_python_tool"}
+#: A tool's address changed in place (F1312b): a change's own write, through the registry; no "all" agent's.
+OPT_IN_BUILDER_TOOLS |= {"update_http_tool"}
 
 #: Why the builder's Python tool names no variable (F1198, Naveen 10-29).
 _PYTHON_VARIABLES_ARE_A_PERSONS = (
@@ -1427,6 +1463,29 @@ BUILDER_TOOL_SCHEMAS = [
                     **_TAG_PARAMS,
                 },
                 "required": ["name", "description", "url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_http_tool",
+            "description": (
+                "Change an HTTP tool's address, method or what it does, in place: its headers, its key, its lock and "
+                "the inputs it has stay as they are. A variable the new address reads ({{ order_id }}) is added to "
+                "its inputs; none is taken away."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "The HTTP tool's name"},
+                    "url": {"type": "string", "description": "Its new address, with {{ placeholders }} for what varies"},
+                    "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
+                    "description": {"type": "string", "description": "What it does, in new words"},
+                    "drop_inputs": {"type": "array", "items": {"type": "string"},
+                                    "description": "Inputs to take out that its address no longer reads (an undo's)"},
+                },
+                "required": ["name"],
             },
         },
     },
@@ -3447,6 +3506,34 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         await save_tool(_builder_tags(tool, before, claimed))
         _emit(events, "tool", "created", name, name, tool)
         return {"status": "created", "id": name, "name": name}
+
+    elif tool_name == "update_http_tool":
+        from core.http_facts import new_inputs, reads
+        from core.store.resources import load_tools, save_tool
+
+        name = str(args.get("name") or "").strip()
+        before = next((t for t in await load_tools() if t.get("name") == name), None)
+        if refused := await http_tool_update_issues(before, args):
+            return refused
+        # Everything it was but what this changes, its tags derived again as a replace derives them (TAG1).
+        tool = {k: v for k, v in before.items() if k not in ("annotations", "annotations_by")}
+        if args.get("url"):
+            tool["url"] = str(args["url"]).strip()
+        if args.get("method"):
+            tool["method"] = str(args["method"]).strip().upper()
+        if args.get("description") is not None:
+            tool["description"] = str(args["description"]).strip()
+        schema, added = new_inputs(before.get("inputSchema"), tool["url"])
+        # An undo's: only inputs its address no longer reads, never one it still needs.
+        drop = [n for n in args.get("drop_inputs") or [] if isinstance(n, str) and n not in reads(tool["url"])]
+        if drop:
+            schema["properties"] = {k: v for k, v in (schema.get("properties") or {}).items() if k not in drop}
+            if schema.get("required"):
+                schema["required"] = [r for r in schema["required"] if r not in drop]
+        tool["inputSchema"] = schema
+        await save_tool(_builder_tags(tool, before, None))
+        _emit(events, "tool", "updated", name, name, tool)
+        return {"status": "updated", "name": name, **({"added_inputs": added} if added else {})}
 
     elif tool_name == "create_python_tool":
         from core.store.resources import save_tool

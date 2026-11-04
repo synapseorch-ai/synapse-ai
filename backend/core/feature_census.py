@@ -103,8 +103,8 @@ CENSUS: tuple[Screen, ...] = (
        ("prepare_connection", "find_in_catalog", "search_mcp_registry", "list_tool_servers", "list_server_tools"),
        names=("app catalogue", "connectors", "mcp", "tool servers")),
     _s("custom_tools", "Tools", "/tools", "makes HTTP and Python tools, imports an API's OpenAPI spec, tests a tool",
-       ("create_http_tool", "create_python_tool", "import_openapi", "test_python_tool", "list_custom_tools",
-        "delete_custom_tool"),
+       ("create_http_tool", "update_http_tool", "create_python_tool", "import_openapi", "test_python_tool",
+        "list_custom_tools", "delete_custom_tool"),
        names=("http tool", "python tool", "openapi", "api spec"), plan_part=True),
     _s("messaging", "Channels", "/channels", "connects a Telegram, Discord, Slack, Teams or WhatsApp channel on a "
        "Connect card (its token typed there), turns one on or off, removes it, sends one test message, says which "

@@ -134,7 +134,8 @@ SUBMIT = {"type": "function", "function": {
         "PATCH | DELETE, headers, body, input_schema, group, key: {header, scheme} where its key goes, never the key; "
         "or from: {curl: n}, a curl in the context's curls, or from: {spec, operation}, an operation of a spec you "
         "read with read_api_spec, and code fills its fields, your url and body marking only what varies with "
-        "{{ }}}, before the ops that give it to an agent. Deletes and the other acts take none. For \"undo that\", send "
+        "{{ }}}, before the ops that give it to an agent; update_tool {url, method, description} or {from: {curl: n}} "
+        "(an HTTP tool's address, method or what it does, in place: never its headers or its key). Deletes and the other acts take none. For \"undo that\", send "
         "undo_of with no ops."
     ),
     "parameters": {"type": "object", "properties": {
@@ -266,9 +267,10 @@ async def submit_change(args: dict, server_module: Any, events: list[dict]) -> d
             found.append(f"op {n} is not an object")
             continue
         fields = op.get("fields") if isinstance(op.get("fields"), dict) else {}
-        if op.get("op") == "create_tool" and isinstance(fields.get("from"), dict):
+        if op.get("op") in ("create_tool", "update_tool") and isinstance(fields.get("from"), dict):
             # What the person pasted or the conversation read, filled in by code (F1312a): never retyped.
-            fields, why = await _from_source(fields, run.shared_state if run is not None else {})
+            fields, why = await _from_source(fields, run.shared_state if run is not None else {},
+                                             update=op.get("op") == "update_tool")
             if why:
                 found.append(f"op {n}: {why}")
                 continue
@@ -288,7 +290,7 @@ async def submit_change(args: dict, server_module: Any, events: list[dict]) -> d
 _KINDS_KEY = "_change_kinds"
 
 
-async def _from_source(fields: dict, state: dict) -> tuple[dict, str | None]:
+async def _from_source(fields: dict, state: dict, *, update: bool = False) -> tuple[dict, str | None]:
     """A new HTTP tool's fields from where its `from` says (F1312a): the n-th curl the person pasted this turn
     (`build_plan.curls`), or an operation of a spec this conversation read (`own_api.SPECS_KEY`). The source's method,
     URL, headers, body, inputs and where its key goes are the tool's; the planner's own url and body may only mark
@@ -312,6 +314,8 @@ async def _from_source(fields: dict, state: dict) -> tuple[dict, str | None]:
         if fields.get("body") and facts.get("body") and (why := http_facts.same_body(fields["body"], facts["body"])):
             return fields, f"curl {n}: {why}"
         out = {**fields, "url": fields.get("url") or facts["url"], "method": facts["method"]}
+        if update:
+            return out, None  # a change to a tool: its address and method; its headers and key stay (F1312b)
         for name in ("headers", "key"):
             if facts.get(name):
                 out[name] = facts[name]
@@ -336,6 +340,8 @@ async def _from_source(fields: dict, state: dict) -> tuple[dict, str | None]:
         return fields, f"{spec['name']}'s spec has no operation {_quoted(operation)}: its operations are {names}"
     out = {**fields, "url": tool["url"], "method": tool.get("method") or "GET",
            "description": fields.get("description") or tool.get("description") or ""}
+    if update:
+        return out, None
     if isinstance(tool.get("inputSchema"), dict):
         out["input_schema"] = tool["inputSchema"]
     if tool.get("body"):
@@ -1236,7 +1242,8 @@ def _quoted(name: str) -> str:
     return f'"{name}"'
 
 
-def _words(op: C.Op, target: dict, fields: dict, says: str, want: dict | None = None) -> str:
+def _words(op: C.Op, target: dict, fields: dict, says: str, want: dict | None = None,
+           live: dict | None = None) -> str:
     """One line of the review, in code's words: what this op does and every value its call sets (MCP2's review: the
     person approves what is done). Built from `want`, what the call leaves the target reading, the object the call
     itself is built from; a new schedule says what it starts by name. `says` is code's own note (an undo's), never
@@ -1247,6 +1254,8 @@ def _words(op: C.Op, target: dict, fields: dict, says: str, want: dict | None = 
         detail = f"to {_quoted(fields['name'])}"
     elif op.name == "create_tool":
         detail = _new_tool_detail(target["name"], fields)
+    elif op.name == "update_tool":
+        detail = _tool_change_detail(fields, want or {}, live)
     elif op.internal:
         detail = "as it was before it was deleted"  # an undo's re-create, from the card's before-image
     elif op.kind == "delete":
@@ -1428,6 +1437,15 @@ async def _tool_names(fields: dict, made: set[str], server_module: Any) -> str |
                     for n, near in gone) or None
 
 
+async def _tool_change_refusal(name: str, fields: dict, live: dict | None) -> str | None:
+    """Why this HTTP tool can't be changed as asked, before the review (F1312b): `update_http_tool`'s own refusal, in
+    its own words (`http_tool_update_issues`, the check the tool itself runs)."""
+    from core.builder_tools import http_tool_update_issues
+
+    refused = await http_tool_update_issues(live, {"name": name, **C.expected(C.OPS["update_tool"], fields, live)})
+    return f"I can't change the tool {_quoted(name)}: {refused['error']}" if refused else None
+
+
 async def _new_tool_refusal(name: str, fields: dict) -> str | None:
     """Why this new HTTP tool can't be made as asked, before the review (F1322): code's own reading of it, then
     `create_http_tool`'s own refusal in its own words (`http_tool_issues`, the check the tool itself runs)."""
@@ -1466,6 +1484,24 @@ def _new_tool_detail(name: str, fields: dict) -> str:
     return "; ".join(parts)
 
 
+def _tool_change_detail(fields: dict, want: dict, live: dict | None) -> str:
+    """An HTTP tool's change, after "Change the tool …" (F1312b): its address before and after (the call's own values,
+    so the person approves what is sent), the inputs a new address adds, and what it does in new words."""
+    from core import http_facts
+
+    live = live or {}
+    new = f"{want.get('method') or live.get('method') or 'GET'} {want.get('url') or live.get('url') or ''}"
+    old = f"{live.get('method') or 'GET'} {live.get('url')}" if live.get("url") else ""
+    parts = [f"an HTTP tool: {old} → {new}" if old and old != new else f"an HTTP tool: {new}"]
+    if "curl" in (fields.get("from") if isinstance(fields.get("from"), dict) else {}):
+        parts.append("from the curl you pasted; its key stays on its card, and its headers as they are")
+    if added := http_facts.new_inputs(live.get("inputSchema"), want.get("url") or live.get("url") or "")[1]:
+        parts.append(f"now asks for {', '.join(added)}")
+    if "description" in want:
+        parts.append(f"does: {want['description']}")
+    return "; ".join(parts)
+
+
 def _keep(op: C.Op, record: dict | None, want: dict | None) -> dict | None:
     """The before-image an undo needs, never a secret's value: the fields the op touches, or for a delete the
     record with its credentials, memory and bookkeeping left out (F797)."""
@@ -1478,6 +1514,9 @@ def _keep(op: C.Op, record: dict | None, want: dict | None) -> dict | None:
         if op.target == "schedule" and any(k in C._SCHEDULE_TIME for k in want):
             # The clock its time is on, though a time change does not set it: the card says the new time there (F1010).
             kept.setdefault("timezone", record.get("timezone"))
+        if op.name == "update_tool":
+            # The inputs it had, so its undo takes out only the ones this change added (F1312b).
+            kept["inputSchema"] = record.get("inputSchema")
     else:
         kept = {k: v for k, v in record.items()
                 if k not in ("memory", "created_at", "updated_at", "last_run_at", "next_run_at", "headers")}
@@ -1792,6 +1831,9 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
         if op.name == "create_tool" and (said := await _new_tool_refusal(target["name"], fields)):
             item.update(status="refused", say=said)
             continue
+        if op.name == "update_tool" and (said := await _tool_change_refusal(target["name"], fields, live)):
+            item.update(status="refused", say=said)
+            continue
         if op.name == "set_agent_tools" and (said := await _tool_names(fields, made, server_module)):
             item.update(status="refused", say=said)
             continue
@@ -1818,7 +1860,7 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             item["rows"] = _settings_rows(live, want)
             line = _settings_words(item["rows"], item["says"] if draft.get("undo_of") else "")
         else:
-            line = _words(op, target, fields, item["says"] if draft.get("undo_of") else "", want)
+            line = _words(op, target, fields, item["says"] if draft.get("undo_of") else "", want, live)
         if op.name == "knowledge_settings":
             line = await _settings_line(target, live, want)
         if op.name == "knowledge_edit_document":
@@ -1829,6 +1871,8 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             line = _memory_line(op, target, live, want)
         if op.name == "create_tool":
             made.add(target["name"])
+        if op.name == "update_tool" and (used := (await _used_by(C.OPS["delete_tool"], target["id"]))[0]):
+            line = f"{line}; used by {', '.join(used)}"
         item.update(status="ready", call={"tool": tool_name, "args": call_args}, expected=want,
                     before=_keep(op, live, want), line=f"{line} ({item['why']})" if item.get("why") else line)
         if op.kind != "create":
