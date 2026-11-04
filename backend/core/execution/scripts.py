@@ -58,9 +58,13 @@ _STATE_CLASS = '''class _SynapseState(dict):
         try:
             return self[name]
         except KeyError:
-            raise AttributeError(
-                f"no key {name!r} here; the keys are: {', '.join(sorted(map(str, self))) or 'none'}"
-            ) from None
+            keys = ', '.join(sorted(map(str, self))) or 'none'
+            if name in ("split", "rsplit", "strip", "lstrip", "rstrip", "lower", "upper", "casefold", "replace",
+                        "startswith", "endswith", "splitlines", "partition", "rpartition", "encode"):
+                raise AttributeError(
+                    f"this value from `state` is an object, not text, so it has no {name!r}; read one of its keys: {keys}"
+                ) from None
+            raise AttributeError(f"no key {name!r} here; the keys are: {keys}") from None
 '''
 
 
@@ -169,4 +173,9 @@ def transform_failure(stderr: str, code: str, offset: int, exit_code: int, *,
     if line is not None:
         source = lines[line - 1].strip()
         where = f" on line {line}" + (f" (`{_clip(source, 120)}`)" if source and "`" not in source else "")
-    return f"{label} failed{where}: {_clip(raised, 300) or f'exit {exit_code}'}"
+    said = f"{label} failed{where}: {_clip(raised, 300) or f'exit {exit_code}'}"
+    if "_SynapseState" in raised:
+        # A value read out of `state` is an object (a person's answer, parsed JSON) where the code wanted text (F1359:
+        # cap-05 ran re.search on a Human step's {approved, feedback}): say what to do, not the class's name alone.
+        said += " — a value read from `state` is an object here, not text: read one of its keys (`state.x.key`)"
+    return said
