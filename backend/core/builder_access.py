@@ -81,6 +81,8 @@ WRITES: frozenset[str] = frozenset({
     "set_settings",
     # BRW1's reviewed changes (F1258, F1276, F1259): a knowledge note's text, a base's settings, an agent's memory item.
     "edit_knowledge_document", "update_knowledge_base", "edit_agent_memory_item", "delete_agent_memory_item",
+    # A skill a reviewed change deletes (F1266's delete_skill): a write, for the builder role, as its create and update.
+    "delete_skill",
 })
 
 #: Usable anywhere (F1315): an ordinary agent or workflow may name these. The primitives a person may build with, which
