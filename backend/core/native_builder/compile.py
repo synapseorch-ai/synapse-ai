@@ -326,6 +326,33 @@ def text_reads(code: str, keys: set[str]) -> set[str]:
             out |= {key for side in (node.left, node.right) if (key := read(side))}
     return out
 
+def _template_reads(step: dict[str, Any], keys: set[str]) -> dict[str, str]:
+    """What a step's templates read of each of `keys` (F1370, cap-05): `{{ state.X.field }}` (or the older
+    `{state.X.field}`) anywhere in its set arguments or its prompts reads X as an object, `{{ state.X.0 }}` as a list,
+    as `state.X.field` reads it in code (F1358); a name only text has is no field. A Transform's code is
+    `_structure_reads`'s."""
+    from core.templating import _OLD_STATE_REF, STATE_REF
+
+    out: dict[str, str] = {}
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for v in value.values():
+                walk(v)
+        elif isinstance(value, list):
+            for v in value:
+                walk(v)
+        elif isinstance(value, str):
+            for ref in [*STATE_REF.findall(value), *_OLD_STATE_REF.findall(value)]:
+                head, _, rest = ref.partition(".")
+                field = rest.split(".", 1)[0]
+                if head in keys and field and field not in TEXT_METHODS:
+                    out.setdefault(head, "list" if field.lstrip("-").isdigit() else "dict")
+
+    walk({k: v for k, v in step.items() if k != "transform_code"})
+    return out
+
+
 def _typed_reads(orch: dict[str, Any], issues: list[str]) -> None:
     """Declare each model or Tool step's answer as the list or object a later step reads it as (F1287, brief 6;
     F1358, cap-04).
@@ -335,7 +362,8 @@ def _typed_reads(orch: dict[str, Any], issues: list[str]) -> None:
     declared `list` or `dict` out of text as `extract_json` does (whole text, a fenced block, matching braces), so a
     JSON list inside a sentence reaches an Ingest as records; it parses nothing undeclared, so a workflow saved
     without a declaration reads the text as before. Read as a structure by: a Loop over it, an Ingest of its records,
-    a Transform going through it or looking fields up in it, a condition reading one of its fields. The plan's own
+    a Transform going through it or looking fields up in it, a condition reading one of its fields, a template in a
+    step's arguments or prompts reading one (F1370, cap-05: `{{state.parse_request.order_id}}`). The plan's own
     declaration is kept; one as text is said, naming the step that reads it. What a Transform or Extract JSON step
     wrote is already data."""
     import re
@@ -362,6 +390,8 @@ def _typed_reads(orch: dict[str, Any], issues: list[str]) -> None:
         if s.get("type") == "transform" and isinstance(s.get("transform_code"), str):
             for key, kind in _structure_reads(s["transform_code"], set(writers)).items():
                 want(key, kind, sid)
+        for key, kind in _template_reads(s, set(writers)).items():
+            want(key, kind, sid)
         for expr in (s.get("if_condition"), s.get("switch_expression")):
             if isinstance(expr, str):
                 for key in re.findall(r"\bstate\.([A-Za-z_]\w*)(?:\.[A-Za-z_]\w*(?!\s*\()|\[\s*['\"])", expr):
