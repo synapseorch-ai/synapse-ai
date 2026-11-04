@@ -2979,6 +2979,9 @@ class HumanStepExecutor:
 
 #: What a transform that reached for the network is told (F968): 1.x gave it the internet.
 TRANSFORM_NO_NETWORK = "Transforms have no network since 2.0: fetch with a tool step and pass the result in."
+#: A Transform that finds no Docker to run in (F1353): what to do, never the daemon's socket or pipe.
+TRANSFORM_NO_DOCKER = ("Code steps run in Docker, and Docker isn't running here. Start Docker, or set "
+                       "SYNAPSE_TRANSFORM_RUNTIME=host to run them on this computer.")
 
 #: How a failed connection or lookup reads in a transform's stderr, on Linux, macOS and Windows.
 _NO_NETWORK_ERRORS = re.compile(
@@ -3069,7 +3072,8 @@ class TransformStepExecutor:
         """
         import os
 
-        from core.execution import DockerRunner, ExecRequest, HostRunner, Network, get_runner, wrap_transform
+        from core.execution import (DockerRunner, DockerUnavailable, ExecRequest, HostRunner, Network,
+                                    docker_not_running, get_runner, wrap_transform)
         from core.execution.scripts import transform_failure, transform_line_offset, vault_paths_named
 
         runtime = "host" if os.environ.get("SYNAPSE_TRANSFORM_RUNTIME", "").strip().lower() == "host" else "sandbox"
@@ -3084,16 +3088,21 @@ class TransformStepExecutor:
         from core.vault import _vault_root
 
         files = await _vault_files_for(vault_paths_named(code)[0])
-        result = await runner.run(ExecRequest(
-            code=wrap_transform(code, state, files),
-            network=network,
-            timeout_s=capped,
-            vault_path=_vault_root(),
-            max_stdout=1_000_000,
-        ))
+        try:
+            result = await runner.run(ExecRequest(
+                code=wrap_transform(code, state, files),
+                network=network,
+                timeout_s=capped,
+                vault_path=_vault_root(),
+                max_stdout=1_000_000,
+            ))
+        except DockerUnavailable as exc:
+            raise RuntimeError(TRANSFORM_NO_DOCKER) from exc  # no docker here at all (F1353)
 
         if result.timed_out:
             raise RuntimeError(f"Transform timed out after {capped}s")
+        if result.exit_code != 0 and isinstance(runner, DockerRunner) and docker_not_running(result.stderr):
+            raise RuntimeError(TRANSFORM_NO_DOCKER)  # its daemon isn't running: what to do, not its socket (F1353)
         if result.exit_code != 0:
             # Your line, its source and what it raised — not the wrapper's line,
             # the runner's temp path and the whole traceback (F407).

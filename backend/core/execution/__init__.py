@@ -16,7 +16,7 @@ A deployment chooses its runner with `SYNAPSE_CODE_RUNNER=package.module:factory
 (see `runner.py`); unset, it is `DockerRunner` — what the product has always
 done.
 """
-from .docker_runner import DOCKER_IMAGE, DockerRunner
+from .docker_runner import DOCKER_IMAGE, DockerRunner, DockerUnavailable, docker_not_running
 from .host_runner import HostRunner
 from .runner import RUNNER_ENV, CodeRunner, describe_runner, get_runner, register_runner
 from .scripts import declared_globals, wrap_args, wrap_transform
@@ -27,6 +27,8 @@ __all__ = [
     "RUNNER_ENV",
     "CodeRunner",
     "DockerRunner",
+    "DockerUnavailable",
+    "docker_not_running",
     "ExecRequest",
     "ExecResult",
     "ExecUnsupported",

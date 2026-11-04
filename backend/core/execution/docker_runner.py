@@ -16,11 +16,28 @@ Two things did change, and both are the bug this package exists for:
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 import tempfile
 from pathlib import Path
 
 from .types import ExecRequest, ExecResult, ExecUnsupported, Network
+
+
+class DockerUnavailable(ExecUnsupported):
+    """There is no `docker` here to run the sandbox with (F1353): an `ExecUnsupported`, as before, said apart."""
+
+
+#: Docker saying its daemon isn't there, in its current words, its older ones and Windows' (F1353): the CLI ran, the
+#: daemon didn't answer. Its own text names a socket or a pipe and no fix.
+_NOT_RUNNING = re.compile(r"failed to connect to the docker API|Cannot connect to the Docker daemon|"
+                          r"Is the docker daemon running|error during connect\b.*docker_engine|"
+                          r"pipe/docker_engine: The system cannot find", re.IGNORECASE)
+
+
+def docker_not_running(stderr: str | None) -> bool:
+    """Whether a `docker run` failed because Docker's daemon isn't running here (F1353)."""
+    return bool(_NOT_RUNNING.search(stderr or ""))
 
 #: The image `backend/tools/sandbox.Dockerfile` builds, and the API's
 #: `/api/tools/python/build` route builds on demand.
@@ -84,7 +101,7 @@ class DockerRunner:
 
     async def run(self, request: ExecRequest) -> ExecResult:
         if not shutil.which("docker"):
-            raise ExecUnsupported("Docker is not available. Cannot execute Python code.")
+            raise DockerUnavailable("Docker is not available. Cannot execute Python code.")
         if request.packages and request.network is Network.NONE:
             raise ExecUnsupported(
                 "Installing packages needs a network, and this request asked for none."
