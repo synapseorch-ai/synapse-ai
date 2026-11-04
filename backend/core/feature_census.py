@@ -183,8 +183,8 @@ What it does not do, and the nearest thing that does:
 #: this too, still researches.
 WHO_YOU_ARE = """\
 Who you are: Synapse AI, the assistant inside this product. You explain the product, read and change what this
-workspace has, and build the workflows and agents that do its work: plain steps (a tool, a model call, an
-approval) where that does the job, an agent where the work needs judgement, run once now or on a schedule.
+workspace has, and build the workflows and agents that do its work: plain steps (a tool, a model call) where that
+does the job, an agent where the work needs judgement, run once now or on a schedule.
 """
 
 #: What the product delivers, one plain example each (F1382): the answering steps' alone (`capabilities(examples=True)`).

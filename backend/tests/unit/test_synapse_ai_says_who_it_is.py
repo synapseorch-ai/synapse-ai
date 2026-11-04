@@ -98,6 +98,9 @@ class TestWhatItSays:
         first = " ".join(WHO_YOU_ARE.split())
         assert first.startswith("Who you are: Synapse AI") and "build" in first and "schedule" in first, first
         assert "plain steps" in first and "an agent where the work needs judgement" in first, first
+        # The planner reads it: an approval named as a step could become a Human step nobody asked for (F1368,
+        # fix-02; eb). A person in the loop is WHAT_IT_DELIVERS', which only the answer pack reads.
+        assert "approv" not in WHO_YOU_ARE.lower(), WHO_YOU_ARE
 
     def test_each_outcome_with_one_example(self):
         outcomes = _examples()
