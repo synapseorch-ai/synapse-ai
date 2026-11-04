@@ -411,11 +411,10 @@ def _gates_moved(reviewed: list[O.Gate], now: list[O.Gate], promised: dict[str, 
     return out
 
 
-def _holder(plan: O.Plan, tool: str) -> str:
-    """Who in the plan calls `tool`: the new agent that holds it, else its Tool step."""
-    steps = [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)]
-    return (next((a.name for a in plan.agents if tool in a.tools), None)
-            or next((s.name for s in steps if s.type == "tool" and s.tool == tool), None) or "the run")
+def _holder(plan: O.Plan, tool: str) -> str | None:
+    """The plan's new agent that holds `tool`, whose "Asks you first" the compile turns into a confirm; None when no
+    new agent holds it (a Tool step's own tool), where the card's ask is not one the run's policy keeps."""
+    return next((a.name for a in plan.agents if tool in a.tools), None)
 
 
 def _why_missing(gone: list[str], plan: O.Plan, state: dict) -> str:
@@ -652,7 +651,8 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
     # The asks the card listed for tools that were not here to decide at the yes (F1375): approved as listed, and
     # held to it once the tool is here.
     here = {t.name for t in now.tools if t.status == "present"}
-    promised = {n: _holder(plan, n) for n in plan.approvals.asks_first if (n in making or n in later) and n in here}
+    promised = {n: who for n in plan.approvals.asks_first
+                if (n in making or n in later) and n in here and (who := _holder(plan, n))}
     if moved := _gates_moved(plan.gates, now.gates, promised):
         # The card promised what the run asks for (F964; SAI2's point 3): a policy changed since is not what was
         # approved.
