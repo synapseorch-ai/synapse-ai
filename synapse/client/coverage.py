@@ -158,6 +158,7 @@ NOT_BY_THE_CLI: dict[str, str] = {
     "get_tools_detail": "`tools call get_tools_detail`",
     "list_custom_tools": "`tools call list_custom_tools`",
     "create_http_tool": "`tools call create_http_tool`",
+    "update_http_tool": "`tools call update_http_tool`",
     "import_openapi": "`tools call import_openapi`",
     "create_python_tool": "`tools call create_python_tool` (previewed with its code, then --yes)",
     "test_python_tool": "`tools call test_python_tool`",
