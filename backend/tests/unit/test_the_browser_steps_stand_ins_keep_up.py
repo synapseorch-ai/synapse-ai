@@ -5,6 +5,15 @@ F1356's Browser step began handing the run page the browser's events while its r
 the engine's own BrowserTools — but two tests' stand-ins did not, and 14 cases failed on an AttributeError that said
 nothing of a browser step. So the calls are read once, from the step's own source, and every stand-in is held to
 them: a call a Browser step makes next fails here, by name, not in fourteen places.
+
+And to what the real client does, not only to its names (F1363): F1356's stand-in queued a replay's actions as an
+agent's, and the real client queued none, so the run page's promise passed its test and failed on REL3's install. A
+stand-in's replay now says only what the real client's says, run against a component whose log grows.
+
+And the host's own `Session`, which three tests build in part (CI2 41840655764: F1363's `replay_running`, read by
+`first_frame`, was not on F1356's): each is held to what the host reads from a session where it says what the
+browser shows — `state`, `_push_state`, `popups`, `first_frame` and the screencast — taken from that source, so a
+field the host reads next fails here, by name.
 """
 from __future__ import annotations
 
@@ -38,3 +47,87 @@ def _stand_ins():
 def test_each_stand_in_has_every_call(name):
     missing = sorted(n for n in STEP_CALLS if not callable(getattr(_stand_ins()[name], n, None)))
     assert not missing, f"{name}'s stand-in for the run's browser lacks {missing}"
+
+
+async def _the_real_clients_replay(monkeypatch) -> set[tuple[str | None, str | None]]:
+    """What the real client queues for a run's replay, opening its browser first: `(type, actor)` of each event."""
+    import test_a_replays_steps_reach_the_run_page as real
+
+    from core.browser import client as browser_client
+    from core.browser import kept
+
+    monkeypatch.setattr(kept, "keep", lambda *a: None)
+    monkeypatch.setattr(kept, "keep_lines", lambda *a: None)
+    monkeypatch.setattr(browser_client, "REPLAY_POLL_S", 0.01)
+    host = real._Host()
+    tools = browser_client.BrowserTools(hosts=real._Hosts(host))
+    host.tools = tools
+    await tools.replay_for_step(real.KEY, real.DOC, [], {})
+    return {(e.get("type"), e.get("actor")) for e in tools.take_events(real.KEY)}
+
+
+def _made(name: str):
+    answer = {"done": 0, "outputs": {}}
+    return {"test_browser_step": lambda c: c(answer), "test_a_browser_turn_answered…": lambda c: c(answer),
+            "test_every_browser_use_in_a_run_shows_its_pane": lambda c: c()}[name](_stand_ins()[name])
+
+
+async def test_the_real_clients_replay_says_its_browser_and_its_own_lines():
+    """The baseline the stand-ins are held to: its browser opening, then each of the replay's lines (F1363)."""
+    import pytest as _pytest
+
+    with _pytest.MonkeyPatch.context() as mp:
+        said = await _the_real_clients_replay(mp)
+    assert said == {("browser_session", None), ("browser_action", "replay")}, said
+
+
+@pytest.mark.parametrize("name", sorted(_stand_ins()))
+async def test_each_stand_ins_replay_says_only_what_the_real_clients_does(name, monkeypatch):
+    import test_a_replays_steps_reach_the_run_page as real
+
+    allowed = await _the_real_clients_replay(monkeypatch)
+    stand_in = _made(name)
+    await stand_in.replay_for_step(real.KEY, real.DOC, [], {})
+    said = {(e.get("type"), e.get("actor")) for e in stand_in.take_events(real.KEY)}
+    assert said <= allowed, f"{name}'s stand-in says {sorted(said - allowed, key=str)}, which the real client never does"
+
+
+#: Where the host says what its browser shows: what each reads from the session is what a stand-in `Session` holds.
+SHOWN_BY = ("state", "_push_state", "popups", "first_frame", "_start_screencast")
+
+
+def _session_reads() -> frozenset[str]:
+    """The fields of a `Session` those read (loads of `self.<name>`, its own methods aside), from their source."""
+    import ast
+    import textwrap
+
+    from core.browser.host import Session
+
+    names = set()
+    for method in SHOWN_BY:
+        for node in ast.walk(ast.parse(textwrap.dedent(inspect.getsource(getattr(Session, method))))):
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self" \
+                    and isinstance(node.ctx, ast.Load) and not callable(getattr(Session, node.attr, None)):
+                names.add(node.attr)
+    return frozenset(names)
+
+
+def _session_stand_ins():
+    import test_a_replays_steps_reach_the_run_page as reach
+    import test_a_take_over_stops_the_replay as take
+    import test_every_browser_use_in_a_run_shows_its_pane as pane
+
+    return {"test_every_browser_use_in_a_run_shows_its_pane": lambda: pane._session()[0],
+            "test_a_replays_steps_reach_the_run_page": reach._session,
+            "test_a_take_over_stops_the_replay": take._session}
+
+
+def test_the_host_reads_what_its_browser_shows_from_the_session():
+    assert {"wheel", "replay_running", "banner", "page", "viewers"} <= _session_reads(), _session_reads()
+
+
+@pytest.mark.parametrize("name", sorted(_session_stand_ins()))
+def test_each_stand_in_session_holds_what_the_host_reads(name):
+    session = _session_stand_ins()[name]()
+    missing = sorted(n for n in _session_reads() if not hasattr(session, n))
+    assert not missing, f"{name}'s stand-in Session lacks {missing}, which host.py reads from a session"

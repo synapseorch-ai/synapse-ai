@@ -204,6 +204,7 @@ class Session:
         self.replay_id: str | None = None
         self.replay_answer: dict | None = None
         self.replay_at: int | None = None
+        self.replay_running = False  # a replay drives now: the pane says the recording, not the agent (F1363)
         self._pressing: dict | None = None  # a press the person's own words allowed, logged once it runs
         self.select: dict | None = None  # a dropdown the person clicked: the pane draws its options
         self.chooser = None         # a page's file picker, while the person drives
@@ -740,6 +741,17 @@ class Session:
             return {"refused": "A send is waiting for the person."}
         self.wheel, self.idle, self.banner, self.handover = "agent", False, None, None
         self.replay_blocked = None
+        self.replay_running = True
+        self._push_state()
+        try:
+            return await self._replay(steps, inputs, unattended=unattended, recording_id=recording_id, from_n=from_n)
+        finally:
+            self.replay_running = False
+            self._push_state()
+
+    async def _replay(self, steps: list[dict], inputs: dict, *, unattended: bool, recording_id: str,
+                      from_n: int) -> dict:
+        """`replay`'s own work, while the browser says a replay drives it (F1363)."""
         plan = self.replaying if (self.replaying and self.replaying["steps"] is steps) else None
         if plan is None:
             self.fixing = None
@@ -751,6 +763,8 @@ class Session:
         self.replay_sends = ({x for st in steps for x in (st.get("sends") or [])} if unattended else None)
         for step in [st for st in steps if int(st.get("n") or 0) >= from_n]:
             self.replay_at = int(step.get("n") or 0)
+            if self.wheel == "person":  # they took over during the step before: nothing more is done on their page
+                return self._replay_taken(step)
             stopped = self._replay_held(step) or await self._replay_step(step, unattended)
             if stopped is not None:
                 return stopped
@@ -835,6 +849,18 @@ class Session:
         if self.replaying is not None:
             self.replaying["turn_at"] = step.get("n")
         return {"handover": {**(self.handover or {}), "session_id": self.id}, "at": step.get("n"),
+                "step_id": step.get("id")}
+
+    def _replay_taken(self, step: dict) -> dict:
+        """The person took over (F1367): the step under way finished, as an action can't stop halfway, and the replay
+        stops before this one, as their turn. Handed back, it carries on from this step (`turn_at`: the one before)."""
+        n = int(step.get("n") or 1)
+        if self.replaying is not None:
+            self.replaying["turn_at"] = n - 1
+        line = step.get("line") or "its next step"
+        reason = (f"You took over, so the recording stopped before step {n}, \"{line}\". "
+                  "Hand the browser back when you're done, and it carries on from that step.")
+        return {"handover": {"kind": "took_over", "reason": reason, "session_id": self.id}, "at": n,
                 "step_id": step.get("id")}
 
     def _replay_turn(self, step: dict, kind: str, reason: str, **extra) -> dict:
@@ -1061,7 +1087,8 @@ class Session:
                     pass
 
     def state(self) -> dict:
-        return {"wheel": self.wheel, "url": self._page_url(), "banner": self.banner, **self.popups(),
+        return {"wheel": self.wheel, "replaying": self.replay_running, "url": self._page_url(), "banner": self.banner,
+                **self.popups(),
                 "recording": self.recorder.frame() if self.recorder is not None else None,
                 "held": ({"method": self.held["method"], "url": self.held["url"], "money": bool(self.held.get("money"))}
                          if self.held else None)}
@@ -1070,7 +1097,8 @@ class Session:
         """Viewers see the wheel and the banner change at once, on the last frame."""
         if self.last_frame and self.viewers:
             meta = {k: v for k, v in self.last_frame.items() if k not in ("dialog", "select", "file")}
-            meta = {**meta, "wheel": self.wheel, "banner": self.banner, "url": self._page_url(), **self.popups(),
+            meta = {**meta, "wheel": self.wheel, "replaying": self.replay_running, "banner": self.banner,
+                    "url": self._page_url(), **self.popups(),
                     "recording": self.recorder.frame() if self.recorder is not None else None}
             for q in list(self.viewers):
                 _offer(q, meta)
@@ -1221,7 +1249,7 @@ class Session:
         def on_frame(ev):
             meta = {"jpeg_b64": ev["data"], "w": ev.get("metadata", {}).get("deviceWidth"),
                     "h": ev.get("metadata", {}).get("deviceHeight"), "url": self.page.url if self.page else "",
-                    "wheel": self.wheel, "banner": self.banner, **self.popups()}
+                    "wheel": self.wheel, "replaying": self.replay_running, "banner": self.banner, **self.popups()}
             self.last_frame = meta
             for q in list(self.viewers):
                 _offer(q, meta)
@@ -1248,7 +1276,8 @@ class Session:
         except Exception:
             return None
         self.last_frame = {"jpeg_b64": base64.b64encode(shot).decode(), "w": _VIEWPORT["width"],
-                           "h": _VIEWPORT["height"], "url": self.page.url, "wheel": self.wheel, "banner": self.banner}
+                           "h": _VIEWPORT["height"], "url": self.page.url, "wheel": self.wheel,
+                           "replaying": self.replay_running, "banner": self.banner}
         return self.last_frame
 
 

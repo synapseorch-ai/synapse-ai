@@ -63,6 +63,8 @@ export type BrowserFrame = {
   h: number;
   url: string;
   wheel: Wheel;
+  /** A recording replays by code: the agent's wheel, and no agent (F1363). */
+  replaying?: boolean;
   banner?: BrowserBanner;
   dialog?: PageDialog;
   select?: PageSelect;

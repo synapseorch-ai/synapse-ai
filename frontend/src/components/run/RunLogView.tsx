@@ -527,7 +527,7 @@ function BrowserGroupRow({ entry }: { entry: BrowserGroupEntry }) {
       <summary className="cursor-pointer select-none">
         Browser <span className="text-text-faint">· {n} action{n === 1 ? "" : "s"}</span>
       </summary>
-      <ol aria-label="What the agent did in the browser" className="mt-1 space-y-1 pl-4">
+      <ol aria-label="What was done in the browser" className="mt-1 space-y-1 pl-4">
         {entry.actions.map((a) => (
           <li key={`${a.session_id}:${a.n}`}><BrowserActionLine action={a} dense /></li>
         ))}

@@ -8,7 +8,7 @@ import { Button, IconButton, Modal } from '@/components/ui';
 import { actionWords, type BrowserAction } from './model';
 
 /**
- * What the agent did in the browser, after the fact (DESIGN §2.4 "the record"; F1356 in place of the Filmstrip's small
+ * What was done in the browser, after the fact (DESIGN §2.4 "the record"; F1356 in place of the Filmstrip's small
  * cards): the screenshot kept after each of its actions, one at a time and large, at the browser's own 16:10, with its
  * line, back and next (and the arrow keys), where it is in the run ("3 of 12"), and Enlarge for the whole screen.
  * Nothing is recorded while the person drives, so their part is said, never pictured; a screenshot that is gone
@@ -40,7 +40,7 @@ export function ShotViewer({ actions, shotUrl }: {
     />
   ) : (
     <p className="px-3 text-center text-sm text-text-faint">
-      {action.actor === 'agent' ? 'No screenshot for this step' : 'Nothing is recorded while you drive'}
+      {action.actor === 'person' ? 'Nothing is recorded while you drive' : 'No screenshot for this step'}
     </p>
   );
   const controls = (
@@ -54,7 +54,7 @@ export function ShotViewer({ actions, shotUrl }: {
 
   return (
     <figure
-      aria-label="What the agent did in the browser"
+      aria-label="What was done in the browser"
       tabIndex={0}
       onKeyDown={(e) => {
         if (e.key === 'ArrowLeft') { e.preventDefault(); go(-1); }

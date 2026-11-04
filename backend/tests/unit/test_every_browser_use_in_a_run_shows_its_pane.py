@@ -26,8 +26,8 @@ from core.browser import client as browser_client
 SESSION = {"type": "browser_session", "session_id": "bs1", "owner": "run:run_f1356"}
 
 
-def _action(n: int) -> dict:
-    return {"type": "browser_action", "session_id": "bs1", "n": n, "actor": "agent", "action": "click",
+def _action(n: int, actor: str = "agent") -> dict:
+    return {"type": "browser_action", "session_id": "bs1", "n": n, "actor": actor, "action": "click",
             "target": f"Order {n}", "url": "https://portal.example/orders", "shot_ref": str(n)}
 
 
@@ -59,7 +59,7 @@ class _Tools:
             self._queue(key, SESSION)
             for n in (1, 2, 3):
                 await asyncio.sleep(0.6)
-                self._queue(key, _action(n))
+                self._queue(key, _action(n, "replay"))  # a replay's line is the replay's, as the client says (F1363)
             await asyncio.sleep(0.6)
             self.finished = True
             return {"outputs": {"orders": 3}}
@@ -217,6 +217,8 @@ def _session():
     s = object.__new__(Session)
     s.page, s._cdp, s.viewers, s.log, s.shots, s.id = _Page(), None, [], [], {}, "bs1"
     s.wheel, s.banner = "agent", None
+    s.dialog, s.select, s.chooser, s.held, s.recorder, s.last_frame = None, None, None, None, None, None
+    s.replay_running = False  # as Session.__init__ sets it (F1363)
     cdp = _CDP()
     s.ctx = types.SimpleNamespace(new_cdp_session=lambda page: asyncio.sleep(0, result=cdp), pages=[s.page])
     return s, cdp

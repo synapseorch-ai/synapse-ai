@@ -219,10 +219,11 @@ class MemorySessionStore:
 REPLAY_S, REPLAY_POLL_S = 600, 1.0
 
 
-async def _replay_polled(host, sid: str, path: str, body: dict) -> tuple[int, dict]:
+async def _replay_polled(host, sid: str, path: str, body: dict, on_look=None) -> tuple[int, dict]:
     """A replay started (`wait: false`) and then polled until it ends (BRW3: a long request may not survive the
     MicroVM endpoint, an idle cutoff or a restart). Its id is ours, sent with the start, which is sent once: if the
-    answer is lost, that id is polled (404 a few times means it never arrived); a 409 is another replay running."""
+    answer is lost, that id is polled (404 a few times means it never arrived); a 409 is another replay running.
+    `on_look` runs after each look at it, the last after its end (F1363: its lines, as it goes)."""
     replay_id = f"rp_{secrets.token_hex(8)}"
     try:
         status, started = await host.call("POST", path, json={**body, "wait": False, "replay_id": replay_id},
@@ -241,6 +242,8 @@ async def _replay_polled(host, sid: str, path: str, body: dict) -> tuple[int, di
                                           params={"session_id": sid, "replay_id": replay_id})
         except Exception:
             status, now = 599, {}
+        if on_look is not None:
+            await on_look()
         if status == 200 and not now.get("running"):
             return 200, now
         if status == 404:
@@ -479,14 +482,54 @@ class BrowserTools:
         """A Browser step's recording, replayed in the run's browser (opened with `settings`): never watched, so
         only the steps allowed to send on their own send (Naveen 2026-10-29). Its answer, with `session_id`."""
         host, sid = await self._session_for(key)
+        seen = await self._log_end(host, sid)
+
+        async def look() -> None:
+            nonlocal seen
+            if seen is not None:
+                seen = await self._carry_lines(host, key, sid, seen)
+
         if carry_on:
-            status, body = await _replay_polled(host, sid, "/replay/continue", {"session_id": sid})
+            status, body = await _replay_polled(host, sid, "/replay/continue", {"session_id": sid}, look)
         else:
             status, body = await _replay_polled(host, sid, "/replay", {
-                "session_id": sid, "steps": steps, "inputs": inputs, "recording_id": doc["id"], "unattended": True})
+                "session_id": sid, "steps": steps, "inputs": inputs, "recording_id": doc["id"], "unattended": True},
+                look)
         if status >= 400:
             body = {"refused": body.get("error") or "The recording could not run."}
         return {**body, "session_id": sid}
+
+    @staticmethod
+    async def _log_end(host, sid: str) -> int | None:
+        """The last line the browser's log holds before a replay: what came before it is not the replay's (an agent's
+        line went with its own call). None when the log can't be read: that replay's lines are then left to its end."""
+        try:
+            status, body = await host.call("GET", "/log", params={"session_id": sid}, timeout=30)
+        except Exception:
+            return None
+        if status != 200:
+            return None
+        return max((int(e.get("n") or 0) for e in body.get("entries") or [] if isinstance(e, dict)), default=0)
+
+    async def _carry_lines(self, host, key: str, sid: str, after: int) -> int:
+        """The browser's log lines after `after`, done with as an agent's call does with its own (F1363): a replay's
+        line is a `browser_action` for the owner, its screenshot kept; every line is kept with the run or chat, the
+        person's as text (nothing is pictured while they drive). The last line's `n`. Best effort, never in the
+        replay's way; a cancel goes on."""
+        try:
+            status, body = await host.call("GET", "/log", params={"session_id": sid, "after": str(after)}, timeout=30)
+        except Exception:
+            return after
+        lines = [e for e in (body.get("entries") or [] if status == 200 else [])
+                 if isinstance(e, dict) and int(e.get("n") or 0) > after]
+        if not lines:
+            return after
+        for entry in lines:
+            if entry.get("actor") == "replay":
+                self._events.setdefault(key, []).append({"type": "browser_action", "session_id": sid, **entry})
+                await self._keep_shot(host, key, sid, entry)
+        await self.keep_lines(key, lines)
+        return max(int(e.get("n") or 0) for e in lines)
 
     async def latest_replay(self, key: str) -> dict | None:
         """The run's browser's last replay, as it ended (after an agent carried it on in its own calls)."""
