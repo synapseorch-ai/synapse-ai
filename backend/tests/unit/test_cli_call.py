@@ -14,6 +14,7 @@ import pytest
 
 from core.llm_providers import LLMError, call_cli_provider
 from core.providers.cli_invocation import HOST_NOTE
+from tests._fakes.cli_process import fake_cli_process
 
 
 class _Proc:
@@ -49,7 +50,7 @@ def cli(monkeypatch, tmp_path):
         return proc(call) if callable(proc) else proc
 
     monkeypatch.setattr("shutil.which", lambda cmd: f"/usr/bin/{cmd}")
-    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+    fake_cli_process(monkeypatch, fake_exec)  # the CLI runs off the loop (F1320)
     monkeypatch.setenv("SYNAPSE_CLI_WORKDIR_ROOT", str(tmp_path))
 
     async def no_catalog(refresh=False):

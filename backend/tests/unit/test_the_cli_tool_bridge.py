@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from core.providers.cli_invocation import BRIDGED_CLIS, build_cli_invocation, new_workdir
+from tests._fakes.cli_process import fake_cli_process
 
 SERVER = Path(__file__).resolve().parents[2] / "core" / "providers" / "cli_bridge_server.py"
 
@@ -146,7 +147,7 @@ def codex(monkeypatch, tmp_path):
         return seen["proc"](call)
 
     monkeypatch.setattr("shutil.which", lambda cmd: f"/usr/bin/{cmd}")
-    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+    fake_cli_process(monkeypatch, fake_exec)  # the CLI runs off the loop (F1320)
     monkeypatch.setenv("SYNAPSE_CLI_WORKDIR_ROOT", str(tmp_path))
 
     async def no_catalog(refresh=False):
