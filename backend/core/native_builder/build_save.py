@@ -28,9 +28,9 @@ from typing import Any
 from core import http_tool
 from core.builder_registry import register_builder_tool
 from core.log import get_logger
-from core.native_builder import objects as O, one_writer
+from core.native_builder import addresses, objects as O, one_writer
 from core.native_builder.build_plan import (FINDINGS_KEY, _obj, _orch_id, _state, agent_fingerprint, checked_in,
-                                            dry_issues, placeholder_mint, reviewed_of, workspace)
+                                            dry_issues, persons_texts, placeholder_mint, reviewed_of, workspace)
 from core.native_builder.change_tools import _caller, _run
 from core.product_tools.approved import PLACEHOLDER as MADE  # approved's own, as build_plan's is (F1293)
 from core.product_tools.errors import AlreadySpent, ToolRefusal
@@ -58,6 +58,11 @@ def _prompts(checked: dict) -> dict[str, str]:
 
 
 # ── the prompt writer's finish ────────────────────────────────────────────────────────────────────────────────────
+
+#: What a new browser agent's instructions say when the prompt writer left the person's address out twice (F1341).
+ADDRESS_LINE = "The address to open is {url}, as the person gave it."
+#: Each agent and address the prompt writer was sent back for once.
+_ADDRESS_SAID_KEY = "_prompts_address_said"
 
 SUBMIT_PROMPTS = {"type": "function", "function": {
     "name": "submit_prompts",
@@ -88,6 +93,22 @@ async def submit_prompts(args: dict, server_module: Any, events: list[dict]) -> 
         return {"error": "Instructions never hold a key, a token or a password: the agent's tools carry those."}
     if any(MADE in text for text in given.values()):
         return {"error": f"Instructions never hold the text {MADE}: it is how the save names an id it has yet to make."}
+    # The person's address as they gave it (F1341, cap-01): a new browser agent's instructions hold it for each of its
+    # sites, never its kept session's site in its place. Sent back once; then code adds the line, and the card shows it.
+    state = _state()
+    urls = addresses.given_urls(persons_texts(state))
+    need = {a["name"]: found for a in agents if urls and a.get("type") == "browser"
+            if (found := addresses.missing(given[a["name"]], list((a.get("browser") or {}).get("sites") or []), urls))}
+    said = list(state.get(_ADDRESS_SAID_KEY) or [])
+    fresh = {n: u for n, u in need.items() if any(f"{n} {x}" not in said for x in u)}
+    if fresh:
+        state[_ADDRESS_SAID_KEY] = [*said, *(f"{n} {x}" for n, u in fresh.items() for x in u)]
+        return {"error": "Write each address as the person gave it: "
+                         + "; ".join(f'"{n}" opens {", ".join(u)}' for n, u in fresh.items())
+                         + ". browser.sites keeps a host and browser.sessions a kept sign-in, and neither is the "
+                           "address to open."}
+    for name, found in need.items():
+        given[name] = given[name].rstrip() + "\n\n" + " ".join(ADDRESS_LINE.format(url=u) for u in found)
     # What each was written for, so a plan revised since is written for again (`build_plan.prompts_for`).
     written_for = {a["name"]: (checked.get("for") or {}).get(a["name"]) or agent_fingerprint(a) for a in agents}
     return {"finish": "submit_prompts", "prompts": given, "for": written_for}

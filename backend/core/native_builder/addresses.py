@@ -102,9 +102,9 @@ def _walk(value: Any, where: str, *, inputs: bool = False) -> list[Address]:
     return []
 
 
-def in_plan(draft: dict) -> list[Address]:
+def in_plan(draft: dict, *, every: bool = False) -> list[Address]:
     """Each address the planner wrote, once, first where it is used: its steps, its edits, its agents, its schedule,
-    its inner workflows, then the rest of the plan."""
+    its inner workflows, then the rest of the plan; with `every`, each time it is written (F1341 reads them all)."""
     draft = {k: v for k, v in (draft or {}).items() if k not in _UNREAD}
     found: list[Address] = []
     for s in draft.pop("steps", None) or []:
@@ -122,6 +122,8 @@ def in_plan(draft: dict) -> list[Address]:
         if isinstance(w, dict):
             found += _walk(w, f'The workflow "{w.get("title") or w.get("name") or "inner"}"')
     found += _walk(draft, "The plan")
+    if every:
+        return found
     seen: set[str] = set()
     return [a for a in found if not (a.key in seen or seen.add(a.key))]
 
@@ -149,3 +151,82 @@ def unsaid(draft: dict, texts: Iterable[Any]) -> list[Address]:
     """The plan's addresses the run was never given, in the order the plan uses them."""
     known = given(texts)
     return [a for a in in_plan(draft) if a.key not in known]
+
+
+# ── the person's addresses, as they gave them (F1341) ──────────────────────────────────────────────────────────────
+# cap-01's person named http://portal.localhost:9411, and the built agent opened portal.localhost, its kept session's
+# site, on port 80. A link above is known by its host; one the person gave is known whole here: its scheme, host,
+# port and path, which a plan and a browser agent's instructions keep as given. Never a credential: a user:pass@ and
+# a query value named as a key are no part of what is required or copied (the door masks both).
+
+_DEFAULT_PORT = {"http": 80, "https": 443}
+
+
+def as_given(url: str) -> str:
+    """`url` without a user:pass@ part or a query parameter named as a key (`http_facts.KEY_QUERY`)."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    from core.http_facts import KEY_QUERY
+
+    parts = urlsplit(url)
+    query = "&".join(p for p in parts.query.split("&") if p and not KEY_QUERY.match(p.split("=", 1)[0]))
+    return urlunsplit((parts.scheme, parts.netloc.rsplit("@", 1)[-1], parts.path, query, parts.fragment))
+
+
+def given_urls(texts: Iterable[Any]) -> list[str]:
+    """Each link in the person's own `texts`, as given (`as_given`), once, in the order they gave them."""
+    out: list[str] = []
+    for raw in texts:
+        text = raw if isinstance(raw, str) else json.dumps(raw, default=str, ensure_ascii=False)
+        for url in _URL.findall(_clean(text or "")):
+            url = as_given(url.rstrip(_TRAILING))
+            if _origin(url)[1] and url not in out:
+                out.append(url)
+    return out
+
+
+def _origin(url: str) -> tuple[str, str, int | None]:
+    """A link's scheme, host and port, its scheme's default port when it names none."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    scheme = parts.scheme.lower()
+    return scheme, (parts.hostname or "").lower(), port or _DEFAULT_PORT.get(scheme)
+
+
+def holds(text: str, url: str) -> bool:
+    """Whether `text` names `url` as given: a deeper path, a query or a sentence's full stop after it, never more
+    of its host or port."""
+    return bool(re.search(re.escape(url.rstrip("/")) + r"(?![\w@-]|:\d|\.\w)", text or "", re.I))
+
+
+def another_origin(url: str, given: list[str]) -> str | None:
+    """The person's address for `url`'s host when `url` opens that host at another scheme or port; None when they
+    gave none for it, or `url` is at one they gave."""
+    scheme, host, port = _origin(url)
+    theirs = [g for g in given if _origin(g)[1] == host]
+    if not theirs or any(_origin(g)[0] == scheme and _origin(g)[2] == port for g in theirs):
+        return None
+    return theirs[0]
+
+
+def missing(text: str, sites: list[str], given: list[str]) -> list[str]:
+    """For each host of `sites` the person gave an address for, that address when `text` holds none of theirs for
+    it, or opens the host at another scheme or port."""
+    from core.browser.gate import site_allowed
+
+    out: list[str] = []
+    for host in dict.fromkeys(_origin(g)[1] for g in given):
+        theirs = [g for g in given if _origin(g)[1] == host]
+        if not host or not site_allowed(host, sites):
+            continue
+        wrong = any(another_origin(a.value, given) for a in _in_words(text, "") if a.kind == "url"
+                    and _origin(a.value)[1] == host)
+        if wrong or not any(holds(text, g) for g in theirs):
+            out.append(theirs[0])
+    return out
+
