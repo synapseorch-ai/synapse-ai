@@ -1088,7 +1088,7 @@ class Session:
     async def _record(self, actor: str, action: str, target: str, **extra) -> dict:
         ref = None
         try:
-            shot = await self.page.screenshot(type="jpeg", quality=60)
+            shot = await self.page.screenshot(type="jpeg", quality=85)  # kept, and looked at large after (F1356)
             ref = f"{len(self.log) + 1}"
             self.shots[ref] = shot
         except Exception:
@@ -1228,7 +1228,8 @@ class Session:
             asyncio.ensure_future(cdp.send("Page.screencastFrameAck", {"sessionId": ev["sessionId"]}))
 
         cdp.on("Page.screencastFrame", on_frame)
-        await cdp.send("Page.startScreencast", {"format": "jpeg", "quality": 60,
+        # JPEG 75, the run page's large view worth watching (F1356; it was 60); skip-not-lag holds (`_offer`).
+        await cdp.send("Page.startScreencast", {"format": "jpeg", "quality": 75,
                                                 "maxWidth": _VIEWPORT["width"], "maxHeight": _VIEWPORT["height"]})
 
     async def _stop_screencast(self) -> None:
@@ -1243,7 +1244,7 @@ class Session:
 
     async def first_frame(self) -> dict | None:
         try:
-            shot = await self.page.screenshot(type="jpeg", quality=60)
+            shot = await self.page.screenshot(type="jpeg", quality=75)  # as the screencast (F1356)
         except Exception:
             return None
         self.last_frame = {"jpeg_b64": base64.b64encode(shot).decode(), "w": _VIEWPORT["width"],
