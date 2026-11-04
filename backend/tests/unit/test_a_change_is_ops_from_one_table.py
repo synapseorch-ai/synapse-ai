@@ -30,10 +30,10 @@ def test_the_model_s_enum_is_the_table():
 
 def test_an_undo_s_re_create_is_code_s_only():
     # F1198 (BLD1): a deleted Python tool's re-create, its own. F1259: an agent's settings set back as they were, and a
-    # deleted memory item written back.
+    # deleted memory item written back. F1266: a deleted skill written back to the library.
     assert {n for n, op in C.OPS.items() if op.internal} == {"restore_agent", "restore_workflow", "restore_tool",
                                                               "restore_python_tool", "set_agent_fields",
-                                                              "restore_agent_memory"}
+                                                              "restore_agent_memory", "restore_skill"}
     assert C.issues("restore_agent", {"kind": "agent", "name": "x"}, {}) == [
         f"`restore_agent` is not an op. The ops are: {', '.join(C.PLANNER_OPS)}."]
 
@@ -46,7 +46,7 @@ def test_making_something_new_is_handed_over_not_an_op(tool):
     assert tool not in C.OPS
     assert tool not in {C.OPS[n].tool for n in C.PLANNER_OPS}
     assert {op.name for op in C.OPS.values() if op.tool == tool} <= {"restore_agent", "restore_tool",
-                                                                      "restore_python_tool"}
+                                                                      "restore_python_tool", "restore_skill"}
     assert C.OPS["create"].kind == "handoff"
 
 
@@ -166,6 +166,8 @@ def _samples():
         ("restore_workflow", {"name": "N", "steps_json": "[]", "entry_step_id": "s1", "max_run_credits": 2}),
         ("restore_tool", {"name": "N", "description": "d", "url": "https://x.example/api", "method": "GET"}),
         ("restore_python_tool", {"name": "N", "description": "d", "code": "print(1)\n"}),
+        ("delete_skill", {}),
+        ("restore_skill", {"name": "N", "description": "d", "body": "Use the house style."}),
     ]
 
 

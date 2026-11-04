@@ -187,6 +187,8 @@ _WRITES = (
        verb="Change the tool policy of"),
     Op("delete_agent", "delete", "agent", "delete_agent", verb="Delete"),
     Op("update_skill", "write", "skill", "update_skill", ("description", "body"), any_of=True, verb="Change"),
+    # A library skill, through the Skills screen's own delete (F1266); a disk skill is the folder's.
+    Op("delete_skill", "delete", "skill", "delete_skill", verb="Delete"),
     # The rest of an agent's settings, one op per section of the agent editor (F1259, `agent_census`; Naveen 10-31).
     Op("set_agent_settings", "write", "agent", "update_agent", AGENT_SETTINGS, any_of=True,
        verb="Change the settings of"),
@@ -248,6 +250,9 @@ _RESTORES = (
     Op("restore_python_tool", "create", "tool", "create_python_tool",
        ("name", "description", "code", "input_schema_json", "group"), ("name", "description", "code"),
        verb="Bring back", internal=True),
+    # An undo of a skill's delete (F1266): written back to the library as it was, under its name.
+    Op("restore_skill", "create", "skill", "create_skill", ("name", "description", "body"),
+       ("name", "description", "body"), verb="Bring back", internal=True),
 )
 
 OPS: dict[str, Op] = {op.name: op for op in (*_ACTS, *_WRITES, *_HANDOFFS, *_RESTORES)}
@@ -603,7 +608,7 @@ def call(op: Op, target_id: str, fields: dict[str, Any], live: dict[str, Any] | 
     after = expected(op, fields, live)
     if op.kind == "delete":
         key = {"workflow": "orch_id", "agent": "agent_id", "schedule": "schedule_id", "tool": "name",
-               "memory": "item"}[op.target]
+               "memory": "item", "skill": "name"}[op.target]
         return op.tool, {key: target_id}
     if op.name == "set_agent_fields":
         return op.tool, {"agent_id": target_id, "fields": after}

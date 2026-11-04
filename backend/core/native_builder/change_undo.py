@@ -179,6 +179,11 @@ def _inverse(applied: dict) -> tuple[dict | None, str | None]:
             keep["input_schema_json"] = json.dumps(before["inputSchema"])
         return {"op": "restore_tool", "target": {"kind": "tool", "name": before.get("name")}, "fields": keep,
                 "says": "undo: a new copy, without its headers: enter its key again on its card"}, None
+    if name == "delete_skill":
+        # Its words as they were (F1266); the agents that select it find it again by its name.
+        keep = {k: before.get(k) or "" for k in C.OPS["restore_skill"].fields}
+        return {"op": "restore_skill", "target": {"kind": "skill", "name": before.get("name")}, "fields": keep,
+                "says": "undo: back in the library, and the agents that select it load it again"}, None
     return None, f"{label} can't be undone from here."
 
 

@@ -107,10 +107,8 @@ async def update_skill(name: str, payload: SkillIn):
 
 @router.delete("/api/skills/{name}")
 async def delete_skill(name: str):
-    name = skills_mod.normalize_name(name)
-    library = await skills_mod.load_library()
-    remaining = [item for item in library if (item.get("name") or item.get("id")) != name]
-    if len(remaining) == len(library):
-        raise HTTPException(status_code=404, detail="Skill not found in the library (disk skills are read-only)")
-    await skills_mod.save_library(remaining)
+    try:
+        await skills_mod.delete_from_library(name)
+    except skills_mod.NotInLibrary as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"status": "success"}
