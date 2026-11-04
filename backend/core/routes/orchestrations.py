@@ -648,6 +648,16 @@ async def get_run_status(run_id: str, definition: bool = False):
     try:
         restored = await SharedState.restore(run_id)
         body = _public_run_view(restored.run)
+        if restored.run.waiting_for_human:
+            # The question's object, as its live event carried it and masked the same (F1333): what a client re-reads
+            # when the journal shrank that event past its size.
+            from core.orchestration.pauses import asked_again
+
+            asked = await asked_again(restored.run.definition, restored.run.shared_state, restored.run.step_history,
+                                      restored.run.current_step_id)
+            body["human_context_key"] = asked.get("context_key")
+            if "context" in asked:
+                body["human_context"] = asked["context"]
         if definition:
             body["definition"] = restored.run.definition
         body["step_usage"], body["entry_usage"] = await _step_usage(restored.run)

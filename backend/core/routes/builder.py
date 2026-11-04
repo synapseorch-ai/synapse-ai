@@ -672,6 +672,13 @@ async def _drawn(s, run) -> dict:
             "step_id": asking_step_id(run.step_history, run.current_step_id),
             "prompt": run.human_prompt or "",
         }
+        # The object its live event carried, read back the same and masked the same, so a reopened review draws the
+        # card the live one drew (F1333). The run's own definition, read for this question only.
+        from core.orchestration.pauses import asked_again
+
+        definition = (await s.execute(
+            select(OrchestrationRunDB.definition).where(OrchestrationRunDB.run_id == run.run_id))).scalar_one_or_none()
+        pending.update(await asked_again(definition, run.shared_state, run.step_history, run.current_step_id))
     status = run.status
     if status == "running" and not live:
         status = "stopped"  # left `running` by a restart: nothing will finish it

@@ -2923,6 +2923,30 @@ def _typed_object(value: Any) -> dict | None:
     return None
 
 
+def asked_context(input_keys: Any, shared_state: dict, step_history: Any) -> tuple[str | None, str | None, dict | None]:
+    """What a Human step's question shows beside it: `(agent_context, context_key, typed)` — the first of its input keys
+    the state holds, else the newest step output it does (U65), and that value as an object that names itself (F795),
+    when it is one. The live event carries these, and a question read back later (`pauses.asked_again`) the same, from
+    the same state (F1333)."""
+    agent_context = None
+    context_key = None
+    for key in (input_keys or []):
+        if key in shared_state and shared_state[key]:
+            agent_context = str(shared_state[key])
+            context_key = key
+            break
+    # Fallback: find the last output from step history
+    if not agent_context:
+        for h in reversed(step_history or []):
+            okey = h.get("output_key") if isinstance(h, dict) else None
+            if okey and okey in shared_state:
+                agent_context = str(shared_state[okey])
+                context_key = okey
+                break
+    typed = _typed_object(shared_state.get(context_key)) if context_key else None
+    return agent_context, context_key, typed
+
+
 class HumanStepExecutor:
     """Pause execution and request human input.
 
@@ -2941,26 +2965,8 @@ class HumanStepExecutor:
         run.human_prompt = prompt
         run.human_fields = step.human_fields
 
-        # Gather recent agent output from shared state for display context,
-        # and the key it came from, so the page can say what it is (U65).
-        agent_context = None
-        context_key = None
-        for key in (step.input_keys or []):
-            if key in run.shared_state and run.shared_state[key]:
-                agent_context = str(run.shared_state[key])
-                context_key = key
-                break
-        # Fallback: find the last output from step history
-        if not agent_context:
-            for h in reversed(run.step_history):
-                okey = h.get("output_key")
-                if okey and okey in run.shared_state:
-                    agent_context = str(run.shared_state[okey])
-                    context_key = okey
-                    break
-
+        agent_context, context_key, typed = asked_context(step.input_keys, run.shared_state, run.step_history)
         channel_id = step.human_channel_id
-        typed = _typed_object(run.shared_state.get(context_key)) if context_key else None
 
         yield {
             "type": "human_input_required",
