@@ -228,7 +228,8 @@ def _own_writes(step: dict) -> set[str]:
     return keys
 
 
-def _first_unwritten(key: str, entry: str | None, by_id: dict[str, dict]) -> set[str]:
+def _first_unwritten(key: str, entry: str | None, by_id: dict[str, dict],
+                     parents: dict[str, tuple[str, str]] | None = None) -> set[str]:
     """The steps a run can reach before any step writes `key`.
 
     Walked from the entry; a step that writes it ends that path (a step reading
@@ -236,6 +237,8 @@ def _first_unwritten(key: str, entry: str | None, by_id: dict[str, dict]) -> set
     leads into its body — a Loop's in order, a Parallel's every branch — and on
     to its own next step only when nothing in it writes the key: a Loop's body
     is taken to run, and every branch of a Parallel runs before it goes on.
+    `parents`, when given, gets each reached step's way in: the step before it
+    and which of its ways it took (F1346 names the branch that misses a key).
     """
     in_loop: dict[str, str | None] = {}  # a Loop body step -> the one after it
     for step in by_id.values():
@@ -253,21 +256,28 @@ def _first_unwritten(key: str, entry: str | None, by_id: dict[str, dict]) -> set
         step = by_id[sid]
         if key in _own_writes(step):
             continue
-        targets: list[str | None] = []
+        targets: list[tuple[str, str | None]] = []
         if step.get("type") == "loop":
             body = [b for b in step.get("loop_step_ids") or [] if b in by_id]
-            targets += body[:1]
+            targets += [("body", b) for b in body[:1]]
         elif step.get("type") == "parallel":
-            targets += [chain[0] for chain in branch_chains(step, by_id) if chain]
+            targets += [(f"branch {i}", chain[0]) for i, chain in enumerate(branch_chains(step, by_id), 1) if chain]
         container = step.get("type") in ("loop", "parallel")
         if not container or key not in _writes(sid, by_id, set()):
             if sid in in_loop:
-                targets.append(in_loop[sid])
+                targets.append(("next", in_loop[sid]))
             else:
-                targets += [step.get("next_step_id"), step.get("if_true_step_id"), step.get("if_false_step_id"),
-                            step.get("switch_default_step_id"), step.get("on_exhausted_step_id"),
-                            *(step.get("route_map") or {}).values(), *(step.get("switch_cases") or {}).values()]
-        queue += [t for t in targets if t and t in by_id and t not in reached]
+                targets += [("next", step.get("next_step_id")), ("true branch", step.get("if_true_step_id")),
+                            ("false branch", step.get("if_false_step_id")),
+                            ("default case", step.get("switch_default_step_id")),
+                            ("way when its tries run out", step.get("on_exhausted_step_id")),
+                            *((f"'{k}' route", t) for k, t in (step.get("route_map") or {}).items()),
+                            *((f"'{k}' case", t) for k, t in (step.get("switch_cases") or {}).items())]
+        for way, target in targets:
+            if target and target in by_id and target not in reached:
+                queue.append(target)
+                if parents is not None:
+                    parents.setdefault(target, (sid, way))
     return reached
 
 
@@ -298,3 +308,90 @@ def unset_reads(orch: dict) -> list[str]:
                     f"Step '{step['id']}' reads {{{{ state.{key} }}}} before any step writes it, so its first pass "
                     f"reads it empty. Give '{key}' a default in the state schema if it should read something.")
     return sentences
+
+
+# ── reads that break without the key (F1346) ──────────────────────────────────────────────────────────────────────
+# cap-05: a Transform read `state.extract_webhook` after a join only one branch of which wrote it, and the run that
+# took the other failed "no key 'extract_webhook' here". A prompt reads an unset key empty (above, a warning); these
+# two readers break: a Transform's state has no default for a missing key (`execution.scripts`), and a Loop over a
+# missing list runs no iteration while the run reads Completed.
+
+#: `state.key` in a Transform's code, never a dict method (`state.get(…)`, `state.items`).
+_CODE_ATTR = re.compile(r"\bstate\.([A-Za-z_]\w*)\b(?!\s*\()")
+#: `state["key"]` / `state['key']`.
+_CODE_ITEM = re.compile(r"\bstate\[\s*(['\"])([^'\"]+)\1\s*\]")
+_DICT_NAMES = frozenset(dir(dict))
+
+
+def _guarded(code: str, key: str) -> bool:
+    """The code asks whether `key` is there before it reads it, or writes it itself first."""
+    k = re.escape(key)
+    return bool(re.search(rf"(['\"]){k}\1\s+(?:not\s+)?in\s+state\b", code)
+                or re.search(rf"hasattr\(\s*state\s*,\s*(['\"]){k}\1", code)
+                or re.search(rf"\bstate(?:\.{k}|\[\s*(['\"]){k}\1\s*\])\s*=(?!=)", code))
+
+
+def _hard_reads(step: dict) -> dict[str, str]:
+    """The keys a step breaks without, each with what happens then: a Transform's unguarded reads, a Loop's list."""
+    if step.get("type") == "transform" and isinstance(step.get("transform_code"), str):
+        code = step["transform_code"]
+        keys = {m.group(1) for m in _CODE_ATTR.finditer(code) if m.group(1) not in _DICT_NAMES}
+        keys |= {m.group(2).split(".")[0] for m in _CODE_ITEM.finditer(code)}
+        return {k: "its code stops there (no key '" + k + "')" for k in sorted(keys) if not _guarded(code, k)}
+    if step.get("type") == "loop" and isinstance(step.get("loop_over"), str):
+        from core.templating import STATE_REF, one_form
+
+        expr = one_form(step["loop_over"])
+        keys = {m.group(1).split(".")[0] for m in STATE_REF.finditer(expr)}
+        keys |= {m.group(1) for m in _CODE_ATTR.finditer(expr) if m.group(1) not in _DICT_NAMES}
+        keys |= {m.group(2).split(".")[0] for m in _CODE_ITEM.finditer(expr)}
+        return {k: "it loops over nothing there and the run goes on as if it had" for k in sorted(keys)}
+    return {}
+
+
+def _way_in(sid: str, parents: dict[str, tuple[str, str]]) -> str:
+    """How a run reaches `sid` with the key unset: by the last branch it takes on the way, and the step after it."""
+    path, at, seen = [], sid, {sid}
+    while at in parents:
+        before, way = parents[at]
+        path.append((before, way, at))
+        if before in seen:
+            break
+        seen.add(before)
+        at = before
+    for before, way, after in path:  # nearest first
+        if way not in ("next", "body"):
+            return f"from '{before}' by its {way}" + (f", through '{after}'" if after != sid else "")
+    return "before any step writes it"
+
+
+def missing_key_reads(orch: dict) -> list[str]:
+    """One sentence per step a run can reach without a key it breaks without (F1346): its name, the key, the branch
+    that misses it, and the three ways to fix it. Not a key with a default, the run's own input (declared and
+    written by no step, so filled when it starts), or the engine's own."""
+    steps = [s for s in orch.get("steps") or [] if isinstance(s, dict) and s.get("id")]
+    by_id = {s["id"]: s for s in steps}
+    schema = orch.get("state_schema") or {}
+    written = set().union(*(_own_writes(s) for s in steps)) if steps else set()
+    filled = {k for k, v in schema.items() if isinstance(v, dict) and "default" in v} | (set(schema) - written)
+    sentences: list[str] = []
+    for step in steps:
+        for key, breaks in _hard_reads(step).items():
+            if key in ENGINE_KEYS or key in filled:
+                continue
+            fixes = (f"read it with state.get('{key}'), or give it a default in the state schema"
+                     if step.get("type") == "transform" else
+                     "an empty list where there is nothing, or give it a default of [] in the state schema")
+            if key not in written:
+                sentences.append(f"Step '{step['id']}' reads state.{key}, which no step writes, so {breaks}. Write "
+                                 f"it in an earlier step, {fixes}.")
+                continue
+            parents: dict[str, tuple[str, str]] = {}
+            if step["id"] in _first_unwritten(key, orch.get("entry_step_id"), by_id, parents):
+                way = _way_in(step["id"], parents)
+                reached = (f"a run can reach it {way}" if way.startswith("before") else
+                           f"a run reaches it {way}, without '{key}' set")
+                sentences.append(f"Step '{step['id']}' reads state.{key}, but {reached}, so {breaks}. Write it on "
+                                 f"that way too, {fixes}.")
+    return sentences
+

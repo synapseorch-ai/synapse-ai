@@ -50,10 +50,14 @@ async def _call(tool, args):
     return json.loads(raw) if isinstance(raw, str) else raw
 
 
-def _plan(code):
+def _plan(code, writes=()):
+    """The plan around `code`; `writes`, the keys it reads that a step before it writes (F1346: a Transform reading
+    `state.x` that no step writes breaks there, so the check refuses it — a real plan writes what its code reads)."""
+    before = [{"id": key, "type": "transform", "name": f"Keep the {key}", "does": f"Keeps the {key} it reads",
+               "config": {"transform_code": "result = {}"}} for key in writes]
     return {"kind": "create", "title": "Daily tip", "summary": "Posts a tip.", "steps": [
         {"id": "tip", "type": "llm", "name": "Write a tip", "does": "Writes a dental hygiene tip",
-         "prompt": "Write one short dental hygiene tip."},
+         "prompt": "Write one short dental hygiene tip."}, *before,
         {"id": "post", "type": "transform", "name": "Post it", "does": "Reshapes the tip",
          "config": {"transform_code": code}}]}
 
@@ -124,7 +128,8 @@ async def test_code_that_reaches_a_service_or_reads_a_key_goes_back_to_the_plann
     "from http import cookies\nresult = str(cookies.SimpleCookie())",
 ])
 async def test_code_that_reshapes_the_runs_own_data_is_kept(client, code):
-    out = await _call("submit_plan", _plan(code))
+    # `state.db` and `state.row` are a step's answers here, as the code reads them (F1346).
+    out = await _call("submit_plan", _plan(code, writes=[k for k in ("db", "row") if f"state.{k}" in code]))
     assert out.get("finish") == "submit_plan", out
 
 
