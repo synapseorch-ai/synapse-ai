@@ -92,6 +92,7 @@ class State:
     was_running: bool = False
     link: str = ""
     path_changed: bool = False
+    notes: list[str] = field(default_factory=list)   # said under the link at the end
 
 
 class Installer:
@@ -340,6 +341,9 @@ class Installer:
 
     def _stop_legacy(self) -> str:
         stopped = legacy.stop_services(self.legacy, self.log)
+        if self.legacy.stopped_words:
+            # Found running with no PID file — a 1.x `synapse upgrade`'s own stop leaves its web page up (F1350).
+            return "stopped " + "; ".join(self.legacy.stopped_words)
         return f"stopped {len(stopped)} process{'es' if len(stopped) != 1 else ''}" if stopped else "not running"
 
     def _backup_legacy(self) -> str:
@@ -383,9 +387,15 @@ class Installer:
             raise Failed("setup", f"port {BACKEND_PORT} is in use by another program, and Synapse's "
                                   "backend needs it. Close that program — if it is an older Synapse "
                                   "running in another window, stop it there — then run the installer again.")
-        wanted_f = _int(self.legacy.settings.get("frontend_port")) or 3000
+        old_f = _int(self.legacy.settings.get("frontend_port"))
+        wanted_f = old_f or 3000
         self.s.backend_port = BACKEND_PORT
         self.s.frontend_port = ports.free_port(wanted_f, avoid={BACKEND_PORT})
+        if old_f and self.s.frontend_port != old_f:
+            # The old install's own were stopped first, so another program holds it: said, never a quiet move (F1350).
+            self.s.notes.append(f"Port {old_f}, your old address, is in use by another program, "
+                                f"so Synapse is now on port {self.s.frontend_port}.")
+            self.log.write(f"frontend port {old_f} is held by another program; using {self.s.frontend_port}")
 
     def _python(self) -> str:
         self.uv = self._find_uv()
@@ -530,6 +540,13 @@ class Installer:
         if failed:
             raise Failed("migrate", f"{failed[0]['path']} could not be imported: {failed[0]['error']}")
         self.s.migrated = True
+        if str(self.legacy.settings.get("transform_runtime", "")).strip().lower() == "host":
+            # 1.x ran Transform steps on this computer from a setting 2.0 no longer reads (F968): said now, not at the
+            # first Transform's Docker error (F1353).
+            note = ("2.0 runs code steps in Docker. To keep running them on this computer, set "
+                    "SYNAPSE_TRANSFORM_RUNTIME=host (see Upgrading to 2.0).")
+            self.s.notes.append(note)
+            self.log.write(note)
         totals = report.get("totals", {})
         moved = [f"{totals[k]} {name}" for k, name in (("user_agents", "agents"), ("orchestrations", "orchestrations"),
                                                          ("chat_sessions", "chats")) if totals.get(k)]
@@ -546,8 +563,9 @@ class Installer:
         payload = json.dumps({"settings": settings, "default_agent": True})
         self._cli(["setup", "--apply", "-"], stdin_text=payload)
         self._register_autostart()
-        if not self.s.answers and self.legacy.has_model():
-            # Nothing was asked because the 1.x model came across with its data.
+        if "model" not in self.s.answers and self.legacy.has_model():
+            # Nothing was asked because the 1.x model came across with its data. The answers are not empty even
+            # then: the Browser step keeps its folder there (F1352).
             kept = providers.describe({"model": self.legacy.settings.get("model", "")})
             return f"{kept}, from {self.legacy.version}"
         return providers.describe(self.s.answers) or "choose an AI later in Settings"
@@ -757,13 +775,14 @@ class Installer:
     def _final_lines(self, started: bool) -> list[str]:
         t = self.term
         if self.o.method == "npm" and not started:
-            # The npm launcher starts Synapse next, and that prints the link.
-            return []
+            # The npm launcher starts Synapse next, and that prints the link; the notes are still this screen's.
+            return ["", *("  " + note for note in self.s.notes), ""] if self.s.notes else []
         if started:
             name = f"Synapse {self.version}" if self.o.upgrade else "Synapse"
             lines = ["", f"  {name} is running {t.g('arrow')} " + t.style(self.s.link, "cyan", "bold")]
         else:
             lines = ["", f"  Synapse {self.version} is installed. Start it with: synapse start"]
+        lines += ["  " + note for note in self.s.notes]
         if self.s.path_changed and self.o.method != "npm":
             lines.append("  " + t.style("Open a new terminal to use the synapse command.", "dim"))
         lines.append("")

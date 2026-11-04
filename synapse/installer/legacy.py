@@ -70,6 +70,7 @@ class Migration:
     leftovers: list[Path] = field(default_factory=list)     # removed at the end
     counts: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)            # the old settings.json
+    stopped_words: list[str] = field(default_factory=list)  # what stop_services found with no PID file, said
 
     @property
     def found(self) -> bool:
@@ -431,8 +432,239 @@ def is_synapse_process(pid: int) -> bool:
     return any(marker in cmd for marker in ("main.py", "server.js", "next start", "next-server", "synapse"))
 
 
+@dataclass
+class Proc:
+    """One running process, as much of it as this platform says."""
+    pid: int
+    ppid: int
+    argv: list[str]                 # one unsplit command line where the platform gives no argv
+    exe: str = ""
+    cwd: str = ""
+    uid: int | None = None
+    ports: tuple = ()               # the TCP ports it listens on (Linux)
+
+
+#: Interpreters whose first script argument is the program they run.
+_INTERPRETER = re.compile(r"^(python(\d+(\.\d+)*)?|node|nodejs)(\.exe)?$", re.I)
+#: Options of those interpreters that take the next argument as their value.
+_OPTION_WITH_VALUE = {"-X", "-W", "-r", "--require", "--import", "--loader", "--experimental-loader"}
+
+
+def code_dirs(m: Migration) -> list[Path]:
+    """Where each old install's code runs from: a script install's folder, a pip install's packages (never all of
+    site-packages), an npm package's folder."""
+    dirs: list[Path] = []
+    for install in m.installs:
+        dirs += [install.root / "synapse", install.root / "backend"] if install.kind == "pip" else [install.root]
+    return _unique(dirs)
+
+
+def _norm(path: str) -> str:
+    return os.path.normcase(os.path.abspath(path))
+
+
+def _inside(path: str, dirs: list[str]) -> bool:
+    p = _norm(path)
+    return any(p == d or p.startswith(d.rstrip(os.sep) + os.sep) for d in dirs)
+
+
+def _script_arg(argv: list[str]) -> str | None:
+    """The program an interpreter runs: its first argument that is not an option. None for -m, -c and -e, which
+    run a module or text, not a file."""
+    skip = False
+    for arg in argv[1:]:
+        if skip:
+            skip = False
+        elif arg in ("-m", "-c", "-e", "--eval", "-p", "--print"):
+            return None
+        elif arg in _OPTION_WITH_VALUE:
+            skip = True
+        elif not arg.startswith("-"):
+            return arg
+    return None
+
+
+def _runs_old_code(p: Proc, dirs: list[str]) -> bool:
+    """Its program is the old install's: the executable or the path it was started by is inside a code folder, or
+    it is an interpreter whose script is. Where it merely sits (its working folder) or a file it names is never
+    enough: a person's shell or editor in the old folder is theirs (F1350)."""
+    if p.exe and _inside(p.exe, dirs):
+        return True
+    if len(p.argv) == 1 and " " in p.argv[0] and not os.path.exists(p.argv[0]):
+        # An unsplit command line (Windows, macOS, a retitled process): an interpreter naming the folder, or its
+        # relative script under its working folder.
+        cmd = p.argv[0]
+        if not _INTERPRETER.match(os.path.basename(p.exe or cmd.split(" ")[0].strip('"'))):
+            return False
+        if any(d in os.path.normcase(cmd) for d in dirs):
+            return True
+        script = _script_arg(cmd.split())
+        return bool(script and p.cwd and not os.path.isabs(script)) and _inside(_resolve(script, p.cwd), dirs)
+    if not p.argv:
+        return False
+    first = p.argv[0]
+    if (os.sep in first or (os.altsep and os.altsep in first)) and _inside(_resolve(first, p.cwd), dirs):
+        return True     # started by its path: a venv's python, the old bin/synapse
+    if _INTERPRETER.match(os.path.basename(first)) or (p.exe and _INTERPRETER.match(os.path.basename(p.exe))):
+        script = _script_arg(p.argv)
+        return bool(script) and _inside(_resolve(script, p.cwd), dirs)
+    return False
+
+
+def _resolve(path: str, cwd: str) -> str:
+    return path if os.path.isabs(path) or not cwd else os.path.join(cwd, path)
+
+
+def _ancestors(pid: int, procs: dict[int, Proc]) -> set[int]:
+    seen: set[int] = set()
+    while pid in procs and pid not in seen and pid > 1:
+        seen.add(pid)
+        pid = procs[pid].ppid
+    return seen
+
+
+def old_install_processes(m: Migration, procs: list[Proc] | None = None) -> list[Proc]:
+    """What still runs the old install's code, with what it started: the web server its frontend's node started
+    names no path of its own (next-server rewrites its title). Never this process or one it runs under (the hand-off
+    runs from inside the old folder), never another user's, never PID 1. Listeners first: they are what holds the
+    old addresses."""
+    dirs = [_norm(str(d)) for d in code_dirs(m)] + [_norm(os.path.realpath(d)) for d in code_dirs(m)]
+    if not dirs:
+        return []
+    procs = _processes() if procs is None else procs
+    by_pid = {p.pid: p for p in procs}
+    mine = _ancestors(os.getpid(), by_pid) | {os.getpid()}
+    uid = os.getuid() if hasattr(os, "getuid") else None
+
+    def eligible(p: Proc) -> bool:
+        return p.pid > 1 and p.pid not in mine and (uid is None or p.uid is None or p.uid == uid)
+
+    found = {p.pid for p in procs if eligible(p) and _runs_old_code(p, dirs)}
+    grew = True
+    while grew:
+        children = {p.pid for p in procs if p.ppid in found and p.pid not in found and eligible(p)}
+        found |= children
+        grew = bool(children)
+    return sorted((by_pid[pid] for pid in found), key=lambda p: (not p.ports, p.pid))
+
+
+def _processes() -> list[Proc]:
+    try:
+        if sys.platform.startswith("linux"):
+            return _linux_processes()
+        if IS_WIN:
+            return _windows_processes()
+        return _ps_processes()
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return []
+
+
+def _linux_processes() -> list[Proc]:
+    listening = _linux_listening_inodes()
+    procs = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_text()
+            ppid = int(stat[stat.rindex(")") + 2:].split()[1])
+            argv = [a.decode("utf-8", "replace") for a in (entry / "cmdline").read_bytes().split(b"\0") if a]
+            uid = entry.stat().st_uid
+        except (OSError, ValueError, IndexError):
+            continue
+        exe, cwd = _readlink(entry / "exe"), _readlink(entry / "cwd")    # "" where it is not ours to read
+        ports: set[int] = set()
+        try:
+            for fd in (entry / "fd").iterdir():
+                link = _readlink(fd)
+                if link.startswith("socket:[") and link[8:-1] in listening:
+                    ports.add(listening[link[8:-1]])
+        except OSError:
+            pass
+        procs.append(Proc(int(entry.name), ppid, argv, exe, cwd, uid, tuple(sorted(ports))))
+    return procs
+
+
+def _readlink(path: Path) -> str:
+    try:
+        return os.readlink(path)
+    except OSError:
+        return ""
+
+
+def _linux_listening_inodes() -> dict[str, int]:
+    out: dict[str, int] = {}
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            lines = Path(table).read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            f = line.split()
+            if len(f) > 9 and f[3] == "0A":     # LISTEN
+                out[f[9]] = int(f[1].rsplit(":", 1)[1], 16)
+    return out
+
+
+def _ps_processes() -> list[Proc]:
+    out = subprocess.run(["ps", "-axo", "pid=,ppid=,uid=,command="], capture_output=True, text=True, timeout=20)
+    exes = subprocess.run(["ps", "-axo", "pid=,comm="], capture_output=True, text=True, timeout=20).stdout
+    exe_of = {int(a): b.strip() for a, b in (ln.strip().split(None, 1) for ln in exes.splitlines() if ln.strip())
+              if a.isdigit()}
+    cwd_of: dict[int, str] = {}
+    try:    # each process's working folder, for a relative script (the 1.x frontend's scripts/load-env.js)
+        lsof = subprocess.run(["lsof", "-a", "-d", "cwd", "-Fpn", "-u", str(os.getuid())],
+                              capture_output=True, text=True, timeout=30).stdout
+        pid = 0
+        for ln in lsof.splitlines():
+            if ln[:1] == "p" and ln[1:].isdigit():
+                pid = int(ln[1:])
+            elif ln[:1] == "n" and pid:
+                cwd_of[pid] = ln[1:]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    procs = []
+    for line in out.stdout.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) == 4 and parts[0].isdigit():
+            pid = int(parts[0])
+            procs.append(Proc(pid, int(parts[1]), [parts[3]], exe_of.get(pid, ""), cwd_of.get(pid, ""),
+                              int(parts[2])))
+    return procs
+
+
+def _windows_processes() -> list[Proc]:
+    out = subprocess.run(
+        ["powershell", "-NoProfile", "-Command",
+         "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine"
+         " | ConvertTo-Json -Compress"], capture_output=True, text=True, timeout=60)
+    rows = json.loads(out.stdout or "[]")
+    rows = rows if isinstance(rows, list) else [rows]
+    return [Proc(int(r.get("ProcessId") or 0), int(r.get("ParentProcessId") or 0), [r.get("CommandLine") or ""],
+                 r.get("ExecutablePath") or "") for r in rows if r.get("ProcessId")]
+
+
+def describe(p: Proc) -> str:
+    """The stop line's words for one: what it was, by its short command, and its PID."""
+    argv = p.argv if len(p.argv) > 1 else (p.argv[0].split() if p.argv else [])
+    name = os.path.basename(argv[0]).strip('"') if argv else os.path.basename(p.exe)
+    script = _script_arg(argv) if argv and _INTERPRETER.match(name) else None
+    rest = argv[argv.index(script) + 1:argv.index(script) + 2] if script in argv else []
+    short = " ".join([name, "…", os.path.basename(script), *rest] if script else argv[:2] or [name])
+    text = f"{name} {os.path.basename(script) if script else ' '.join(argv[1:2])}".lower()   # never a folder's name
+    what = ("the old web page" if any(k in text for k in ("next", "load-env", "server.js", "frontend"))
+            else "the old backend" if any(k in text for k in ("main.py", "uvicorn", "core.server"))
+            else "an old process")
+    return f"{what} ({short}, pid {p.pid})"
+
+
 def stop_services(m: Migration, log=None) -> list[int]:
-    """Stop what the old install is running. Returns the PIDs stopped."""
+    """Stop what the old install is running. Returns the PIDs stopped.
+
+    First what its PID files name; then whatever still runs the old install's code with no PID file. A 1.x
+    `synapse upgrade` stops its own services before it hands over and removes the PID files, but its frontend's
+    web server outlives that stop and keeps the old address, serving the old pages from a folder the hand-off then
+    removes (F1350). Each of those is said (`m.stopped_words`)."""
     _stop_service_managers(log)
     stopped: list[int] = []
     for pid_file in m.pid_files:
@@ -450,6 +682,14 @@ def stop_services(m: Migration, log=None) -> list[int]:
             pid_file.unlink()
         except OSError:
             pass
+    for p in old_install_processes(m):
+        if p.pid in stopped or not _terminate(p.pid):
+            continue
+        stopped.append(p.pid)
+        m.stopped_words.append(describe(p))
+        if log:
+            log.write(f"stopped old process {p.pid} ({' '.join(p.argv)[:200]}), still running the old install's code"
+                      + (f", listening on {', '.join(map(str, p.ports))}" if p.ports else ""))
     return stopped
 
 
@@ -470,7 +710,8 @@ def _terminate(pid: int) -> bool:
         out = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=30)
         return out.returncode == 0
     try:
-        target = os.getpgid(pid) if os.getpgid(pid) == pid else None
+        # Its whole group when it leads one, unless that group is this process's own.
+        target = os.getpgid(pid) if os.getpgid(pid) == pid and pid != os.getpgrp() else None
         (os.killpg if target else os.kill)(target or pid, signal.SIGTERM)
     except (ProcessLookupError, PermissionError, OSError):
         return False
