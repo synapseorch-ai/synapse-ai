@@ -254,3 +254,10 @@ def test_needs_is_talk_to_agents_list_and_still_set_agent_models_word():
     assert C._field_issue(model, "needs", ["lookup_order"]).startswith("`needs` is one of")
     assert C.act_arguments(talk, "agent_1", {"message": "Hi", "needs": ["x"]}) == {
         "action": "talk_to_agent", "agent": "agent_1", "message": "Hi", "needs": ["x"]}
+
+
+def test_submit_changes_schema_asks_for_asked_and_code_still_takes_a_change_without_it():
+    """The schema lists `asked` as required, so a model fills it nearly always (eb 11-04); the builder never holds its
+    own calls to that schema, so a change sent without it is taken as before (TestTaken)."""
+    params = change_tools.SUBMIT["function"]["parameters"]
+    assert params["required"] == ["asked"] and "asked" in params["properties"]
