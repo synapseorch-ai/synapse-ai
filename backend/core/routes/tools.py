@@ -614,6 +614,9 @@ def _public_server(config: dict) -> dict:
     view["token_placeholder"] = token if token in _PLACEHOLDER_TOKENS else None
     if isinstance(config.get("env"), dict):
         view["env"] = {key: "" for key in config["env"]}
+    if view.get("last_error"):  # why it did not connect, never a credential (F1306)
+        from core.mcp_client import said_safely
+        view["last_error"] = said_safely(str(view["last_error"]), config)
     return view
 
 
@@ -717,7 +720,10 @@ async def reconnect_mcp_server(name: str):
             except (asyncio.TimeoutError, Exception):
                 pass
 
-        return {"status": "failed", "connected": False, "needs_oauth": False, "message": "Could not reconnect."}
+        # Why, in the words the add and the server list say (F1306, `mcp_client.connect_failure`).
+        why = _server.mcp_manager.last_error(name)
+        return {"status": "failed", "connected": False, "needs_oauth": False,
+                "message": f"Could not reconnect: {why}." if why else "Could not reconnect."}
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
