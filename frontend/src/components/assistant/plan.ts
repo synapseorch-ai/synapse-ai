@@ -519,8 +519,9 @@ export function planFromChange(change: ChangeView, prompt: string): Plan | null 
             ? `${o.used_by?.length ? `Used by ${o.used_by.join(', ')}.` : 'Nothing uses it.'} It can come back only as a new copy.`
             : '';
         const rows = !deletes && o.rows?.length ? o.rows : null;
-        // A settings change's rows (F1264): its name is the line's heading, as code wrote it.
-        const [heading] = (o.line as string).split(' — ')[0].split(/:\s*\n/);
+        // A settings change's rows (F1264): its name is its first line's heading, as code wrote it, its settings only
+        // the rows under it (F1332: an undo's first line goes on after its colon, "…settings: undo: as they were").
+        const heading = first.split(' — ')[0].replace(/:\s*$/, '');
         const detail = rows ? '' : [deletes ? how.join(' — ') : (valueWords(o) ?? how.join(' — ')), exact, uses]
             .filter(Boolean).join(' ');
         // The planner's words for it, as the review shows them (F1308): none when the line already says them (an undo's).
