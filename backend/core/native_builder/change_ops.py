@@ -108,7 +108,8 @@ _ACTS = (
     Op("cancel_run", "act", "run", verb="Stop"),
     Op("resume_run", "act", "run", verb="Resume"),
     # Asking an agent for the person (F1274): a card, its answer shown once pressed.
-    Op("talk_to_agent", "act", "agent", fields=("message",), required=("message",), verb="Ask"),
+    # Only to an agent holding what its answer needs (F1364): `needs` names those tools and knowledge bases.
+    Op("talk_to_agent", "act", "agent", fields=("message", "needs"), required=("message",), verb="Ask"),
     # A hosted workspace's (F1260): a job the fleet gave up on, and a support request (named by its subject).
     Op("dead_job_retry", "act", "dead_job", verb="Retry"),
     Op("dead_job_discard", "act", "dead_job", verb="Discard"),
@@ -438,6 +439,9 @@ def _field_issue(op: Op, key: str, value: Any) -> str | None:
     if key in ("max_run_credits", "max_run_usd"):
         return None if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0 else \
             f"`{key}` is a number above 0"
+    if key == "needs" and op.name == "talk_to_agent":
+        return None if _is_list_of_text(value) else \
+            "`needs` is a list of the tools and knowledge bases its answer needs, by name"
     if key == "needs":
         from core.native_builder.models_menu import NEEDS
 
