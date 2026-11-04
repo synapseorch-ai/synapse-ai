@@ -130,7 +130,7 @@ _OURS = re.compile(
     r"\b(?:agents?|workflows?|orchestrations?|runs?|ran|schedules?|scheduled|tools?|skills?|channels?|boards?|cards?|"
     r"knowledge|bases?|credits?|usage|spend|spent|spending|bills?|billing|keys?|variables?|widgets?|failed|failing|"
     r"failure|errors?|broke|broken|stuck|waiting|logs?|history|workspace|synapse)\b")
-#: What a turn that offered to build the agent for a live fact keeps (F1382), `{fact, ask}`, for a builder only; and
+#: What a turn that offered to set up the workflow for a live fact keeps (F1382), `{fact, ask}`, for a builder only; and
 #: the next turn's mark that its yes took the offer, which goes to the build route through the role door.
 OFFERED_KEY = "offered_build"
 OFFER_TAKEN_KEY = "offer_taken"
@@ -211,7 +211,7 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
     # Why something failed is said before it is fixed (F1378, prod-07): the answer reads the failed run, and the fix
     # waits for after it. The quick model's order of the two asks never decides it.
     if state.get(OFFER_TAKEN_KEY):
-        # A yes to the offer to build the agent for a live fact (F1382): its ask is this turn's message.
+        # A yes to the offer to set up the workflow for a live fact (F1382): its ask is this turn's message.
         kind, by = "build", "offer_taken"
     elif kind in ("change", "build") and by is None and _CAUSE.search(text):
         kind, by, also = "answer", "cause_first", _fix_half(message, request.also)
@@ -253,7 +253,7 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
         # What it can do for them is the talk step's, from the workspace's description (F1382), never the help's list.
         needs, by = "none", "about_you"
     elif kind == "answer" and by in _MAY_TALK and offers(request, text, things):
-        # A fact from outside that changes: the talk step offers the agent that gets it, never a read here (F1382).
+        # A fact from outside that changes: the talk step offers the workflow that gets it, never a read here (F1382).
         needs, by = "none", "live_fact"
     # What a recording's request names is the recording: not the conversation's last build (F1229's "it"), nor a
     # workflow found by the recording's own name.
@@ -271,7 +271,7 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
 
 
 def offers(request: Request, text: str, things: dict) -> bool:
-    """Whether the live fact the model typed is one to offer an agent for (F1382): never on what the message names
+    """Whether the live fact the model typed is one to offer a workflow for (F1382): never on what the message names
     here, a how-to, an act, or this workspace's own state ("how many runs failed today?")."""
     return bool((request.live_fact or "").strip()) and not things and not _ACT.search(text) and not \
         _HOW_TO.match(text) and not _OURS.search(text)
@@ -279,7 +279,7 @@ def offers(request: Request, text: str, things: dict) -> bool:
 
 def offer_ask(fact: str) -> str:
     """The build a yes to the offer asks for (F1382), as the person would ask it."""
-    return f"Build an agent that gets {fact} each time it runs, so I can run it now and put it on a schedule."
+    return f"Build a workflow that gets {fact} each time it runs, so I can run it now and put it on a schedule."
 
 
 def _needs(kind: str, said: str | None, text: str, things: dict) -> str:

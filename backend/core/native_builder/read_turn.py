@@ -159,7 +159,7 @@ def decide(message: str, *, previous: dict, facts: dict, change: dict | None = N
         going_on = yes or said in _GO_ON or said in _ACK or said.startswith("continue") or said in _JUST
         return Turn(route="effort_continue", then="classify", message=ask if going_on else f"{ask}\n\n{message}")
 
-    # 0b. A yes to the offer to build the agent for a live fact (F1382): its ask, with what they added. Only a
+    # 0b. A yes to the offer to set up the workflow for a live fact (F1382): its ask, with what they added. Only a
     # builder's turn keeps an offer, so a viewer's yes is read as below.
     offer = previous.get(OFFERED_KEY) if isinstance(previous.get(OFFERED_KEY), dict) else {}
     if ask := str(offer.get("ask") or ""):

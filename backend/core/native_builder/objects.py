@@ -418,7 +418,7 @@ class Request(_Written):
     also: str | None = Field(None, description="A second request in the same message, in its words, if any")
     language: str | None = Field(None, description="The language the person wrote in, e.g. en, hi")
     #: A fact from outside that changes over time, asked for now (F1382): code sends it to the talk step, which offers
-    #: to build the agent that gets it. Code checks it against what the message names (`classify.override`).
+    #: to set up the workflow that gets it. Code checks it against what the message names (`classify.override`).
     live_fact: str | None = Field(
         None, description="A fact from outside this workspace that changes over time, which the message asks to be "
                           "told now (an exchange rate, a flight's status, a score), in its words. Empty when it asks about this "

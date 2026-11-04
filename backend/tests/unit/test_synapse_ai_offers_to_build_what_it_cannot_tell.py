@@ -1,5 +1,5 @@
-"""Asked for a fact from outside that changes over time, Synapse AI offers to build the agent that gets it, and a yes
-builds it (F1382, TRI1; eb's audit, Naveen 11-04: "Build as planned").
+"""Asked for a fact from outside that changes over time, Synapse AI offers to set up the workflow that gets it, and
+a yes builds it (F1382, TRI1; eb's audit, Naveen 11-04: "Build as planned"; "workflow", not "agent": Naveen via CAP3).
 
 Asked a city's weather, Synapse AI said a bare "can't", or read the workspace for it: "today" is a workspace word, so
 the answer went to the step that reads it. This chat does not look a live fact up; it builds the thing that does. These
@@ -99,10 +99,16 @@ class TestTheYesBuildsIt:
         routed = _route(offer_ask(FACT), needs="none", state={**VIEWER, OFFER_TAKEN_KEY: True})
         assert routed.route == "step_not_yours"
 
-    def test_the_ask_names_the_fact_and_an_agent(self):
+    def test_the_ask_names_the_fact_and_a_workflow_never_an_agent(self):
+        """A fetch and a send are plain steps (# Structure 1-3): the ask says workflow, and the planner picks the
+        steps, an agent only where judgement is needed (Naveen, via CAP3; eb)."""
+        from core.native_builder.answer_pack import offer_line
         from core.native_builder.classify import offer_ask
 
-        assert FACT in offer_ask(FACT) and "agent" in offer_ask(FACT)
+        assert offer_ask(FACT) == f"Build a workflow that gets {FACT} each time it runs, so I can run it now and put " \
+                                  "it on a schedule."
+        for said in (offer_ask(FACT), offer_line(FACT)):
+            assert "workflow" in said and "agent" not in said, said
 
 
 class TestTheOfferIsKept:
@@ -211,7 +217,7 @@ class TestTheOfferIsSaid:
     def test_a_reply_that_asks_keeps_its_words(self):
         from core.native_builder.answer_pack import offer_kept
 
-        reply = "I can make an agent that gets it each morning. Want it?"
+        reply = "I can set up a workflow that gets it each morning. Want it?"
         assert offer_kept(reply, {"fact": FACT}) == reply
 
     def test_no_offer_no_line(self):
@@ -223,7 +229,7 @@ class TestTheOfferIsSaid:
         """A yes has somewhere to go after the offer, so F1243's cut does not apply; without one it does."""
         from core.native_builder.answer_pack import NO_YES_HERE, checked_answer
 
-        reply = "I can build an agent that gets it each morning. Just say yes and I'll set it up?"
+        reply = "I can set up a workflow that gets it each morning. Just say yes and I'll build it?"
         assert checked_answer(reply, None, {"fact": FACT}) == reply
         assert NO_YES_HERE in checked_answer(reply, None, None)
 
@@ -251,7 +257,7 @@ class TestThePackSaysIt:
     def test_a_viewers_pack_says_who_can_ask(self):
         pack = self._pack(live_fact=FACT, may_build=False)
         assert f"outside this workspace and changes over time: {FACT}." in pack
-        assert "for an owner or a builder of this workspace" in pack
+        assert "Setting up a workflow that gets it is for an owner or a builder of this workspace" in pack
 
     def test_no_fact_no_line(self):
         assert "changes over time" not in self._pack()

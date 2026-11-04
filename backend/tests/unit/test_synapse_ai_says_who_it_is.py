@@ -97,6 +97,7 @@ class TestWhatItSays:
 
         first = " ".join(WHO_YOU_ARE.split())
         assert first.startswith("Who you are: Synapse AI") and "build" in first and "schedule" in first, first
+        assert "plain steps" in first and "an agent where the work needs judgement" in first, first
 
     def test_each_outcome_with_one_example(self):
         outcomes = _examples()
@@ -123,7 +124,8 @@ class TestTheTalkStepsRules:
     def test_a_live_fact_is_offered_never_told(self):
         said = _sentence(_talk(), "changes over time")
         assert "do not look it up in this chat" in said and "never give it from memory" in said, said
-        assert "offer to build an agent that gets it" in said and "on a schedule" in said, said
+        assert "offer to set up a workflow that gets it" in said and "on a schedule" in said, said
+        assert "agent" not in said, said
         assert "say what that needs" in said and "end by asking whether they want it" in said, said
 
     def test_what_you_can_do_is_fitted_to_the_workspace(self):

@@ -184,9 +184,9 @@ def build_pack(*, routed: dict, workspace_name: str, profile: str, asker_name: s
         parts.append(connect)
     parts.append(capabilities.strip())
     if live_fact:
-        # The fact the talk step offers an agent for (F1382); building one is a builder's, so a viewer is told who.
+        # The fact the talk step offers a workflow for (F1382); building one is a builder's, so a viewer is told who.
         said = f"What they asked for is outside this workspace and changes over time: {live_fact}."
-        parts.append(said if may_build else f"{said} Building an agent that gets it is for an owner or a builder of "
+        parts.append(said if may_build else f"{said} Setting up a workflow that gets it is for an owner or a builder of "
                                             "this workspace: say they can ask for one.")
     if needs == "help":
         parts.append("What this product's help says about the question:\n" + (
@@ -454,8 +454,8 @@ def no_change_claimed(text: str, writes: Any = None) -> str:
 
 def offer_line(fact: str) -> str:
     """Code's own offer, said when the reply to a live fact did not ask: fixed words but the fact, as NO_YES_HERE."""
-    return (f"I can build an agent that gets {fact} for you: run it now, and on a schedule if you like, sent by email "
-            "or a chat channel. Want it?")
+    return (f"I can set up a workflow that gets {fact} for you: run it now, and on a schedule if you like, sent by "
+            "email or a chat channel. Want it?")
 
 
 def offer_kept(text: str, offered: Any) -> str:
