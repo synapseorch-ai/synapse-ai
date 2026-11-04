@@ -6,8 +6,10 @@
  * A tab is a workflow being edited or one of its runs. Only the tab in front
  * is mounted; a tab going behind leaves its draft and the run it follows here
  * (`kept`), and comes forward from them. Unlike chat, nothing is ever closed for
- * the person: a tab may hold unsaved work, so at the cap a new tab is refused
- * with a sentence, and a tab with unsaved work closes only after they say so.
+ * the person: a tab may hold unsaved work, so at the cap a new tab waits while
+ * they pick one to close (F1354: no tab is in front meanwhile, so the page never
+ * shows a workflow other than the one asked for), and a tab with unsaved work
+ * closes only after they say so.
  */
 
 import * as React from "react";
@@ -37,6 +39,13 @@ export interface KeptTab<D> {
   dirty?: boolean;
 }
 
+/** At the cap: the tab asked for, waiting for one to close, and the tab that was in front. */
+export interface AskAtCap {
+  tab: WorkflowTab;
+  from: string | null;
+  besideId?: string | null;
+}
+
 /** What the tab in front says of itself. */
 export interface FrontReport {
   title: string;
@@ -63,6 +72,7 @@ export function useWorkflowTabs<D>({
   const [ready, setReady] = React.useState(false);
   const [state, setState] = React.useState<TabsState<WorkflowTab>>({ tabs: [], activeId: null });
   const [notice, setNotice] = React.useState<string | null>(null);
+  const [asking, setAsking] = React.useState<AskAtCap | null>(null);
   const [front, setFront] = React.useState<FrontReport | null>(null);
   // Kept per tab, in this page's memory only: a draft is never stored.
   const kept = React.useRef(new Map<string, KeptTab<D>>());
@@ -94,10 +104,16 @@ export function useWorkflowTabs<D>({
     ...(workflowId ? { workflowId } : {}),
   }), []);
 
-  /** Open a tab, or bring forward the one already showing it. At the cap, nothing closes: it says why. */
+  /** Open a tab, or bring forward the one already showing it. At the cap, nothing closes: the person is asked which
+   *  tab to close, and none is in front until they answer (F1354). */
   const open = React.useCallback((tab: WorkflowTab, besideId?: string | null) => {
     setState((s) => {
-      const result = openTab(s, tab, () => true, "refuse");
+      const result = openTab(s, tab, () => true, "ask");
+      if (result.ask) {
+        const ask = { tab: result.ask, from: s.activeId, besideId };
+        queueMicrotask(() => setAsking(ask));
+        return result.state;
+      }
       if (result.refused) {
         queueMicrotask(() => setNotice(result.refused));
         return s;
@@ -145,6 +161,31 @@ export function useWorkflowTabs<D>({
     setState((s) => closeTab(s, id, Date.now()));
     setFront(null);
   }, []);
+
+  /** At the cap: close the tab they picked (the caller asked first when it held unsaved work), then open the one asked
+   *  for, in front. */
+  const chooseClose = React.useCallback((id: string) => {
+    const ask = asking;
+    setAsking(null);
+    if (!ask) return;
+    kept.current.delete(id);
+    fresh.current.delete(id);
+    setState((s) => closeTab(s, id, Date.now()));
+    open(ask.tab, ask.besideId);
+  }, [asking, open]);
+
+  /** At the cap, they picked none: the tab that was in front comes back, and nothing new opens. */
+  const cancelAsk = React.useCallback(() => {
+    const ask = asking;
+    setAsking(null);
+    if (ask) {
+      // The tab asked for never opened: what was kept for it (a run to follow, a blank start) goes with it.
+      kept.current.delete(ask.tab.id);
+      fresh.current.delete(ask.tab.id);
+    }
+    if (ask?.from) setState((s) => focusTab(s, ask.from!, Date.now()));
+    setFront(null);
+  }, [asking]);
 
   const move = React.useCallback((id: string, to: number) => setState((s) => moveTab(s, id, to)), []);
 
@@ -213,7 +254,7 @@ export function useWorkflowTabs<D>({
   return {
     ready, start, make, state, front: activeTab(state), frontReport: front, setFrontReport: setFront,
     kept: kept.current, isFresh: (id: string) => fresh.current.has(id),
-    notice, setNotice, badges, unsaved,
-    open, openWorkflow, openRun, openNew, focus, close, move, change, keep,
+    notice, setNotice, badges, unsaved, asking,
+    open, openWorkflow, openRun, openNew, focus, close, chooseClose, cancelAsk, move, change, keep,
   };
 }

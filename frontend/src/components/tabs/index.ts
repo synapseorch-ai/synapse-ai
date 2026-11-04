@@ -12,7 +12,7 @@ export { SideRail, type RailPanel } from "./SideRail";
 export { useTabShortcuts } from "./useTabShortcuts";
 export { useTabStatus } from "./useTabStatus";
 export { MAX_PINS, restorePins, useChatTabs, type Pin, type SavedChatTabs } from "./useChatTabs";
-export { useWorkflowTabs, type FrontReport, type KeptTab } from "./useWorkflowTabs";
+export { useWorkflowTabs, type AskAtCap, type FrontReport, type KeptTab } from "./useWorkflowTabs";
 export type { EditorTabs } from "./editorTabs";
 export {
   assistantChatHref, cleanDraft, draftHome, MAX_DRAFT, NEW_ASSISTANT_CHAT, readAssistantDraft, SUGGESTED_LABEL,
