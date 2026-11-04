@@ -162,7 +162,9 @@ from core.native_builder import prompt_lint, seed
 #: F1365 + F1366 + F1368 (TRI1): the person's words for what to count, filter or pick, and the source they name
 #: (plan_steps.md), the prompt writer's echo, running a tool once is its Test (# Choose), and F1364's `asked` and
 #: `needs` (# Changing rules 2 and 20), 815d6552… (on fix-forward 18).
-BUNDLE_SHA256 = "815d6552730c70c48ddcded1a235c434fa0e5e9857f771096c5ab618a5ecfc20"
+#: F1377 + F1379 (TRI1): rule 23 makes a curl's one-call value an input, and the planner holds get_skill (its tools,
+#: # Changing rule 1, rule 26: a skill read before update_skill), e516d60f… (on fix-forward 19).
+BUNDLE_SHA256 = "e516d60f717bd2e07e876e37fec7f8f299a9d0897f4fda05e5070a8556099f23"
 
 
 def _sha(definitions) -> str:

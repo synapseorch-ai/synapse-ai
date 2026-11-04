@@ -1551,7 +1551,9 @@ BUILDER_TOOL_SCHEMAS = [
                 "type": "object",
                 "properties": {
                     "name": {"type": "string", "description": "The HTTP tool's name"},
-                    "url": {"type": "string", "description": "Its new address, with {{ placeholders }} for what varies"},
+                    "url": {"type": "string", "description": (
+                        "Its new address, with {{ placeholders }} for each value that changes from call to call (an id, "
+                        "a date, a name), never one call's value as written")},
                     "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
                     "description": {"type": "string", "description": "What it does, in new words"},
                     "drop_inputs": {"type": "array", "items": {"type": "string"},
