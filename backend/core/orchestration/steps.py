@@ -872,6 +872,25 @@ class ToolCallFailed(RuntimeError):
         self.ran = ran
 
 
+class ToolUnavailable(ToolCallFailed):
+    """A tool the step names that isn't available now: its app disconnected, signed out or turned off, or the tool
+    gone (F1349). Said in `tool_availability`'s words, once: never retried, and the tool never ran, so Resume is
+    safe. `plain`: the run records its words without a class name (`run_error.reason_of`)."""
+
+    plain = True
+
+    def __init__(self, message: str):
+        super().__init__(message, retryable=False, ran=False)
+
+
+def _unavailable(tool_name: str, server_module, *, error: BaseException | str | None = None) -> ToolUnavailable:
+    from core.mcp_client import connect_failure
+    from core.tool_availability import why_unavailable
+
+    said = connect_failure(error) if isinstance(error, BaseException) else error
+    return ToolUnavailable(why_unavailable(tool_name, server_module, error=said).words())
+
+
 def _final_refusal(exc: BaseException) -> bool:
     """A refusal no argument the model writes can change, so another attempt is a paid model call for
     the same answer (F851): the egress guard's — a blocked range, no host, not a URL, a scheme that is
@@ -958,7 +977,15 @@ class ToolStepExecutor:
         if not tool_obj:
             # Failed the way a tool call that fails is, below: the step's own
             # line says why (the engine's stream message is sanitised), and the
-            # run stops here rather than carrying on without it.
+            # run stops here rather than carrying on without it. A tool nothing
+            # here can answer now is said with its app's reason (F1349).
+            from core.tool_availability import is_live
+
+            if not is_live(tool_name, engine.server_module, custom_tools):
+                unavailable = _unavailable(tool_name, engine.server_module)
+                yield {"type": "final", "orch_step_id": step.id, "step_name": step.name,
+                       "response": str(unavailable)}
+                raise unavailable
             message = f"Tool '{tool_name}' not found in available tools"
             yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
             raise RuntimeError(message)
@@ -1049,6 +1076,7 @@ class ToolStepExecutor:
         max_turns = max(1, step.max_turns or 3)
         last_error = None
         final_response = None
+        unavailable: ToolUnavailable | None = None  # its tool isn't available now: said in its own words (F1349)
         called_tool: str = ""
         last_tool_args: dict = {}
         attempts = 0
@@ -1209,6 +1237,9 @@ class ToolStepExecutor:
             except ToolCallFailed as e:
                 last_error = str(e)
                 _log.debug(f"TOOL STEP: ❌ tool reported failure turn={turn + 1}: {last_error}")
+                if isinstance(e, ToolUnavailable):
+                    unavailable = e  # nothing another attempt could change: the tool never ran
+                    break
                 if e.ran and not _repeatable:
                     last_error = f"{last_error} — {MAY_HAVE_RUN}"
                     break
@@ -1237,6 +1268,9 @@ class ToolStepExecutor:
         # A saved output (D339 P4) is said as its excerpt and file wherever the step's answer is words; state keeps
         # the reference itself.
         said = _preview(final_response, whole=True) if is_ref(final_response) else final_response
+        if final_response is None and unavailable is not None:
+            yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": str(unavailable)}
+            raise unavailable
         yield {
             "type": "final",
             "orch_step_id": step.id,
@@ -1313,6 +1347,15 @@ class ToolStepExecutor:
                         read_timeout_seconds=timedelta(seconds=mcp_call_timeout(actual_tool_name, tool_args)),
                         **(await call_kwargs_for(agent_name, run_id, tool_args)),
                     )
+                except Exception as exc:
+                    # Its app refused the sign-in, the token expired mid-run (F1349): said as the app's, the tool
+                    # never ran. Any other failure is the call's own, as before.
+                    from core.mcp_client import connect_failure
+                    from core.tool_availability import signed_out
+
+                    if signed_out(connect_failure(exc)):
+                        raise _unavailable(tool_name, server_module, error=exc) from exc
+                    raise
                 finally:
                     if token is not None:
                         browser_client.owner.reset(token)
@@ -1342,7 +1385,8 @@ class ToolStepExecutor:
                 return await self._execute_python_tool(target_tool, tool_args)
             # HTTP tool — with URL templating and method-aware arg routing
             return await self._execute_http_tool(target_tool, tool_args)
-        raise RuntimeError(f"Tool '{tool_name}' not found in tool router")
+        # Nothing answers it now: its app's session is gone, or the tool is (F1349).
+        raise _unavailable(tool_name, server_module)
 
     async def _execute_python_tool(self, tool: dict, tool_args: dict) -> str:
         """Execute a custom Python tool through the registered code runner.

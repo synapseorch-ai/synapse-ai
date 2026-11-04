@@ -70,6 +70,9 @@ class WorkerServerModule:
         # cloud's `definition["status"]` has documented `reauth_needed` since the
         # router was written and has never had anything able to set it.
         self.mcp_reauth_needed: list[str] = []
+        # Why each one did not open, in `mcp_client.connect_failure`'s scrubbed words: the engine says it when a step or
+        # an agent names one of its tools (F1349, `tool_availability`), as OSS says F1306's `last_error`.
+        self.mcp_errors: dict[str, str] = {}
         # One handle per server this module opened, each with its own task and
         # its own AsyncExitStack. Borrowed sessions (folded in from `shared`) are
         # deliberately absent: `close()` closes what this module opened, never
@@ -220,6 +223,7 @@ class WorkerServerModule:
                     f"{_reason(handle.error)}",
                 )
                 instance.mcp_disabled.append(server_name)
+                instance.mcp_errors[server_name] = _said(handle.error)
                 continue
 
             try:
@@ -452,6 +456,7 @@ class WorkerServerModule:
                     + ("  (re-authorisation needed)" if needs_auth else ""),
                 )
                 self._note(self.mcp_disabled, server_name)
+                self.mcp_errors[server_name] = _said(handle.error, cfg)
                 if needs_auth:
                     self._note(self.mcp_reauth_needed, server_name)
                     await report_mcp_status(server_name, "reauth_needed")
@@ -858,6 +863,19 @@ def _build_stdio_mcp_params(cfg: dict):
         args_raw = shlex.split(args_raw)
     env = cfg.get("env") or {}
     return StdioServerParameters(command=command, args=list(args_raw), env=env or None)
+
+
+def _said(exc: BaseException, config: dict | None = None) -> str:
+    """Why a server did not open, as anyone may read it (F1349): OSS's own words for it (F1306), scrubbed of its
+    token and an address's credentials, else this module's `_reason`."""
+    from core.mcp_client import connect_failure
+
+    if isinstance(exc, asyncio.CancelledError):
+        return _reason(exc)  # says what a cancelled connect usually means: an expired credential
+    try:
+        return connect_failure(exc, config)
+    except Exception:  # noqa: BLE001 — a reason is a courtesy; the server is off either way
+        return _reason(exc)
 
 
 def _reason(exc: BaseException) -> str:

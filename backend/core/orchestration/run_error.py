@@ -72,6 +72,9 @@ def reason_of(exc: BaseException, limit: int = 300) -> str:
     if isinstance(exc, Unreadable):
         return clean(str(exc))[:max(limit, 1200)]
     # A tool's rendered URL or header can be in its error: recorded by name (F854), and a key it quotes as a mark.
+    # A tool that isn't available is said in its own words, whole: which tool, why, and what to do (F1349).
+    if getattr(exc, "plain", False):
+        return clean(str(exc))[:max(limit, 600)]
     text = clean(str(exc))[:limit]
     return text if type(exc) is RuntimeError else f"{type(exc).__name__}: {text}"
 

@@ -32,6 +32,8 @@ FIXES: dict[str, tuple[str, ...]] = {
     "turn_limit": ("update_workflow",),
     "time_limit": ("update_workflow",),
     "tool_auth": ("app_reconnect", "set_agent_tools"),
+    # A tool that isn't available (F1349): its app reconnected, or another tool, then the run resumed from the step.
+    "tool_unavailable": ("app_reconnect", "edit_steps", "set_agent_tools", "resume_run"),
     "tool_input": ("edit_steps", "set_agent_instructions"),
     "tool_down": ("resume_run",),
     "tool": ("edit_steps", "set_agent_tools"),
@@ -51,6 +53,8 @@ MEANS: dict[str, str] = {
     "turn_limit": "the run used every turn its workflow allows",
     "time_limit": "the step or the run ran out of time",
     "tool_auth": "a tool's service refused its sign-in or key",
+    "tool_unavailable": "a tool the step names isn't available: its app is disconnected, needs signing in again or is "
+                        "turned off, or the tool is gone; it never ran, so the run can resume once it is back",
     "tool_input": "a tool's service refused what was sent to it",
     "tool_down": "a tool's service failed on its side",
     "tool": "a tool reported a failure",
@@ -83,6 +87,10 @@ def classify(error: str, entry: dict | None, *, status: str | None) -> tuple[str
         return "time_limit", None
     if text.startswith("RouteFailed") or "no default" in text or "Max iterations" in text:
         return "route", None
+    from core.tool_availability import LEAD
+
+    if text.startswith(LEAD):
+        return "tool_unavailable", None
     if text.startswith("ToolCallFailed") or entry.get("step_type") == "tool":
         found = _STATUS.search(text)
         http = int(found.group(1)) if found else None
