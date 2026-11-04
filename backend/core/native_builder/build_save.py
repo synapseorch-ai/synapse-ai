@@ -385,8 +385,12 @@ async def _models_moved(plan: O.Plan, checked: dict) -> list[str]:
     return out
 
 
-def _gates_moved(reviewed: list[O.Gate], now: list[O.Gate]) -> list[str]:
-    """Each approval or block that is not what the card said, in the card's words: was, and is."""
+def _gates_moved(reviewed: list[O.Gate], now: list[O.Gate], promised: dict[str, str] | None = None) -> list[str]:
+    """Each approval or block that is not what the card said, in the card's words: was, and is. `promised` are the
+    tools the card listed under "Asks you first" that had no gate to decide at the yes, being this build's to make or
+    connected after it, each with who holds it (F1375, prod-13): their ask, once they are here, is what the card said,
+    and one with no ask then is not (BLD1's read)."""
+    promised = promised or {}
     from core.native_builder.render import gate_words
 
     def key(g: O.Gate) -> tuple[str, str, str]:
@@ -396,17 +400,33 @@ def _gates_moved(reviewed: list[O.Gate], now: list[O.Gate]) -> list[str]:
     out = []
     for k in dict.fromkeys([*was, *is_]):
         before, after = was.get(k), is_.get(k)
-        if before == after:
+        if before == after or (before is None and after.decision == "confirm" and after.tool in promised):
             continue
         name = f"{(before or after).who} and `{k[2]}`"
         out.append(f"{name}: the card said \"{gate_words(before)}\", now "
                    + (f"\"{gate_words(after)}\"" if after else "it acts without asking") if before
                    else f"{name}: now \"{gate_words(after)}\"")
+    out += [f"{who} and `{tool}`: the card said \"asks you first\", now it acts without asking"
+            for tool, who in promised.items() if not any(g.tool == tool for g in now)]
     return out
+
+
+def _holder(plan: O.Plan, tool: str) -> str | None:
+    """The plan's new agent that holds `tool`, whose "Asks you first" the compile turns into a confirm; None when no
+    new agent holds it (a Tool step's own tool), where the card's ask is not one the run's policy keeps."""
+    return next((a.name for a in plan.agents if tool in a.tools), None)
 
 
 def _why_missing(gone: list[str], plan: O.Plan, state: dict) -> str:
     """F768's words, from the Plan's own tool status and the lookup's findings."""
+    found = _found_for(gone, plan, state)
+    return ("Nothing was built: " + _gone_words(gone) + ". "
+            + (("The research found: " + "; ".join(found) + ". ") if found else "")
+            + "Connect the app or service it needs, then ask me to build it again.")
+
+
+def _found_for(gone: list[str], plan: O.Plan, state: dict) -> list[str]:
+    """What the lookup found for the providers of the tools `gone`, each in a line."""
     findings = _obj(state.get(FINDINGS_KEY)) or {}
     providers = {t.provider for t in plan.tools if t.name in gone and t.provider}
     found = []
@@ -415,10 +435,11 @@ def _why_missing(gone: list[str], plan: O.Plan, state: dict) -> str:
             way = "its own MCP server" if option["how"] == "mcp" else "a public API"
             page = next(iter(option.get("sources") or []), "")
             found.append(f"{option['provider']} has {way}" + (f" ({page})" if page else ""))
-    names = ", ".join(f"`{t}`" for t in gone[:5])
-    return ("Nothing was built: this plan uses " + names + ", which nothing in this workspace provides now. "
-            + (("The research found: " + "; ".join(found) + ". ") if found else "")
-            + "Connect the app or service it needs, then ask me to build it again.")
+    return found
+
+
+def _gone_words(gone: list[str]) -> str:
+    return "this plan uses " + ", ".join(f"`{t}`" for t in gone[:5]) + ", which nothing in this workspace provides now"
 
 
 def _issues_said(issues: list[str]) -> list[str]:
@@ -438,6 +459,17 @@ PLAN_ANSWER_KEY = "plan_answer"
 #: What a second refusal adds, plainly.
 AGAIN = (" I planned it again once already. The tools I made stay; tell me what to change and I'll plan it again, "
          "or say \"stop\".")
+
+
+def _refused_after_the_yes(state: dict, events: list[dict], only: str, words: str, reason: str) -> dict:
+    """A save refused after the yes, nothing of the workflow saved yet, goes back to the planner once (F1295, F1375)
+    with the save's own words (`words`), the tools made and connected kept, for one more yes: never a dead end. A
+    second refusal stops and says so; the tools' own pass (`only`) stops as before, its route having no way back."""
+    if not only and not state.get(SAVE_REPLAN_KEY):
+        state[SAVE_REPLAN_KEY] = True
+        state[PLAN_ANSWER_KEY] = {"outcome": "replan", "refused": words}
+        return {"outcome": "replan", "refused": words, "effect": "", "does": ""}
+    return _stopped(events, reason + (AGAIN if state.get(SAVE_REPLAN_KEY) else ""))
 
 
 #: Where a save keeps what it has made, call by call, in the run's checkpointed progress: a re-run (a resume, a
@@ -612,31 +644,34 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
     gone = [t.name for t in now.tools if t.status != "present" and t.name not in making
             and not (only == "tools" and t.name in later)]
     if gone:
-        return _stopped(events, _why_missing(gone, plan, state))
-    if moved := _gates_moved(plan.gates, now.gates):
+        # The planner is given what the research found too, so the plan it draws again can use it (BLD1's read).
+        found = _found_for(gone, plan, state)
+        words = _gone_words(gone) + (f" (the research found: {'; '.join(found)})" if found else "")
+        return _refused_after_the_yes(state, events, only, words, _why_missing(gone, plan, state))
+    # The asks the card listed for tools that were not here to decide at the yes (F1375): approved as listed, and
+    # held to it once the tool is here.
+    here = {t.name for t in now.tools if t.status == "present"}
+    promised = {n: who for n in plan.approvals.asks_first
+                if (n in making or n in later) and n in here and (who := _holder(plan, n))}
+    if moved := _gates_moved(plan.gates, now.gates, promised):
         # The card promised what the run asks for (F964; SAI2's point 3): a policy changed since is not what was
         # approved.
-        return _stopped(events, "Nothing was built: what the run asks you for changed since your yes — "
-                                + "; ".join(moved) + ". Ask again to see the plan as it is now.")
+        words = "what the run asks you for changed since your yes — " + "; ".join(moved)
+        return _refused_after_the_yes(state, events, only, words,
+                                      f"Nothing was built: {words}. Ask again to see the plan as it is now.")
     if moved := await _models_moved(plan, checked):
         # The card said which model each new agent runs on, and the yes covered it: one this workspace can no longer
         # call, or a better fit since, is not what was approved.
-        return _stopped(events, "Nothing was built: the models this workspace can use changed since your yes — "
-                                + "; ".join(moved) + ". Ask again to see the plan as it is now.")
+        words = "the models this workspace can use changed since your yes — " + "; ".join(moved)
+        return _refused_after_the_yes(state, events, only, words,
+                                      f"Nothing was built: {words}. Ask again to see the plan as it is now.")
     issues = [i for i in await dry_issues(plan, server_module, await workspace(server_module), state)
               # A tool this build makes is not there until `step_make_tools` makes it (F944), nor one connected after
               # the yes until it is (F949).
               if not ("nothing here provides" in i and any(f"'{n}'" in i or f"`{n}`" in i for n in
                                                            [*making, *(later if only == "tools" else [])]))]
-    if issues and not only and not state.get(SAVE_REPLAN_KEY):
-        # Refused after the yes, nothing of it saved yet (F1295, prod-13): back to the planner once with the save's
-        # own words, the tools made and connected kept, and one more yes; never a dead end.
-        state[SAVE_REPLAN_KEY] = True
-        words = "; ".join(_issues_said(issues))
-        state[PLAN_ANSWER_KEY] = {"outcome": "replan", "refused": words}
-        return {"outcome": "replan", "refused": words, "effect": "", "does": ""}
     if issues:
-        return _stopped(events, _issues_reason(issues) + (AGAIN if state.get(SAVE_REPLAN_KEY) else ""))
+        return _refused_after_the_yes(state, events, only, "; ".join(_issues_said(issues)), _issues_reason(issues))
     if plan.kind == "update" and (moved := await _moved_since_read(state)):
         return _stopped(events, f"Nothing was changed: the workflow \"{moved}\" was changed since I read it for "
                                 "your review, so I left it as it is now. Ask again to change it.")

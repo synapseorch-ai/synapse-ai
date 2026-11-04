@@ -252,13 +252,16 @@ async def test_a_wish_for_a_model_the_wallet_cant_pay_is_said_never_picked(works
     assert "Warning writer: synapse.claude-sonnet-unpaid can't be paid for now (the wallet)." in checked["issues"]
 
 
-async def test_a_pick_gone_from_the_menu_since_the_yes_stops_the_save(client, workspace):
+async def test_a_pick_gone_from_the_menu_since_the_yes_plans_again_then_stops_the_save(client, workspace):
+    """F1375 B: the first refusal goes back to the planner in the same words (`refused`), the second stops."""
     run, _ = await _check(_draft(_writer(needs="reasoning")))
     run.shared_state["review_feedback"] = {"feedback": "Build it"}
     run.shared_state["plan_approval"], _ = await _call("approve_plan", {}, run)
     workspace["now"] = [e for e in MENU if e.id != "synapse.claude-sonnet"]  # refused since: off the menu
+    first, _ = await _call("save_build", {}, run)
+    assert first["outcome"] == "replan" and "synapse.claude-sonnet" in first["refused"], first
     saved, _ = await _call("save_build", {}, run)
-    assert saved["outcome"] != "saved" and "synapse.claude-sonnet" in saved["reason"]
+    assert saved["outcome"] == "stopped" and "synapse.claude-sonnet" in saved["reason"], saved
 
 
 # ── compiled, saved, priced ───────────────────────────────────────────────────────────────────────────────────────
@@ -292,18 +295,21 @@ async def test_the_save_makes_the_agent_on_its_pick(client):
     assert {a["name"]: a.get("model") for a in await load_user_agents()}["Warning writer"] == "synapse.claude-sonnet"
 
 
-async def test_a_menu_that_moved_since_the_yes_stops_the_save_and_says_so(client, workspace):
+async def test_a_menu_that_moved_since_the_yes_plans_again_then_stops_the_save_and_says_so(client, workspace):
+    """F1375 B: the first refusal names the agent, the pick it lost and the pick now, for the planner (`refused`);
+    the second stops in the same words; neither saves the agent."""
     from core.routes.agents import load_user_agents
 
     run, _ = await _check(_draft(_writer(needs="reasoning")))
     run.shared_state["review_feedback"] = {"feedback": "Build it"}
     run.shared_state["plan_approval"], _ = await _call("approve_plan", {}, run)
     workspace["now"] = [e for e in MENU if e.id != "synapse.claude-sonnet"]
-    saved, _ = await _call("save_build", {}, run)
-    assert saved["outcome"] != "saved"
-    assert "Warning writer" in saved["reason"] and "synapse.claude-sonnet" in saved["reason"]
-    assert "synapse.claude-haiku" in saved["reason"]
-    assert "Warning writer" not in {a["name"] for a in await load_user_agents()}
+    for said, outcome in (("refused", "replan"), ("reason", "stopped")):
+        saved, _ = await _call("save_build", {}, run)
+        assert saved["outcome"] == outcome, saved
+        assert "Warning writer" in saved[said] and "synapse.claude-sonnet" in saved[said]
+        assert "synapse.claude-haiku" in saved[said]
+        assert "Warning writer" not in {a["name"] for a in await load_user_agents()}
 
 
 # ── the planner's pack ────────────────────────────────────────────────────────────────────────────────────────────

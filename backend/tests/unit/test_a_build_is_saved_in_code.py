@@ -220,16 +220,21 @@ async def test_a_plan_changed_after_the_yes_saves_nothing(client):
     assert "Warning writer" not in agents and not [n for n in flows if n in ("Another", "Rotterdam wind warning")]
 
 
-async def test_a_tool_gone_since_the_yes_stops_the_build_before_any_write_and_says_which(client):
+async def test_a_tool_gone_since_the_yes_plans_again_then_stops_before_any_write_and_says_which(client):
+    """F1375 B: the first refusal goes back to the planner naming the tool, the second stops; neither writes."""
     from core.store.resources import delete_tool_named
 
     run, _ = await _reviewed(_plan(CHECK, {**TELL, "agent": "agent_desk"}))
     await _yes(run)
     await delete_tool_named("rotterdam_weather")
+    first, events = await _call("save_build", {}, run)
+    assert first["outcome"] == "replan" and not [e for e in events if e.get("type") == "resource_saved"]
+    assert "`rotterdam_weather`" in first["refused"], first
     out, events = await _call("save_build", {}, run)
     assert out["outcome"] == "stopped" and not [e for e in events if e.get("type") == "resource_saved"]
     [stopped] = [e for e in events if e.get("type") == "build_stopped"]
     assert "`rotterdam_weather`" in stopped["reason"] and "Nothing was built" in stopped["reason"]
+    assert stopped["reason"].endswith(build_save.AGAIN), stopped["reason"]
 
 
 async def test_a_failure_mid_way_removes_what_this_pass_made_and_says_why(client, monkeypatch):

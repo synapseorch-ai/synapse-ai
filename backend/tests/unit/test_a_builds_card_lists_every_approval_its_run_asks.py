@@ -204,8 +204,9 @@ async def test_a_reused_agents_blocked_tool_the_plan_does_not_name_is_said_but_d
     assert "Vault Clerk can't use `file_summary`: its own tool policy blocks it" in out["review"]
 
 
-async def test_the_gates_are_covered_by_the_yes_and_a_policy_changed_since_stops_the_save(client):
-    """SAI2's point 3: the card promised what the run asks; a policy moved since the review is not what was approved."""
+async def test_the_gates_are_covered_by_the_yes_and_a_policy_changed_since_plans_again_then_stops_the_save(client):
+    """SAI2's point 3: the card promised what the run asks; a policy moved since the review is not what was approved.
+    F1375 B: the first such refusal goes back to the planner in the same words, the second stops; neither writes."""
     from core.native_builder.build_plan import reviewed_of
     from core.product_tools.approved import digest
 
@@ -216,6 +217,9 @@ async def test_the_gates_are_covered_by_the_yes_and_a_policy_changed_since_stops
     approved, _ = await _call("approve_plan", {}, run)
     run.shared_state["plan_approval"] = approved
     await _clerk()  # the Vault Clerk's own confirm is taken off after the yes
+    first, events = await _call("save_build", {}, run)
+    assert first["outcome"] == "replan" and not [e for e in events if e.get("type") == "resource_saved"]
+    assert "Vault Clerk" in first["refused"] and "`file_summary`" in first["refused"], first
     saved, events = await _call("save_build", {}, run)
     assert saved["outcome"] == "stopped" and not [e for e in events if e.get("type") == "resource_saved"]
     [stopped] = [e for e in events if e.get("type") == "build_stopped"]
