@@ -627,6 +627,20 @@ def _body_message(text: str) -> str | None:
     return said.strip() if isinstance(said, str) and said.strip() else None
 
 
+def _refusal_said(response: "httpx.Response") -> str:
+    """A refused call's own words (F1318, prod-14): the provider's sentence (`_body_message`), else its text, kept as
+    a stored run error is (held secrets named, key-shaped tokens marked) and capped; "" when there is no body to read.
+    So `model_availability.model_gone` reads "The model … does not exist", not httpx's "Client error … for url"."""
+    from core.secret_scrub import for_storage, scrub_credentials
+
+    try:
+        text = str(response.text or "")
+    except Exception:  # noqa: BLE001 — a body never read (a stream's): httpx's own sentence, as before
+        return ""
+    said = " ".join((_body_message(text) or text).split())
+    return scrub_credentials(for_storage(said))[0][:300]
+
+
 class EmptyAnswer(LLMError):
     """A provider answered, and the answer holds nothing usable (F133).
 
@@ -1336,7 +1350,8 @@ async def call_openai(model, messages, api_key, tools=None, images=None, prompt_
                 await asyncio.sleep(backoff)
                 continue
         except httpx.HTTPStatusError as e:
-            last_error = f"HTTP {e.response.status_code}: {str(e)[:200]}"
+            # The provider's own words, not httpx's (F1318): a gone model's refusal says so in its body.
+            last_error = f"HTTP {e.response.status_code}: {_refusal_said(e.response) or str(e)[:200]}"
             _log.warning(f"❌ OpenAI HTTP error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES and e.response.status_code in (429, 499, 500, 502, 503, 529):
                 await asyncio.sleep(backoff)
@@ -2487,7 +2502,8 @@ async def call_grok(model, messages, system, api_key, tools=None, images=None, p
                 await asyncio.sleep(backoff)
                 continue
         except httpx.HTTPStatusError as e:
-            last_error = f"HTTP {e.response.status_code}: {str(e)[:200]}"
+            # The provider's own words, not httpx's (F1318): a gone model's refusal says so in its body.
+            last_error = f"HTTP {e.response.status_code}: {_refusal_said(e.response) or str(e)[:200]}"
             _log.warning(f"❌ Grok HTTP error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES and e.response.status_code in (429, 499, 500, 502, 503, 529):
                 await asyncio.sleep(backoff)
@@ -2595,7 +2611,8 @@ async def call_deepseek(model, messages, system, api_key, tools=None, images=Non
                 await asyncio.sleep(backoff)
                 continue
         except httpx.HTTPStatusError as e:
-            last_error = f"HTTP {e.response.status_code}: {str(e)[:200]}"
+            # The provider's own words, not httpx's (F1318): a gone model's refusal says so in its body.
+            last_error = f"HTTP {e.response.status_code}: {_refusal_said(e.response) or str(e)[:200]}"
             _log.warning(f"❌ DeepSeek HTTP error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES and e.response.status_code in (429, 499, 500, 502, 503, 529):
                 await asyncio.sleep(backoff)
