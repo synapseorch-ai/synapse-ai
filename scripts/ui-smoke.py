@@ -13799,8 +13799,8 @@ async def check_brwrunpage(browser) -> str:
 @check
 async def check_brwreplayrun(browser) -> str:
     """A Browser step's replay on its run's page (F1363; REL3's rc4 proof): live, the pane says the recording drives,
-    never the agent; ended, every replayed step is a line with its kept picture, and one with none says so, never
-    "while you drive"."""
+    never the agent, and Take over says the recording stops after this step (F1367); ended, every replayed step is a
+    line with its kept picture, and one with none says so, never "while you drive"."""
     global _M2B_STREAM
     kept = _M2B_STREAM
 
@@ -13833,6 +13833,28 @@ async def check_brwreplayrun(browser) -> str:
                 bad.append(f"a replay's live pane does not say the recording drives ({str(e)[:120]})")
             if await region.get_by_text("The agent is driving").count():
                 bad.append("a replay's live pane says the agent is driving")
+            # F1367: a press on the page offers Take over, saying the recording stops after this step; Take over
+            # takes the wheel (the replay stops before its next step: test_a_take_over_stops_the_replay).
+            taken: list[str] = []
+
+            async def take(route):
+                taken.append(route.request.url)
+                await route.fulfill(status=200, json={"wheel": "person"})
+
+            await ctx.route(re.compile(r".*/api/browser/bsP/wheel/take$"), take)
+            try:
+                await region.locator("img").first.click()
+                ask = page.get_by_role("dialog", name="The recording is driving")
+                await ask.wait_for(timeout=4_000)
+                words = await ask.inner_text()
+                if "The recording stops after this step" not in words or "The agent finishes" in words:
+                    bad.append(f"Take over during a replay says {words[:160]!r}")
+                await ask.get_by_role("button", name="Take over").click()
+                await asyncio.sleep(0.6)
+                if not taken:
+                    bad.append("Take over during a replay never took the wheel")
+            except Exception as e:
+                bad.append(f"a press on a replaying page offers no Take over ({str(e)[:120]})")
         finally:
             await ctx.close()
 
@@ -13874,8 +13896,8 @@ async def check_brwreplayrun(browser) -> str:
         _M2B_STREAM = kept
     if bad:
         raise AssertionError("; ".join(bad))
-    return ("a replay's live pane says the recording drives; ended, each replayed step shows its kept picture, and "
-            "one with none says so")
+    return ("a replay's live pane says the recording drives, and Take over that it stops after this step; ended, each "
+            "replayed step shows its kept picture, and one with none says so")
 
 
 @check

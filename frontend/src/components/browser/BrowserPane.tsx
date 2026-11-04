@@ -364,7 +364,9 @@ export function BrowserPane({
                  className="flex w-80 max-w-[calc(100%-2rem)] flex-col gap-2.5 rounded-xl bg-bg p-4 shadow-elevated">
               <p className="text-sm font-semibold text-text">{agentDriving}</p>
               <p className="text-sm text-text-muted">
-                Take over to use the page yourself. The agent finishes what it is doing, then waits for you.
+                {replaying
+                  ? 'Take over to use the page yourself. The recording stops after this step, then waits for you.'
+                  : 'Take over to use the page yourself. The agent finishes what it is doing, then waits for you.'}
               </p>
               <div className="flex justify-end gap-2">
                 <Button variant="secondary" size="sm" onClick={() => setNudge(false)}>Keep watching</Button>

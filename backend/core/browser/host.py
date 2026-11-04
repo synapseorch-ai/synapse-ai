@@ -763,6 +763,8 @@ class Session:
         self.replay_sends = ({x for st in steps for x in (st.get("sends") or [])} if unattended else None)
         for step in [st for st in steps if int(st.get("n") or 0) >= from_n]:
             self.replay_at = int(step.get("n") or 0)
+            if self.wheel == "person":  # they took over during the step before: nothing more is done on their page
+                return self._replay_taken(step)
             stopped = self._replay_held(step) or await self._replay_step(step, unattended)
             if stopped is not None:
                 return stopped
@@ -847,6 +849,18 @@ class Session:
         if self.replaying is not None:
             self.replaying["turn_at"] = step.get("n")
         return {"handover": {**(self.handover or {}), "session_id": self.id}, "at": step.get("n"),
+                "step_id": step.get("id")}
+
+    def _replay_taken(self, step: dict) -> dict:
+        """The person took over (F1367): the step under way finished, as an action can't stop halfway, and the replay
+        stops before this one, as their turn. Handed back, it carries on from this step (`turn_at`: the one before)."""
+        n = int(step.get("n") or 1)
+        if self.replaying is not None:
+            self.replaying["turn_at"] = n - 1
+        line = step.get("line") or "its next step"
+        reason = (f"You took over, so the recording stopped before step {n}, \"{line}\". "
+                  "Hand the browser back when you're done, and it carries on from that step.")
+        return {"handover": {"kind": "took_over", "reason": reason, "session_id": self.id}, "at": n,
                 "step_id": step.get("id")}
 
     def _replay_turn(self, step: dict, kind: str, reason: str, **extra) -> dict:
