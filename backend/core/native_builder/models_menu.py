@@ -104,6 +104,19 @@ async def _own(model_id: str, pricing: dict) -> ModelEntry:
         can_pay=True, window=window_tokens(model_id))
 
 
+async def _pricing() -> dict:
+    """The rate card: the store's rows over the seed it started from."""
+    try:
+        from core.store.usage import load_pricing
+
+        pricing = await load_pricing() or {}
+    except Exception:  # noqa: BLE001 — no rate card: the seeded one, below
+        pricing = {}
+    from core.model_pricing import DEFAULT_MODEL_PRICING
+
+    return {**DEFAULT_MODEL_PRICING, **pricing}
+
+
 async def menu() -> list[ModelEntry]:
     """Every model this workspace can call, with what is known of each; [] when the list cannot be read."""
     from core import model_choices
@@ -113,15 +126,7 @@ async def menu() -> list[ModelEntry]:
         if not listed:
             return []
         ids = list(dict.fromkeys(m for models in listed.values() for m in models))
-        try:
-            from core.store.usage import load_pricing
-
-            pricing = await load_pricing() or {}
-        except Exception:  # noqa: BLE001 — no rate card: the seeded one, below
-            pricing = {}
-        from core.model_pricing import DEFAULT_MODEL_PRICING
-
-        pricing = {**DEFAULT_MODEL_PRICING, **pricing}  # the store's rows over the seed it started from
+        pricing = await _pricing()
         entries = [await _own(i, pricing) for i in ids]
         if _facts is not None:
             said = await _facts(ids) or {}
@@ -212,6 +217,24 @@ def _best(fitting: list[ModelEntry], needs: str, *, has_tools: bool, narrow: boo
     if default and (mine := next((e for e in fitting if e.id == default), None)):
         return mine, "default"
     return sorted(_within(fitting, True), key=lambda e: _strongest_first(e, has_tools))[0], "best"
+
+
+#: The price bands a stand-in keeps to (F1369), USD per 1M output tokens: never in a dearer band than the refused one.
+STAND_IN_BANDS = (1.0, 5.0, float(AUTO_PICK_CEILING_USD_PER_MTOK_OUT))
+
+
+async def stand_in(refused: str, *, has_tools: bool) -> str | None:
+    """The model a call its provider refused as gone answers from, once (F1369, cap-04): the cheapest that fits from
+    the **same provider and the same pool** (the workspace's own key, or the platform's), never in a dearer price band
+    than the refused one's, never above the automatic ceiling. None when there is none, or the refused one's price is
+    not known: a person who chose one provider never has a call sent to another because a model retired."""
+    gone = await _own(refused, await _pricing())
+    if gone.source in ("cli", "local") or gone.price_out is None:
+        return None
+    bound = next((b for b in STAND_IN_BANDS if gone.price_out <= b), STAND_IN_BANDS[-1])
+    fitting = [e for e in await menu() if e.id != refused and e.provider == gone.provider and e.source == gone.source
+               and _fits(e, "simple", has_tools) and e.price_out is not None and e.price_out <= bound]
+    return sorted(fitting, key=lambda e: _cheapest_first(e, has_tools))[0].id if fitting else None
 
 
 def pick(needs: str, *, has_tools: bool, menu: list[ModelEntry], narrow: bool = False, long_inputs: bool = False,

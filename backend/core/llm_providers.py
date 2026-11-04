@@ -4125,7 +4125,41 @@ async def _chat_ollama(call: ChatCall, spec) -> LLMResult:
 
 
 @_spans.traced_coroutine("gen_ai.chat", _spans.model_call_attributes, model_call=True)
-async def generate_response_ex(
+async def generate_response_ex(prompt_msg, sys_prompt, mode, current_model, current_settings, *args, **kwargs):
+    """Unified LLM dispatch (`_generate_response_once`), and once, for a model its provider refused as gone, the same
+    call from a stand-in of the same provider and pool (F1369, cap-04: `models_menu.stand_in`). The refused call wrote
+    no usage, so only the call that answered is billed, on either host; the run says so (`said_stand_in`) and the
+    agent or step keeps its model. Any other failure, a local model, no stand-in, or the stand-in's own failure is
+    raised as before."""
+    try:
+        return await _generate_response_once(prompt_msg, sys_prompt, mode, current_model, current_settings,
+                                             *args, **kwargs)
+    except LLMError as failed:
+        tools = kwargs["tools"] if "tools" in kwargs else (args[0] if args else None)
+        instead = await _stand_in_for(current_model, failed, current_settings, tools)
+        if instead is None:
+            raise
+    answered = await _generate_response_once(prompt_msg, sys_prompt, mode, instead, current_settings, *args, **kwargs)
+    _model_availability.said_stand_in(current_model, instead)
+    return answered
+
+
+async def _stand_in_for(model, failed: LLMError, settings, tools) -> str | None:
+    """The stand-in for a call refused because its model is gone, or None (never for a local model)."""
+    if not model or not _model_availability.model_gone(failed):
+        return None
+    if _model_availability.is_local(detect_provider_from_model(model), settings):
+        return None
+    try:
+        from core.native_builder import models_menu
+
+        return await models_menu.stand_in(model, has_tools=bool(tools))
+    except Exception:  # noqa: BLE001 — no menu to read: the refusal stands, as before
+        _log.warning("no stand-in read for %s", model, exc_info=True)
+        return None
+
+
+async def _generate_response_once(
     prompt_msg,
     sys_prompt,
     mode,

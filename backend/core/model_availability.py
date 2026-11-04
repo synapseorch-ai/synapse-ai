@@ -25,6 +25,8 @@ from __future__ import annotations
 import ipaddress
 import re
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from urllib.parse import urlparse
 
 from core.log import get_logger
@@ -43,7 +45,42 @@ RETIRED: dict[str, dict[str, str]] = {
         "provider": "gemini", "since": "2026-10-29",
         "reason": "This model models/gemini-2.5-flash-lite is no longer available to new users.",
     },
+    # CAP3's cap-04 (F1369): still listed by OpenAI, refused to a workspace's own key.
+    "gpt-4.1-nano": {
+        "provider": "openai", "since": "2026-11-04",
+        "reason": "The model `gpt-4.1-nano` has been deprecated.",
+    },
 }
+
+#: The stand-ins said in this step (F1369): a call refused because its model is gone that answered from another of
+#: the same provider. The engine reads them after each step (`noting_stand_ins`); a call outside one says nothing.
+_STAND_INS: ContextVar[list[str] | None] = ContextVar("model_stand_ins", default=None)
+
+
+@contextmanager
+def noting_stand_ins():
+    """The stand-ins said while it is open, in words: `with noting_stand_ins() as said: …`."""
+    said: list[str] = []
+    token = _STAND_INS.set(said)
+    try:
+        yield said
+    finally:
+        _STAND_INS.reset(token)
+
+
+def begin_stand_ins() -> list[str]:
+    """A step's own list of stand-ins said, from here on in this context (the engine's, at each step's start)."""
+    said: list[str] = []
+    _STAND_INS.set(said)
+    return said
+
+
+def said_stand_in(refused: str, used: str) -> None:
+    """Say that a call to `refused`, which its provider no longer serves, answered from `used` (F1369)."""
+    said = _STAND_INS.get()
+    if said is not None:
+        said.append(f"`{refused}` is no longer served by its provider, so this step used `{used}` instead, from the "
+                    "same provider and keys. Set the model on the step or its agent to keep that one.")
 
 
 def retired_for(provider: str) -> dict[str, dict]:
