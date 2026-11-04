@@ -14,6 +14,8 @@ it needs to read the other workflow, and a run's caps stop it.
 """
 from __future__ import annotations
 
+from typing import Any
+
 #: The five step fields that carry an expression. `core.expressions` decides
 #: what one may contain; this is only the list of places to look.
 EXPRESSION_FIELDS = (
@@ -100,6 +102,35 @@ def browser_step_problems(orch: dict, agents: dict) -> list[str]:
     return found
 
 
+def engine_key_sentence(step: Any) -> str:
+    """Why a step may not write `step`'s output key, one that starts with an underscore (F1315)."""
+    get = step.get if isinstance(step, dict) else (lambda k: getattr(step, k, None))
+    return (f"Step '{get('name') or get('id')}' writes '{get('output_key')}', a key that starts with an underscore: "
+            "those are the engine's own, and no step may write one. Give it another output key.")
+
+
+def engine_key_defaults(schema: Any) -> list[str]:
+    """A sentence for each key of a workflow's declared state that starts with an underscore and has a default: the
+    engine's own keys are never set by a workflow (F1315)."""
+    if not isinstance(schema, dict):
+        return []
+    return [f"The workflow's state gives '{key}' a default, and a key that starts with an underscore is the engine's "
+            "own, which no workflow may set. Give it another name." for key, field in schema.items()
+            if str(key).startswith("_") and isinstance(field, dict) and "default" in field]
+
+
+def reserved_problems(steps: list) -> list[str]:
+    """A sentence for the Tool steps that name Synapse AI's own steps, which only its own run takes, and one for each
+    step that writes an engine key (F1315)."""
+    from core.builder_access import run_only_named
+
+    steps = [s for s in steps or [] if isinstance(s, dict)]
+    found = [engine_key_sentence(s) for s in steps if str(s.get("output_key") or "").startswith("_")]
+    if own := run_only_named([s.get("forced_tool") for s in steps]):
+        found.insert(0, own)
+    return found
+
+
 def refusal(orch: dict, agents: dict) -> str | None:
     """Why `orch` may not be saved, in one paragraph; `None` when it may."""
     unsafe = expression_problems(orch.get("steps") or [], unsafe_only=True)
@@ -111,6 +142,9 @@ def refusal(orch: dict, agents: dict) -> str | None:
             "An expression uses something this engine will not run. " + " ".join(p.rstrip(".") + "." for p in unsafe)
             + " " + vocabulary_sentence()  # what it may use, from the tables that decide it (F957)
         )
+    if not orch.get("system"):  # Synapse AI's own workflow is its own run's (F1315)
+        parts += reserved_problems(orch.get("steps") or [])
+        parts += engine_key_defaults(orch.get("state_schema"))
     parts += self_calls(orch, agents)
     parts += browser_step_problems(orch, agents)
     if not parts:

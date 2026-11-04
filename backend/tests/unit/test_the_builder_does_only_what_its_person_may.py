@@ -44,9 +44,10 @@ def roles():
     builder_access.forget_runs()
 
 
-async def _run_for(user_id: str | None, run_id: str = "builder_abc") -> str:
+async def _run_for(user_id: str | None, run_id: str = "builder_abc",
+                   orchestration_id: str = "orch_native_builder") -> str:
     state = {builder_access.CALLER_KEY: {"user_id": user_id}} if user_id is not ... else {}
-    await SharedState(OrchestrationRun(run_id=run_id, orchestration_id="orch_native_builder",
+    await SharedState(OrchestrationRun(run_id=run_id, orchestration_id=orchestration_id,
                                        shared_state=state)).checkpoint()
     return run_id
 
@@ -113,9 +114,16 @@ async def test_the_role_is_read_on_every_call_not_when_the_run_started(roles):
 
 
 async def test_a_run_without_a_person_is_untouched(roles):
-    run_id = await _run_for(..., run_id="run_plain")  # a workflow's run: no `_caller`
+    run_id = await _run_for(..., run_id="run_plain", orchestration_id="orch_plain")  # a workflow's run: no `_caller`
     assert "error" not in await _call("create_agent", {"name": "Plain", "system_prompt": "x"}, run_id)
     assert "error" not in await _call("create_agent", {"name": "NoRun", "system_prompt": "x"}, None)
+
+
+async def test_its_own_run_that_names_no_person_does_nothing(roles):
+    """F1315: on a host with people, Synapse AI's own run acts for the person who started it, or for no one."""
+    run_id = await _run_for(..., run_id="builder_no_person")
+    refused = await _call("create_agent", {"name": "Nobody's", "system_prompt": "x"}, run_id)
+    assert refused.get("error") == builder_access.NO_ONE
 
 
 async def test_a_tool_sees_who_the_run_works_for(roles):

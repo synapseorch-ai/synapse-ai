@@ -63,6 +63,11 @@ def set_role_source(fn: RoleSource | None) -> None:
     _role_source = fn
 
 
+def tells_people_apart() -> bool:
+    """Whether this host has people with roles (cloud), not the one owner of the self-hosted product."""
+    return _role_source is not None
+
+
 async def role_of(user_id: str) -> Role:
     """`user_id`'s role in the bound workspace. Without a host source, the owner (the self-hosted product)."""
     if _role_source is None:

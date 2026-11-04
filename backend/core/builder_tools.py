@@ -109,6 +109,10 @@ async def _workflows_called(orch: dict, agents: dict) -> tuple[list[dict], list[
                 )
                 continue
             if child.get("system"):
+                # Synapse AI's own workflow acts for the person who asks it: no workflow may run it (F1315).
+                kind = "Workflow" if direct else "Agent"
+                issues.append(f"{where}{kind} step '{s.get('id')}' runs Synapse AI's own workflow, which no "
+                              "workflow may run: point it at one of this workspace's workflows.")
                 continue
             called.append(child)
             await visit(child, (*chain, child_id))
@@ -329,6 +333,16 @@ def _refuse_unsafe_expression(steps: list) -> dict | None:
     }
 
 
+def _refuse_engine_key_defaults(fields: dict) -> dict | None:
+    """Refuse a declared state that gives an engine key (a leading underscore) a default (F1315): one rule with every
+    door that saves a workflow (`save_rules.engine_key_defaults`)."""
+    from core.orchestration.save_rules import engine_key_defaults
+
+    if said := engine_key_defaults(fields.get("state_schema")):
+        return {"error": "Refusing to save: " + " ".join(said)}
+    return None
+
+
 def _refuse_misshapen_steps(steps: list) -> dict | None:
     """Refuse steps the engine's own step model would not read (F1047).
 
@@ -343,6 +357,10 @@ def _refuse_misshapen_steps(steps: list) -> dict | None:
     from core.models_orchestration import StepConfig
     from core.orchestration.read_shapes import shape_problem as _shape_problem
 
+    from core.orchestration.save_rules import reserved_problems
+
+    if reserved := reserved_problems(steps):  # Synapse AI's own steps, an engine key (F1315): never a step's
+        return {"error": "Refusing to save: " + " ".join(reserved)}
     problems = []
     for s in steps:
         try:
@@ -2179,7 +2197,7 @@ async def execute_builder_tool(tool_name: str, args: dict, server_module: Any) -
 
 
 async def execute_builder_tool_with_events(
-    tool_name: str, args: dict, server_module: Any, *, run_id: str | None = None
+    tool_name: str, args: dict, server_module: Any, *, run_id: str | None = None, door: str | None = None
 ) -> tuple[str, list[dict]]:
     """Dispatch a builder tool, returning its JSON result *and* what it changed.
 
@@ -2188,13 +2206,16 @@ async def execute_builder_tool_with_events(
     is the point: the panel used to recover "an orchestration was saved" by
     running a regex over a 500-character truncation of the result, which failed
     on any orchestration big enough to be worth building.
+
+    `door`: how an agent or a workflow named the tool, `"agent"` or `"step"`, so that only Synapse AI's own run takes
+    its own steps (F1315); None for the install's own direct call.
     """
     events: list[dict] = []
     token = _current_run.set(run_id)
     try:
         # Only what the run's person may do (ASSIST1, F681): a write is refused below builder, by their role now.
         from core.builder_access import acting_for, refusal
-        refused, caller = await refusal(tool_name, run_id)
+        refused, caller = await refusal(tool_name, run_id, door=door)
         if refused:
             return json.dumps({"error": refused}), []
         from core.native_builder import turn_facts
@@ -2776,6 +2797,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
         _normalize_state_schema_arg(args)
+        if (refused := _refuse_engine_key_defaults(args)) is not None:
+            return refused
         _normalize_steps_arg(args)
         steps = args.get("steps", [])
         if not isinstance(steps, list) or not steps:
@@ -2851,6 +2874,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         except ValueError as e:
             return {"error": str(e)}
         _normalize_state_schema_arg(fields)
+        if (refused := _refuse_engine_key_defaults(fields)) is not None:
+            return refused
         _normalize_steps_arg(fields)
         if "steps" in fields and isinstance(fields["steps"], list):
             fields["steps"] = _fill_step_defaults(fields["steps"])
@@ -2890,6 +2915,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             orch_id = _mint_id("orch")
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         _normalize_state_schema_arg(args)
+        if (refused := _refuse_engine_key_defaults(args)) is not None:
+            return refused
         try:
             caps = _run_cap_args(args)
         except ValueError as e:
@@ -3102,6 +3129,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             if key in args and args[key] is not None:
                 raw_fields[key] = args[key]
         _normalize_state_schema_arg(raw_fields)
+        if (refused := _refuse_engine_key_defaults(raw_fields)) is not None:
+            return refused
         allowed = {"name", "description", "entry_step_id", "state_schema",
                    "max_total_turns", "timeout_minutes", "strict_state_types", "result_key"}
         fields = {k: v for k, v in raw_fields.items() if k in allowed}

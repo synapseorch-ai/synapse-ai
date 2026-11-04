@@ -161,6 +161,9 @@ async def _save_agent(agent: Agent) -> dict:
 
     document = agent.dict()
     await _check_type(document)
+    from core.builder_access import run_only_named
+    if (own := run_only_named(document.get("tools"))) is not None:  # only Synapse AI's own run takes these (F1315)
+        raise HTTPException(status_code=422, detail=own)
     if document.get("knowledge"):
         # The bases it answers from, held to the builder's check (F1223): only one added now is asked about, so an
         # agent whose base was deleted or turned off since saves as it is.

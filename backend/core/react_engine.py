@@ -3770,7 +3770,7 @@ async def run_agent_step(
                     resource_events: list[dict] = []
                     try:
                         raw_output, resource_events = await execute_builder_tool_with_events(
-                            tool_name, tool_args, server_module, run_id=run_id
+                            tool_name, tool_args, server_module, run_id=run_id, door="agent"
                         )
                     except Exception as e:
                         raw_output = json.dumps({"error": str(e)})

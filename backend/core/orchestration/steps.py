@@ -675,6 +675,9 @@ async def run_nested_workflow(
     # By id, through the resource provider — the same path resume takes.
     # This used to load every orchestration in the tenant and scan.
     sub_orch_data = await resolve_orchestration(sub_orch_id)
+    if sub_orch_data and sub_orch_data.get("system"):
+        # Synapse AI's own orchestration acts for the person who asks it, so no workflow runs it (F1315).
+        raise RuntimeError(f"The {source} names Synapse AI's own workflow, which no workflow may run.")
     if sub_orch_data and sub_orch_data.get("is_active", True) is False:
         # Deleted and kept as a record: never run (F408).
         raise RuntimeError(gone)
@@ -1281,8 +1284,17 @@ class ToolStepExecutor:
             # The run's id lets a builder tool tell its own run's work from
             # another's — `finish_build` removes only what this run left (F156).
             output, saved = await execute_builder_tool_with_events(
-                tool_name, tool_args, server_module, run_id=run_id
+                tool_name, tool_args, server_module, run_id=run_id, door="step"
             )
+            # Refused because no one may have this run call it (F1315): the step fails and the run stops in words,
+            # so no later step reads, or shows a person, what this one never wrote.
+            from core.builder_access import NO_ONE, run_only
+            try:
+                said = json.loads(output).get("error")
+            except (ValueError, AttributeError):
+                said = None
+            if said in (run_only(tool_name), NO_ONE):
+                raise ToolCallFailed(said, retryable=False)
             if resource_events is not None:
                 resource_events.extend(saved)
             return output

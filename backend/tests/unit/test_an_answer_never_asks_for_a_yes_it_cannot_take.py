@@ -119,6 +119,13 @@ class TestThePersonSeesOneReplyTheCheckedOne:
             yield {"type": "final", "response": TURN_3}
 
         monkeypatch.setattr(re_mod, "run_agent_step", reporter)
+        # The slice is Synapse AI's own steps, which run only in its own run (F1315): the host's builder ids name it.
+        from core.native_builder import identity
+
+        async def builder_ids():
+            return ["orch_f1243"]
+
+        monkeypatch.setattr(identity, "_host_ids", builder_ids)
         await S.seed_agents([S.make_agent(id="agent_answers", name="Answers")])
         answer = {**STEPS["step_answer_workspace"], "agent_id": "agent_answers"}
         orch = Orchestration.model_validate({

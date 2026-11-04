@@ -210,9 +210,9 @@ async def feature_switch(off: _FeatureOff) -> tuple[str, dict | None]:
 
 
 def _caller() -> Caller:
-    from core.builder_access import current_caller
+    from core.builder_access import acting_caller
 
-    return current_caller() or Caller(role=Role.OWNER, via="assistant")
+    return acting_caller()  # the run's person; never the owner inside a run that names no one (F1315)
 
 
 #: The id at the end of what a listing printed, `"name" (id)` or `name (id) — detail` (F760).
