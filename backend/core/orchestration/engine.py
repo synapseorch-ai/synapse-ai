@@ -29,6 +29,7 @@ from .answers import QuestionNotAsked
 from .time_limits import CONTAINERS, OWN_BUDGET, deadline_scope, run_ceiling, step_time_limit, timed_out
 from .logger import OrchestrationLogger
 
+from core import model_availability as _model_availability
 from core.log import get_logger
 from core.secret_scrub import scrub_secrets_in
 from core.telemetry import spans as _spans
@@ -566,6 +567,8 @@ class OrchestrationEngine:
             # wrote — `output_key` alone misses every multi-write step: parallel
             # branches, merge, a nested orchestration, a loop body.
             state_before = dict(run.shared_state)
+            # The stand-ins this step's model calls said (F1369), said after it as its warnings.
+            stand_ins = _model_availability.begin_stand_ins()
 
             try:
                 # anyio.fail_after installs a cancel scope on the CURRENT task —
@@ -726,6 +729,13 @@ class OrchestrationEngine:
                         if logger:
                             logger.log_event(warning)
                         yield warning
+                # A model its provider no longer serves answered from a stand-in (F1369): said in the step's run.
+                for line in list(stand_ins):
+                    warning = {"type": "step_warning", "orch_step_id": step.id, "step_name": step.name,
+                               "message": line}
+                    if logger:
+                        logger.log_event(warning)
+                    yield warning
 
                 # If END step or timeout set status, break out
                 if run.status in ("completed", "failed"):
