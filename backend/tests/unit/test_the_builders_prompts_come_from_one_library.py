@@ -159,7 +159,10 @@ from core.native_builder import prompt_lint, seed
 #: F1325's readers: topic `tool` named in both topic lists and in rule 25 (the reader guards), 5526f648… (on fix-forward 17).
 #: F1359: plan_steps.md says what a code step reads (the run's own message is state.user_input; a human step answers an
 #: object; a tool step's JSON is parsed when its fields are read, F1358's words), fe45f2c3… (on fix-forward 18).
-BUNDLE_SHA256 = "fe45f2c3bb86914520a25302e975314b1b59d86e0e18f5ec1fa7716b575aca6c"
+#: F1365 + F1366 + F1368 (TRI1): the person's words for what to count, filter or pick, and the source they name
+#: (plan_steps.md), the prompt writer's echo, running a tool once is its Test (# Choose), and F1364's `asked` and
+#: `needs` (# Changing rules 2 and 20), 815d6552… (on fix-forward 18).
+BUNDLE_SHA256 = "815d6552730c70c48ddcded1a235c434fa0e5e9857f771096c5ab618a5ecfc20"
 
 
 def _sha(definitions) -> str:
