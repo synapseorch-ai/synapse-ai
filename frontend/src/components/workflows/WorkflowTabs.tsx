@@ -16,17 +16,17 @@
  * still opens the browser's own tab.
  */
 
-import { Plus, X } from 'lucide-react';
+import { CircleDot, Plus, X } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { RunPage } from '@/components/runs/RunPage';
 import { OrchestrationTab, type EditorTabs } from '@/components/settings/OrchestrationTab';
 import {
-    NewTabMenu, TabStrip, TabSwitcher, restoreWorkflowTabs, useTabShortcuts, useWorkflowTabs,
+    MAX_TABS, NewTabMenu, TabStrip, TabSwitcher, closeChoices, restoreWorkflowTabs, useTabShortcuts, useWorkflowTabs,
     type StripTab, type TabStatus, type TabsState, type WorkflowTab,
 } from '@/components/tabs';
-import { ConfirmDialog, IconButton } from '@/components/ui';
+import { Button, ConfirmDialog, IconButton, Modal } from '@/components/ui';
 import type { DraftSnapshot } from '@/components/orchestration/use-draft-history';
 
 /** Where this browser keeps the open workflow tabs. Drafts are never kept: they live in the page. */
@@ -123,11 +123,13 @@ export function WorkflowTabs({ initialOrchId, openSettings }: {
     openSettings?: boolean;
 }) {
     const tabs = useWorkflowTabs<DraftSnapshot>({ load: loadTabs, save: saveTabs, readStatus: readRuns, newWorkflowId });
-    const { ready, start, state, front, notice, setNotice, badges, unsaved, kept } = tabs;
+    const { ready, start, state, front, notice, setNotice, badges, unsaved, kept, asking } = tabs;
     const [workflows, setWorkflows] = useState<{ id: string; name: string; description?: string }[]>([]);
     const [recent, setRecent] = useState<RecentRun[]>([]);
     const [picker, setPicker] = useState<'strip' | 'phone' | null>(null);
     const [closing, setClosing] = useState<WorkflowTab | null>(null);
+    // At the cap (F1354): the tab picked to make room, when it holds unsaved work and its discard waits for a yes.
+    const [discarding, setDiscarding] = useState<WorkflowTab | null>(null);
     const shellRef = useRef<HTMLDivElement>(null);
 
     const readWorkflows = useCallback(() => {
@@ -225,6 +227,28 @@ export function WorkflowTabs({ initialOrchId, openSettings }: {
         window.addEventListener('beforeunload', handler);
         return () => window.removeEventListener('beforeunload', handler);
     }, [behindDirty]);
+
+    /** A tab's name as the strip says it. */
+    const tabName = useCallback((t: WorkflowTab) =>
+        t.title || nameOf(t.workflowId ?? t.ref) || (t.kind === 'run' ? 'Run' : 'New workflow'), [nameOf]);
+
+    /** At the cap: close the picked tab and open the one asked for; one holding unsaved work asks first. */
+    const pickToClose = useCallback((t: WorkflowTab) => {
+        if (unsaved[t.id]) setDiscarding(t);
+        else tabs.chooseClose(t.id);
+    }, [unsaved, tabs]);
+
+    /** At the cap, none picked: the tab that was in front comes back, and so does its address. */
+    const cancelAsk = useCallback(() => {
+        const from = state.tabs.find(t => t.id === asking?.from) ?? null;
+        tabs.cancelAsk();
+        const url = new URL(window.location.href);
+        url.searchParams.delete('id');
+        url.searchParams.delete('run');
+        if (from?.kind === 'workflow') url.searchParams.set('id', from.ref);
+        else if (from?.kind === 'run') url.searchParams.set('run', from.ref);
+        window.history.replaceState(null, '', `${url.pathname}${url.search}`);
+    }, [state.tabs, asking, tabs]);
 
     /** Close a tab; one holding unsaved work asks first. */
     const requestClose = useCallback((id: string) => {
@@ -363,6 +387,50 @@ export function WorkflowTabs({ initialOrchId, openSettings }: {
                     tabs={bridge}
                 />
             )}
+            <Modal
+                open={asking !== null && discarding === null}
+                onClose={cancelAsk}
+                title={`${MAX_TABS} workflows are open`}
+                description={<>Close one to open <strong>{asking ? tabName(asking.tab) || 'this workflow' : ''}</strong>.
+                    Nothing closes until you pick.</>}
+                footer={<Button variant="secondary" size="sm" onClick={cancelAsk}>Cancel</Button>}
+            >
+                <ul className="flex flex-col gap-1" aria-label="Open tabs, least recently used first">
+                    {closeChoices(state).map(t => (
+                        <li key={t.id}>
+                            <button
+                                type="button"
+                                onClick={() => pickToClose(t)}
+                                className="flex w-full min-w-0 items-center gap-3 rounded-lg px-3 py-2 text-left hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                            >
+                                <span className="min-w-0 flex-1">
+                                    <span className="block truncate text-sm text-text">{tabName(t)}</span>
+                                    <span className="block text-xs text-text-faint">{t.kind === 'run' ? 'Run' : 'Workflow'}</span>
+                                </span>
+                                {unsaved[t.id] && (
+                                    <span className="inline-flex shrink-0 items-center gap-1 text-xs text-warning">
+                                        <CircleDot className="size-3" aria-hidden />
+                                        Unsaved changes
+                                    </span>
+                                )}
+                                <span className="shrink-0 text-xs font-medium text-text-muted">Close</span>
+                            </button>
+                        </li>
+                    ))}
+                </ul>
+            </Modal>
+            <ConfirmDialog
+                open={discarding !== null}
+                onClose={() => setDiscarding(null)}
+                onConfirm={() => {
+                    if (discarding) tabs.chooseClose(discarding.id);
+                    setDiscarding(null);
+                }}
+                title="Discard unsaved changes?"
+                description={<>Your changes to <strong>{discarding ? tabName(discarding) : 'this workflow'}</strong> have not
+                    been saved. Closing it opens <strong>{asking ? tabName(asking.tab) : 'the workflow you asked for'}</strong>.</>}
+                confirmLabel="Discard changes"
+            />
             <ConfirmDialog
                 open={closing !== null}
                 onClose={() => setClosing(null)}

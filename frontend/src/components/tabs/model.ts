@@ -66,8 +66,8 @@ export function activeTab<T extends Tab>(state: TabsState<T>): T | null {
 }
 
 export type OpenResult<T extends Tab> =
-  | { state: TabsState<T>; closed: T | null; refused?: undefined }
-  | { state: TabsState<T>; closed: null; refused: string };
+  | { state: TabsState<T>; closed: T | null; refused?: undefined; ask?: undefined }
+  | { state: TabsState<T>; closed: null; refused: string; ask?: T };
 
 /** Said when every open tab is working or waiting on the person and one more is asked for. */
 export const ALL_BUSY = `${MAX_TABS} tabs are open and each is working or waiting on you. Close one to open another.`;
@@ -77,10 +77,13 @@ export const AT_CAP = `Close a tab to open another: ${MAX_TABS} are open.`;
 
 /**
  * At the cap: `close-idle` closes the tab least recently in front that isn't
- * busy (chat, where a tab is only a view); `refuse` closes nothing and says so
- * (workflows, where a tab may hold unsaved work).
+ * busy (chat, where a tab is only a view); `refuse` closes nothing and says so;
+ * `ask` closes nothing either, and puts no tab in front while the person picks
+ * one to close (workflows, where a tab may hold unsaved work): it answers with
+ * the tab asked for, so the page never shows another workflow in its place
+ * (F1354).
  */
-export type AtCap = 'close-idle' | 'refuse';
+export type AtCap = 'close-idle' | 'refuse' | 'ask';
 
 /**
  * Open `tab` at the end and bring it to the front, or bring the tab already
@@ -102,6 +105,9 @@ export function openTab<T extends Tab>(
   let tabs = state.tabs;
   let closed: T | null = null;
   if (tabs.length >= MAX_TABS && atCap === 'refuse') return { state, closed: null, refused: AT_CAP };
+  if (tabs.length >= MAX_TABS && atCap === 'ask') {
+    return { state: { tabs, activeId: null }, closed: null, refused: AT_CAP, ask: tab };
+  }
   if (tabs.length >= MAX_TABS) {
     const idle = tabs
       .filter((t) => t.id !== state.activeId && !busy(t))
@@ -111,6 +117,11 @@ export function openTab<T extends Tab>(
     tabs = tabs.filter((t) => t.id !== closed!.id);
   }
   return { state: { tabs: [...tabs, tab], activeId: tab.id }, closed };
+}
+
+/** The tabs a person may close to make room, least recently in front first (F1354's ask). */
+export function closeChoices<T extends Tab>(state: TabsState<T>): T[] {
+  return [...state.tabs].sort((a, b) => a.usedAt - b.usedAt);
 }
 
 /** Bring a tab to the front. Its mark clears: the person is looking at it. */
