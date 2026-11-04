@@ -95,24 +95,31 @@ async def _held(*, with_variables: bool = True) -> list[tuple[str, str]]:
 
 
 async def find(text: str) -> list[tuple[str, str]]:
-    """The held secrets in `text`, as (value, kind): each once, the longest first."""
-    from core.secret_scrub import secret_like
+    """The held secrets in `text`, as (as written, kind): each once, the longest first. A value written with
+    lookalikes (a no-break hyphen for its "-", F1339) comes back as it stands in `text`, so the door masks exactly that."""
+    from core.secret_scrub import secret_like, written_as
 
-    found: dict[str, str] = {}
+    kinds: dict[str, str] = {}
     for value, kind in await _held():
-        if secret_like(value) and value in text and value not in found:
-            found[value] = kind
+        if secret_like(value):
+            kinds.setdefault(value, kind)
+    found: dict[str, str] = {}
+    for value, written in written_as(text, list(kinds)):
+        found.setdefault(written, kinds[value])
     return sorted(found.items(), key=lambda vk: -len(vk[0]))
 
 
 class _Values:
-    """This step's held values, longest first: `find` names those in a text (`secret_scrub.refresh_held`)."""
+    """This step's held values, longest first: `find` names those in a text as they stand in it, lookalikes and all
+    (`secret_scrub.refresh_held`, F1339)."""
 
     def __init__(self, values: Iterable[str]):
         self._values = sorted({v for v in values}, key=len, reverse=True)
 
     def find(self, text: str) -> list[str]:
-        return [v for v in self._values if v in text]
+        from core.secret_scrub import written_as
+
+        return [written for _, written in written_as(text, self._values)]
 
 
 async def matcher() -> _Values | None:

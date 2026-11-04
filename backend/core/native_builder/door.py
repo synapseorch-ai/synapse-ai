@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from core.native_builder.export import CREDENTIAL_MARK, scrub_credentials
+from core.secret_scrub import LOOKALIKES
 
 Refusal = Literal["card", "password"]
 
@@ -175,11 +176,10 @@ def has_password(text: str) -> bool:
 
 # ── the door ─────────────────────────────────────────────────────────────────
 
-#: Characters that look like a dash or like nothing, folded before the door reads a message (F1280: a key pasted with
-#: U+2011 hyphens went past every pattern, and the planner wrote it back out in ASCII to its logs). Dashes become "-",
-#: zero-width characters go.
-_LOOKALIKES = {**{ord(c): "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d"},
-               **{ord(c): None for c in "\u200b\u200c\u200d\u2060\ufeff"}}
+#: Characters that look like a dash, a space or like nothing, folded before the door reads a message (F1280: a key
+#: pasted with U+2011 hyphens went past every pattern, and the planner wrote it back out in ASCII to its logs): the one
+#: table held values are matched through too (`secret_scrub.LOOKALIKES`, F1339).
+_LOOKALIKES = LOOKALIKES
 
 
 def _without_held(text: str, held: Any) -> tuple[str, int, set[str]]:
