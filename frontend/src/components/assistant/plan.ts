@@ -64,6 +64,8 @@ export interface PlanStep {
     role: StepRole;
     /** A change plan's line: what the action does. */
     detail?: string;
+    /** A change plan's op as the planner described it (F1308): shown under its line, said as whose it is. */
+    says?: string;
     /** A change plan's `⚠️ DELETES:` line. */
     deletes?: boolean;
     /** The model an agent step runs on, when code picked its new agent's (F966): the estimate prices it. */
@@ -381,6 +383,8 @@ export interface ChangeOpView {
     target?: { kind?: string; id?: string | null; name?: string | null };
     /** Code's words for it: "<what> — <how>". */
     line?: string;
+    /** The planner's own words for it (F1308): the card shows them beside code's, so a change that does more is seen. */
+    says?: string;
     /** For a delete: what uses its target, by name. */
     used_by?: string[];
     /** The op's values as proposed, what the target reads after it, and before: the card says them in words (F1010). */
@@ -506,12 +510,17 @@ export function planFromChange(change: ChangeView, prompt: string): Plan | null 
             ? `${o.used_by?.length ? `Used by ${o.used_by.join(', ')}.` : 'Nothing uses it.'} It can come back only as a new copy.`
             : '';
         const detail = [deletes ? how.join(' — ') : (valueWords(o) ?? how.join(' — ')), uses].filter(Boolean).join(' ');
+        // The planner's words for it, as the review shows them (F1308): none when the line already says them (an undo's).
+        const said = o.says?.trim() ?? '';
+        const head = (o.line as string).split('\n')[0].toLowerCase();
+        const says = said && !head.includes(said.toLowerCase()) ? said : '';
         return {
             n: i + 1,
             name: deletes ? `Deletes: the ${o.target?.kind ?? ''} "${name}"${id}` : `${what}${id}`,
             type: null,
             label: '',
             role: 'logic',
+            ...(says ? { says } : {}),
             ...(detail ? { detail } : {}),
             ...(deletes ? { deletes: true } : {}),
         };
