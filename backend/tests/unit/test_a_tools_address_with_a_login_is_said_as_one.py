@@ -14,12 +14,16 @@ import json
 
 import pytest
 
-from core.builder_tools import LOGIN_REFUSAL, holds_a_login
 from test_a_change_makes_the_http_tools_it_uses import (  # noqa: F401 — fixtures
     SHOP, _call, _change, _public_dns, _run, _tools, fresh)
 
 PASSWORD = "p" + "w9" + "x"
 LOGGED_IN = f"https://alice:{PASSWORD}@shop.tidewell.example/orders"
+
+
+def _says_a_login(said: str) -> bool:
+    """The answer says the address holds a login, in the words a person reads: a user and a password."""
+    return "a user and a password" in said
 
 
 def _never_said(said: str) -> None:
@@ -33,7 +37,7 @@ def _args(url: str = LOGGED_IN) -> dict:
 async def test_the_builders_create_http_tool_refuses_it_and_saves_nothing(client):
     out, _ = await _call("create_http_tool", _args(), await _run())
     said = json.dumps(out)
-    assert LOGIN_REFUSAL in said, said
+    assert _says_a_login(said), said
     _never_said(said)
     assert "fetch_new_orders" not in await _tools()
 
@@ -50,7 +54,7 @@ async def test_an_mcp_clients_create_http_tool_refuses_it_and_saves_nothing(clie
         said = json.dumps(out, default=str)
     except ToolRefusal as refused:
         said = str(refused)
-    assert LOGIN_REFUSAL in said, said
+    assert _says_a_login(said), said
     _never_said(said)
     assert "fetch_new_orders" not in await _tools()
 
@@ -60,7 +64,7 @@ async def test_a_new_tool_in_a_change_is_refused_as_a_login_and_kept_nowhere(cli
         "op": "create_tool", "target": {"kind": "tool", "name": "fetch_new_orders"},
         "fields": {"description": "Fetches the shop's new orders", "method": "GET", "url": LOGGED_IN}}]})
     assert checked["outcome"] == "said" and applied is None, checked
-    assert LOGIN_REFUSAL in checked["say"], checked
+    assert _says_a_login(checked["say"]), checked
     _never_said(json.dumps(checked, default=str))
     _never_said(json.dumps(events, default=str))
     assert "fetch_new_orders" not in await _tools()
@@ -75,9 +79,11 @@ async def test_a_new_tool_in_a_change_is_refused_as_a_login_and_kept_nowhere(cli
     ("mailto:alice@example.com", False),
 ])
 def test_only_a_user_part_before_the_host_is_a_login(url, login):
+    from core.builder_tools import holds_a_login  # a new function's own cases: imported here, so the rest collect
+
     assert holds_a_login(url) is login
 
 
 async def test_an_at_in_a_path_is_not_refused_as_a_login(client):
     out, _ = await _call("create_http_tool", _args(f"{SHOP}/users/alice@example.com"), await _run())
-    assert LOGIN_REFUSAL not in json.dumps(out), out
+    assert not _says_a_login(json.dumps(out)), out
