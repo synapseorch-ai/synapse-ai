@@ -591,7 +591,15 @@ CODE_BOX = """() => {
   if (!pre) return {pre: false};
   const lines = [...pre.querySelectorAll('code > span')];
   const cls = (start) => lines.filter((l) => l.innerText.startsWith(start)).map((l) => l.className);
-  return {pre: true, text: pre.innerText, scrolls: getComputedStyle(pre).overflowX,
+  // The design's code font, read off its own class (font-mono is the UI font here, globals.css).
+  const first = (f) => f.split(',')[0].replace(/["']/g, '').trim().toLowerCase();
+  const probe = document.createElement('span');
+  probe.className = 'font-code';
+  pre.parentElement.appendChild(probe);
+  const codeFont = first(getComputedStyle(probe).fontFamily);
+  probe.remove();
+  return {pre: true, text: pre.innerText, scrolls: getComputedStyle(pre).overflowX, codeFont,
+          font: first(getComputedStyle(pre).fontFamily), uiFont: first(getComputedStyle(document.body).fontFamily),
           spaces: getComputedStyle(pre).whiteSpace, plus: cls('+'), minus: cls('-'),
           tested: document.querySelector('[data-testid="assistant-panel"]').innerText.includes('printed {"total": 3.23}')};
 }"""
@@ -599,9 +607,9 @@ CODE_BOX = """() => {
 
 @check
 async def check_codeblock(browser) -> str:
-    """A change's code shows as code (F1328): a fenced block in a step's detail is a <pre> that keeps its lines and
-    scrolls sideways, a diff's added and removed lines tinted; the words around it stay text. Model-free: the review
-    is the stub's."""
+    """A change's code shows as code (F1328): a fenced block in a step's detail is a <pre> in the code font that keeps
+    its lines and scrolls sideways, a diff's added and removed lines tinted; the words around it stay text. Model-free:
+    the review is the stub's."""
     ctx, page = await _open_builder(browser)
     try:
         await page.evaluate("(id) => window.__stub.push({type: 'orchestration_start', run_id: id})", RUN_ID)
@@ -624,6 +632,9 @@ async def check_codeblock(browser) -> str:
             raise AssertionError(f"the code box lost its lines or kept its fences: {box['text']!r}")
         if box["spaces"] not in ("pre", "pre-wrap") or box["scrolls"] not in ("auto", "scroll"):
             raise AssertionError(f"the code box does not keep its spacing and scroll sideways: {box}")
+        if box["font"] != box["codeFont"] or box["font"] == box["uiFont"]:
+            raise AssertionError(f"the code box is not in the code font: {box['font']!r}, the code font "
+                                 f"{box['codeFont']!r}, the UI's {box['uiFont']!r}")
         if not any("success" in c for c in box["plus"]) or not any("danger" in c for c in box["minus"]):
             raise AssertionError(f"a diff's added and removed lines are not tinted: {box}")
         if not box["tested"]:
