@@ -193,7 +193,10 @@ export function BrowserPane({
   };
 
   const url = frame?.url || lines[lines.length - 1]?.url || '';
-  const driver = wheel === 'person' ? 'You’re driving' : wheel === 'nobody' ? 'Nobody is driving' : `${agentName} is driving`;
+  // A recording replayed by code drives as the agent does, and no agent is there: the browser says so (F1363).
+  const replaying = wheel === 'agent' && !!frame?.replaying;
+  const agentDriving = replaying ? 'The recording is driving' : `${agentName} is driving`;
+  const driver = wheel === 'person' ? 'You’re driving' : wheel === 'nobody' ? 'Nobody is driving' : agentDriving;
 
   // Said once to each person, in this browser, and in the terms (Naveen 2026-10-28). A sign-in browser is the person's alone.
   const [disclaimerSeen, setDisclaimerSeen] = usePersisted<'0' | '1'>(
@@ -357,9 +360,9 @@ export function BrowserPane({
         ) : null}
         {nudge && canDrive && !driving && (
           <div className="absolute inset-0 flex items-center justify-center bg-scrim/60">
-            <div role="dialog" aria-label={`${agentName} is driving`}
+            <div role="dialog" aria-label={agentDriving}
                  className="flex w-80 max-w-[calc(100%-2rem)] flex-col gap-2.5 rounded-xl bg-bg p-4 shadow-elevated">
-              <p className="text-sm font-semibold text-text">{agentName} is driving</p>
+              <p className="text-sm font-semibold text-text">{agentDriving}</p>
               <p className="text-sm text-text-muted">
                 Take over to use the page yourself. The agent finishes what it is doing, then waits for you.
               </p>

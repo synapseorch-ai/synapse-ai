@@ -13797,6 +13797,88 @@ async def check_brwrunpage(browser) -> str:
 
 
 @check
+async def check_brwreplayrun(browser) -> str:
+    """A Browser step's replay on its run's page (F1363; REL3's rc4 proof): live, the pane says the recording drives,
+    never the agent; ended, every replayed step is a line with its kept picture, and one with none says so, never
+    "while you drive"."""
+    global _M2B_STREAM
+    kept = _M2B_STREAM
+
+    def replayed(n: int, line: str, shot: str | None) -> dict:
+        return {"session_id": "bsP", "n": n, "at": n, "actor": "replay", "action": "open", "target": line,
+                "url": "https://www.iana.org/help/example-domains", "shot_ref": shot}
+
+    steps = [replayed(1, "Open https://example.com", "1"),
+             replayed(2, "Open https://www.iana.org/help/example-domains", "2"),
+             {**replayed(3, "Stopped at: Read the table (its target is not on the page)", "9"), "action": "missed"}]
+    events = "".join([
+        _frame({"type": "orchestration_start", "run_id": "run_smoke_m2b_done"}, "1"),
+        _frame({"type": "browser_session", "session_id": "bsP", "owner": "run:run_smoke_m2b_done"}, "2"),
+        _frame({"type": "browser_action", **steps[0]}, "3")])
+    bad: list[str] = []
+    try:
+        _M2B_STREAM = events
+        live = {**_M2B_RUNS["run_smoke_m2b_done"], "status": "running", "ended_at": None}
+        ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done", runs={"run_smoke_m2b_done": live})
+        await ctx.route(re.compile(r".*/api/browser/bsP/frames$"), lambda r: r.fulfill(
+            status=200, headers={"Content-Type": "text/event-stream"},
+            body=_frame({"jpeg_b64": BRW_JPEG, "w": 1280, "h": 800, "url": "https://example.com/", "wheel": "agent",
+                         "replaying": True})))
+        try:
+            region = page.get_by_role("region", name="Live browser")
+            try:
+                await region.wait_for(timeout=8_000)
+                await region.get_by_text("The recording is driving").first.wait_for(timeout=6_000)
+            except Exception as e:
+                bad.append(f"a replay's live pane does not say the recording drives ({str(e)[:120]})")
+            if await region.get_by_text("The agent is driving").count():
+                bad.append("a replay's live pane says the agent is driving")
+        finally:
+            await ctx.close()
+
+        _M2B_STREAM = events + _frame({"type": "stream_complete"})
+
+        async def kept_routes(ctx):
+            await ctx.route(re.compile(r".*/api/browser/kept/run/run_smoke_m2b_done/log$"),
+                            lambda r: r.fulfill(status=200, json={"entries": steps}))
+            await _brw_shots(ctx)
+            # The missed step's picture was never kept: the newer route wins.
+            await ctx.route(re.compile(r".*/api/browser/kept/run/run_smoke_m2b_done/9$"),
+                            lambda r: r.fulfill(status=404, body="not kept"))
+
+        ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done",
+                                       runs={"run_smoke_m2b_done": _M2B_RUNS["run_smoke_m2b_done"]}, before=kept_routes)
+        try:
+            section = page.get_by_role("region", name="The browser")
+            viewer = page.get_by_role("figure", name="What the agent did in the browser")
+            kept_shot = "/api/browser/kept/run/run_smoke_m2b_done/"
+            try:
+                await viewer.wait_for(timeout=8_000)
+                if "3 actions" not in await section.inner_text():
+                    bad.append(f"the ended replay's count is not 3: {(await section.inner_text())[:80]!r}")
+                for n in (1, 2):
+                    img = viewer.locator("img")
+                    src = await img.first.get_attribute("src") if await img.count() else None
+                    if src != f"{kept_shot}{n}" or f"{n} of 3" not in await viewer.inner_text():
+                        bad.append(f"replayed step {n} shows {src!r}, not its kept picture")
+                    await viewer.get_by_role("button", name="Next screenshot").click()
+                await asyncio.sleep(0.6)
+                words = await viewer.inner_text()
+                if "No screenshot for this step" not in words or "while you drive" in words:
+                    bad.append(f"a replayed step with no picture says {words[:120]!r}")
+            except Exception as e:
+                bad.append(f"an ended replay shows no viewer ({str(e)[:120]})")
+        finally:
+            await ctx.close()
+    finally:
+        _M2B_STREAM = kept
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("a replay's live pane says the recording drives; ended, each replayed step shows its kept picture, and "
+            "one with none says so")
+
+
+@check
 async def check_brwrunturn(browser) -> str:
     """A run parked on a browser turn is answered by handing the browser back, not by a form (BRW2, F1077). The run
     carries the turn in its waiting step's fields (BRW1: a field of type `browser_turn`), and every place a run waits

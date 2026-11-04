@@ -40,7 +40,7 @@ export function ShotViewer({ actions, shotUrl }: {
     />
   ) : (
     <p className="px-3 text-center text-sm text-text-faint">
-      {action.actor === 'agent' ? 'No screenshot for this step' : 'Nothing is recorded while you drive'}
+      {action.actor === 'person' ? 'Nothing is recorded while you drive' : 'No screenshot for this step'}
     </p>
   );
   const controls = (

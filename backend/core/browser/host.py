@@ -204,6 +204,7 @@ class Session:
         self.replay_id: str | None = None
         self.replay_answer: dict | None = None
         self.replay_at: int | None = None
+        self.replay_running = False  # a replay drives now: the pane says the recording, not the agent (F1363)
         self._pressing: dict | None = None  # a press the person's own words allowed, logged once it runs
         self.select: dict | None = None  # a dropdown the person clicked: the pane draws its options
         self.chooser = None         # a page's file picker, while the person drives
@@ -740,6 +741,17 @@ class Session:
             return {"refused": "A send is waiting for the person."}
         self.wheel, self.idle, self.banner, self.handover = "agent", False, None, None
         self.replay_blocked = None
+        self.replay_running = True
+        self._push_state()
+        try:
+            return await self._replay(steps, inputs, unattended=unattended, recording_id=recording_id, from_n=from_n)
+        finally:
+            self.replay_running = False
+            self._push_state()
+
+    async def _replay(self, steps: list[dict], inputs: dict, *, unattended: bool, recording_id: str,
+                      from_n: int) -> dict:
+        """`replay`'s own work, while the browser says a replay drives it (F1363)."""
         plan = self.replaying if (self.replaying and self.replaying["steps"] is steps) else None
         if plan is None:
             self.fixing = None
@@ -1061,7 +1073,8 @@ class Session:
                     pass
 
     def state(self) -> dict:
-        return {"wheel": self.wheel, "url": self._page_url(), "banner": self.banner, **self.popups(),
+        return {"wheel": self.wheel, "replaying": self.replay_running, "url": self._page_url(), "banner": self.banner,
+                **self.popups(),
                 "recording": self.recorder.frame() if self.recorder is not None else None,
                 "held": ({"method": self.held["method"], "url": self.held["url"], "money": bool(self.held.get("money"))}
                          if self.held else None)}
@@ -1070,7 +1083,8 @@ class Session:
         """Viewers see the wheel and the banner change at once, on the last frame."""
         if self.last_frame and self.viewers:
             meta = {k: v for k, v in self.last_frame.items() if k not in ("dialog", "select", "file")}
-            meta = {**meta, "wheel": self.wheel, "banner": self.banner, "url": self._page_url(), **self.popups(),
+            meta = {**meta, "wheel": self.wheel, "replaying": self.replay_running, "banner": self.banner,
+                    "url": self._page_url(), **self.popups(),
                     "recording": self.recorder.frame() if self.recorder is not None else None}
             for q in list(self.viewers):
                 _offer(q, meta)
@@ -1221,7 +1235,7 @@ class Session:
         def on_frame(ev):
             meta = {"jpeg_b64": ev["data"], "w": ev.get("metadata", {}).get("deviceWidth"),
                     "h": ev.get("metadata", {}).get("deviceHeight"), "url": self.page.url if self.page else "",
-                    "wheel": self.wheel, "banner": self.banner, **self.popups()}
+                    "wheel": self.wheel, "replaying": self.replay_running, "banner": self.banner, **self.popups()}
             self.last_frame = meta
             for q in list(self.viewers):
                 _offer(q, meta)
@@ -1248,7 +1262,8 @@ class Session:
         except Exception:
             return None
         self.last_frame = {"jpeg_b64": base64.b64encode(shot).decode(), "w": _VIEWPORT["width"],
-                           "h": _VIEWPORT["height"], "url": self.page.url, "wheel": self.wheel, "banner": self.banner}
+                           "h": _VIEWPORT["height"], "url": self.page.url, "wheel": self.wheel,
+                           "replaying": self.replay_running, "banner": self.banner}
         return self.last_frame
 
 

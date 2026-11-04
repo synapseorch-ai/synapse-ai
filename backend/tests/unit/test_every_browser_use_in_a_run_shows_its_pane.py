@@ -26,8 +26,8 @@ from core.browser import client as browser_client
 SESSION = {"type": "browser_session", "session_id": "bs1", "owner": "run:run_f1356"}
 
 
-def _action(n: int) -> dict:
-    return {"type": "browser_action", "session_id": "bs1", "n": n, "actor": "agent", "action": "click",
+def _action(n: int, actor: str = "agent") -> dict:
+    return {"type": "browser_action", "session_id": "bs1", "n": n, "actor": actor, "action": "click",
             "target": f"Order {n}", "url": "https://portal.example/orders", "shot_ref": str(n)}
 
 
@@ -59,7 +59,7 @@ class _Tools:
             self._queue(key, SESSION)
             for n in (1, 2, 3):
                 await asyncio.sleep(0.6)
-                self._queue(key, _action(n))
+                self._queue(key, _action(n, "replay"))  # a replay's line is the replay's, as the client says (F1363)
             await asyncio.sleep(0.6)
             self.finished = True
             return {"outputs": {"orders": 3}}
