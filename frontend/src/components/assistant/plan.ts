@@ -529,6 +529,13 @@ export function changeOf(context: unknown): ChangeView | null {
  * the person approves, a delete in the danger colour with what uses it. Null
  * when nothing waits for approval; the card then shows the words as asked.
  */
+/** A step's detail from its parts, a space between them, except that a part opening a code block starts on a line of
+ *  its own: a fence opens only at a line's start (F1374: "its code: ```diff" drew the diff as words). */
+function joinedParts(parts: (string | null | undefined)[]): string {
+    return parts.filter((part): part is string => !!part)
+        .reduce((said, part) => (said ? `${said}${part.startsWith('```') ? '\n' : ' '}${part}` : part), '');
+}
+
 export function planFromChange(change: ChangeView, prompt: string): Plan | null {
     const ready = change.ops.filter((o) => o.status === 'ready' && o.line);
     if (!ready.length) return null;
@@ -539,7 +546,10 @@ export function planFromChange(change: ChangeView, prompt: string): Plan | null 
         // Code's words are the line's first line ("<what> — <how>"); a knowledge note's or a memory item's before and
         // after follow on lines of their own: the exact change, the row's detail (F1308).
         const [first, ...below] = (o.line as string).split('\n');
-        const exact = below.map((part) => part.trim()).filter(Boolean).join('\n');
+        // Each line below loses the list item's own indent (change_tools' `_fenced`: two spaces), never a code line's
+        // own indentation (F1374: a loop's body lost it).
+        const exact = below.map((part) => part.replace(/^ {1,2}/, '').trimEnd()).filter((part) => part.trim())
+            .join('\n');
         const [what, ...how] = first.replace(/\s+—\s*$/, '').split(' — ');
         const name = o.target?.name ?? '';
         // Two of one name are told apart by id (F760's class).
@@ -552,8 +562,8 @@ export function planFromChange(change: ChangeView, prompt: string): Plan | null 
         // A settings change's rows (F1264): its name is its first line's heading, as code wrote it, its settings only
         // the rows under it (F1332: an undo's first line goes on after its colon, "…settings: undo: as they were").
         const heading = first.split(' — ')[0].replace(/:\s*$/, '');
-        const detail = rows ? '' : [deletes ? how.join(' — ') : (valueWords(o) ?? how.join(' — ')), exact, uses]
-            .filter(Boolean).join(' ');
+        const detail = rows ? ''
+            : joinedParts([deletes ? how.join(' — ') : (valueWords(o) ?? how.join(' — ')), exact, uses]);
         // The planner's words for it, as the review shows them (F1308): none when the line already says them (an undo's).
         const said = o.says?.trim() ?? '';
         const says = said && !first.toLowerCase().includes(said.toLowerCase()) ? said : '';
