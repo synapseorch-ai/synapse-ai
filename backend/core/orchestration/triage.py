@@ -219,3 +219,21 @@ async def failure(run_id: str) -> dict | None:
     if output_key and output_key in (run.shared_state or {}):
         out["its_output"] = _clean(_said(run.shared_state[output_key]))[:cap]
     return out
+
+
+async def latest() -> dict | None:
+    """The newest failed run of this workspace's own workflows, with its failure block and its workflow's name; None
+    when none failed (F1378): what an answer about why something failed, and the fix after it, both read."""
+    from core.orchestration.run_view import list_runs
+    from core.routes.orchestrations import load_orchestrations
+
+    failed = await list_runs(limit=1, status="failed")
+    if not failed:
+        return None
+    block = await failure(failed[0]["run_id"])
+    if block is None:
+        return None
+    names = {o.get("id"): o.get("name") for o in await load_orchestrations()}
+    return {"workflow": names.get(failed[0].get("orchestration_id")) or failed[0].get("orchestration_id"),
+            "run_id": failed[0]["run_id"], "failed_at": failed[0].get("ended_at") or failed[0].get("started_at"),
+            **block}
