@@ -53,6 +53,10 @@ _CREDENTIALS: tuple[re.Pattern[str], ...] = (
     # `Bearer <token>`: the token only. A reference — `Bearer ${process.env.X}`,
     # `Bearer {{ global.X }}` — starts with a character the class leaves out.
     re.compile(r"(?i)(\bBearer\s+)([A-Za-z0-9._~+/=-]{16,})"),
+    # A URL's password, in its user part (`scheme://user:password@host`, F1343: a pasted `https://ops:…@host:9411/x`
+    # reached the model, its password of no shape we know). The password only: the user names the connection, never
+    # its secret. One holding "@" or ":" runs to the last "@" before the host; with no scheme it is not read as a URL.
+    re.compile(r"(?i)(\b[a-z][a-z0-9+.-]{1,30}://[^\s:/@?#]*:)([^\s/?#]+)(?=@[^\s@/?#]+)"),
     # A value right after a credential label, said in prose ("the API key is X", "token: X", "client secret = X"),
     # whatever its shape: a vendor's own key matched no shape above and reached a run (F896, SAI2-P2's chg-09). It
     # must read like one: letters with digits, 8+ characters, starting with neither a quote nor a reference's `{`,
