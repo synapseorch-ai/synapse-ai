@@ -6,8 +6,9 @@ answer what happened, from the records the run page, the bell and Chat read:
 
 * `summarise_activity`: a window (a day by default): runs by status, each failure and why, what waits on a person,
   the schedules that ran, what it cost;
-* `agent_activity`: an agent's recent conversations (the last question and answer, keys masked) and the workflows
-  that use it, with how each one's last run went.
+* `agent_activity`: an agent's recent conversations (the last question and answer, keys masked), only those the
+  caller may open by the host's rule (`set_conversation_rule`, F1361), and the workflows that use it, with how each
+  one's last run went.
 
 One run step by step is MCP2's `get_run`; what waits is its `list_waiting`. Reads, anyone's (a viewer's too); a host
 whose truth lives elsewhere (cloud's credits) registers its own reader for the assistant's topic
@@ -16,6 +17,7 @@ whose truth lives elsewhere (cloud's credits) registers its own reader for the a
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from core.product_tools.errors import ToolRefusal
@@ -25,6 +27,31 @@ from core.product_tools.registry import ProductTool
 _TEXT = 300
 _CONVERSATIONS = 5
 _WINDOW_RUNS = 1000
+
+#: A host's rule for whose conversations a read may carry (F1361): given the caller and session ids, the ones it may
+#: not open, as its Chat decides it. None: every person's conversation is the caller's (self-hosted, one person).
+ConversationRule = Callable[[Any, list[str]], Awaitable[set[str]]]
+_conversation_rule: ConversationRule | None = None
+
+#: Said when the host's rule cannot answer: the read is refused, never every conversation shown.
+NOT_READ = "This agent's conversations can't be read right now. Try again in a moment."
+
+
+def set_conversation_rule(rule: ConversationRule | None) -> None:
+    """A host's own rule for which conversations a caller may open; None puts back self-hosted's (all of them)."""
+    global _conversation_rule
+    _conversation_rule = rule
+
+
+async def _openable(caller: Any, sessions: list[dict]) -> list[dict]:
+    """`sessions` less those the host's rule says `caller` may not open, asked before any is read."""
+    if _conversation_rule is None or not sessions:
+        return sessions
+    try:
+        hidden = await _conversation_rule(caller, [str(s["session_id"]) for s in sessions])
+    except Exception as exc:  # noqa: BLE001 — any failure of the host's rule refuses the read
+        raise ToolRefusal(NOT_READ) from exc
+    return [s for s in sessions if str(s["session_id"]) not in hidden]
 
 
 def _clip(text: Any) -> str | None:
@@ -126,7 +153,8 @@ async def agent_activity(caller: Any, args: dict[str, Any]) -> dict:
         raise ToolRefusal("No agent by that name in this workspace. read_workspace topic `agents` lists them.")
 
     talks = []
-    for s in [s for s in await list_chat_sessions(agent_id=agent["id"]) if _a_persons_conversation(s)][:_CONVERSATIONS]:
+    persons = [s for s in await list_chat_sessions(agent_id=agent["id"]) if _a_persons_conversation(s)]
+    for s in (await _openable(caller, persons))[:_CONVERSATIONS]:
         turns = await _get_conversation_history(s["session_id"], agent["id"])
         last = turns[-1] if turns else {}
         talks.append({"when": s.get("last_updated"), "turns": s.get("turn_count"),
@@ -145,8 +173,8 @@ async def agent_activity(caller: Any, args: dict[str, Any]) -> dict:
     schedules = [s.get("name") for s in await store.load()
                  if s.get("target_type") == "agent" and s.get("target_id") == agent["id"]]
     return {"agent": agent.get("name"), "conversations": talks, "workflows": flows, "schedules": schedules,
-            "note": "Newest conversations first; keys in them are masked. A workflow's own step-by-step record is "
-                    "topic `run`."}
+            "note": "Newest conversations first, of those this person may open; keys in them are masked. A "
+                    "workflow's own step-by-step record is topic `run`."}
 
 
 _DAYS = {"days": {"type": "integer", "minimum": 1, "maximum": 90, "description": "How many days back (default 1)."}}
