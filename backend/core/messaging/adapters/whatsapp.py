@@ -1,20 +1,18 @@
 """
-WhatsApp adapter with two paths:
-
-Path A — Meta Cloud API (official, requires Business account):
+WhatsApp adapter, through Meta's Cloud API (official, requires a Business account):
   Credentials: phone_number_id, access_token, verify_token
   Incoming: FastAPI webhook at /api/messaging/whatsapp/webhook/{channel_id}
   Outgoing: HTTPX call to Meta Graph API
 
-Path B — Unofficial (Playwright-based, no Business account needed):
-  Uses existing Playwright Chromium to drive WhatsApp Web.
-  WARNING: This uses an unofficial approach and may violate WhatsApp ToS.
-  The user must explicitly acknowledge the risk to enable this path.
+The second path 1.x offered, WhatsApp Web driven in a headed Chromium after a QR scan (`whatsapp_mode:
+"unofficial"`), is removed in 2.0 (F1355): it never read a message after the scan, and it was the one part of
+Synapse that needed the full Chromium build, which every install downloaded for it. The manager keeps a 1.x
+channel in that mode switched off and never builds this adapter for one; refusing here too is the second guard.
 """
-import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+from core.messaging import store as channel_store
 from core.messaging.base import MessagingAdapter
 
 if TYPE_CHECKING:
@@ -29,38 +27,14 @@ class WhatsAppAdapter(MessagingAdapter):
 
     def __init__(self, channel: dict, manager: "MessagingManager"):
         super().__init__(channel, manager)
+        if channel_store.is_whatsapp_web(channel):
+            raise ValueError(channel_store.WHATSAPP_WEB_PAUSED)
         creds = channel["credentials"]
-        self.mode: str = creds.get("whatsapp_mode", "meta_api")  # "meta_api" | "unofficial"
-
-        # Meta API credentials
         self.phone_number_id: str = creds.get("phone_number_id", "")
         self.access_token: str = creds.get("access_token", "")
         self.verify_token: str = creds.get("verify_token", "synapse_verify")
 
-        # Unofficial mode
-        self._playwright_task: asyncio.Task | None = None
-        self._playwright_page = None
-        self._browser = None
-        self._playwright = None
-
     async def start(self) -> None:
-        if self.mode == "meta_api":
-            await self._start_meta()
-        else:
-            await self._start_unofficial()
-
-    async def stop(self) -> None:
-        if self.mode == "meta_api":
-            self.manager.unregister_whatsapp_adapter(self.channel_id)
-        else:
-            await self._stop_unofficial()
-        logger.info("[WhatsApp] Adapter stopped for channel %s", self.channel_id)
-
-    # ------------------------------------------------------------------ #
-    # Meta Cloud API path
-    # ------------------------------------------------------------------ #
-
-    async def _start_meta(self) -> None:
         if not self.phone_number_id or not self.access_token:
             raise ValueError(
                 "WhatsApp Meta API requires phone_number_id and access_token."
@@ -72,11 +46,12 @@ class WhatsAppAdapter(MessagingAdapter):
             self.channel_id,
         )
 
+    async def stop(self) -> None:
+        self.manager.unregister_whatsapp_adapter(self.channel_id)
+        logger.info("[WhatsApp] Adapter stopped for channel %s", self.channel_id)
+
     async def _send_raw(self, chat_id: str, text: str) -> None:
-        if self.mode == "meta_api":
-            await self._send_meta(chat_id, text)
-        else:
-            await self._send_unofficial(chat_id, text)
+        await self._send_meta(chat_id, text)
 
     async def _send_meta(self, to: str, text: str) -> None:
         if not text.strip():
@@ -121,98 +96,3 @@ class WhatsAppAdapter(MessagingAdapter):
         if mode == "subscribe" and token == self.verify_token:
             return challenge
         return None
-
-    # ------------------------------------------------------------------ #
-    # Unofficial Playwright path
-    # ------------------------------------------------------------------ #
-
-    async def _start_unofficial(self) -> None:
-        logger.warning(
-            "[WhatsApp/Unofficial] Starting unofficial mode for channel %s. "
-            "This uses Playwright to drive WhatsApp Web. "
-            "Use at your own risk — may violate WhatsApp ToS.",
-            self.channel_id,
-        )
-        self._playwright_task = asyncio.create_task(self._run_playwright_session())
-
-    async def _run_playwright_session(self) -> None:
-        try:
-            from playwright.async_api import async_playwright
-        except ImportError:
-            logger.error(
-                "[WhatsApp/Unofficial] Playwright not available. "
-                "Install it or use Meta API path."
-            )
-            return
-
-        try:
-            playwright = await async_playwright().start()
-            self._playwright = playwright
-
-            # Launch browser with persistent context to preserve the WhatsApp
-            # Web session. This is durable tenant state that cannot be
-            # regenerated without a human scanning a QR code, so tenant_dir()
-            # refuses outright when there is nowhere persistent to put it
-            # rather than writing to storage the next deploy discards.
-            from core.runtime_dirs import tenant_dir
-            user_data_dir = str(tenant_dir("whatsapp_sessions", self.channel_id))
-
-            browser = await playwright.chromium.launch_persistent_context(
-                user_data_dir=user_data_dir,
-                headless=False,  # WhatsApp Web requires non-headless for QR
-                args=["--no-sandbox"],
-            )
-            self._browser = browser
-
-            page = await browser.new_page()
-            self._playwright_page = page
-
-            await page.goto("https://web.whatsapp.com")
-            logger.info(
-                "[WhatsApp/Unofficial] WhatsApp Web opened for channel %s. "
-                "Scan the QR code in the browser to authenticate.",
-                self.channel_id,
-            )
-
-            # Wait for QR to be scanned (up to 5 minutes)
-            try:
-                await page.wait_for_selector('[data-testid="default-user"]', timeout=300_000)
-                logger.info("[WhatsApp/Unofficial] Authenticated for channel %s", self.channel_id)
-            except Exception:
-                logger.warning("[WhatsApp/Unofficial] QR scan timed out for channel %s", self.channel_id)
-                return
-
-            # Polling loop to check for new messages
-            # NOTE: Full message interception would require MutationObserver injection.
-            # This is a simplified placeholder — real implementation would inject JS
-            # to listen to DOM changes and call back to the Python side.
-            logger.info(
-                "[WhatsApp/Unofficial] Message polling not fully implemented. "
-                "This path is experimental."
-            )
-
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.error("[WhatsApp/Unofficial] Error: %s", e)
-
-    async def _stop_unofficial(self) -> None:
-        if self._playwright_task:
-            self._playwright_task.cancel()
-            try:
-                await self._playwright_task
-            except (asyncio.CancelledError, Exception):
-                pass
-        if self._browser:
-            try:
-                await self._browser.close()
-            except Exception:
-                pass
-        if self._playwright:
-            try:
-                await self._playwright.stop()
-            except Exception:
-                pass
-
-    async def _send_unofficial(self, to: str, text: str) -> None:
-        logger.warning("[WhatsApp/Unofficial] Proactive send not implemented.")

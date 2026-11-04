@@ -34,6 +34,17 @@ from core import visitor as _visitor
 _COLLECTION = "messaging_channels"
 _ASSIGNMENTS = "channel_assignments"
 
+#: WhatsApp Web, the QR sign-in 1.x offered (`whatsapp_mode: "unofficial"`), is removed in 2.0 (F1355): what saving
+#: one is told, and what a 1.x channel carried over in that mode says while it is kept switched off.
+WHATSAPP_WEB_REMOVED = ("WhatsApp Web (the QR sign-in) was removed in Synapse 2.0. "
+                        "Connect WhatsApp through the WhatsApp Cloud API.")
+WHATSAPP_WEB_PAUSED = ("WhatsApp Web sign-in was removed in Synapse 2.0; "
+                       "reconnect this channel through the WhatsApp Cloud API.")
+
+
+def is_whatsapp_web(channel: dict) -> bool:
+    return channel.get("platform") == "whatsapp" and (channel.get("credentials") or {}).get("whatsapp_mode") == "unofficial"
+
 
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -105,7 +116,12 @@ async def save_channel(channel: dict) -> dict:
     mental model is "the channel's one agent" — a *changed* scalar replaces the
     old agent's assignment rather than accumulating beside it. Assignments made
     through :func:`assign_channel` for other agents are left alone.
+
+    A WhatsApp Web channel is saved only switched off, from any door: one carried over from 1.x is kept, paused,
+    and nothing makes or turns on a new one (F1355).
     """
+    if is_whatsapp_web(channel) and channel.get("enabled", True):
+        raise ValueError(WHATSAPP_WEB_REMOVED)
     data = await _load_raw()
     now = _now()
 

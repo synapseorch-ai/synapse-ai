@@ -74,6 +74,9 @@ async def save(body: dict) -> dict:
     body.pop("status", None)
     body.pop("last_error", None)
     body.pop("credentials_set", None)
+    if channel_store.is_whatsapp_web(body):
+        # Removed in 2.0, the Cloud API its one way in (F1355): said, never stored.
+        raise ChannelRefused(channel_store.WHATSAPP_WEB_REMOVED, 422)
     if body.get("platform") == "twilio_voice":
         # A language or provider Twilio can't serve would end every call (VOX1d); say so at the save.
         problems = voice_languages.check(body.get("voice"))
@@ -98,6 +101,9 @@ async def enable(channel_id: str, app_state: Any = None) -> dict:
     """Start the adapter for a channel; the channel as it now stands (a refused token is `error`, with its reason)."""
     mgr = manager(app_state)
     ch = await get(channel_id)
+    if channel_store.is_whatsapp_web(ch):
+        # A 1.x WhatsApp Web channel stays off until it is reconnected through the Cloud API (F1355).
+        raise ChannelRefused(channel_store.WHATSAPP_WEB_PAUSED, 422)
     # Mark as enabled in store before starting
     ch["enabled"] = True
     await channel_store.save_channel(ch)
