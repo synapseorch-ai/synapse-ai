@@ -22,6 +22,7 @@ from core.native_builder import build_plan, build_save
 from core.native_builder import change_tools as T
 from core.orchestration.run_writes import WRITES_KEY
 from test_a_build_makes_the_tools_it_found import ASK, FINDINGS, _call, _tool, workspace  # noqa: F401
+from test_a_build_makes_the_tools_it_found import SEND as SEND_STEP
 
 TOOL = "mailchimp_send_campaign"
 SENDER = {"name": "Sender", "purpose": "Sends the newsletter", "tools": [TOOL]}
@@ -102,6 +103,30 @@ class TestWhatTheCardPromisedIsApproved:
         await _workspace_policy("deny")
         refused, _ = await _call("save_build", {}, run)
         assert refused["outcome"] == "replan" and "Sender and `mailchimp_send_campaign`" in refused["refused"], refused
+
+
+class TestAToolStepsMadeToolKeepsItsAskByAHumanStep:
+    async def test_with_no_human_step_before_it_it_is_never_saved(self, client):
+        """A Tool step's "Asks you first" is a Human step before it (`builder_guard.unapproved`), never a confirm
+        (F1375's promise binds new agents only, 03c9c41c). A tool this build makes acts until shown otherwise, so with
+        no Human step before its step the card offers no build at all, and nothing is saved (BLD1's read)."""
+        from core import builder_access
+        from core.models_orchestration import OrchestrationRun
+        from core.orchestration.state import SharedState
+        from core.store.resources import load_orchestrations
+
+        run = OrchestrationRun(run_id="builder_unasked", orchestration_id="orch_native_builder",
+                               shared_state={builder_access.CALLER_KEY: {"user_id": "u1"}, "intent": "create",
+                                             build_plan.FINDINGS_KEY: FINDINGS})
+        await SharedState(run).checkpoint()
+        draft = {"finish": "submit_plan", "kind": "create", "title": "Unasked", "summary": "Sends it.",
+                 "steps": [SEND_STEP]}
+        run.shared_state[build_plan.DRAFT_KEY] = draft
+        checked, _ = await _call("check_build", {"draft": draft}, run)
+        assert "build" not in checked["offers"], checked["offers"]
+        assert ("Step 'Send it' runs `mailchimp_send_campaign`, which changes something outside this workspace, "
+                "with nobody approving it first. Put a Human step before it") in checked["say"], checked["say"]
+        assert not [o for o in await load_orchestrations() if o.get("name") == "Unasked"]
 
 
 class TestARefusalAfterTheYesPlansAgainOnce:
