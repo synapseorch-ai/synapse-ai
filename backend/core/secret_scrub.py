@@ -104,7 +104,14 @@ _PLACEHOLDER = (r"(?:<[^>\"'\r\n]*>|\[[^\]\"'\r\n]*\]|\{[^}\"'\r\n]*\}|YOUR[\w-]
 _NOT_A_QUOTED_VALUE = (r"(?![^\"'\r\n]*(?:\{\{|‹|\$))(?!\s*(?i:(?:bearer|token|basic)\s+)?" + _PLACEHOLDER +
                        r"\s*[\"'])")
 _NOT_A_BARE_VALUE = r"(?!\{\{|\$|‹)(?!" + _PLACEHOLDER + r"(?:[\s\"'&#]|$))"
-_KEY_HEADER_NAME = r"(?:authorization|proxy-authorization|cookie|[\w-]*(?:key|token|secret|auth)[\w-]*)"
+#: A header that carries a key, by its name: Proxy-Authorization, Cookie, or a name one of whose parts (split at - and
+#: _) says key, token, secret or auth (Naveen's list; eb 11-04: a whole part, so `X-Author-Id` and `Keyboard-Layout`
+#: are no key's). One rule: `http_facts` reads a curl's headers by it.
+_KEY_NAME_PART = (r"(?:keys?|tokens?|secrets?|auth|authori[sz]ation|authentication|apikey|authtoken|accesstoken|"
+                  r"secretkey|privatekey)")
+_KEY_HEADER_NAME = (r"(?:proxy-authori[sz]ation|cookie|(?:[A-Za-z0-9]+[-_])*" + _KEY_NAME_PART +
+                    r"(?:[-_][A-Za-z0-9]+)*)")
+KEY_HEADER = re.compile(r"(?i)^" + _KEY_HEADER_NAME + r"$")
 _CURL_PARTS: tuple[re.Pattern[str], ...] = (
     # -H 'Authorization: Bearer …', --header "X-Api-Key: …", -H 'Cookie: …': the value, its scheme word kept.
     re.compile(r"(?i)((?<![\w-])(?-i:-H|--header)(?=[\s=])\s*=?\s*[\"']\s*" + _KEY_HEADER_NAME +

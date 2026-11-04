@@ -23,10 +23,11 @@ import shlex
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+#: A header that carries a key, by its name (Naveen's list, 11-04): never a tool's, its Connect card's. The door's rule.
+from core.secret_scrub import KEY_HEADER
+
 #: The most curls one text is read for.
 MAX_CURLS = 3
-#: A header that carries a key, by its name (Naveen's list, 11-04): never a tool's, its Connect card's.
-KEY_HEADER = re.compile(r"(?i)^(?:authorization|proxy-authorization|cookie|[\w-]*(?:key|token|secret|auth)[\w-]*)$")
 #: A query parameter that carries a key, by its name: a workspace variable, never a value in the tool.
 KEY_QUERY = re.compile(r"(?i)^(?:api[_-]?key|apikey|key|token|access[_-]?token|auth|secret|client[_-]?secret|"
                        r"signature|sig)$")
