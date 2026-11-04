@@ -656,6 +656,46 @@ async def check_codeblock(browser) -> str:
         await ctx.close()
 
 @check
+async def check_codetestpress(browser) -> str:
+    """A press of "Test this fix" shows it is working for the whole test, then says how it went (F1380, F1371): the
+    card's words are the test's own (`say`), never "Done."; its button is busy, and nothing else can be pressed,
+    until the answer comes. Model-free: the card is the stub's, the act's answer a route's, after a wait."""
+    ctx, page = await _open_builder(browser)
+    said = 'It passed on its 1 sample: tested with {"rows": [1.234, 2.0]}: printed {"total": 3.23}. Press Go ahead.'
+
+    async def act(route):
+        await asyncio.sleep(2.5)  # a test on the fleet takes a while
+        await route.fulfill(status=200, json={"done": True, "result": {"passed": True, "say": said}})
+
+    await ctx.route(re.compile(r".*/api/assistant/act$"), act)
+    try:
+        await page.evaluate("(id) => window.__stub.push({type: 'orchestration_start', run_id: id})", RUN_ID)
+        await page.evaluate("(e) => window.__stub.push(e)", {
+            "type": "action_needed", "id": "act_f1380", "title": 'Test this fix to "region_totals"',
+            "detail": "Pressing this runs the fix above on its sample inputs, with the internet.", "danger": False,
+            "buttons": [{"label": "Test this fix", "tool": "test_code_change",
+                         "arguments": {"run_id": RUN_ID, "op": 0}, "token": "t_f1380", "expires_in_seconds": 300}]})
+        card = page.locator('[data-testid="assistant-panel"]').get_by_role("region", name=re.compile("Test this fix"))
+        await card.wait_for(timeout=8_000)
+        button = card.get_by_role("button", name="Test this fix")
+        await button.click()
+        busy = []
+        for _ in range(4):  # across the wait, not only its first moment
+            await asyncio.sleep(0.5)
+            busy.append(await button.is_disabled() and await button.locator("svg, [role=status]").count() > 0)
+        if not all(busy):
+            raise AssertionError(f"the button does not show it is working for the whole test: {busy}")
+        status = card.get_by_role("status")
+        await status.wait_for(timeout=6_000)
+        words = await status.inner_text()
+        if "passed on its 1 sample" not in words or words.strip() == "Done.":
+            raise AssertionError(f"the card says {words!r}, not how the test went")
+        return "a press of Test this fix is busy for the whole test, then says how it went in the test's own words"
+    finally:
+        await ctx.close()
+
+
+@check
 async def check_money(browser) -> str:
     """Money that was spent is never rendered as nothing.
 

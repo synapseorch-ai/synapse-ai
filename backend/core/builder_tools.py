@@ -205,6 +205,39 @@ def _python_update_args(before: dict, args: dict) -> dict:
             "input_schema_json": json.dumps(before.get("inputSchema") or {"type": "object", "properties": {}})}
 
 
+async def _tested_said(passed: bool, results: list[dict], globals_: list[str]) -> dict:
+    """What a press of "Test this fix" answers (F1380): how it went, in words the card shows (`say`), and each
+    sample's run. Never a secret: a press is not a run, so beside the workspace's held secrets (what a run's events
+    are masked by) each variable the tool reads is said by its name wherever its value was printed or raised, and a
+    credential's shape is masked though nothing holds it."""
+    from core import python_edits, variables
+    from core.execution import declared_globals
+    from core.secret_scrub import _named_out, scrub_credentials, scrub_secrets
+
+    values = declared_globals({"globals": globals_}, await variables.load()) if globals_ else {}
+    pairs = [(name, str(value)) for name, value in values.items() if value not in (None, "")]
+
+    def masked(text: Any) -> Any:
+        if not isinstance(text, str) or not text:
+            return text
+        return scrub_secrets(scrub_credentials(_named_out(text, pairs) if pairs else text)[0])
+
+    shown = [{**r, "printed": masked(r.get("printed")), **({"error": masked(r["error"])} if "error" in r else {})}
+             for r in results]
+    if passed:
+        n = len(shown)
+        say = (f"It passed on its {n} sample{'' if n == 1 else 's'}: " + "; ".join(python_edits.said(shown))
+               + ". Press Go ahead on the change to make it.")
+    else:
+        failed = next((r for r in shown if not r["ok"]), None)
+        say = (f"It failed with {json.dumps(failed['args'], ensure_ascii=False)}: "
+               f"{python_edits.last_line(failed.get('error') or '') or 'no error was said'}. "
+               "Say what to change, or stop the change.") if failed else "It ran nothing: it has no samples to test."
+    return {"passed": passed, "results": shown, "say": say,
+            "next": "Press Go ahead on the change to make it." if passed else
+                    "It failed: say what to change, or stop the change."}
+
+
 async def _change_fix(args: dict) -> tuple[dict | None, str | None]:
     """The fix a change proposed, from its own run (F1325): `(its checked op, None)`, or `(None, why)`."""
     from sqlalchemy import select
@@ -3707,9 +3740,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         passed = bool(results) and all(r["ok"] for r in results)
         if passed:
             await python_edits.keep_pass(code, samples)
-        return {"passed": passed, "results": results,
-                "next": "Press Go ahead on the change to make it." if passed else
-                        "It failed: say what to change, or stop the change."}
+        return await _tested_said(passed, results, tool.get("globals") or [])
 
     elif tool_name == "create_python_tool":
         from core.store.resources import save_tool

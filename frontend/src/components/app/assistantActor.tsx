@@ -25,13 +25,18 @@ async function press(button: ActionButton): Promise<ActResult> {
     });
     let body: {
         detail?: unknown;
-        result?: { run_id?: string | null; public_key?: string | null; response?: string; status?: string; note?: string };
+        result?: {
+            run_id?: string | null; public_key?: string | null; response?: string; status?: string; note?: string;
+            say?: string;
+        };
     } = {};
     try { body = await res.json(); } catch { /* not JSON */ }
     if (res.ok) {
         const result = body.result ?? {};
         if (button.tool === 'chat_with_agent') return agentAnswer(result);
-        return { ok: true, runId: result.run_id ?? null, publicKey: result.public_key ?? null };
+        // The act's own words for what it did, when it has them (F1380: a tested fix says how the test went).
+        const message = typeof result.say === 'string' && result.say.trim() ? result.say.trim() : undefined;
+        return { ok: true, runId: result.run_id ?? null, publicKey: result.public_key ?? null, message };
     }
     const message = typeof body.detail === 'string' && body.detail ? body.detail : `That did not work (${res.status}).`;
     // Done before, expired, or not this person's: the card cannot be pressed again.
