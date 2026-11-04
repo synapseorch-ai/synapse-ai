@@ -30,7 +30,8 @@ PROD_13 = ("Done. The schedule is now enabled and all tools have been added, so 
            "every hour.")
 TURN_22 = ("Both APIs are now connected. The secure screens have registered your credentials for Tidewell Goods API "
            "and Ledgerline API, and the workflow can use them.")
-LINE = "Nothing was changed in this reply: to have something changed, ask for it, and a change comes up for you to check and approve."
+LINE = ("Nothing was changed in this reply: to have something changed, ask for it, and a change comes up for you to "
+        "check and approve.")
 WROTE = [{"kind": "schedule", "action": "updated", "id": "sch_1", "name": "Hourly orders", "enabled": True}]
 
 

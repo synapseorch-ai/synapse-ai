@@ -319,13 +319,66 @@ def no_yes_offered(text: str) -> str:
     return "\n".join(lines).rstrip() + "\n\n" + NO_YES_HERE
 
 
+# ── an answer never claims a change this turn did not make (F1323) ────────────────────────────────────────────────
+
+#: What a reply says in place of a change it claimed and this turn never made. Fixed words, as NO_YES_HERE.
+NOTHING_CHANGED_HERE = ("Nothing was changed in this reply: to have something changed, ask for it, and a change comes "
+                        "up for you to check and approve.")
+_CHANGED = (r"(?:added|created|updated|changed|enabled|disabled|turned\s+(?:it\s+|them\s+)?(?:on|off)|"
+            r"switched\s+(?:it\s+|them\s+)?(?:on|off)|deleted|removed|renamed|set\s+(?:it\s+|them\s+)?up|connected|"
+            r"scheduled|built|made|saved|fixed|applied|moved|paused|resumed|activated|deactivated|installed|"
+            r"registered|configured|edited|replaced|started|stopped|approved|sent)")
+#: A sentence that claims a change was made: a "Done" or "All set" announcement; "I've turned on…" (the speaker did
+#: it); a state said as just changed ("is now enabled", "has now been added", "successfully connected"). Never a status
+#: ("is enabled"), history ("was turned off on Monday") or what the speaker can do or did not ("I can", "I haven't").
+_CLAIMS_A_CHANGE = re.compile(
+    r"(?i)^\W*(?:all\s+(?:done|set)|done|finished)\s*[.!,:\u2014\u2013-]"
+    r"|^\W*(?:that['\u2019]s|that\s+is|it['\u2019]s|it\s+is)\s+(?:all\s+)?done\b"
+    r"|\b(?:i|we)(?:['\u2019]ve|\s+have)?\s+(?:(?:now|just|already|successfully|also|gone\s+ahead\s+and)\s+)*"
+    rf"{_CHANGED}\b"
+    r"|(?:\b(?:is|are|has|have)|['\u2019](?:s|re))\s+now\s+(?:been\s+)?"
+    rf"(?:{_CHANGED}|on|off|live|active|running|in\s+place)\b"
+    rf"|\bsuccessfully\s+{_CHANGED}\b")
+#: A sentence that sets a condition or a time ("Once it's enabled…", "If I added…") claims nothing.
+_CONDITION = re.compile(r"(?i)^\W*(?:if|when|once|after|before|until|unless)\b")
+
+
+def _claims_a_change(sentence: str) -> bool:
+    text = sentence.strip()
+    return bool(text) and not _CONDITION.match(text) and bool(_CLAIMS_A_CHANGE.search(text))
+
+
+def no_change_claimed(text: str, writes: Any = None) -> str:
+    """`text` without any whole sentence that claims a change was made, and then code's line, when this turn wrote
+    nothing (`writes`: the run's own record, `run_writes`; F1323). No answer step can change anything, so a claim
+    there has nothing behind it: prod-13's "Done. The schedule is now enabled and all tools have been added…" after no
+    op applied. A turn that wrote keeps its words."""
+    if writes:
+        return text
+    cut = False
+    lines = []
+    for line in str(text or "").split("\n"):
+        parts = _SENTENCE_END.split(line)
+        kept = [x for x in parts if not _claims_a_change(x)]
+        cut |= len(kept) < len(parts)
+        if kept or not line.strip():
+            lines.append(" ".join(kept))
+    if not cut:
+        return text
+    rest = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    return f"{rest}\n\n{NOTHING_CHANGED_HERE}" if rest else NOTHING_CHANGED_HERE
+
+
 async def check_answer(args: dict, server_module: Any, events: list[dict]) -> dict:
-    """After every answer (talk, help, workspace): the run's answer with no yes asked for that nothing can take."""
+    """After every answer (talk, help, workspace, the planner's plain reply): the run's answer with no yes asked for
+    that nothing can take (F1243), and no change claimed that this turn did not make (F1323)."""
     from core.native_builder.change_tools import _run
+    from core.orchestration.run_writes import WRITES_KEY
 
     _, run = _run()
-    said = (run.shared_state.get("summary") if run is not None else "") or ""
-    return {"object": "answer_checked", "text": no_yes_offered(str(said))}
+    state = run.shared_state if run is not None else {}
+    said = state.get("summary") or ""
+    return {"object": "answer_checked", "text": no_change_claimed(no_yes_offered(str(said)), state.get(WRITES_KEY))}
 
 
 CHECK_SCHEMA = {"type": "function", "function": {
