@@ -233,14 +233,21 @@ _MODEL_TYPES = frozenset({"agent", "llm"})
 #: Steps whose answer is text a later step may read as a structure: a model's, and a Tool step's, which stores what
 #: its tool answered, JSON as text from an MCP tool (F1358).
 _TEXT_WRITERS = _MODEL_TYPES | {"tool"}
+#: What only text has: a code step calling one of these on a value read it as text, never as an object's field
+#: (F1358's dotted reads leave it undeclared; F1359's check reads the same list). The one list: the engine's
+#: `_SynapseState` keeps its own copy in its generated class, held equal to this by a test.
+TEXT_METHODS = frozenset({"split", "rsplit", "strip", "lstrip", "rstrip", "lower", "upper", "casefold", "replace",
+                          "startswith", "endswith", "splitlines", "partition", "rpartition", "encode"})
 #: Calls that go through what they are given, as a list does.
 _GOES_THROUGH = frozenset({"len", "sorted", "list", "enumerate", "sum", "max", "min", "reversed"})
 
 
 def _structure_reads(code: str, keys: set[str]) -> dict[str, str]:
     """What a Transform's code does with each of `keys` it reads out of state: goes through it (`list`: iterated,
-    counted, indexed by a number) or looks a field up in it (`dict`: indexed by a name, `.get`, `.items`). A name
-    assigned from it counts as it, as F1227's reading does."""
+    counted, indexed by a number) or looks a field up in it (`dict`: indexed by a name, `.get`, `.items`, or read by
+    its name, `state.x.content`, as a Transform's `state` answers, F1358). A method called on it is no field, and one
+    only text has (`TEXT_METHODS`) is a use of it as text. A name assigned from it counts as it, as F1227's reading
+    does."""
     import ast
 
     from core.builder_tools import _state_key
@@ -260,6 +267,7 @@ def _structure_reads(code: str, keys: set[str]) -> dict[str, str]:
             return key
         return names.get(node.id) if isinstance(node, ast.Name) else None
 
+    called = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
     out: dict[str, str] = {}
     for node in ast.walk(tree):
         if isinstance(node, (ast.For, ast.comprehension)) and (key := read(node.iter)):
@@ -273,6 +281,9 @@ def _structure_reads(code: str, keys: set[str]) -> dict[str, str]:
             elif isinstance(node.slice, ast.Slice):
                 out.setdefault(key, "list")
         elif isinstance(node, ast.Attribute) and node.attr in ("get", "items", "keys", "values") \
+                and (key := read(node.value)):
+            out.setdefault(key, "dict")
+        elif isinstance(node, ast.Attribute) and id(node) not in called and node.attr not in TEXT_METHODS \
                 and (key := read(node.value)):
             out.setdefault(key, "dict")
     return out
