@@ -31,6 +31,18 @@ router = APIRouter()
 #: The envelope's version. "1.1" added `exported_from`; "1.0" files still import.
 BUNDLE_VERSION = "1.1"
 
+#: Said of each of Synapse AI's own agents and its workflow a file carries (F1373; cloud's import says the same,
+#: F1372): the product's, never the person's to import.
+SYNAPSE_AIS_OWN = ("One of Synapse AI's own, from the install this file came from, so it isn't imported: "
+                   "this workspace has its own Synapse AI.")
+
+
+def _synapse_ais_own(kind: str, entity: dict) -> bool:
+    """Whether a file's agent or workflow is the builder's own, of any release, by its id alone (F1351)."""
+    from core.native_builder.seed import NATIVE_BUILDER_ORCH_ID, is_builder_agent
+
+    return is_builder_agent(entity.get("id")) if kind == "agents" else entity.get("id") == NATIVE_BUILDER_ORCH_ID
+
 # --------------------------------------------------------------------------- #
 # Resources come from the store, through the same functions the CRUD routes
 # use. This module used to hold a second, independent set of JsonStore handles
@@ -188,8 +200,14 @@ async def import_bundle(req: ImportRequest):
     imported_orchs: List[dict] = []
 
     picked: list[dict] = []
+    # Synapse AI's own, from the install the file came from (F1373): never written, so never over the builder's
+    # own; each named. A step of the file's that used one says it isn't here (`_warnings`).
+    left_out: List[Dict[str, str]] = []
     for index, orch in enumerate(bundle["orchestrations"]):
         if not isinstance(orch, dict) or bundle_key(orch, index) not in selected_orchs:
+            continue
+        if _synapse_ais_own("orchestrations", orch):
+            left_out.append(_warning("orchestrations", orch, SYNAPSE_AIS_OWN))
             continue
         orch = dict(orch)
         oid = orch.get("id")
@@ -204,7 +222,8 @@ async def import_bundle(req: ImportRequest):
     from core.routes.orchestrations import _refuse_to_save
 
     arriving = {a["id"]: a for a in bundle["agents"]
-                if isinstance(a, dict) and a.get("id") in set(req.selected_agent_ids)}
+                if isinstance(a, dict) and a.get("id") in set(req.selected_agent_ids)
+                and not _synapse_ais_own("agents", a)}
     for orch in picked:
         await _refuse_to_save(orch, arriving)
 
@@ -228,6 +247,9 @@ async def import_bundle(req: ImportRequest):
     for agent in bundle["agents"]:
         aid = agent.get("id") if isinstance(agent, dict) else None
         if not aid or aid not in selected_agents:
+            continue
+        if _synapse_ais_own("agents", agent):
+            left_out.append(_warning("agents", agent, SYNAPSE_AIS_OWN))
             continue
         await save_agent(dict(agent))
         imported_agents.append(agent)
@@ -382,7 +404,7 @@ async def import_bundle(req: ImportRequest):
         from core.store.resources import save_tools
         await save_tools(imported_tools)
 
-    warnings = await _warnings(imported_orchs, imported_agents, [t["name"] for t in imported_tools])
+    warnings = [*left_out, *await _warnings(imported_orchs, imported_agents, [t["name"] for t in imported_tools])]
     return {"status": "success", "results": results, "warnings": warnings}
 
 
