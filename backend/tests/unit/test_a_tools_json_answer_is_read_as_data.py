@@ -12,6 +12,11 @@ Transform going through it or looking fields up in it, a condition reading its f
 JSON step wrote is data already, and still left alone. And as before, the engine parses only what is declared: a
 workflow saved without a declaration reads a Tool step's text as text, a Transform that `json.loads` it is not
 declared, and an answer that is not JSON is kept as it came, with the engine's warning, and the run goes on.
+
+A field is read the way the planner's guide writes it too, `state.read_csv.content` (a Transform's `state` answers by
+attribute, nested objects as well): for a Tool step's answer and a model's alike. A method called on it is not a field:
+one only text has (`compile.TEXT_METHODS`, the one list F1359's check reads too) is a use of it as text, and leaves it
+undeclared (eb 11-04).
 """
 from __future__ import annotations
 
@@ -138,3 +143,36 @@ class TestWhatIsLeftAsItWas:
         mine = {"read_csv": {"type": "dict", "description": "The CSV file vault_read answers"}}
         compiled = _compiled([READ, _transform(CAP04_CODE)], settings={"state_schema": mine})
         assert _schema(compiled)["read_csv"] == mine["read_csv"]
+
+
+class TestAFieldReadByItsName:
+    """`state.<step id>.<field>`, as plan_steps.md writes a field (`state.check_weather.wind_kmh`)."""
+
+    def test_a_dotted_read_of_a_tools_answer_declares_it_an_object_and_hands_over_the_field(self):
+        compiled = _compiled([READ, _transform("result = state.read_csv.content")])
+        assert _schema(compiled).get("read_csv", {}).get("type") == "dict", _schema(compiled)
+        value, _, _ = _typed(compiled.orchestration, ANSWER)
+        assert value["content"] == CSV
+
+    def test_a_dotted_read_through_a_name_assigned_from_it_counts(self):
+        code = "data = state.read_csv\nresult = data.content.splitlines()[0]"
+        assert _schema(_compiled([READ, _transform(code)])).get("read_csv", {}).get("type") == "dict"
+
+    def test_a_dotted_read_of_a_models_answer_declares_it_too(self):
+        write = {"id": "write", "type": "llm", "name": "Write", "does": "Writes", "prompt": "Give a title as JSON.",
+                 "next": "parse_sales"}
+        assert _schema(_compiled([write, _transform("result = state.write.title")])).get(
+            "write", {}).get("type") == "dict"
+
+    @pytest.mark.parametrize("code", ["result = state.read_csv.strip()", "result = state.read_csv.find('date')",
+                                      "rows = state.read_csv\nresult = rows.splitlines()"])
+    def test_a_method_called_on_it_is_no_field(self, code):
+        assert "read_csv" not in _schema(_compiled([READ, _transform(code)]))
+
+    def test_every_method_only_text_has_leaves_it_text(self):
+        from core.native_builder.compile import TEXT_METHODS  # the one list (F1359 reads it too)
+
+        assert {"split", "strip", "lower", "replace", "startswith", "splitlines"} <= TEXT_METHODS
+        for method in sorted(TEXT_METHODS):
+            code = f"result = state.read_csv.{method}()"
+            assert "read_csv" not in _schema(_compiled([READ, _transform(code)])), method
