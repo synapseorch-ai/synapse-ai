@@ -106,8 +106,9 @@ def _said(events) -> str:
     return " ".join(str(e.get("response") or e.get("error") or e.get("message") or "") for e in events)
 
 
-def _done(events) -> bool:
-    return any(e.get("type") == "orchestration_complete" for e in events)
+def _status(events) -> str | None:
+    """How the run ended: its `orchestration_complete` says, a failed run's too (its status `failed`)."""
+    return next((e.get("status") for e in reversed(events) if e.get("type") == "orchestration_complete"), None)
 
 
 async def _step_error(run_id: str) -> str:
@@ -129,7 +130,7 @@ class TestAToolStep:
     async def test_its_app_needing_sign_in_fails_the_step_in_clear_words(self, client):
         events = await _run(_server())
         said = _said(events)
-        assert not _done(events)
+        assert _status(events) == "failed", _status(events)  # it fails, and Resume is the way on (eb: A)
         for words in (GMAIL, "isn't available", "Gmail", "needs signing in again", REASON, "Reconnect Gmail",
                       "Resume", "never ran"):
             assert words in said, (words, said)
@@ -179,13 +180,13 @@ class TestAToolStep:
 
         server = _server()
         events = await _run(server, run_id="run_f1349_resume")
-        assert not _done(events)
+        assert _status(events) == "failed", _status(events)
         app = _App()
         server.tool_router[GMAIL] = ("ext_mcp_Gmail", "send_email")
         server.agent_sessions["ext_mcp_Gmail"] = app
         server.mcp_manager.servers["Gmail"].update(status="connected", last_error=None)
         resumed = [e async for e in OrchestrationEngine.resume_failed("run_f1349_resume", server)]
-        assert _done(resumed), _said(resumed)
+        assert _status(resumed) == "completed", _said(resumed)
         assert app.calls == [("send_email", {"to": "ops@harborpine.example"})]
 
 
