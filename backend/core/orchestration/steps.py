@@ -3,6 +3,7 @@ Step executors for each orchestration step type.
 Each executor is an async generator that yields SSE-compatible events.
 """
 import asyncio
+import contextlib
 import datetime
 import json
 import re
@@ -1359,6 +1360,9 @@ class ToolStepExecutor:
                 finally:
                     if token is not None:
                         browser_client.owner.reset(token)
+                if token is not None and resource_events is not None and hasattr(session, "take_events"):
+                    # The pane's events, as the agent loop sends them: a browser opened, what each action did (F1356).
+                    resource_events.extend(session.take_events(browser_client.owner_for(None, run_id)))
                 from core.tool_result import mcp_text
 
                 text = mcp_text(result)  # as the agent path reads it: [] is "", a list whole (F1344)
@@ -3675,6 +3679,11 @@ class EndStepExecutor:
         yield {"type": "orchestration_end", "orch_step_id": step.id}
 
 
+#: How often a Browser step's replay hands the run page what the browser did, and the key its answer comes under.
+_DRAIN_EVERY = 0.5
+_ANSWER = "_replay_answer"
+
+
 class BrowserStepExecutor:
     """A recording replayed by code in the run's browser (BRW1, F1146; DESIGN §v5.4): its inputs filled from the
     run's state, what it reads to `output_key`, no model on the way. A workflow run is never watched, so a recorded
@@ -3721,13 +3730,30 @@ class BrowserStepExecutor:
                     yield event
                     if event.get("type") == "human_input_required":
                         return
-                answer = await tools.latest_replay(key) or {"refused": "The browser closed."}
+                async with contextlib.aclosing(self._live(step, key, tools.latest_replay(key))) as live:
+                    async for event in live:
+                        if _ANSWER in event:
+                            answer = event[_ANSWER] or {"refused": "The browser closed."}
+                        else:
+                            yield event
                 phase = "agent_done"
             elif phase:
-                answer = await tools.replay_for_step(key, doc, steps, inputs, carry_on=True)
+                carried_on = tools.replay_for_step(key, doc, steps, inputs, carry_on=True)
+                async with contextlib.aclosing(self._live(step, key, carried_on)) as live:
+                    async for event in live:
+                        if _ANSWER in event:
+                            answer = event[_ANSWER]
+                        else:
+                            yield event
             else:
                 yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": f"[Browser] {doc['name']}"}
-                answer = await tools.replay_for_step(key, doc, steps, inputs)
+                replaying = tools.replay_for_step(key, doc, steps, inputs)
+                async with contextlib.aclosing(self._live(step, key, replaying)) as live:
+                    async for event in live:
+                        if _ANSWER in event:
+                            answer = event[_ANSWER]
+                        else:
+                            yield event
             while True:
                 fix = answer.get("fix")
                 if fix and fix.get("steps"):
@@ -3756,7 +3782,12 @@ class BrowserStepExecutor:
                             yield event
                             if event.get("type") == "human_input_required":
                                 return
-                        answer = await tools.latest_replay(key) or {"refused": "The browser closed."}
+                        async with contextlib.aclosing(self._live(step, key, tools.latest_replay(key))) as live:
+                            async for event in live:
+                                if _ANSWER in event:
+                                    answer = event[_ANSWER] or {"refused": "The browser closed."}
+                                else:
+                                    yield event
                         phase = "agent_done"
                         continue
                     turn = await tools.hand_to_person(key, (
@@ -3777,6 +3808,37 @@ class BrowserStepExecutor:
             run.shared_state[step.output_key] = outputs
         yield {"type": "final", "orch_step_id": step.id, "step_name": step.name,
                "response": json.dumps(outputs, ensure_ascii=False) if outputs else f"Ran '{doc['name']}'."}
+
+    async def _live(self, step, key: str, call):
+        """`call` (the replay, or the wait on it) as a task of its own, and the browser's events for `key` as they
+        come (F1356: the run page's pane, live): every `_DRAIN_EVERY` seconds while it runs, and once at its end, in
+        the order the component queued them, each with the step's id. Its answer comes last, as `{_ANSWER: …}`. A
+        step cancelled mid-replay cancels it: no replay left running, nothing said after the step's end. Each caller
+        holds it in `contextlib.aclosing`, so a step that is closed ends it in its own task (never the event loop's
+        finaliser, later): a cancel aimed at the step while it waits for the replay's end is the step's."""
+        from core.browser import client as browser_client
+
+        task = asyncio.create_task(call, name=f"browser-replay:{step.id}")
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=_DRAIN_EVERY)
+                for event in browser_client.tools.take_events(key):
+                    yield {**event, "orch_step_id": step.id, "step_name": step.name}
+                if done:
+                    break
+            yield {_ANSWER: task.result()}
+        finally:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    # The replay's own end passes; a cancel aimed at the step while it waited for it is the step's.
+                    here = asyncio.current_task()
+                    if here is not None and here.cancelling():
+                        raise
+                except Exception:  # noqa: BLE001 — the replay's own failure, as it ends; the step's is what propagates
+                    pass
 
     async def _park(self, step, run, progress: dict, handover: dict, phase: str):
         """The person's turn, as an agent step parks on one (F1099): answered by handing the browser back."""

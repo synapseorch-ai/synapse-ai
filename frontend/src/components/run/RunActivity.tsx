@@ -23,12 +23,12 @@ import * as React from 'react';
 import { Button, ErrorNote, Markdown, Modal, Spinner } from '@/components/ui';
 import { cn, focusRing } from '@/lib/cn';
 
-import { BrowserPane, Filmstrip, useKeptLog, type BrowserAction } from '@/components/browser';
+import { BrowserPane, ShotViewer, useKeptLog, type BrowserAction } from '@/components/browser';
 import { TeamView, type LaneHandlers, type MemberAnswer } from '@/components/team';
 
 import { useRunHost } from './host';
 import { isLive } from './model';
-import { applyRunEvent, emptyRunLog, LogLine, type BrowserEntry, type RunLogState, type StepResultEntry } from './RunLogView';
+import { applyRunEvent, emptyRunLog, LogLine, type BrowserGroupEntry, type RunLogState, type StepResultEntry } from './RunLogView';
 
 /** A `step_error` with the step's own words from the history (F151, F195): the stream's `error` is sanitised. */
 function withStepError(event: unknown, errors: Record<string, string>): unknown {
@@ -228,13 +228,14 @@ export function RunActivity({
 
 /**
  * The browser a step's agent worked in (BRW2, F1075): live while the run runs, the same pane as beside a chat; after
- * it, the filmstrip of what the agent did, from the screenshots kept with the run. Nothing while no browser opened,
+ * it, one large viewer of what the agent did, from the screenshots kept with the run (F1356). Nothing while no browser opened,
  * or where the product reaches no browser (`RunHost.browser`).
  */
 function RunBrowser({ runId, live, state }: { runId: string; live: boolean; state: RunLogState }) {
     const browser = useRunHost().browser;
     const heard: BrowserAction[] = React.useMemo(
-        () => state.entries.filter((e): e is BrowserEntry => typeof e !== 'string' && e.kind === 'browser'),
+        () => state.entries.filter((e): e is BrowserGroupEntry => typeof e !== 'string' && e.kind === 'browser_group')
+            .flatMap((g) => g.actions),
         [state.entries]);
     // Once the run ended, the whole log kept with it: the person's own presses and sends too, the record of who
     // pressed what. A run that kept none shows what its journal carried.
@@ -252,7 +253,10 @@ function RunBrowser({ runId, live, state }: { runId: string; live: boolean; stat
                     actions={actions}
                     owner={`run:${runId}`}
                     signedIn={state.browser.signedIn}
-                    className="h-[30rem] overflow-hidden rounded-lg border border-border"
+                    // The picture is the pane, at the page's own shape, and it can be seen large (F1356).
+                    hero
+                    enlarge
+                    className="overflow-hidden rounded-lg border border-border"
                 />
             </section>
         );
@@ -260,11 +264,11 @@ function RunBrowser({ runId, live, state }: { runId: string; live: boolean; stat
     if (actions.length === 0) return null;
     const kept = browser.keptShotUrl;
     return (
-        <section aria-label="The browser" className="mb-3 grid gap-2">
+        <section id="run-browser" aria-label="The browser" className="mb-3 grid scroll-mt-4 gap-2">
             <h3 className="text-sm font-medium text-text">
                 The browser <span className="font-normal text-text-faint">· {actions.length} action{actions.length === 1 ? '' : 's'}</span>
             </h3>
-            <Filmstrip actions={actions} shotUrl={(a) => (kept && a.shot_ref ? kept('run', runId, Number(a.shot_ref)) : null)} />
+            <ShotViewer actions={actions} shotUrl={(a) => (kept && a.shot_ref ? kept('run', runId, Number(a.shot_ref)) : null)} />
         </section>
     );
 }

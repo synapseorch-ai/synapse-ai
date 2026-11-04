@@ -39,7 +39,7 @@ export {
   type SessionsHost,
   type SiteSession,
 } from './sessions';
-export { Filmstrip } from './Filmstrip';
+export { ShotViewer } from './ShotViewer';
 export { PANE_SHARE, PaneHandle, parseShare } from './PaneHandle';
 export { pagePoint, type Box as PageBox } from './pagePoint';
 export { useBrowserFrames, useKeptLog, type FrameMemory, type FramesState } from './useBrowserFrames';

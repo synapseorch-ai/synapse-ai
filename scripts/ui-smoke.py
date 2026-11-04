@@ -12655,27 +12655,35 @@ async def check_brwlog(browser) -> str:
     try:
         ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done", runs=runs, before=_brw_shots)
         try:
-            line = page.locator("main [data-browser-action]").filter(has_text="Search button")
+            # F1356: the run log has one line per browser session, "Browser · N actions", which opens to their words;
+            # the pictures are the browser's own, above it, never a thumbnail per action here.
+            group = page.locator("main details").filter(has_text=re.compile(r"Browser\s*·\s*1 action"))
             await asyncio.sleep(0.6)
             # The log may start folded; an open one is left open (a click would fold it).
-            if not await line.count():
+            if not await group.count():
                 for opener in ("Activity", "Show the log", "Log"):
                     b = page.get_by_role("button", name=re.compile(rf"^{opener}"))
                     if await b.count():
                         await b.first.click()
                         break
                 await asyncio.sleep(0.6)
-            if not await line.count():
-                bad.append("the run log has no line for the browser action")
-            elif not await line.locator("img[src*='/api/browser/bsL/shot/1']").count():
-                bad.append("the run log's browser line has no screenshot")
+            if not await group.count():
+                bad.append("the run log has no 'Browser · 1 action' line")
+            else:
+                await group.first.locator("summary").click()
+                await asyncio.sleep(0.3)
+                if not await group.first.locator("[data-browser-action]").filter(has_text="Search button").count():
+                    bad.append("the run log's browser line does not open to what the agent did")
+                if await group.first.locator("img").count():
+                    bad.append("the run log still shows a thumbnail per browser action")
         finally:
             await ctx.close()
     finally:
         _M2B_STREAM = kept
     if bad:
         raise AssertionError("; ".join(bad))
-    return "a browser action is a line with its screenshot in the chat turn and in the run log"
+    return ("a browser action is a line with its screenshot in the chat turn; in the run log one 'Browser · N actions' "
+            "line that opens")
 
 
 
@@ -13610,10 +13618,94 @@ async def check_brwbox(browser) -> str:
     return "a refused answer is said, leaves no trace of what was typed, and the question stays open"
 
 
+async def _brw_hero(page, region) -> list[str]:
+    """What the run page's live browser must be (F1356): the picture fills the column at the page's own shape, what
+    the agent did is folded and closed, and Enlarge shows it large, Esc closing it, Take over in reach where the pane
+    has it. Returns what is not so."""
+    bad: list[str] = []
+    await region.locator("img").first.wait_for(timeout=8_000)
+    await asyncio.sleep(0.5)
+    got = await region.evaluate("""(r) => {
+      const pane = r.querySelector('section[aria-label="Browser"]');
+      const box = pane && pane.querySelector('div[style*="aspect-ratio"]');
+      const details = pane && pane.querySelector('details');
+      const p = pane ? pane.getBoundingClientRect() : null, b = box ? box.getBoundingClientRect() : null;
+      return {pane: p && p.width, w: b && b.width, h: b && b.height, folded: !!details && !details.open,
+              summary: details ? details.querySelector('summary').innerText : null,
+              wide: document.documentElement.scrollWidth <= window.innerWidth + 1};
+    }""")
+    if not got["w"] or got["w"] < 0.9 * got["pane"]:
+        bad.append(f"the live picture does not fill the column: {got}")
+    elif abs(got["h"] - got["w"] * 10 / 16) > 6:
+        bad.append(f"the live picture is not at the page's 16:10: {got}")
+    if not got["folded"] or not re.search(r"What the agent did · \d", got["summary"] or ""):
+        bad.append(f"what the agent did is not folded and closed under the picture: {got}")
+    if not got["wide"]:
+        bad.append("the run page scrolls sideways")
+    pane_has_take_over = await region.get_by_role("button", name="Take over").count()
+    await region.get_by_role("button", name="Enlarge").click()
+    dialog = page.get_by_role("dialog")
+    await dialog.wait_for(timeout=4_000)
+    await asyncio.sleep(0.4)
+    large = await dialog.evaluate("""(d) => {
+      const img = d.querySelector('img'), r = img ? img.getBoundingClientRect() : null, dr = d.getBoundingClientRect();
+      return {img: r && r.width, left: dr.left, right: dr.right, vw: window.innerWidth, vh: window.innerHeight,
+              wide: document.documentElement.scrollWidth <= window.innerWidth + 1};
+    }""")
+    if not large["img"] or large["img"] <= got["w"] * (1.05 if large["vw"] > 600 else 0.85):
+        bad.append(f"Enlarge does not show the page large: {large} against {got['w']}")
+    if large["left"] < 0 or large["right"] > large["vw"] + 1 or not large["wide"]:
+        bad.append(f"the enlarged page does not fit the screen: {large}")
+    if pane_has_take_over:
+        take_over = dialog.get_by_role("button", name="Take over")
+        if not await take_over.count():
+            bad.append("Take over is not in reach in the enlarged page")
+        else:
+            tb = await take_over.bounding_box()
+            if not tb or tb["x"] < 0 or tb["x"] + tb["width"] > large["vw"] + 1 or tb["y"] + tb["height"] > large["vh"] + 1:
+                bad.append(f"Take over is off the screen in the enlarged page: {tb}")
+    await page.keyboard.press("Escape")
+    await asyncio.sleep(0.4)
+    if await page.get_by_role("dialog").count():
+        bad.append("Esc does not close the enlarged page")
+    return bad
+
+
+@check
+async def check_brwrunpagephone(browser) -> str:
+    """The run page's live browser on a phone (F1356): the picture fills the column at its shape, and Enlarge fits
+    the screen with no sideways scroll, Take over in reach."""
+    global _M2B_STREAM
+    kept = _M2B_STREAM
+    _M2B_STREAM = "".join([
+        _frame({"type": "orchestration_start", "run_id": "run_smoke_m2b_done"}, "1"),
+        _frame({"type": "browser_session", "session_id": "bsR", "owner": "run:run_smoke_m2b_done"}, "2"),
+        _frame({**_BRW_ACTION, "session_id": "bsR"}, "3")])
+    bad: list[str] = []
+    try:
+        live = {**_M2B_RUNS["run_smoke_m2b_done"], "status": "running", "ended_at": None}
+        ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done", width=(390, 844),
+                                       runs={"run_smoke_m2b_done": live})
+        await ctx.route(re.compile(r".*/api/browser/bsR/frames$"), lambda r: r.fulfill(
+            status=200, headers={"Content-Type": "text/event-stream"}, body=_brw_frame()))
+        try:
+            region = page.get_by_role("region", name="Live browser")
+            await region.wait_for(timeout=8_000)
+            await region.scroll_into_view_if_needed()
+            bad += await _brw_hero(page, region)
+        finally:
+            await ctx.close()
+    finally:
+        _M2B_STREAM = kept
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "on a phone the live browser fills the column, and Enlarge fits the screen with Take over in reach"
+
+
 @check
 async def check_brwrunpage(browser) -> str:
     """A run's page shows the browser its agent works in (BRW2, F1075): live while the run runs, then, once it has
-    ended, a filmstrip of what was done in it, from the log and screenshots kept with the run (the person's own
+    ended, one large viewer of what was done in it (F1356), from the log and screenshots kept with the run (the person's own
     presses included: the record of who pressed what)."""
     global _M2B_STREAM
     kept = _M2B_STREAM
@@ -13635,12 +13727,13 @@ async def check_brwrunpage(browser) -> str:
             region = page.get_by_role("region", name="Live browser")
             try:
                 await region.wait_for(timeout=8_000)
-            except Exception:
-                bad.append("a running run with a browser shows no live browser")
+                bad += await _brw_hero(page, region)
+            except Exception as e:
+                bad.append(f"a running run with a browser shows no live browser ({str(e)[:120]})")
         finally:
             await ctx.close()
 
-        # Ended: the filmstrip, from the kept screenshots.
+        # Ended: the viewer, from the kept screenshots.
         _M2B_STREAM = events + _frame({"type": "stream_complete"})
         # The whole log kept with the run (BRW1, F1125): the agent's lines and the person's own press, which the
         # journal never carried.
@@ -13658,16 +13751,39 @@ async def check_brwrunpage(browser) -> str:
         ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done",
                                        runs={"run_smoke_m2b_done": _M2B_RUNS["run_smoke_m2b_done"]}, before=kept_routes)
         try:
-            strip = page.get_by_role("list", name="What the agent did in the browser")
+            # F1356: one large viewer of the kept screenshots, back and next, its caption and "n of N", and Enlarge.
+            viewer = page.get_by_role("figure", name="What the agent did in the browser")
+            kept_shot = "/api/browser/kept/run/run_smoke_m2b_done/"
             try:
-                await strip.wait_for(timeout=8_000)
-                srcs = await strip.locator("img").evaluate_all("els => els.map(e => e.getAttribute('src'))")
-                if srcs != ["/api/browser/kept/run/run_smoke_m2b_done/1", "/api/browser/kept/run/run_smoke_m2b_done/2"]:
-                    bad.append(f"the filmstrip shows {srcs}")
-            except Exception:
-                bad.append("an ended run with a browser shows no filmstrip")
-            if not await _wait(page, "() => document.body.innerText.includes('You pressed ‘Pay now’')"):
-                bad.append("the filmstrip is not the log kept with the run (the person's own press is missing)")
+                await viewer.wait_for(timeout=8_000)
+
+                async def showing() -> tuple[str | None, str]:
+                    img = viewer.locator("img")
+                    return (await img.first.get_attribute("src") if await img.count() else None,
+                            await viewer.inner_text())
+
+                src, words = await showing()
+                if src != f"{kept_shot}1" or "1 of 3" not in words:
+                    bad.append(f"the viewer opens on {src!r} / {words[:80]!r}, not the first of 3")
+                await viewer.get_by_role("button", name="Enlarge").click()
+                dialog = page.get_by_role("dialog")
+                await dialog.wait_for(timeout=4_000)
+                if not await dialog.locator(f"img[src='{kept_shot}1']").count():
+                    bad.append("Enlarge does not show the screenshot large")
+                await page.keyboard.press("Escape")
+                await asyncio.sleep(0.4)
+                if await page.get_by_role("dialog").count():
+                    bad.append("Esc does not close the enlarged screenshot")
+                await viewer.get_by_role("button", name="Next screenshot").click()
+                src, words = await showing()
+                if src != f"{kept_shot}2" or "2 of 3" not in words:
+                    bad.append(f"Next shows {src!r} / {words[:80]!r}, not the second of 3")
+                await viewer.get_by_role("button", name="Next screenshot").click()
+                src, words = await showing()
+                if "3 of 3" not in words or "You pressed ‘Pay now’" not in words or src is not None:
+                    bad.append(f"the person's own press is not the third, unpictured: {src!r} / {words[:120]!r}")
+            except Exception as e:
+                bad.append(f"an ended run with a browser shows no viewer ({str(e)[:120]})")
             if await page.get_by_role("region", name="Live browser").count():
                 bad.append("an ended run still shows the live browser")
         finally:
@@ -13676,7 +13792,8 @@ async def check_brwrunpage(browser) -> str:
         _M2B_STREAM = kept
     if bad:
         raise AssertionError("; ".join(bad))
-    return "a running run shows its live browser; an ended one the filmstrip of the log and screenshots kept with it"
+    return ("a running run shows its live browser as the picture, enlargeable; an ended one a viewer of the log and "
+            "screenshots kept with it")
 
 
 @check
