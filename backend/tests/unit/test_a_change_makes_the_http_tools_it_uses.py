@@ -344,3 +344,35 @@ async def test_the_changes_lock_is_the_approved_urls_origin_and_never_wider(clie
         _new_tool("get_order", "https://elsewhere.example/orders", key={"header": "X-Api-Key"})])})
     assert again["outcome"] == "said" and "already called" in again["say"], again
     assert (await _tools())["get_order"]["base_lock"] == SHOP
+
+
+# ── F1309's door, shared: a key in a new tool's headers, by shape or as a value the workspace holds (TRI1, eb 11-04) ──
+
+HELD = "tracker-" + "canary-token-" + "4410"  # assembled at run time, as F1309's tests do: scanners read sources
+
+
+@pytest.fixture
+async def held():
+    from core.store.resources import save_mcp_server
+
+    await save_mcp_server({"name": "tracker", "label": "Tracker", "server_type": "http",
+                           "url": "http://localhost:9/mcp", "token": HELD})
+
+
+async def test_a_value_the_workspace_holds_in_a_new_tools_headers_is_refused_before_the_review(client, held):
+    _, checked, done, _ = await _change({"ops": [_new_tool("tracker_lookup", f"{SHOP}/tickets",
+                                                           headers={"X-Token": HELD})]})
+    assert checked["outcome"] == "said" and done is None, checked
+    assert HELD not in json.dumps(checked) and "tracker_lookup" not in await _tools()
+
+
+@pytest.mark.parametrize("header, refused", [(f"Bearer sk-live-{'abcdefghijklmnopqrstuvwx'}1234", True),
+                                             (HELD, True), ("Bearer {{ global.TRACKER }}", False)])
+async def test_the_tools_own_check_holds_f1309s_refusal(client, held, header, refused):
+    from core.builder_tools import http_tool_issues
+
+    found = await http_tool_issues({"name": "tracker_lookup", "url": f"{SHOP}/tickets", "method": "GET",
+                                    "headers_json": json.dumps({"Authorization": header})})
+    assert bool(found) is refused, found
+    if refused:
+        assert "Connect card" in found["error"] and header not in found["error"]
