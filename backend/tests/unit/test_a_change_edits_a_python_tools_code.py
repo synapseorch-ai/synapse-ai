@@ -270,3 +270,42 @@ def test_the_planner_is_told_how_a_python_tool_is_fixed():
     rule = next(line for line in changing.splitlines() if "update_python_tool" in line)
     for word in ("read_workspace", "find", "test_args", "needs_network"):
         assert word in rule, (word, rule)
+
+
+# ── over MCP (Naveen 11-04) ─────────────────────────────────────────────────────────────────────────────────────────
+
+async def test_update_python_tool_is_served_to_mcp_clients_its_new_code_in_the_preview(client, runner):
+    from core.mcp_server import catalog
+    from core.product_tools import areas, build, confirm, registry
+    from core.product_tools.caller import Caller
+    from core.product_tools.roles import Role
+    from test_a_change_makes_the_http_tools_it_uses import _Server
+
+    [served] = [t for t in catalog.builder_tools() if t.name == "update_python_tool"]
+    assert served.annotations.destructiveHint and not served.annotations.readOnlyHint
+    await _tool()
+    new = OLD.replace(FIND, REPLACE)
+    areas.ensure_loaded()
+    caller, args = Caller(role=Role.OWNER, via="mcp", user_id="u1"), {"name": "region_totals", "code": new}
+    with build.using_module(_Server()):
+        preview = await registry.invoke("update_python_tool", caller, args)
+        assert preview["status"] == "needs_confirmation", "a client confirms what it changes"
+        shown = preview["preview"]
+        assert shown["will_change"]["code"] == new and f"+print(json.dumps({{'total': {REPLACE}}}))" in shown["diff"]
+        done = await registry.invoke("update_python_tool", caller, {**args, confirm.TOKEN_ARG: preview["confirm_token"]})
+    assert "updated" in json.dumps(done) and (await _tools())["region_totals"]["code"] == new
+
+
+async def test_test_code_change_is_the_apps_own_never_an_mcp_clients(client):
+    from core.mcp_server import catalog
+    from core.product_tools import areas, registry
+    from core.product_tools.caller import Caller
+    from core.product_tools.errors import ToolRefusal
+    from core.product_tools.roles import Role
+
+    assert "test_code_change" not in catalog.SERVED_BUILDER_TOOLS
+    assert "test_code_change" not in {t.name for t in catalog.builder_tools()}
+    areas.ensure_loaded()
+    with pytest.raises(ToolRefusal):
+        await registry.invoke("test_code_change", Caller(role=Role.OWNER, via="mcp", user_id="u1"),
+                              {"run_id": "builder_x", "op": 0})

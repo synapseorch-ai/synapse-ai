@@ -46,9 +46,12 @@ class TestTheAllowlist:
             # F1312b (Naveen 11-04): an HTTP tool's address changed in place, never its headers; destructive, so the
             # client asks first.
             "update_http_tool",
+            # F1325 (Naveen 11-04): a Python tool's code changed in place, previewed with its new code, made with a
+            # token. Its fix's test on a person's press, test_code_change, is the app's own (below).
+            "update_python_tool",
         }
 
-    @pytest.mark.parametrize("name", ["finish_build", "list_variables"])
+    @pytest.mark.parametrize("name", ["finish_build", "list_variables", "test_code_change"])
     def test_the_rest_are_not_served(self, name):
         assert name in BUILDER_TOOL_NAMES  # still a builder tool…
         assert name not in catalog.SERVED_BUILDER_TOOLS  # …not an MCP one
@@ -85,7 +88,7 @@ class TestAnnotations:
             assert marks[name].readOnlyHint and not marks[name].destructiveHint
 
     @pytest.mark.parametrize("name", ["update_orchestration", "remove_step", "create_http_tool", "create_skill",
-                                      "update_http_tool"])
+                                      "update_http_tool", "update_python_tool"])
     def test_overwriters_are_destructive(self, name):
         mark = {t.name: t.annotations for t in catalog.builder_tools()}[name]
         assert mark.destructiveHint and not mark.readOnlyHint
