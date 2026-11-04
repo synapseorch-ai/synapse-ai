@@ -35,6 +35,8 @@ FIXES: dict[str, tuple[str, ...]] = {
     # A tool that isn't available (F1349): its app reconnected, or another tool, then the run resumed from the step.
     "tool_unavailable": ("app_reconnect", "edit_steps", "set_agent_tools", "resume_run"),
     "tool_input": ("edit_steps", "set_agent_instructions"),
+    # A Tool step's own HTTP tool found nothing at its address (F1378): the tool's address changed, then the run on.
+    "tool_address": ("update_tool", "resume_run"),
     "tool_down": ("resume_run",),
     "tool": ("edit_steps", "set_agent_tools"),
     "route": ("edit_steps",),
@@ -56,6 +58,7 @@ MEANS: dict[str, str] = {
     "tool_unavailable": "a tool the step names isn't available: its app is disconnected, needs signing in again or is "
                         "turned off, or the tool is gone; it never ran, so the run can resume once it is back",
     "tool_input": "a tool's service refused what was sent to it",
+    "tool_address": "the tool's address finds nothing at its service (404 or 410): its URL or path is wrong",
     "tool_down": "a tool's service failed on its side",
     "tool": "a tool reported a failure",
     "route": "a step had nowhere to go next",
@@ -154,6 +157,24 @@ async def _steps_of(run: Any) -> list[dict]:
     return [s for s in steps or [] if isinstance(s, dict)]
 
 
+#: The statuses that say an address finds nothing there.
+_NOT_THERE = (404, 410)
+
+
+async def _addressed(kind: str, http: int | None, step: dict, entry: dict) -> str:
+    """`tool_address` for a Tool step whose own tool is an HTTP tool of this workspace answering 404 or 410 (F1378):
+    its address is what is wrong. An agent's tool (an app's or a server's) or a model answering so keeps its class."""
+    if kind != "tool_input" or http not in _NOT_THERE or (entry.get("step_type") or step.get("type")) != "tool":
+        return kind
+    name = step.get("forced_tool") or step.get("tool")
+    if not name:
+        return kind
+    from core.store.resources import load_tools
+
+    tools = await load_tools()
+    return "tool_address" if any(t.get("name") == name and t.get("tool_type") == "http" for t in tools) else kind
+
+
 async def failure(run_id: str) -> dict | None:
     """The failure block of a failed or stopped run; None for one still going, done, or not here."""
     from core import vault
@@ -173,6 +194,7 @@ async def failure(run_id: str) -> dict | None:
     step_id = entry.get("step_id") or run.current_step_id
     steps = {s.get("id"): s for s in await _steps_of(run)}
     step = steps.get(step_id) or {}
+    kind = await _addressed(kind, http, step, entry)
     progress = (run.step_progress or {}).get(step_id) or {}
     cap = vault.read_cap()
     out: dict[str, Any] = {
