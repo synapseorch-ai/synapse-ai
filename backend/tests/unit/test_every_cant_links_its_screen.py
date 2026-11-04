@@ -82,9 +82,19 @@ class TestTheFinish:
         assert "](" not in said and said == "Writing a rubric is done on Evals. Use Evals."
 
     def test_the_check_says_it(self):
+        """The check's own body says it, and the route's `check_change` goes through that body (F1364 made it a wrapper
+        that adds what a change says it isn't doing)."""
         import inspect
 
-        assert "cannot_said(draft)" in inspect.getsource(change_tools.check_change)
+        assert "cannot_said(draft)" in inspect.getsource(change_tools._check_change)
+        assert "await _check_change(args, server_module, events)" in inspect.getsource(change_tools.check_change)
+
+    async def test_a_cannot_through_the_check_is_said_with_its_link(self):
+        draft = {"finish": "cannot", "why": "Writing a rubric is done on Evals, not from here yet.",
+                 "nearest": "Open Evals to add one.", "screen": "evals"}
+        out = await change_tools.check_change({"draft": draft}, None, [])
+        assert out["outcome"] == "said" and out["say"] == change_tools.cannot_said(draft), out
+        assert out["say"].endswith("Open [Evals](/evals).")
 
     def test_the_tool_and_the_planner_ask_for_the_screen(self):
         props = change_tools.CANNOT["function"]["parameters"]["properties"]
