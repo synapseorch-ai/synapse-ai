@@ -580,6 +580,58 @@ window.fetch = function (input, init) {
 """
 
 
+
+#: A change's review whose line carries a diff and its code, as F1325's update_python_tool writes them.
+CODE_LINE = ('Change the tool "region_totals" — its code:\n  ```diff\n  @@ -1,3 +1,3 @@\n   import json\n'
+             "  -print(json.dumps({'total': round(sum(rows), 0)}))\n  +print(json.dumps({'total': round(sum(rows), 2)}))\n"
+             '  ```\n  tested with {"rows": [1.234, 2.0]}: printed {"total": 3.23}')
+
+CODE_BOX = """() => {
+  const pre = document.querySelector('[data-testid="assistant-panel"] pre');
+  if (!pre) return {pre: false};
+  const lines = [...pre.querySelectorAll('code > span')];
+  const cls = (start) => lines.filter((l) => l.innerText.startsWith(start)).map((l) => l.className);
+  return {pre: true, text: pre.innerText, scrolls: getComputedStyle(pre).overflowX,
+          spaces: getComputedStyle(pre).whiteSpace, plus: cls('+'), minus: cls('-'),
+          tested: document.querySelector('[data-testid="assistant-panel"]').innerText.includes('printed {"total": 3.23}')};
+}"""
+
+
+@check
+async def check_codeblock(browser) -> str:
+    """A change's code shows as code (F1328): a fenced block in a step's detail is a <pre> that keeps its lines and
+    scrolls sideways, a diff's added and removed lines tinted; the words around it stay text. Model-free: the review
+    is the stub's."""
+    ctx, page = await _open_builder(browser)
+    try:
+        await page.evaluate("(id) => window.__stub.push({type: 'orchestration_start', run_id: id})", RUN_ID)
+        await page.evaluate("(e) => window.__stub.push(e)", {
+            "type": "human_input_required", "run_id": RUN_ID, "orch_step_id": "step_manage_review",
+            "prompt": "Here is what I would do.\n\n---\n\n- " + CODE_LINE, "fields": [{"name": "feedback"}],
+            "context": {"object": "change", "ops": [{
+                "op": "update_python_tool", "kind": "write", "status": "ready", "line": CODE_LINE,
+                "target": {"kind": "tool", "name": "region_totals", "id": "region_totals"}}]}})
+        await page.evaluate("() => window.__stub.close()")
+        box: dict = {}
+        for _ in range(40):
+            await asyncio.sleep(0.25)
+            box = await page.evaluate(CODE_BOX)
+            if box.get("pre"):
+                break
+        if not box.get("pre"):
+            raise AssertionError("a change's diff is not a code box: the card drew it as one line of text")
+        if "\n" not in box["text"] or "```" in box["text"]:
+            raise AssertionError(f"the code box lost its lines or kept its fences: {box['text']!r}")
+        if box["spaces"] not in ("pre", "pre-wrap") or box["scrolls"] not in ("auto", "scroll"):
+            raise AssertionError(f"the code box does not keep its spacing and scroll sideways: {box}")
+        if not any("success" in c for c in box["plus"]) or not any("danger" in c for c in box["minus"]):
+            raise AssertionError(f"a diff's added and removed lines are not tinted: {box}")
+        if not box["tested"]:
+            raise AssertionError("the words after the code box were lost")
+        return "a change's diff is a code box: its lines kept, scrolling sideways, + and - tinted"
+    finally:
+        await ctx.close()
+
 @check
 async def check_money(browser) -> str:
     """Money that was spent is never rendered as nothing.
