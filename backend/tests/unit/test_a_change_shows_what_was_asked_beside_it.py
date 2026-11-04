@@ -94,3 +94,14 @@ class TestTheCard:
         assert "says" in build.split("return {", 1)[0] and "says" in build.split("return {", 1)[1]
         assert "step.says" in cards and "Described as: " in cards
         assert cards.index("step.says") < cards.index("step.detail"), "the words above the exact change, as the review"
+
+    def test_a_lines_exact_change_is_the_rows_detail_never_its_name(self):
+        """A knowledge note's or a memory item's line is "… —" and then its before and after on lines of their own
+        (`_before_after`); the row's name is the first line's words and the lines under it are its detail, so the
+        planner's words sit between the two as on the review (F1308's shot: the before/after was in the name, and
+        "Described as" came after it)."""
+        plan_ts = (self.ROOT / "plan.ts").read_text()
+        build = plan_ts[plan_ts.index("export function planFromChange"):plan_ts.index("// ── A build, from its own object")]
+        before_return = build.split("return {", 1)[0]
+        assert ".split('\\n')" in before_return, "the line's first line is read apart from the lines under it"
+        assert "exact" in before_return and "exact" in build.split("const detail", 1)[1].split(";", 1)[0]
