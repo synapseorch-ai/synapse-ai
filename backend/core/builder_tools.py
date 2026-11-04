@@ -1826,6 +1826,13 @@ def register_builder_tool(schema: dict, handler: Any) -> None:
     _REGISTERED[name] = handler
 
 
+# Every module registers through `core.builder_registry`, which imports none of them (F1327): one imported before this
+# module waited there, and is registered now; the rest, at their import below, register at once.
+from core import builder_registry as _builder_registry  # noqa: E402
+
+_builder_registry.attach(register_builder_tool)
+
+
 # ─── Tool server capability ───────────────────────────────────────────────────
 #
 # `list_tool_servers` is the first call every builder prompt tells an agent to

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from core.builder_tools import register_builder_tool
+from core.builder_registry import register_builder_tool
 from core.log import get_logger
 
 _log = get_logger(__name__)

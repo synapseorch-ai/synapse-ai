@@ -22,7 +22,7 @@ import re
 import uuid
 from typing import Any
 
-from core.builder_tools import register_builder_tool
+from core.builder_registry import register_builder_tool
 from core.product_tools.caller import Caller
 from core.product_tools.errors import ToolRefusal
 from core.product_tools.roles import Role

@@ -23,7 +23,7 @@ import re
 from typing import Any
 from urllib.parse import quote, urlsplit
 
-from core.builder_tools import register_builder_tool
+from core.builder_registry import register_builder_tool
 
 logger = logging.getLogger(__name__)
 

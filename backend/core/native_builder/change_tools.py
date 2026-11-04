@@ -29,7 +29,7 @@ import unicodedata
 from typing import Any
 
 from core import feature_census
-from core.builder_tools import register_builder_tool
+from core.builder_registry import register_builder_tool
 from core.log import get_logger
 from core.native_builder import change_ops as C, one_writer
 from core.product_tools.roles import Role

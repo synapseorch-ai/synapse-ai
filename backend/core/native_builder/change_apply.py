@@ -19,11 +19,10 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from core import http_tool
-from core.builder_tools import register_builder_tool
+from core.builder_registry import register_builder_tool
 from core.native_builder import change_ops as C, one_writer
-# The module, its names read when they run (F1293): change_tools imports builder_tools, which loads this one, so
-# names taken at import would be read from a change_tools still half-made when it is imported first.
-from core.native_builder import change_tools as _change_tools
+from core.native_builder.change_tools import (_NEW, CHANGED, SET_ASIDE, _caller, _card, _quoted, _run, _text,
+                                              candidates, read, reviewed_of)
 from core.product_tools.errors import AlreadySpent, ToolRefusal
 
 #: The run-state keys the route reads: the check's answer and the review's.
@@ -51,14 +50,14 @@ async def read_change_context(args: dict, server_module: Any, events: list[dict]
     undo a change or to read "the second one" (P4's `read_turn` takes the pick over)."""
     from core.boards import assistant
 
-    person = _change_tools._caller().user_id
+    person = _caller().user_id
     mine = (lambda cards: [c for c in cards if c.owner_id == person]) if person else (lambda cards: cards)
     try:
         done = mine(await assistant.cards_for(person, admin=True, closed=True))
         open_ = mine(await assistant.cards_for(person, admin=True))
     except Exception:  # noqa: BLE001 — no board yet, or a store that cannot read it: nothing to remember
         return {"last_change": None, "waiting_pick": None}
-    last = next((c for c in _newest(done) if c.stage == _change_tools.CHANGED and (c.data or {}).get("applied")), None)
+    last = next((c for c in _newest(done) if c.stage == CHANGED and (c.data or {}).get("applied")), None)
     waiting = next((c for c in _newest(open_) if ((c.data or {}).get("change") or {}).get("picks")), None)
     # What `read_turn` chose from that list in code (SAI2-P4, F978), when it is this conversation's own card; a pick
     # reads the list of the card its turn read, never the person's newest in another conversation.
@@ -89,7 +88,7 @@ async def approve_change(args: dict, server_module: Any, events: list[dict]) -> 
     from core.native_builder import review
     from core.product_tools.approved import digest
 
-    run_id, run = _change_tools._run()
+    run_id, run = _run()
     if run is None:
         return {"error": "There is no change waiting here to approve."}
     state = run.shared_state
@@ -98,18 +97,18 @@ async def approve_change(args: dict, server_module: Any, events: list[dict]) -> 
     if not review.is_yes(answer):
         return {"error": "The change was not approved, so nothing is done."}
     checked = checked_in(state)
-    reviewed = _change_tools.reviewed_of(checked)
+    reviewed = reviewed_of(checked)
     if not checked.get("calls") or digest(reviewed) != checked.get("digest"):
         return {"error": "What is waiting is not what the review showed, so nothing is done."}
     calls = [(tool, args) for tool, args in checked["calls"]]
-    review.record_approval(state, reviewed, _change_tools._caller(), calls, run_id=run_id)
+    review.record_approval(state, reviewed, _caller(), calls, run_id=run_id)
     return {"approved": len(calls)}
 
 
 # ── the apply ─────────────────────────────────────────────────────────────────────────────────────────────────────
 
 def _shown(value: Any) -> str:
-    return _change_tools._quoted(value) if isinstance(value, str) else json.dumps(value, default=str)
+    return _quoted(value) if isinstance(value, str) else json.dumps(value, default=str)
 
 
 def _moved_since(before: dict | None, now: dict | None) -> list[str]:
@@ -141,7 +140,7 @@ async def _created_id(item: dict, result: Any) -> str | None:
 async def _named(item: dict) -> list[str]:
     """The ids of every thing of a create's kind that has its name now."""
     name = (item["target"].get("name") or "").lower()
-    return [i["id"] for i in await _change_tools.candidates(C.OPS[item["op"]].target) or [] if i["name"].lower() == name]
+    return [i["id"] for i in await candidates(C.OPS[item["op"]].target) or [] if i["name"].lower() == name]
 
 
 async def _made_since(item: dict) -> tuple[str | None, bool]:
@@ -151,7 +150,7 @@ async def _made_since(item: dict) -> tuple[str | None, bool]:
     not the claim store, is what keeps a create made once."""
     ids = await _named(item)
     for found in ids:
-        if not C.differs(await _change_tools.read(C.OPS[item["op"]].target, found), item.get("expected")):
+        if not C.differs(await read(C.OPS[item["op"]].target, found), item.get("expected")):
             return found, False
     return None, bool(ids)
 
@@ -160,14 +159,14 @@ async def apply_change(args: dict, server_module: Any, events: list[dict]) -> di
     from core.native_builder.review import approved_review
     from core.product_tools import areas, build, registry
 
-    run_id, run = _change_tools._run()
+    run_id, run = _run()
     if run is None:
         return {"error": "There is no approved change here to apply."}
     state = run.shared_state
     checked = checked_in(state)
     approval = approved_review(state)
-    reviewed = _change_tools.reviewed_of(checked)
-    caller = _change_tools._caller()
+    reviewed = reviewed_of(checked)
+    caller = _caller()
     areas.ensure_loaded()
     applied: list[dict] = []
     failed: list[str] = []
@@ -176,8 +175,8 @@ async def apply_change(args: dict, server_module: Any, events: list[dict]) -> di
             if item.get("status") != "ready":
                 continue
             op, target = C.OPS[item["op"]], item["target"]
-            label = f"the {op.noun} {_change_tools._quoted(target.get('name') or target.get('id'))}"
-            now = None if op.kind == "create" else await _change_tools.read(op.target, target["id"])
+            label = f"the {op.noun} {_quoted(target.get('name') or target.get('id'))}"
+            now = None if op.kind == "create" else await read(op.target, target["id"])
             if op.kind == "delete" and now is None:
                 # Gone, as the op asked: this apply ran before (a redelivered job, a resumed step) or someone else
                 # deleted it since. Either way there is nothing to do and nothing is undone.
@@ -192,7 +191,7 @@ async def apply_change(args: dict, server_module: Any, events: list[dict]) -> di
                     continue
                 if taken:
                     a = "an" if op.target[0] in "aeiou" else "a"
-                    failed.append(f"Not done: {a} {op.noun} called {_change_tools._quoted(target.get('name'))} was made since you "
+                    failed.append(f"Not done: {a} {op.noun} called {_quoted(target.get('name'))} was made since you "
                                   "approved this, so I made no second one. Ask again to change it.")
                     continue
             if op.kind != "create" and now is None:
@@ -235,7 +234,7 @@ async def apply_change(args: dict, server_module: Any, events: list[dict]) -> di
                 failed.append(f"Not done: {label}: your approval does not cover this call.")
                 continue
             target_id = target.get("id") or (await _created_id(item, result) if op.kind == "create" else None)
-            after = await _change_tools.read(op.target, target_id) if target_id else None
+            after = await read(op.target, target_id) if target_id else None
             off = C.differs(after, item.get("expected"))
             if off:
                 failed.append(_no_effect(label, off))
@@ -247,7 +246,7 @@ async def apply_change(args: dict, server_module: Any, events: list[dict]) -> di
     connect = await _key_cards(applied, events)
     effect = " ".join([*failed, *connect])
     if applied or failed:
-        await _change_tools._card({**checked, "ops": checked.get("ops") or []}, stage=_change_tools.CHANGED if applied else _change_tools.SET_ASIDE,
+        await _card({**checked, "ops": checked.get("ops") or []}, stage=CHANGED if applied else SET_ASIDE,
                     data={"change": checked, "applied": applied, "failed": failed})
     return {"object": "change_applied", "applied": [a["op"] for a in applied], "failed": failed,
             "effect": (" " + effect) if effect else ""}
@@ -328,12 +327,12 @@ def not_made(state: dict, step_id: str = "step_make_new") -> list[dict]:
     call that makes nothing. The yes covers the one thing the review showed, so a second is never made here."""
     from core.orchestration.steps import NOT_MADE_PREFIX
 
-    kinds = {tool: kind for kind, (_, tool) in _change_tools._NEW.items()}
+    kinds = {tool: kind for kind, (_, tool) in _NEW.items()}
     out = []
     for call in state.get(f"{NOT_MADE_PREFIX}{step_id}") or []:
         args = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
         out.append({"tool": call.get("tool"), "kind": kinds.get(call.get("tool")),
-                    "name": _change_tools._text(args.get("name") or args.get("title") or ""), "why": "skipped_after_finish"})
+                    "name": _text(args.get("name") or args.get("title") or ""), "why": "skipped_after_finish"})
     return out
 
 
@@ -344,8 +343,8 @@ def _unmade_lines(state: dict, checked: dict) -> list[str]:
     for item in not_made(state):
         if item["kind"] is None:
             continue
-        said = _change_tools._NEW[item["kind"]][0]
-        what = f"the {said} {_change_tools._quoted(item['name'])}" if item["name"] else f"another {said}"
+        said = _NEW[item["kind"]][0]
+        what = f"the {said} {_quoted(item['name'])}" if item["name"] else f"another {said}"
         lines.append(f"It didn't also make {what}: one thing is made for each yes. Ask for it next.")
     lines += [str(op["say"]).strip() for op in checked.get("ops") or []
               if isinstance(op, dict) and op.get("status") != "ready" and str(op.get("say") or "").strip()]
@@ -359,7 +358,7 @@ async def check_made(args: dict, server_module: Any, events: list[dict]) -> dict
     says how it ended."""
     from core.orchestration.run_writes import WRITES_KEY
 
-    run_id, run = _change_tools._run()
+    run_id, run = _run()
     if run is None:
         return {"object": "change_made_check", "note": ""}
     state = run.shared_state
@@ -375,15 +374,15 @@ async def check_made(args: dict, server_module: Any, events: list[dict]) -> dict
     if as_approved:
         note = ""
     elif mine:
-        note = f"It was made as the {said} {_change_tools._quoted(mine[0].get('name'))} (you approved {_change_tools._quoted(name)})."
+        note = f"It was made as the {said} {_quoted(mine[0].get('name'))} (you approved {_quoted(name)})."
     elif made:
-        others = ", ".join(f"the {_NOUNS.get(w.get('kind'), w.get('kind'))} {_change_tools._quoted(w.get('name'))}" for w in made)
-        note = f"The {said} {_change_tools._quoted(name)} you approved was not made; made instead: {others}."
+        others = ", ".join(f"the {_NOUNS.get(w.get('kind'), w.get('kind'))} {_quoted(w.get('name'))}" for w in made)
+        note = f"The {said} {_quoted(name)} you approved was not made; made instead: {others}."
     else:
-        note = f"The {said} {_change_tools._quoted(name)} you approved was not made."
+        note = f"The {said} {_quoted(name)} you approved was not made."
     note = " ".join([note, *_unmade_lines(state, checked)]).strip()
     # `changed` is the approved thing made; another name or kind, or nothing, is set aside with what was made kept.
-    await _change_tools._card(checked, stage=_change_tools.CHANGED if as_approved else _change_tools.SET_ASIDE,
+    await _card(checked, stage=CHANGED if as_approved else SET_ASIDE,
                 data={"change": checked, "made": [{"kind": w.get("kind"), "id": w.get("id"), "name": w.get("name")}
                                                    for w in made]})
     return {"object": "change_made_check", "note": (" " + note) if note else ""}
