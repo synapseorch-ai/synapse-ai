@@ -195,6 +195,17 @@ def test_the_curls_in_a_message_are_found_at_most_three():
         "https://a.example/x", "https://b.example/y", "https://c.example/z"]
 
 
+def test_the_word_curl_in_a_sentence_is_no_curl():
+    # CAP3's catch on 40314902 (eb 11-04): "This curl works…" was curl 1, with no URL, and the real one curl 2.
+    from core import http_facts
+    from core.native_builder.build_plan import curls
+
+    text = f"This curl works from my terminal: curl -H 'Accept: application/json' {BILLING}/invoices"
+    assert [http_facts.from_curl(c)["url"] for c in http_facts.curls_in(text)] == [f"{BILLING}/invoices"]
+    assert [(c["n"], c["url"]) for c in curls({"user_message": text})] == [(1, f"{BILLING}/invoices")]
+    assert len(http_facts.curls_in(f"Here is the curl: curl {BILLING}/invoices")) == 1
+
+
 # ── the planner's {{ }} keep the curl's shape ───────────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("template", [f"{BILLING}/orders/{{{{ order_id }}}}", f"{BILLING}/orders/1234",
