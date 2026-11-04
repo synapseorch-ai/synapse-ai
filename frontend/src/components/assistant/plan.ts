@@ -501,7 +501,11 @@ export function planFromChange(change: ChangeView, prompt: string): Plan | null 
     const count = (name: string) =>
         new Set(ready.filter((o) => (o.target?.name ?? '') === name).map((o) => o.target?.id ?? '')).size;
     const steps: PlanStep[] = ready.map((o, i) => {
-        const [what, ...how] = (o.line as string).split(' — ');
+        // Code's words are the line's first line ("<what> — <how>"); a knowledge note's or a memory item's before and
+        // after follow on lines of their own: the exact change, the row's detail (F1308).
+        const [first, ...below] = (o.line as string).split('\n');
+        const exact = below.map((part) => part.trim()).filter(Boolean).join(' ');
+        const [what, ...how] = first.replace(/\s+—\s*$/, '').split(' — ');
         const name = o.target?.name ?? '';
         // Two of one name are told apart by id (F760's class).
         const id = count(name) > 1 && o.target?.id ? ` (${o.target.id})` : '';
@@ -509,11 +513,10 @@ export function planFromChange(change: ChangeView, prompt: string): Plan | null 
         const uses = deletes
             ? `${o.used_by?.length ? `Used by ${o.used_by.join(', ')}.` : 'Nothing uses it.'} It can come back only as a new copy.`
             : '';
-        const detail = [deletes ? how.join(' — ') : (valueWords(o) ?? how.join(' — ')), uses].filter(Boolean).join(' ');
+        const detail = [deletes ? how.join(' — ') : (valueWords(o) ?? how.join(' — ')), exact, uses].filter(Boolean).join(' ');
         // The planner's words for it, as the review shows them (F1308): none when the line already says them (an undo's).
         const said = o.says?.trim() ?? '';
-        const head = (o.line as string).split('\n')[0].toLowerCase();
-        const says = said && !head.includes(said.toLowerCase()) ? said : '';
+        const says = said && !first.toLowerCase().includes(said.toLowerCase()) ? said : '';
         return {
             n: i + 1,
             name: deletes ? `Deletes: the ${o.target?.kind ?? ''} "${name}"${id}` : `${what}${id}`,
