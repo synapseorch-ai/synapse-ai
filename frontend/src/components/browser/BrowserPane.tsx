@@ -32,6 +32,13 @@ import { useBrowserFrames, useKeptLog, type FrameMemory } from './useBrowserFram
  * theirs (amber, Naveen's pick of the prototype's A), their input reaches the
  * page, the address bar takes an address, and Hand back carries a note.
  */
+/** The height around a run page's picture when its browser is in view: its heading, the address and driver strips
+ *  above, the fold below (F1376: the picture fits the screen under them). The enlarged dialog's is the same, so
+ *  Enlarge is never smaller than the column's picture. */
+const HERO_CHROME = '12rem';
+/** The enlarged dialog's title and footer around its picture (F1376). */
+const ENLARGED_CHROME = '12rem';
+
 export function BrowserPane({
   host, sessionId, agentName, actions, memory, closedBefore = false, onClosed, onHide, onHandedBack, signIn, record, owner, signedIn, picks,
   hero = false, enlarge = false, className, style, children,
@@ -196,6 +203,8 @@ export function BrowserPane({
   // A recording replayed by code drives as the agent does, and no agent is there: the browser says so (F1363).
   const replaying = wheel === 'agent' && !!frame?.replaying;
   const agentDriving = replaying ? 'The recording is driving' : `${agentName} is driving`;
+  // What a replay did is the recording's, not an agent's (F1376), as the run page's viewer says it.
+  const doneBy = replaying || lines.some((a) => a.actor === 'replay') ? 'What was done' : 'What the agent did';
   const driver = wheel === 'person' ? 'You’re driving' : wheel === 'nobody' ? 'Nobody is driving' : agentDriving;
 
   // Said once to each person, in this browser, and in the terms (Naveen 2026-10-28). A sign-in browser is the person's alone.
@@ -324,12 +333,17 @@ export function BrowserPane({
 
       <div
         className={cn('relative flex items-center justify-center overflow-hidden bg-surface-2',
-                      hero ? 'w-full shrink-0' : 'min-h-0 flex-1 p-3')}
-        // The page's own shape (F1356): the frame's, else the browser's 16:10.
-        style={hero ? { aspectRatio: `${frame?.w || 16} / ${frame?.h || 10}` } : undefined}
+                      hero ? 'mx-auto w-full shrink-0' : 'min-h-0 flex-1 p-3')}
+        // The page's own shape (F1356): the frame's, else the browser's 16:10. Never taller than the screen leaves
+        // under the pane's own bars (F1376): the whole page is seen without scrolling, where the agent may be
+        // clicking at its foot; so it fills the column up to 1440 and is height-bound on a wider desktop.
+        style={hero ? { aspectRatio: `${frame?.w || 16} / ${frame?.h || 10}`,
+                        maxWidth: `calc((100dvh - ${HERO_CHROME}) * ${frame?.w || 16} / ${frame?.h || 10})` }
+                    : undefined}
       >
         {frame ? (
           <PageScreen
+            fill={hero}
             frame={frame}
             closed={closed}
             driving={driving}
@@ -389,7 +403,7 @@ export function BrowserPane({
       )}
 
       {lines.length > 0 && !hero && (
-        <ol ref={list} aria-label="What the agent did" className="max-h-36 shrink-0 space-y-1.5 overflow-y-auto border-t border-border px-3 py-2 text-xs text-text-muted">
+        <ol ref={list} aria-label={doneBy} className="max-h-36 shrink-0 space-y-1.5 overflow-y-auto border-t border-border px-3 py-2 text-xs text-text-muted">
           {lines.map(a => (
             <li key={`${a.session_id}:${a.n}`}>
               <BrowserActionLine action={a} dense shot={shotFor(a)} />
@@ -401,9 +415,9 @@ export function BrowserPane({
         // Folded under the picture, closed until asked for (F1356).
         <details className="group shrink-0 border-t border-border text-xs text-text-muted">
           <summary className="cursor-pointer select-none px-3 py-2 font-medium text-text hover:bg-surface-2">
-            What the agent did · {lines.length}
+            {doneBy} · {lines.length}
           </summary>
-          <ol ref={list} aria-label="What the agent did" className="max-h-64 space-y-1.5 overflow-y-auto px-3 pb-2">
+          <ol ref={list} aria-label={doneBy} className="max-h-64 space-y-1.5 overflow-y-auto px-3 pb-2">
             {lines.map(a => (
               <li key={`${a.session_id}:${a.n}`}>
                 <BrowserActionLine action={a} dense shot={shotFor(a)} />
@@ -426,8 +440,12 @@ export function BrowserPane({
           }
         >
           {frame && (
-            <div className="flex w-full items-center justify-center" style={{ aspectRatio: `${frame.w || 16} / ${frame.h || 10}` }}>
+            // As large as the screen allows at the page's shape, the dialog's bars kept in view (F1376).
+            <div className="mx-auto flex w-full items-center justify-center"
+                 style={{ aspectRatio: `${frame.w || 16} / ${frame.h || 10}`,
+                          maxWidth: `calc((100dvh - ${ENLARGED_CHROME}) * ${frame.w || 16} / ${frame.h || 10})` }}>
               <PageScreen
+                fill
                 frame={frame}
                 closed={closed}
                 driving={driving}

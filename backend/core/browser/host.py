@@ -322,10 +322,16 @@ class Session:
             _offer(q, {"closed": True})
 
     # ── the network gate ─────────────────────────────────────────────────────
+    def gates_as_agent(self) -> bool:
+        """Whether what the page sends now is held to the agent's rules: its wheel, or its idle browser between its
+        calls (F1376: a replay that ran to its end goes idle, and an unattended replay's send list, its sites and the
+        money backstop hold for what the page sends late, as they did while it drove)."""
+        return self.wheel == "agent" or (self.wheel == "nobody" and self.idle)
+
     async def _route(self, route) -> None:
         req = route.request
         # As the request starts, before any wait: the replay's send list, and whether a replay is running.
-        agent, only, replaying = self.wheel == "agent", self.replay_sends, self.replaying is not None
+        agent, only, replaying = self.gates_as_agent(), self.replay_sends, self.replaying is not None
         try:
             nav = req.is_navigation_request()
             top = nav and _is_main_frame(req)
@@ -389,7 +395,7 @@ class Session:
         self.banner = {"kind": "send", "reason": reason,
                        "held": {"method": req.method.upper(), "url": req.url, "money": True}}
         self.handover = {"kind": "send", "reason": reason}
-        self.wheel = "nobody"
+        self.wheel, self.idle = "nobody", False  # a held send is the person's, never an idle browser to take back
         self._note("guard", "held", f"a {req.method.upper()} to {host}")
         self._push_state()
         try:
@@ -744,10 +750,15 @@ class Session:
         self.replay_running = True
         self._push_state()
         try:
-            return await self._replay(steps, inputs, unattended=unattended, recording_id=recording_id, from_n=from_n)
+            answer = await self._replay(steps, inputs, unattended=unattended, recording_id=recording_id, from_n=from_n)
         finally:
             self.replay_running = False
             self._push_state()
+        if "done" in answer and not any(k in answer for k in ("miss", "handover", "refused")):
+            # Run to its end, it leaves nobody driving, as an agent's turn does (F1376): never "the agent". A stop
+            # keeps the wheel where it put it: a miss the step's agent's to find the way, a turn the person's.
+            self.go_idle()
+        return answer
 
     async def _replay(self, steps: list[dict], inputs: dict, *, unattended: bool, recording_id: str,
                       from_n: int) -> dict:

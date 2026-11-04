@@ -13670,26 +13670,67 @@ async def check_brwbox(browser) -> str:
     return "a refused answer is said, leaves no trace of what was typed, and the question stays open"
 
 
+def _held_frames(session_id: str, meta: dict | None = None):
+    """`_m2b_page`'s `before`: the run page's frames for `session_id` answer one frame and stay open, as a live
+    browser's do. A route answers and ends, and the pane reads an ended stream as its browser closed (v2.0's laptop
+    session: brwrunpage, brwrunpagephone and brwreplayrun saw "Browser closed" and no picture). The frame is a page's
+    own size (1280×800, drawn on a canvas in the page, as `_brw_full_frame`), so Enlarge has a picture to show large;
+    `meta` is the rest of it (`wheel`, `replaying`, `url`)."""
+    meta = {"url": "https://stock.example.com/items", "wheel": "agent", **(meta or {})}
+    script = """(() => { const real = window.fetch; window.fetch = function (input, init) {
+      const url = String((input && input.url) || input || '');
+      if (!url.includes('/api/browser/' + %s + '/frames')) return real(input, init);
+      const c = document.createElement('canvas'); c.width = 1280; c.height = 800;
+      const x = c.getContext('2d'); x.fillStyle = '#d0d4dc'; x.fillRect(0, 0, 1280, 800);
+      x.fillStyle = '#5b6b8c'; x.fillRect(0, 0, 640, 400);
+      const frame = Object.assign({jpeg_b64: c.toDataURL('image/jpeg', 0.6).split(',')[1], w: 1280, h: 800}, %s);
+      const body = 'data: ' + JSON.stringify(frame) + '\\n\\n';
+      const stream = new ReadableStream({start(s) { s.enqueue(new TextEncoder().encode(body)); }});
+      return Promise.resolve(new Response(stream, {status: 200, headers: {'Content-Type': 'text/event-stream'}}));
+    }; })();""" % (json.dumps(session_id), json.dumps(meta))
+
+    async def before(ctx):
+        await ctx.add_init_script(script)
+    return before
+
+
+#: The live page itself in a pane: its screencast frame, never a thumbnail in what the agent did.
+_BRW_PICTURE = 'img[src^="data:"]'
+
+
 async def _brw_hero(page, region) -> list[str]:
-    """What the run page's live browser must be (F1356): the picture fills the column at the page's own shape, what
-    the agent did is folded and closed, and Enlarge shows it large, Esc closing it, Take over in reach where the pane
-    has it. Returns what is not so."""
+    """What the run page's live browser must be (F1356, F1376): the picture fills the column at the page's own shape,
+    as large as the screen allows under the pane's own bars, so the whole page is seen without scrolling (eb 11-04: on
+    a wide desktop it is height-bound, centred); what the agent did is folded and closed; Enlarge shows it as large as
+    its dialog allows and never smaller than the column's, Esc closing it, Take over in reach where the pane has it.
+    Returns what is not so."""
     bad: list[str] = []
-    await region.locator("img").first.wait_for(timeout=8_000)
+    await region.locator(_BRW_PICTURE).first.wait_for(timeout=8_000)
+    await region.evaluate("(r) => r.scrollIntoView({block: 'start'})")
     await asyncio.sleep(0.5)
     got = await region.evaluate("""(r) => {
       const pane = r.querySelector('section[aria-label="Browser"]');
       const box = pane && pane.querySelector('div[style*="aspect-ratio"]');
+      const img = box && box.querySelector('img[src^="data:"]');
       const details = pane && pane.querySelector('details');
       const p = pane ? pane.getBoundingClientRect() : null, b = box ? box.getBoundingClientRect() : null;
-      return {pane: p && p.width, w: b && b.width, h: b && b.height, folded: !!details && !details.open,
+      return {pane: p && p.width, top: p && p.top, w: b && b.width, h: b && b.height, bottom: b && b.bottom,
+              boxTop: b && b.top, iw: img && img.clientWidth, ih: img && img.clientHeight,
+              vw: window.innerWidth, vh: window.innerHeight, folded: !!details && !details.open,
               summary: details ? details.querySelector('summary').innerText : null,
               wide: document.documentElement.scrollWidth <= window.innerWidth + 1};
     }""")
-    if not got["w"] or got["w"] < 0.9 * got["pane"]:
-        bad.append(f"the live picture does not fill the column: {got}")
+    # (1) As large as fits: the column's width, or the screen's height at 16:10 less what is around the picture when
+    # the browser is in view (its heading, strips and fold: 12rem, 192 px, BrowserPane's HERO_CHROME).
+    fits = min(got["pane"] or 0, (got["vh"] - 192) * 16 / 10)
+    if not got["w"] or got["w"] < 0.95 * fits:
+        bad.append(f"the live picture is not as large as the screen allows: {got} against {fits:.0f}")
     elif abs(got["h"] - got["w"] * 10 / 16) > 6:
         bad.append(f"the live picture is not at the page's 16:10: {got}")
+    if got["iw"] and (abs(got["iw"] - got["w"]) > 4 or abs(got["ih"] - got["h"]) > 4):
+        bad.append(f"the live picture is letterboxed inside its box: {got}")
+    if got["bottom"] and got["bottom"] > got["vh"] + 1:
+        bad.append(f"the page's foot is below the screen: {got}")
     if not got["folded"] or not re.search(r"What the agent did · \d", got["summary"] or ""):
         bad.append(f"what the agent did is not folded and closed under the picture: {got}")
     if not got["wide"]:
@@ -13701,11 +13742,18 @@ async def _brw_hero(page, region) -> list[str]:
     await asyncio.sleep(0.4)
     large = await dialog.evaluate("""(d) => {
       const img = d.querySelector('img'), r = img ? img.getBoundingClientRect() : null, dr = d.getBoundingClientRect();
-      return {img: r && r.width, left: dr.left, right: dr.right, vw: window.innerWidth, vh: window.innerHeight,
+      return {img: r && r.width, left: dr.left, right: dr.right, top: dr.top, bottom: dr.bottom, dw: dr.width,
+              ih: r && r.height, vw: window.innerWidth, vh: window.innerHeight,
               wide: document.documentElement.scrollWidth <= window.innerWidth + 1};
     }""")
-    if not large["img"] or large["img"] <= got["w"] * (1.05 if large["vw"] > 600 else 0.85):
-        bad.append(f"Enlarge does not show the page large: {large} against {got['w']}")
+    # (2) As large as its dialog allows at 16:10: the screen's height less the dialog's own title, footer and margins
+    # (12rem, 192 px, BrowserPane's ENLARGED_CHROME), or the dialog's width.
+    room = min(large["dw"] - 32, (large["vh"] - 192) * 16 / 10)
+    if not large["img"] or large["img"] < 0.95 * room:
+        bad.append(f"Enlarge does not show the page as large as the dialog allows: {large} against {room:.0f}")
+    # (3) Never smaller than the column's; on a phone the screen's width (eb 11-04).
+    if large["img"] and large["img"] < got["w"] * (0.995 if large["vw"] > 600 else 0.85):  # equal, to the sub-pixel
+        bad.append(f"Enlarge shows the page smaller than the column does: {large} against {got['w']}")
     if large["left"] < 0 or large["right"] > large["vw"] + 1 or not large["wide"]:
         bad.append(f"the enlarged page does not fit the screen: {large}")
     if pane_has_take_over:
@@ -13737,9 +13785,7 @@ async def check_brwrunpagephone(browser) -> str:
     try:
         live = {**_M2B_RUNS["run_smoke_m2b_done"], "status": "running", "ended_at": None}
         ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done", width=(390, 844),
-                                       runs={"run_smoke_m2b_done": live})
-        await ctx.route(re.compile(r".*/api/browser/bsR/frames$"), lambda r: r.fulfill(
-            status=200, headers={"Content-Type": "text/event-stream"}, body=_brw_frame()))
+                                       runs={"run_smoke_m2b_done": live}, before=_held_frames("bsR"))
         try:
             region = page.get_by_role("region", name="Live browser")
             await region.wait_for(timeout=8_000)
@@ -13772,18 +13818,18 @@ async def check_brwrunpage(browser) -> str:
         # Live: the stream stays open, as a running run's does.
         _M2B_STREAM = events
         live = {**_M2B_RUNS["run_smoke_m2b_done"], "status": "running", "ended_at": None}
-        ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done", runs={"run_smoke_m2b_done": live})
-        await ctx.route(re.compile(r".*/api/browser/bsR/frames$"), lambda r: r.fulfill(
-            status=200, headers={"Content-Type": "text/event-stream"}, body=_brw_frame()))
-        try:
-            region = page.get_by_role("region", name="Live browser")
+        for width in ((1440, 900), WIDE, (1920, 1080)):  # the column's width, and height-bound wider (eb 11-04)
+            ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done", width=width,
+                                           runs={"run_smoke_m2b_done": live}, before=_held_frames("bsR"))
             try:
-                await region.wait_for(timeout=8_000)
-                bad += await _brw_hero(page, region)
-            except Exception as e:
-                bad.append(f"a running run with a browser shows no live browser ({str(e)[:120]})")
-        finally:
-            await ctx.close()
+                region = page.get_by_role("region", name="Live browser")
+                try:
+                    await region.wait_for(timeout=8_000)
+                    bad += [f"{width[0]}×{width[1]}: {b}" for b in await _brw_hero(page, region)]
+                except Exception as e:
+                    bad.append(f"{width[0]}: a running run with a browser shows no live browser ({str(e)[:120]})")
+            finally:
+                await ctx.close()
 
         # Ended: the viewer, from the kept screenshots.
         _M2B_STREAM = events + _frame({"type": "stream_complete"})
@@ -13849,6 +13895,68 @@ async def check_brwrunpage(browser) -> str:
 
 
 @check
+async def check_brwenlargeclick(browser) -> str:
+    """A press on the run page's enlarged browser lands where it was made (F1376 with F1197): on a wide screen the
+    enlarged picture is drawn larger than the page's own 1280 px, and the person's click still reaches the page at the
+    point they pressed, corners and centre to within 3 page px."""
+    global _M2B_STREAM
+    kept = _M2B_STREAM
+    _M2B_STREAM = "".join([
+        _frame({"type": "orchestration_start", "run_id": "run_smoke_m2b_done"}, "1"),
+        _frame({"type": "browser_session", "session_id": "bsR", "owner": "run:run_smoke_m2b_done"}, "2"),
+        _frame({**_BRW_ACTION, "session_id": "bsR"}, "3")])
+    bad: list[str] = []
+    try:
+        live = {**_M2B_RUNS["run_smoke_m2b_done"], "status": "running", "ended_at": None}
+        ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done", width=(1920, 1080),
+                                       runs={"run_smoke_m2b_done": live}, before=_held_frames("bsR"))
+        sent: list[dict] = []
+
+        async def take(route):
+            await route.fulfill(status=200, json={"wheel": "person"})
+
+        async def given(route):
+            try:
+                sent.append(json.loads(route.request.post_data or "{}"))
+            except ValueError:
+                pass
+            await route.fulfill(status=200, json={"ok": True})
+
+        await ctx.route(re.compile(r".*/api/browser/bsR/wheel/take$"), take)
+        await ctx.route(re.compile(r".*/api/browser/bsR/input$"), given)
+        try:
+            region = page.get_by_role("region", name="Live browser")
+            await region.wait_for(timeout=8_000)
+            await region.get_by_role("button", name="Take over").first.click()
+            await asyncio.sleep(0.6)
+            await region.get_by_role("button", name="Enlarge").click()
+            dialog = page.get_by_role("dialog")
+            await dialog.wait_for(timeout=4_000)
+            await asyncio.sleep(0.6)
+            screen = dialog.get_by_role("application", name=re.compile("The page"))
+            drawn = await _brw_drawn(screen)
+            if drawn["w"] <= 1280 * 1.05:
+                bad.append(f"the enlarged picture is not drawn larger than the page's own size: {drawn}")
+            for fx, fy in ((0.03, 0.04), (0.5, 0.5), (0.97, 0.96)):
+                before = len(sent)
+                await page.mouse.click(drawn["x"] + fx * drawn["w"], drawn["y"] + fy * drawn["h"])
+                await asyncio.sleep(0.4)
+                clicks = [b for b in sent[before:] if b.get("type") == "mouse" and b.get("event") == "click"]
+                want = (round(fx * 1280), round(fy * 800))
+                if not clicks or abs(clicks[0]["x"] - want[0]) > 3 or abs(clicks[0]["y"] - want[1]) > 3:
+                    bad.append(f"a press at page {want} on the enlarged picture reached it as {clicks[:1]}")
+        except Exception as e:
+            bad.append(f"the enlarged picture took no press ({str(e)[:160]})")
+        finally:
+            await ctx.close()
+    finally:
+        _M2B_STREAM = kept
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "at 1920 the enlarged browser is drawn larger than the page and a press on it lands where it was made"
+
+
+@check
 async def check_brwreplayrun(browser) -> str:
     """A Browser step's replay on its run's page (F1363; REL3's rc4 proof): live, the pane says the recording drives,
     never the agent, and Take over says the recording stops after this step (F1367); ended, every replayed step is a
@@ -13871,11 +13979,8 @@ async def check_brwreplayrun(browser) -> str:
     try:
         _M2B_STREAM = events
         live = {**_M2B_RUNS["run_smoke_m2b_done"], "status": "running", "ended_at": None}
-        ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done", runs={"run_smoke_m2b_done": live})
-        await ctx.route(re.compile(r".*/api/browser/bsP/frames$"), lambda r: r.fulfill(
-            status=200, headers={"Content-Type": "text/event-stream"},
-            body=_frame({"jpeg_b64": BRW_JPEG, "w": 1280, "h": 800, "url": "https://example.com/", "wheel": "agent",
-                         "replaying": True})))
+        ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done", runs={"run_smoke_m2b_done": live},
+                                       before=_held_frames("bsP", {"url": "https://example.com/", "replaying": True}))
         try:
             region = page.get_by_role("region", name="Live browser")
             try:
@@ -13885,6 +13990,10 @@ async def check_brwreplayrun(browser) -> str:
                 bad.append(f"a replay's live pane does not say the recording drives ({str(e)[:120]})")
             if await region.get_by_text("The agent is driving").count():
                 bad.append("a replay's live pane says the agent is driving")
+            fold = (await region.locator("details summary").first.inner_text()) if await region.locator(
+                "details summary").count() else ""
+            if not re.search(r"What was done · \d", fold):
+                bad.append(f"a replay's fold says {fold!r}, not what was done (F1376)")
             # F1367: a press on the page offers Take over, saying the recording stops after this step; Take over
             # takes the wheel (the replay stops before its next step: test_a_take_over_stops_the_replay).
             taken: list[str] = []
@@ -13895,7 +14004,7 @@ async def check_brwreplayrun(browser) -> str:
 
             await ctx.route(re.compile(r".*/api/browser/bsP/wheel/take$"), take)
             try:
-                await region.locator("img").first.click()
+                await region.locator(_BRW_PICTURE).first.click()
                 ask = page.get_by_role("dialog", name="The recording is driving")
                 await ask.wait_for(timeout=4_000)
                 words = await ask.inner_text()
@@ -13907,6 +14016,21 @@ async def check_brwreplayrun(browser) -> str:
                     bad.append("Take over during a replay never took the wheel")
             except Exception as e:
                 bad.append(f"a press on a replaying page offers no Take over ({str(e)[:120]})")
+        finally:
+            await ctx.close()
+
+        # F1376: the replay has run its last step and the step is ending: nobody drives, never the agent.
+        ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done", runs={"run_smoke_m2b_done": live},
+                                       before=_held_frames("bsP", {"url": "https://www.iana.org/", "wheel": "nobody",
+                                                                   "replaying": False}))
+        try:
+            region = page.get_by_role("region", name="Live browser")
+            try:
+                await region.get_by_text("Nobody is driving").first.wait_for(timeout=8_000)
+            except Exception as e:
+                bad.append(f"a replay that ended does not leave nobody driving ({str(e)[:120]})")
+            if await region.get_by_text("The agent is driving").count():
+                bad.append("a replay that ended says the agent is driving")
         finally:
             await ctx.close()
 
