@@ -43,6 +43,9 @@ class TestTheAllowlist:
             # F1198 (BLD1, Naveen 10-29): a Python tool, previewed with its code and made with a token; its test
             # run, through the editor's Test route.
             "create_python_tool", "test_python_tool",
+            # F1312b (Naveen 11-04): an HTTP tool's address changed in place, never its headers; destructive, so the
+            # client asks first.
+            "update_http_tool",
         }
 
     @pytest.mark.parametrize("name", ["finish_build", "list_variables"])
@@ -81,7 +84,8 @@ class TestAnnotations:
         for name in catalog.READ_TOOLS:
             assert marks[name].readOnlyHint and not marks[name].destructiveHint
 
-    @pytest.mark.parametrize("name", ["update_orchestration", "remove_step", "create_http_tool", "create_skill"])
+    @pytest.mark.parametrize("name", ["update_orchestration", "remove_step", "create_http_tool", "create_skill",
+                                      "update_http_tool"])
     def test_overwriters_are_destructive(self, name):
         mark = {t.name: t.annotations for t in catalog.builder_tools()}[name]
         assert mark.destructiveHint and not mark.readOnlyHint

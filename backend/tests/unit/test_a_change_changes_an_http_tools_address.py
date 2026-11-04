@@ -206,3 +206,81 @@ def test_the_planner_is_told_how_a_tools_address_is_fixed():
     rule = next(line for line in changing.splitlines() if "update_tool" in line)
     for word in ("address", "form", "today"):
         assert word in rule, (word, rule)
+
+
+# ── Naveen's rulings on the shots (eb 11-04) ────────────────────────────────────────────────────────────────────────
+
+CURL_HINT = "a curl is in the context: name it with from {curl: n}"
+ADDRESS_HINT = "You can also paste a curl, its OpenAPI spec, or a link to its docs."
+
+
+@pytest.mark.parametrize("op", [
+    _update(url=f"{SHOP}/v2/orders"),
+    {"op": "create", "target": {"kind": "tool", "name": "fetch_v2_orders"},
+     "fields": {"description": "Fetches orders", "url": f"{SHOP}/v2/orders"}},
+])
+async def test_a_pasted_curl_is_named_with_from_and_asked_for_once_only(client, op):
+    from core import builder_access
+    from core.models_orchestration import OrchestrationRun
+    from core.native_builder.door import check
+    from core.orchestration.state import SharedState
+
+    await _tool()
+    run = OrchestrationRun(run_id=f"builder_f1312b_nudge_{op['op']}", orchestration_id="orch_native_builder",
+                           shared_state={builder_access.CALLER_KEY: {"user_id": "u1"},
+                                         "user_message": check(f"Its call is: curl {SHOP}/v2/orders").text})
+    await SharedState(run).checkpoint()
+    first, _ = await _call("submit_change", {"ops": [op]}, run)
+    assert CURL_HINT in first.get("error", ""), first
+    again, _ = await _call("submit_change", {"ops": [op]}, run)
+    assert again.get("finish") == "submit_change", "said once: never a loop"
+
+
+async def test_with_no_curl_in_the_context_nothing_is_asked(client):
+    await _tool()
+    out = await _submitted([_update(url=f"{SHOP}/v2/orders")], message="its address is now /v2/orders")
+    assert out.get("finish") == "submit_change", out
+
+
+@pytest.mark.parametrize("args", [
+    {"question": "What is the correct address for the fetch_orders tool?", "about": "what",
+     "subject": "address of fetch_orders"},
+    {"question": "A few things before I plan it:", "questions": [
+        {"question": "What is the correct URL for the fetch_orders tool?", "about": "what",
+         "subject": "url of fetch_orders", "guess": f"{SHOP}/orders?status=new"}]},
+])
+async def test_the_address_question_says_what_else_helps_in_codes_words(client, args):
+    from test_a_change_makes_the_http_tools_it_uses import _run
+
+    out, _ = await _call("ask_person", args, await _run())
+    assert out.get("finish") == "ask_person", out
+    assert out["question"].rstrip().endswith(ADDRESS_HINT), out["question"]
+
+
+async def test_a_question_about_anything_else_has_no_such_line(client):
+    from test_a_change_makes_the_http_tools_it_uses import _run
+
+    out, _ = await _call("ask_person", {"question": "What is the finance team's email address?", "about": "who",
+                                        "subject": "finance email"}, await _run())
+    assert ADDRESS_HINT not in out.get("question", ""), out
+
+
+async def test_update_http_tool_is_served_to_mcp_clients_destructive_and_never_with_headers(client):
+    from core.mcp_server import catalog
+    from core.product_tools import areas, build, confirm, registry
+    from core.product_tools.caller import Caller
+    from core.product_tools.roles import Role
+
+    [served] = [t for t in catalog.builder_tools() if t.name == "update_http_tool"]
+    assert served.annotations.destructiveHint and not served.annotations.readOnlyHint
+    assert not {k for k in (served.inputSchema.get("properties") or {}) if "header" in k}, served.inputSchema
+    await _tool()
+    areas.ensure_loaded()
+    caller, args = Caller(role=Role.OWNER, via="mcp", user_id="u1"), {"name": "fetch_orders", "url": f"{SHOP}/v2"}
+    with build.using_module(None):
+        out = await registry.invoke("update_http_tool", caller, args)
+        if isinstance(out, dict) and out.get("status") == "needs_confirmation":
+            assert KEY not in json.dumps(out), "its preview never shows the key"
+            out = await registry.invoke("update_http_tool", caller, {**args, confirm.TOKEN_ARG: out["confirm_token"]})
+    assert KEY not in json.dumps(out, default=str) and "headers" not in json.dumps(out, default=str), out
+    assert (await _tools())["fetch_orders"]["url"] == f"{SHOP}/v2"
