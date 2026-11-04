@@ -14,6 +14,7 @@ the before and after, so the person approved it. Code can't tell which part of a
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 
@@ -67,3 +68,29 @@ class TestRuleTwelve:
     def test_the_numbering_stands(self):
         numbers = [int(n) for n, _ in _changing_rules()]
         assert numbers == list(range(1, len(numbers) + 1)) and len(numbers) >= 21
+
+
+class TestTheCard:
+    """The panel's card is drawn from the change object, not the review's words (plan.ts `planFromChange`), so it
+    carries the op's `says` itself: under code's line, in the review's own label, told apart from the line (F1308's UI
+    half; Naveen 11-03: "the panel card and the text on the run page"). Read from the source, as the build card's gate
+    words are (test_a_builds_card_lists_every_approval_its_run_asks)."""
+
+    ROOT = Path(__file__).resolve().parents[3] / "frontend/src/components/assistant"
+
+    def test_the_label_is_one_and_the_review_writes_it(self):
+        from core.native_builder import change_tools
+
+        label = getattr(change_tools, "DESCRIBED_AS", None)
+        assert label == "Described as", "the review's label is code's one constant"
+        assert change_tools._with_says('Rename the agent "A" — to "B"', "rename it").endswith(f"\n  {label}: rename it")
+
+    def test_the_card_takes_says_from_the_op_and_shows_it_in_that_label(self):
+        plan_ts, cards = (self.ROOT / "plan.ts").read_text(), (self.ROOT / "cards.tsx").read_text()
+        op_view = plan_ts[plan_ts.index("export interface ChangeOpView"):plan_ts.index("const list =")]
+        step = plan_ts[plan_ts.index("export interface PlanStep"):plan_ts.index("export interface Plan {")]
+        build = plan_ts[plan_ts.index("export function planFromChange"):plan_ts.index("// ── A build, from its own object")]
+        assert "says?: string" in op_view and "says?: string" in step
+        assert "says" in build.split("return {", 1)[0] and "says" in build.split("return {", 1)[1]
+        assert "step.says" in cards and "Described as: " in cards
+        assert cards.index("step.says") < cards.index("step.detail"), "the words above the exact change, as the review"
