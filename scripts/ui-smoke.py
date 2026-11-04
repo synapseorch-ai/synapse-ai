@@ -13752,7 +13752,7 @@ async def check_brwrunpage(browser) -> str:
                                        runs={"run_smoke_m2b_done": _M2B_RUNS["run_smoke_m2b_done"]}, before=kept_routes)
         try:
             # F1356: one large viewer of the kept screenshots, back and next, its caption and "n of N", and Enlarge.
-            viewer = page.get_by_role("figure", name="What the agent did in the browser")
+            viewer = page.get_by_role("figure", name="What was done in the browser")
             kept_shot = "/api/browser/kept/run/run_smoke_m2b_done/"
             try:
                 await viewer.wait_for(timeout=8_000)
@@ -13872,7 +13872,7 @@ async def check_brwreplayrun(browser) -> str:
                                        runs={"run_smoke_m2b_done": _M2B_RUNS["run_smoke_m2b_done"]}, before=kept_routes)
         try:
             section = page.get_by_role("region", name="The browser")
-            viewer = page.get_by_role("figure", name="What the agent did in the browser")
+            viewer = page.get_by_role("figure", name="What was done in the browser")
             kept_shot = "/api/browser/kept/run/run_smoke_m2b_done/"
             try:
                 await viewer.wait_for(timeout=8_000)
