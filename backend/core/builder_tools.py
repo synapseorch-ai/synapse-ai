@@ -6,6 +6,7 @@ meta-agent can call to design and create multi-agent workflows.
 """
 import contextlib
 import json
+import re
 import random
 import string
 import time
@@ -128,6 +129,19 @@ def _tool_name(raw: Any) -> str:
     return name if name and name.replace("_", "a").isalnum() and not name[0].isdigit() else ""
 
 
+#: A tool's address that holds a user and a password: said as a login, before any key check (F1343's mask reads its
+#: password as a key and would say only that), never with the address, and nothing of it kept. One sentence for every
+#: door that makes or changes a tool's address: create_http_tool, update_http_tool and the change route (F1312b).
+LOGIN_REFUSAL = "Its address holds a user and a password: a tool's key goes on its Connect card, never in its address."
+#: `scheme://…@` before the path: a user part, its password masked or not.
+_LOGIN = re.compile(r"(?i)^\s*[a-z][a-z0-9+.-]*://[^/?#]*@")
+
+
+def holds_a_login(url: Any) -> bool:
+    """Whether a tool's address carries a user part (`scheme://user:password@host`), its password masked or not."""
+    return isinstance(url, str) and bool(_LOGIN.match(url))
+
+
 async def http_tool_issues(args: dict) -> dict | None:
     """What `create_http_tool` refuses before it saves anything, as it answers it, or None: a name that is no tool
     name, a tool that would place calls, an address inside our own network, headers that are not a JSON object or
@@ -136,6 +150,8 @@ async def http_tool_issues(args: dict) -> dict | None:
     if not _tool_name(args.get("name")):
         return {"error": "name must be a tool-style identifier (letters, digits, underscores)"}
     url = str(args.get("url") or "").strip()
+    if holds_a_login(url):
+        return {"error": LOGIN_REFUSAL}
     from core.builder_guard import PLACES_CALLS, places_calls
     if places_calls(url, args.get("method")):
         # Outbound calls wait for VOX2's consent model (V20, F497): the builder never makes a tool that dials.
@@ -218,8 +234,6 @@ async def http_tool_update_issues(before: dict | None, args: dict) -> dict | Non
     """What `update_http_tool` refuses before it saves anything (F1312b), as it answers it, or None: no HTTP tool by
     that name; its new address or method by create_http_tool's own check (never its headers, which keep its key); a
     locked tool's address off its lock, in create_http_tool's words; a user part in the address, or a key in it."""
-    from urllib.parse import urlsplit
-
     from core.secret_scrub import held_in, holds_credential
 
     name = str(args.get("name") or "").strip()
@@ -239,10 +253,7 @@ async def http_tool_update_issues(before: dict | None, args: dict) -> dict | Non
     if (lock := str(before.get("base_lock") or "")) and not under_lock(url, lock):
         return {"error": f"`{name}` was made for {lock}, and keeps to that API: a tool for another address is a new "
                          "tool, under another name."}
-    got = urlsplit(url)
-    if got.username or got.password:
-        return {"error": "Its address holds a user and a password: a tool's key goes on its Connect card, never in "
-                         "its address."}
+    # A login was said by create_http_tool's own check, above, before the key check below could read it as a key.
     if holds_credential(url) or await held_in(url):
         return {"error": "A key never goes in a tool's address here: its Connect card keeps it."}
     return None

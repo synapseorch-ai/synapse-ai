@@ -59,6 +59,14 @@ def _holds_a_key(fields: dict) -> bool:
     return holds_credential(text) or CREDENTIAL_MARK in text
 
 
+def _login_in(fields: dict) -> str | None:
+    """A tool's address in an op's fields that holds a login, said as one (F1312b × F1343): before the key check, which
+    would read its password as a key and say only that; never with the address, and nothing of it kept."""
+    from core.builder_tools import LOGIN_REFUSAL, holds_a_login
+
+    return LOGIN_REFUSAL if any(holds_a_login(v) for k, v in fields.items() if str(k).endswith("url")) else None
+
+
 async def _carries_a_key(fields: dict, says: str = "") -> bool:
     """An op that carries a key in its fields or its `says`, by shape or as a value the workspace holds (F1309: prod-02's
     "Make the HTTP tool … Authenticates with bearer token …" put a token pasted in chat into a made tool's header)."""
@@ -1751,6 +1759,8 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
         # A new thing, a build or a hand-over leaves before the check below, which refuses a key op by op: one that
         # carries a key is refused here, with nothing of it kept (F1309: prod-02's made tool took a pasted token).
         for o in ops:
+            if login := _login_in(dict(o.get("fields") or {})):
+                return {**base, "outcome": "said", "say": login}
             if await _carries_a_key(dict(o.get("fields") or {}), o.get("says") or ""):
                 return {**base, "outcome": "said", "say": KEY_REFUSAL}
     if len(handoffs) > 1 and len(handoffs) == len(ops):
@@ -1789,6 +1799,9 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
         fields = dict(raw.get("fields") or {})
         item = {"op": op.name, "kind": op.kind, "target": target, "fields": fields, "says": raw.get("says") or ""}
         checked.append(item)
+        if login := _login_in(fields):
+            item.update(fields={}, says="", status="refused", say=login)
+            continue
         if await _carries_a_key(fields, item["says"]):
             # Nothing keeps it: not the review, its event, the card or this answer (the branch review's finding 7);
             # its says too, and a value the workspace holds (F1309).
