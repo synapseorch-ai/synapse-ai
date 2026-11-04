@@ -544,10 +544,14 @@ async def test_python_tool(req: PythonTestRequest):
     """
     from core import variables
     from core.execution import (
+        NO_DOCKER_FOR_TOOLS,
+        DockerRunner,
+        DockerUnavailable,
         ExecRequest,
         ExecUnsupported,
         Network,
         declared_globals,
+        docker_not_running,
         get_runner,
         wrap_args,
     )
@@ -557,8 +561,9 @@ async def test_python_tool(req: PythonTestRequest):
 
     timeout = min(int(req.timeout or 30), 60)
 
+    runner = get_runner()
     try:
-        result = await get_runner().run(ExecRequest(
+        result = await runner.run(ExecRequest(
             code=wrap_args(
                 req.code,
                 req.args or {},
@@ -572,6 +577,8 @@ async def test_python_tool(req: PythonTestRequest):
             cpus=CPU_LIMIT,
             vault_path=Path(_vault_root()),
         ))
+    except DockerUnavailable as e:
+        raise HTTPException(status_code=503, detail=NO_DOCKER_FOR_TOOLS) from e  # no docker here at all (F1353)
     except ExecUnsupported as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
     except Exception as e:
@@ -579,6 +586,9 @@ async def test_python_tool(req: PythonTestRequest):
 
     if result.timed_out:
         return {"exit_code": -1, "stdout": "", "stderr": result.stderr}
+    if result.exit_code != 0 and isinstance(runner, DockerRunner) and docker_not_running(result.stderr):
+        # Its daemon isn't running: said where the button shows a run's error, never its socket (F1353).
+        return {"exit_code": result.exit_code, "stdout": "", "stderr": NO_DOCKER_FOR_TOOLS}
 
     return {"exit_code": result.exit_code, "stdout": result.stdout, "stderr": result.stderr}
 
