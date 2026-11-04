@@ -7,8 +7,8 @@ owner or admin, with undo like any change. These pin:
 - every field of the Settings model is placed, in exactly one of `ALLOWED` and `OUT`;
 - code refuses a setting off the list by name, with where it is done, and a value off its type or bounds; keys,
   billing and the plan, members and roles, API keys, the MCP server and import and export each with its link;
-- the review says each setting as it reads now and as it will; the yes saves it through the Settings route; undo
-  puts back what it read, "automatic" too;
+- the review says each setting as it reads now and as it will, and its op carries the same as rows for the card
+  (REACH2's one shape); the yes saves it through the Settings route; undo puts back what it read, "automatic" too;
 - a builder is refused (an admin's change), and the tool is never offered off the app;
 - a host's own list narrows what Synapse AI may set, never widens it;
 - topic `settings` reads each setting on the list, and never a key.
@@ -162,8 +162,13 @@ class TestAChange:
         await update_settings(Settings(prompt_cache_enabled=True, auto_compact_window_pct=50))
         first, checked, done = await _change({"ops": [_settings(prompt_cache_enabled=False,
                                                                 auto_compact_window_pct=30)]})
-        assert checked["review"] == ("- Change the workspace's settings — Prompt caching: on → off; "
-                                     "Compact at (% of the model's window): 50 → 30")
+        # One shape wherever a yes is asked (REACH2's rows): the review's lines and the card's rows say the same.
+        assert checked["review"] == ("- Change the workspace's settings:\n"
+                                     "  Prompt caching: on → off\n"
+                                     "  Compact at (% of the model's window): 50 → 30")
+        [op] = [o for o in checked["ops"] if o["op"] == "settings_set"]
+        assert op["rows"] == [{"label": "Prompt caching", "before": "on", "after": "off"},
+                              {"label": "Compact at (% of the model's window)", "before": "50", "after": "30"}]
         assert done["applied"] == ["settings_set"], done
         now = load_settings()
         assert now["prompt_cache_enabled"] is False and now["auto_compact_window_pct"] == 30

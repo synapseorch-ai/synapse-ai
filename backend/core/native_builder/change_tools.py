@@ -1107,14 +1107,24 @@ def _words(op: C.Op, target: dict, fields: dict, says: str, want: dict | None = 
     return f"{what} — {detail}" if detail else what
 
 
-def _settings_words(live: dict | None, want: dict, says: str) -> str:
-    """A settings change's line: each setting by its label, what it reads now and what it will (F1264)."""
+def _settings_rows(live: dict | None, want: dict) -> list[dict]:
+    """A settings change's rows (F1264, REACH2's one shape): each setting by its label, as it reads now and as it
+    will, in the words its screen uses ("automatic", "the default model")."""
     from core import settings_allow
+    from core.native_builder import rows
 
     live = live or {}
-    rows = "; ".join(f"{settings_allow.ALLOWED[k].label}: {settings_allow.shown(k, live.get(k))} → "
-                     f"{settings_allow.shown(k, v)}" for k, v in want.items())
-    return "Change the workspace's settings — " + "; ".join(p for p in (rows, says) if p)
+    shown = {k: settings_allow.shown(k, live.get(k)) for k in want}
+    after = {k: settings_allow.shown(k, v) for k, v in want.items()}
+    return rows.changed(shown, after, {k: settings_allow.ALLOWED[k].label for k in want})
+
+
+def _settings_words(changed: list[dict], says: str) -> str:
+    """Its review line: what it is, then a line per setting, as the card's rows say it."""
+    from core.native_builder import rows
+
+    head = "Change the workspace's settings:" + (f" {says}" if says else "")
+    return f"{head}\n{rows.as_text(changed)}"
 
 
 def _review(ops: list[dict]) -> str:
@@ -1557,9 +1567,12 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
                                            "nothing to change.")
             continue
         tool_name, call_args = C.call(op, target.get("id", ""), fields, live, name=target.get("name", ""))
-        line = (_settings_words(live, want, item["says"] if draft.get("undo_of") else "")
-                if op.name == "settings_set" else
-                _words(op, target, fields, item["says"] if draft.get("undo_of") else "", want))
+        if op.name == "settings_set":
+            # One shape wherever a yes is asked (REACH2's rows): the review's lines and the card's rows say the same.
+            item["rows"] = _settings_rows(live, want)
+            line = _settings_words(item["rows"], item["says"] if draft.get("undo_of") else "")
+        else:
+            line = _words(op, target, fields, item["says"] if draft.get("undo_of") else "", want)
         if op.name == "knowledge_settings":
             line = await _settings_line(target, live, want)
         if op.name == "knowledge_edit_document":

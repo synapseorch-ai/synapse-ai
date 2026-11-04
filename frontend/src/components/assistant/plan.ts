@@ -18,6 +18,7 @@
 import type { HumanField } from '@/components/orchestration/humanFields';
 import { roleOf, type StepRole } from '@/components/run/model';
 import { scheduleWords, zoneWords } from '@/components/run/workflowList';
+import type { ChangeRow } from '@/lib/builderEvents';
 import { STEP_TYPE_META, type StepType } from '@/types/orchestration';
 
 /** Which of the builder's questions a prompt is. */
@@ -68,6 +69,8 @@ export interface PlanStep {
     deletes?: boolean;
     /** The model an agent step runs on, when code picked its new agent's (F966): the estimate prices it. */
     model?: string;
+    /** A change's fields as they stand and as they will be (REACH2's rows): shown in place of `detail`. */
+    rows?: ChangeRow[];
 }
 
 export interface Plan {
@@ -387,6 +390,8 @@ export interface ChangeOpView {
     fields?: Record<string, unknown>;
     expected?: Record<string, unknown> | null;
     before?: Record<string, unknown> | null;
+    /** What it changes, field by field, as the check said it (`rows.py`; a settings change's, F1264). */
+    rows?: ChangeRow[];
 }
 
 const list = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : []);
@@ -505,15 +510,19 @@ export function planFromChange(change: ChangeView, prompt: string): Plan | null 
         const uses = deletes
             ? `${o.used_by?.length ? `Used by ${o.used_by.join(', ')}.` : 'Nothing uses it.'} It can come back only as a new copy.`
             : '';
-        const detail = [deletes ? how.join(' — ') : (valueWords(o) ?? how.join(' — ')), uses].filter(Boolean).join(' ');
+        const rows = !deletes && o.rows?.length ? o.rows : null;
+        const [heading] = what.split(/:\s*\n/);
+        const detail = rows ? '' : [deletes ? how.join(' — ') : (valueWords(o) ?? how.join(' — ')), uses]
+            .filter(Boolean).join(' ');
         return {
             n: i + 1,
-            name: deletes ? `Deletes: the ${o.target?.kind ?? ''} "${name}"${id}` : `${what}${id}`,
+            name: deletes ? `Deletes: the ${o.target?.kind ?? ''} "${name}"${id}` : `${rows ? heading : what}${id}`,
             type: null,
             label: '',
             role: 'logic',
             ...(detail ? { detail } : {}),
             ...(deletes ? { deletes: true } : {}),
+            ...(rows ? { rows } : {}),
         };
     });
     return {
