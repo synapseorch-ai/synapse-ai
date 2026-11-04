@@ -8,11 +8,13 @@ check only), and since the run had made the tools, the next turn carried nothing
 no plan. These pin the class:
 
 - A: an ask the card promised (a confirm, for a tool this build makes or connects after the yes, listed under "Asks
-  you first") is what was approved; a block, or an ask the card did not list, still stops the save (F964);
+  you first") is what was approved; a block, an ask the card did not list, or a promised ask that is not there once
+  the tool is, still stops the save (F964; BLD1's read);
 - B: every refusal after the yes with nothing of the workflow saved (an ask or a model moved, a tool gone, a failed
   check) goes back to the planner once, in the save's own words; a second stops and says so;
-- C: a save that stopped having made only its tools leaves the request open: its plan comes with the next turn, to
-  be shown or changed. A run that saved its workflow still carries nothing.
+- C: a save that stopped after the yes having made only its tools leaves the request open: its plan comes with the
+  next turn, to be shown or changed. A run that saved its workflow, one with no yes, and a tool a change made still
+  carry nothing.
 """
 from __future__ import annotations
 
@@ -84,6 +86,17 @@ class TestWhatTheCardPromisedIsApproved:
         refused, _ = await _call("save_build", {}, run)
         assert refused["outcome"] == "replan" and "Sender and `mailchimp_send_campaign`" in refused["refused"], refused
 
+    async def test_a_promised_ask_not_there_once_the_tool_is_is_refused(self, client):
+        """The card said it asks first; the tool, once made, would be called without asking."""
+        from core.store.resources import save_tool
+
+        run, _ = await _approved()
+        await save_tool({**await _tool(), "annotations": {"readOnlyHint": True}})
+        refused, _ = await _call("save_build", {}, run)
+        assert refused["outcome"] == "replan", refused
+        assert ('Sender and `mailchimp_send_campaign`: the card said "asks you first", now it acts without asking'
+                in refused["refused"]), refused
+
     async def test_a_block_is_still_refused(self, client):
         run, _ = await _approved()
         await _workspace_policy("deny")
@@ -147,3 +160,12 @@ class TestAStoppedSavesPlanIsNeverLost:
         saved = {WRITES_KEY: [{"kind": "tool", "id": "t1"}, {"kind": "orchestration", "id": "o1"}],
                  "build_saved": {"outcome": "saved"}, build_plan.DRAFT_KEY: {"title": "Newsletter"}}
         assert T.carry_request(saved, [{"step_id": "step_build_done", "status": "completed"}]) == {}
+
+    def test_a_stop_with_no_yes_and_a_tool_a_change_made_carry_nothing(self):
+        tool = {"kind": "tool", "action": "created", "id": "t1", "name": "t1"}
+        unapproved = {WRITES_KEY: [tool], "tools_made": {"outcome": "stopped"},
+                      build_plan.DRAFT_KEY: {"title": "Newsletter"}}
+        by_a_change = {WRITES_KEY: [tool], "change_applied": {"outcome": "applied"},
+                       build_plan.DRAFT_KEY: {"title": "Newsletter"}}
+        for previous in (unapproved, by_a_change):
+            assert T.carry_request(previous, [{"step_id": "step_build_done", "status": "completed"}]) == {}, previous
