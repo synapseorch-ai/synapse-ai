@@ -26,7 +26,7 @@ import re
 from typing import Any
 
 from core import http_tool
-from core.builder_tools import register_builder_tool
+from core.builder_registry import register_builder_tool
 from core.log import get_logger
 from core.native_builder import objects as O, one_writer
 # The modules, their names read when they run (F1293): each imports builder_tools, which loads this one, so names

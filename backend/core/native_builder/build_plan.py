@@ -27,7 +27,7 @@ from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 from typing import Any
 
-from core.builder_tools import register_builder_tool
+from core.builder_registry import register_builder_tool
 from core.log import get_logger
 from core import feature_census
 from core.native_builder import boards_rule, charts, imitation, objects as O, one_writer, own_api, periods

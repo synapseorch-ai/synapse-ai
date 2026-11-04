@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from core import feature_census
-from core.builder_tools import register_builder_tool
+from core.builder_registry import register_builder_tool
 
 _HELP_FILE = Path(__file__).parent / "native_builder" / "help_topics.json"
 _DOCS_FILE = Path(__file__).parent / "native_builder" / "docs_topics.json"

@@ -18,7 +18,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any, Awaitable, Callable
 
-from core.builder_tools import register_builder_tool
+from core.builder_registry import register_builder_tool
 
 Reader = Callable[[dict], Awaitable[dict]]
 

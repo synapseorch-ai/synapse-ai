@@ -25,7 +25,7 @@ import re
 from typing import Any
 from urllib.parse import urlsplit
 
-from core.builder_tools import register_builder_tool
+from core.builder_registry import register_builder_tool
 from core.native_builder import objects as O
 
 #: How many of a spec's tools `read_api_spec` lists by name; the rest are counted.

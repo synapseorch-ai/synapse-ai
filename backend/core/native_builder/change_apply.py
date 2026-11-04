@@ -19,7 +19,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from core import http_tool
-from core.builder_tools import register_builder_tool
+from core.builder_registry import register_builder_tool
 from core.native_builder import change_ops as C, one_writer
 # The module, its names read when they run (F1293): change_tools imports builder_tools, which loads this one, so
 # names taken at import would be read from a change_tools still half-made when it is imported first.

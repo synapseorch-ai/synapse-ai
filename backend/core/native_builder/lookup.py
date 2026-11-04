@@ -28,7 +28,7 @@ from typing import Any
 
 # The research module, by its name: it imports builder_tools, which imports this module while it loads.
 import core.builder_research as research
-from core.builder_tools import register_builder_tool
+from core.builder_registry import register_builder_tool
 
 #: Providers one look-up reads for, and a research's whole run (SAI2's probe: unbounded, six calls of five new names
 #: read 30 searches and 30 Registry pages); the rest are the research's. A failed source is tried once more.

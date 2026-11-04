@@ -16,7 +16,7 @@ import uuid
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
 
-from core.builder_tools import register_builder_tool
+from core.builder_registry import register_builder_tool
 
 #: The settings screens a card may link to. Each host's panel maps an id to its own path.
 SCREENS: dict[str, str] = {
