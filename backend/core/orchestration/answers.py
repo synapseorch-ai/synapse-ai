@@ -203,6 +203,17 @@ async def _held_for(run_id: str, response: Any) -> list:
     return await held_in(json.dumps(response, default=str, ensure_ascii=False))
 
 
+async def _card_up(run_id: str) -> bool:
+    """Whether a builder run put up a Connect card (its turn's own card, F1345); never asked of any other run."""
+    from core.native_builder.seed import BUILDER_RUN_PREFIX
+
+    if not str(run_id).startswith(BUILDER_RUN_PREFIX):
+        return False
+    from core.native_builder.turn_facts import card_up
+
+    return await card_up(run_id)
+
+
 def _held_out(value: Any, held: Any) -> Any:
     """`value` with every held secret in its strings taken out by its exact value (F1307)."""
     from core.native_builder.door import _without_held
@@ -217,12 +228,13 @@ def _held_out(value: Any, held: Any) -> Any:
 
 
 def _through_door(run_id: str, response: Any, question: Optional[str], step: Optional[str] = None,
-                  held: Any = ()) -> Any:
+                  held: Any = (), card_up: bool = False) -> Any:
     """An answer to an AI builder run goes through the builder's door (BWA1, D274), whichever way it arrives (the
     run page, v1, the MCP server, a channel): a card number or a password is refused as a bad answer, before
     anything is queued or kept, and a key is masked. Read with the question it answers, so a lone secret-looking
-    word in reply to "what's the password?" counts as one, and one at a Connect card's wait (`step`) as a key
-    (F1280); a secret the workspace holds is masked by its value (`held`, F1307). Any other run's answer — a
+    word in reply to "what's the password?" counts as one, and one at a Connect card's wait (`step`) or in a run
+    that put a Connect card up (`card_up`, F1345) as a key (F1280); a secret the workspace holds is masked by its
+    value (`held`, F1307). Any other run's answer — a
     workflow's own Human step — loses only the held secrets (Naveen, 11-03): its other words are the workflow's
     business, as F1100 keeps a workflow's own card digits."""
     from core.native_builder.seed import BUILDER_RUN_PREFIX
@@ -232,7 +244,7 @@ def _through_door(run_id: str, response: Any, question: Optional[str], step: Opt
     from core.native_builder import door
 
     try:
-        masked, _removed = door.check_answer(response, question=question, step=step, held=held)
+        masked, _removed = door.check_answer(response, question=question, step=step, held=held, card_up=card_up)
     except door.Refused as exc:
         raise BadAnswer("answer", str(exc)) from None
     return masked
@@ -327,7 +339,8 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any, *,
             raise RunNotWaiting(run_id, row.status)
         check_question(row, question_id)
         response = _through_door(run_id, response, getattr(row, "human_prompt", None),
-                                 getattr(row, "current_step_id", None), await _held_for(run_id, response))
+                                 getattr(row, "current_step_id", None), await _held_for(run_id, response),
+                                 await _card_up(run_id))
         response = check_answer(row.human_fields, response)
         await refuse_card_for_browser(row, response)
         from core.orchestration.pauses import pause_ordinal
@@ -374,7 +387,7 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any, *,
             raise RunNotWaiting(run_id, run.status)
         check_question(run, question_id)
         response = _through_door(run_id, response, run.human_prompt, run.current_step_id,
-                                 await _held_for(run_id, response))
+                                 await _held_for(run_id, response), await _card_up(run_id))
         response = check_answer(run.human_fields, response)
         await refuse_card_for_browser(run, response)
         response = _named(response, question_id)

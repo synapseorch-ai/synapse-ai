@@ -194,10 +194,12 @@ def _without_held(text: str, held: Any) -> tuple[str, int, set[str]]:
     return text, removed, kinds
 
 
-def check(text: str, held: Any = ()) -> Checked:
+def check(text: str, held: Any = (), *, card_up: bool = False) -> Checked:
     """A new message to the builder: refused (card, password), or the text to run with keys masked. `held`: the
     secrets the workspace holds that occur in it (`secret_scrub.held_in`), taken out by exact value first (F1307),
-    before the lookalikes are folded, so a held value is matched as it was saved."""
+    before the lookalikes are folded, so a held value is matched as it was saved. `card_up`: the conversation's latest
+    turn put up a Connect card (`turn_facts.card_up_before`), so a message that is one secret-looking word alone is the
+    card's key, masked as one (F1345)."""
     text, from_held, kinds = _without_held(text or "", held)
     text = text.translate(_LOOKALIKES)
     if has_card(text):
@@ -205,6 +207,9 @@ def check(text: str, held: Any = ()) -> Checked:
     if has_password(text):
         return Checked(text="", refused="password")
     masked, removed = scrub_credentials(text)
+    lone = _LONE_WORD.match(masked) if card_up and CREDENTIAL_MARK not in masked else None
+    if lone and _secret_looking(lone.group("value")):
+        masked, removed = CREDENTIAL_MARK, removed + 1
     # The held notice only when what came out is the workspace's own secret alone: a connection's, or a key by its
     # shape, gets the key's notice (connect it on its card).
     reason = "held" if from_held and not removed and kinds <= {"workspace"} else "masked"
@@ -251,7 +256,7 @@ CONNECT_WAITS = frozenset({"step_wait_connect"})
 
 
 def check_answer(response: Any, question: str | None = None, *, step: str | None = None,
-                 held: Any = ()) -> tuple[Any, int]:
+                 held: Any = (), card_up: bool = False) -> tuple[Any, int]:
     """An answer to a builder run's question with every string checked: `(answer with keys masked, how many)`.
 
     Raises `Refused` for a card number or a password anywhere in it, before anything is resumed or kept.
@@ -259,12 +264,14 @@ def check_answer(response: Any, question: str | None = None, *, step: str | None
     refused as one; in reply to one that asks for a key or token, it is masked as one. `step`: the step the run waits
     at; at a Connect card's (`CONNECT_WAITS`), whose key belongs on the card, a lone secret-looking word is masked as a
     key whatever the card's words say (F1280: a key of no known shape, pasted alone at the wait, reached the run, its
-    events and logs). The run's own state, never a guess from words. `held`: the secrets the workspace holds that
-    occur in it (`secret_scrub.held_in`), taken out by exact value (F1307).
+    events and logs). `card_up`: the run put up a Connect card (`turn_facts.card_up`), whatever step asks now — its
+    plan's review, a question — and a lone secret-looking word is the card's key the same (F1345). The run's own
+    state, never a guess from words. `held`: the secrets the workspace holds that occur in it
+    (`secret_scrub.held_in`), taken out by exact value (F1307).
     """
     removed = 0
     asks_password = bool(question and _ASKS_PASSWORD.search(question))
-    asks_key = step in CONNECT_WAITS or bool(question and _ASKS_KEY.search(question))
+    asks_key = step in CONNECT_WAITS or card_up or bool(question and _ASKS_KEY.search(question))
 
     def walk(value: Any) -> Any:
         nonlocal removed
