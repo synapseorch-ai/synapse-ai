@@ -163,7 +163,7 @@ SUBMIT = {"type": "function", "function": {
             }, "required": ["part"]}},
         "undo_of": {"type": "string", "description": "The key of the change to undo, from the context you were "
                                                      "given."},
-    }},
+    }, "required": ["asked"]},
 }}
 
 _SUBJECT = ("The thing the question is about, in a few words: the knowledge base 'competitor_pricing', the Monday "
