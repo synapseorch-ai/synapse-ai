@@ -171,12 +171,11 @@ def _seeded_ids() -> dict[str, set[str]]:
     mount, a failed first boot) could then never run.
     """
     from core.default_agent import DEFAULT_AGENT_ID
-    from core.native_builder.seed import LEGACY_BUILDER_AGENT_IDS, bundled_definitions
+    from core.native_builder.seed import bundled_definitions
 
     bundled = bundled_definitions()
     return {
-        "agents": {a["id"] for a in bundled["agents"]}
-        | set(LEGACY_BUILDER_AGENT_IDS) | {DEFAULT_AGENT_ID},
+        "agents": {a["id"] for a in bundled["agents"]} | {DEFAULT_AGENT_ID},
         "orchestrations": {bundled["orchestration"]["id"]},
     }
 
@@ -189,13 +188,17 @@ async def store_is_empty() -> bool:
     and skipping the import in that case would strand the user's workflows.
     Rows the product seeds itself are excluded for the same reason.
     """
+    from core.native_builder.seed import BUILDER_AGENT_PREFIX
     from core.store import session
     from core.store.models import AgentDB, MCPServerDB, OrchestrationDB, ToolDB
 
     seeded = _seeded_ids()
+    # Any release's builder agent is the product's, not the person's work (F1351).
+    persons = AgentDB.id.notin_(seeded["agents"]) & ~AgentDB.id.startswith(BUILDER_AGENT_PREFIX + "_",
+                                                                             autoescape=True)
     checks = (
         (OrchestrationDB, OrchestrationDB.id.notin_(seeded["orchestrations"])),
-        (AgentDB, AgentDB.id.notin_(seeded["agents"])),
+        (AgentDB, persons),
         (ToolDB, None),
         (MCPServerDB, None),
     )
@@ -211,6 +214,7 @@ async def store_is_empty() -> bool:
 
 async def import_data_dir(data_dir: str | Path, tenant_id: str = DEFAULT_TENANT) -> dict:
     """Import a DATA_DIR into the store. Returns a per-source count."""
+    from core.native_builder.seed import is_builder_agent
     from core.store import session, upsert
     from core.store.models import (
         AgentDB,
@@ -263,8 +267,9 @@ async def import_data_dir(data_dir: str | Path, tenant_id: str = DEFAULT_TENANT)
     collections = (
         ("orchestrations.json", "orchestrations", OrchestrationDB, ["id"],
          lambda i, t: orchestration_values(_in_the_engines_shape(i), t), lambda i: bool(i.get("id"))),
+        # Never an agent of the builder's, of any release (F1351): the seeder's, never the person's.
         ("user_agents.json", "user_agents", AgentDB, ["id"],
-         agent_values, lambda i: bool(i.get("id"))),
+         agent_values, lambda i: bool(i.get("id")) and not is_builder_agent(i.get("id"))),
         ("custom_tools.json", "custom_tools", ToolDB, ["id"],
          tool_values, lambda i: bool(i.get("id") or i.get("name"))),
         ("mcp_servers.json", "mcp_servers", MCPServerDB, ["tenant_id", "name"],
