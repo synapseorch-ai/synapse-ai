@@ -1316,7 +1316,9 @@ class ToolStepExecutor:
                 finally:
                     if token is not None:
                         browser_client.owner.reset(token)
-                text = result.content[0].text if result.content else ""
+                from core.tool_result import mcp_text
+
+                text = mcp_text(result)  # as the agent path reads it: [] is "", a list whole (F1344)
                 if getattr(result, "isError", False):
                     # MCP's own way of saying the call failed; it was never read.
                     raise ToolCallFailed(

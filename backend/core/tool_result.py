@@ -55,3 +55,18 @@ def built_in_failure(text: str) -> str | None:
         detail = str(data.get("stderr") or data.get("stdout") or "").strip()
         return f"The script exited with code {code}: {detail[-500:] or '(no output)'}"
     return None
+
+
+def mcp_text(result) -> str:
+    """What an MCP tool's result says, as one text, the way every caller reads it (F1344, cap-03): no content is ""
+    (a tool that returned [] sends none), one part its text, several the list the tool returned when each part is
+    JSON (MCP sends a list's items as parts of their own), else their texts one per line. A part with no text (an
+    image, a resource) is left out; never an index or attribute error the agent would read as an answer."""
+    texts = [t for c in (getattr(result, "content", None) or []) if isinstance(t := getattr(c, "text", None), str)]
+    if len(texts) <= 1:
+        return texts[0] if texts else ""
+    try:
+        return json.dumps([json.loads(t) for t in texts], ensure_ascii=False)
+    except ValueError:
+        return "\n".join(texts)
+
