@@ -2541,7 +2541,7 @@
             ],
             "output_key": "change_clarify",
             "next_step_id": "step_plan",
-            "on_exhausted_step_id": "step_plan_rounds"
+            "on_exhausted_step_id": "step_plan"
         },
         {
             "id": "step_change_said",

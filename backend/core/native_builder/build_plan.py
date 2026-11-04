@@ -1793,6 +1793,16 @@ def no_tool_line(provider: str, names: list[str]) -> str:
             "server for it on the MCP servers screen and ask again, or say \"build without it\".")
 
 
+def not_fixed_line() -> str:
+    """What a step's change leaves as it is (F1310): the tool the step calls, and where it is changed."""
+    from core import feature_census
+
+    tools = next((s for s in feature_census.current() if s.id == "custom_tools"), None)
+    where = feature_census.link(tools) if tools else "the Tools screen"
+    return (f"This changes the steps only. It does not fix the tool they call: a tool's address and settings are "
+            f"changed on {where}.")
+
+
 async def check_build(args: dict, server_module: Any, events: list[dict]) -> dict:
     """See the module's docstring. `draft` is the planner's finish (E2's object); everything else is the run's."""
     from core.builder_connect import _read_options, prepare_connection
@@ -2017,6 +2027,12 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
         review = (f"After connecting {who}, its tools are "
                   + ", ".join(f"`{n}`" for n in (answer.get("tools") or [])[:12])
                   + ": here is the plan on them, for one more yes.\n\n" + review)
+    from core.native_builder.change_tools import dont_knows
+
+    if plan.kind == "update" and dont_knows(state):
+        # A step's change does not fix the tool it calls (F1310, prod-07): where the person said they don't know,
+        # the card says so plainly, with the screen where a tool is changed.
+        review += "\n## What this does not fix\n" + not_fixed_line() + "\n"
     changes = changes_of(plan, state)
     if changes:
         review = review.replace("## Steps\n", "## What changes\n" + "\n".join(f"- {c}" for c in changes)

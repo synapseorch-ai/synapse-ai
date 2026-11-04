@@ -145,7 +145,9 @@ from core.native_builder import prompt_lint, seed
 #: F1311: the help answer holds `read_workspace` and its prompt says when it reads, after the help, 2160ed28….
 #: F1311 (TRI1): a question about using the product is answered from the help alone, one about the workspace's own
 #: spending, runs or results reads it, 47b11d21….
-BUNDLE_SHA256 = "31c4638b3e84cc01e3db5f3ad5e3060a4dab1eb4dc6857f0d5206f4ee3614764"
+#: F1310: # Changing rule 22 (a "don't know" is answered with a change to approve) and step_change_clarify, run out,
+#: back to step_plan, 558f132c….
+BUNDLE_SHA256 = "60e18a4dfe0d60e80309a73bcf8fad71d9aa10346b20fdcc947e7d5d34342694"
 
 
 def _sha(definitions) -> str:
