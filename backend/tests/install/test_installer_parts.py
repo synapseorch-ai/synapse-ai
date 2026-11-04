@@ -540,6 +540,118 @@ def test_a_pid_file_naming_someone_elses_process_is_not_killed(tmp_path, monkeyp
     assert killed == []
 
 
+def _old(root: Path) -> legacy.Migration:
+    return legacy.Migration(installs=[legacy.OldInstall("script", root, "1.9.3")])
+
+
+def _listener(cwd: Path, script: str, port_file: Path):
+    """A stand-in for the old frontend: an interpreter running a script under `cwd`, listening on a port,
+    started in its own session as `synapse start --detach` starts it, and reaped when it ends."""
+    import subprocess
+    import threading
+    import time
+
+    (cwd / Path(script).parent).mkdir(parents=True, exist_ok=True)
+    (cwd / script).write_text(
+        "import socket, sys, time\n"
+        "s = socket.socket(); s.bind(('127.0.0.1', 0)); s.listen()\n"
+        f"open({str(port_file)!r}, 'w').write(str(s.getsockname()[1]))\n"
+        "time.sleep(120)\n")
+    proc = subprocess.Popen([sys.executable, script, "start"], cwd=cwd, start_new_session=True)
+    threading.Thread(target=proc.wait, daemon=True).start()
+    for _ in range(100):
+        if port_file.exists() and port_file.read_text():
+            return proc, int(port_file.read_text())
+        time.sleep(0.05)
+    proc.kill()
+    raise AssertionError("the listener never started")
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
+def test_an_old_install_process_without_a_pid_file_is_stopped(tmp_path, monkeypatch):
+    """F1350: a 1.x `synapse upgrade` stops its own services and removes their PID files before it hands over,
+    but its frontend's web server lives on and keeps the old address. The hand-off finds it by what it runs."""
+    root = tmp_path / "SynapseAI"
+    proc, port = _listener(root / "frontend", "scripts/load-env.py", tmp_path / "port")
+    monkeypatch.setattr(legacy, "_stop_service_managers", lambda log=None: None)
+    m = _old(root)
+    try:
+        stopped = legacy.stop_services(m)
+        assert proc.pid in stopped
+        assert proc.wait(timeout=10) is not None
+        assert ports.is_free(port)
+        python = os.path.basename(sys.executable)
+        assert m.stopped_words == [f"the old web page ({python} … load-env.py start, pid {proc.pid})"]
+    finally:
+        proc.kill()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
+def test_a_process_outside_the_old_folder_is_left_running(tmp_path, monkeypatch):
+    root = tmp_path / "SynapseAI"
+    root.mkdir()
+    proc, port = _listener(tmp_path / "elsewhere", "serve.py", tmp_path / "port")
+    monkeypatch.setattr(legacy, "_stop_service_managers", lambda log=None: None)
+    try:
+        assert legacy.stop_services(_old(root)) == []
+        assert proc.poll() is None and not ports.is_free(port)
+    finally:
+        proc.kill()
+
+
+def test_only_what_runs_the_old_code_is_picked_never_a_shell_or_editor_there(tmp_path):
+    """F1350 (eb's pins): a person's shell, editor or `tail` in the old folder is theirs; what runs the old code is
+    picked, with what it started (next-server retitles itself and names no path), listeners first."""
+    root = tmp_path / "SynapseAI"
+    r, fe = str(root), str(root / "frontend")
+    procs = [
+        legacy.Proc(101, 1, ["-bash"], "/usr/bin/bash", r),
+        legacy.Proc(102, 1, ["vim", f"{r}/.env"], "/usr/bin/vim", r),
+        legacy.Proc(103, 1, ["tail", "-f", f"{r}/backend/logs/x.log"], "/usr/bin/tail", r),
+        legacy.Proc(104, 1, ["python3", "-m", "http.server"], "/usr/bin/python3.12", r),
+        legacy.Proc(105, 1, ["node", "scripts/load-env.js", "start"], "/usr/bin/node", fe),
+        legacy.Proc(106, 105, ["next-server (v16.2.6)"], "/usr/bin/node", fe, ports=(18872,)),
+        legacy.Proc(107, 1, [f"{r}/backend/venv/bin/python", "main.py"], "/usr/bin/python3.12", f"{r}/backend",
+                    ports=(18871,)),
+        legacy.Proc(108, 1, ["node", "/home/x/other/server.js"], "/usr/bin/node", r),
+    ]
+
+    picked = legacy.old_install_processes(_old(root), procs)
+
+    assert [p.pid for p in picked] == [106, 107, 105]
+    assert legacy.describe(procs[4]) == "the old web page (node … load-env.js start, pid 105)"
+    assert legacy.describe(procs[5]) == "the old web page (next-server (v16.2.6), pid 106)"
+    assert legacy.describe(procs[6]) == "the old backend (python … main.py, pid 107)"
+
+
+def test_the_handoff_never_stops_itself_its_parents_or_another_users(tmp_path):
+    """The hand-off runs from inside the old folder, under the old install's own `synapse upgrade`."""
+    root = tmp_path / "SynapseAI"
+    old_python = f"{root}/backend/venv/bin/python"
+    me, parent = os.getpid(), os.getppid()
+    other_uid = (os.getuid() + 1) if hasattr(os, "getuid") else None
+    procs = [
+        legacy.Proc(parent, 1, [old_python, f"{root}/synapse/cli.py", "upgrade"]),
+        legacy.Proc(me, parent, [old_python, f"{root}/synapse/cli.py", "upgrade"]),
+        legacy.Proc(9001, 1, [old_python, "main.py"], cwd=f"{root}/backend", uid=other_uid),
+    ]
+
+    picked = legacy.old_install_processes(_old(root), procs)
+
+    assert [p.pid for p in picked] == ([] if other_uid is not None else [9001])
+
+
+def test_a_pip_install_is_its_own_packages_never_all_of_site_packages(tmp_path):
+    site = tmp_path / "site-packages"
+    m = legacy.Migration(installs=[legacy.OldInstall("pip", site, "1.9.3")])
+    procs = [
+        legacy.Proc(201, 1, ["node", f"{site}/synapse/_frontend/server.js"], "/usr/bin/node"),
+        legacy.Proc(202, 1, ["python3", f"{site}/someone_else/app.py"], "/usr/bin/python3"),
+    ]
+
+    assert [p.pid for p in legacy.old_install_processes(m, procs)] == [201]
+
+
 # ── backups ──────────────────────────────────────────────────────────────────
 
 def test_a_folder_backup_is_private_complete_and_read_back(tmp_path):
