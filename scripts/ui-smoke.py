@@ -13827,6 +13827,68 @@ async def check_brwrunpage(browser) -> str:
 
 
 @check
+async def check_brwenlargeclick(browser) -> str:
+    """A press on the run page's enlarged browser lands where it was made (F1376 with F1197): on a wide screen the
+    enlarged picture is drawn larger than the page's own 1280 px, and the person's click still reaches the page at the
+    point they pressed, corners and centre to within 3 page px."""
+    global _M2B_STREAM
+    kept = _M2B_STREAM
+    _M2B_STREAM = "".join([
+        _frame({"type": "orchestration_start", "run_id": "run_smoke_m2b_done"}, "1"),
+        _frame({"type": "browser_session", "session_id": "bsR", "owner": "run:run_smoke_m2b_done"}, "2"),
+        _frame({**_BRW_ACTION, "session_id": "bsR"}, "3")])
+    bad: list[str] = []
+    try:
+        live = {**_M2B_RUNS["run_smoke_m2b_done"], "status": "running", "ended_at": None}
+        ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done", width=(1920, 1080),
+                                       runs={"run_smoke_m2b_done": live}, before=_held_frames("bsR"))
+        sent: list[dict] = []
+
+        async def take(route):
+            await route.fulfill(status=200, json={"wheel": "person"})
+
+        async def given(route):
+            try:
+                sent.append(json.loads(route.request.post_data or "{}"))
+            except ValueError:
+                pass
+            await route.fulfill(status=200, json={"ok": True})
+
+        await ctx.route(re.compile(r".*/api/browser/bsR/wheel/take$"), take)
+        await ctx.route(re.compile(r".*/api/browser/bsR/input$"), given)
+        try:
+            region = page.get_by_role("region", name="Live browser")
+            await region.wait_for(timeout=8_000)
+            await region.get_by_role("button", name="Take over").first.click()
+            await asyncio.sleep(0.6)
+            await region.get_by_role("button", name="Enlarge").click()
+            dialog = page.get_by_role("dialog")
+            await dialog.wait_for(timeout=4_000)
+            await asyncio.sleep(0.6)
+            screen = dialog.get_by_role("application", name=re.compile("The page"))
+            drawn = await _brw_drawn(screen)
+            if drawn["w"] <= 1280 * 1.05:
+                bad.append(f"the enlarged picture is not drawn larger than the page's own size: {drawn}")
+            for fx, fy in ((0.03, 0.04), (0.5, 0.5), (0.97, 0.96)):
+                before = len(sent)
+                await page.mouse.click(drawn["x"] + fx * drawn["w"], drawn["y"] + fy * drawn["h"])
+                await asyncio.sleep(0.4)
+                clicks = [b for b in sent[before:] if b.get("type") == "mouse" and b.get("event") == "click"]
+                want = (round(fx * 1280), round(fy * 800))
+                if not clicks or abs(clicks[0]["x"] - want[0]) > 3 or abs(clicks[0]["y"] - want[1]) > 3:
+                    bad.append(f"a press at page {want} on the enlarged picture reached it as {clicks[:1]}")
+        except Exception as e:
+            bad.append(f"the enlarged picture took no press ({str(e)[:160]})")
+        finally:
+            await ctx.close()
+    finally:
+        _M2B_STREAM = kept
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "at 1920 the enlarged browser is drawn larger than the page and a press on it lands where it was made"
+
+
+@check
 async def check_brwreplayrun(browser) -> str:
     """A Browser step's replay on its run's page (F1363; REL3's rc4 proof): live, the pane says the recording drives,
     never the agent, and Take over says the recording stops after this step (F1367); ended, every replayed step is a
@@ -13860,6 +13922,10 @@ async def check_brwreplayrun(browser) -> str:
                 bad.append(f"a replay's live pane does not say the recording drives ({str(e)[:120]})")
             if await region.get_by_text("The agent is driving").count():
                 bad.append("a replay's live pane says the agent is driving")
+            fold = (await region.locator("details summary").first.inner_text()) if await region.locator(
+                "details summary").count() else ""
+            if not re.search(r"What was done · \d", fold):
+                bad.append(f"a replay's fold says {fold!r}, not what was done (F1376)")
             # F1367: a press on the page offers Take over, saying the recording stops after this step; Take over
             # takes the wheel (the replay stops before its next step: test_a_take_over_stops_the_replay).
             taken: list[str] = []
@@ -13882,6 +13948,21 @@ async def check_brwreplayrun(browser) -> str:
                     bad.append("Take over during a replay never took the wheel")
             except Exception as e:
                 bad.append(f"a press on a replaying page offers no Take over ({str(e)[:120]})")
+        finally:
+            await ctx.close()
+
+        # F1376: the replay has run its last step and the step is ending: nobody drives, never the agent.
+        ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done", runs={"run_smoke_m2b_done": live},
+                                       before=_held_frames("bsP", {"url": "https://www.iana.org/", "wheel": "nobody",
+                                                                   "replaying": False}))
+        try:
+            region = page.get_by_role("region", name="Live browser")
+            try:
+                await region.get_by_text("Nobody is driving").first.wait_for(timeout=8_000)
+            except Exception as e:
+                bad.append(f"a replay that ended does not leave nobody driving ({str(e)[:120]})")
+            if await region.get_by_text("The agent is driving").count():
+                bad.append("a replay that ended says the agent is driving")
         finally:
             await ctx.close()
 
