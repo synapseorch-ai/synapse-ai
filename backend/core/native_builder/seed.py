@@ -40,13 +40,18 @@ SYSTEM_MARKER = "native_builder"
 #: so never says which orchestration it is.
 BUILDER_RUN_PREFIX = "builder_"
 
-# Agent IDs that were shipped by earlier versions of the native builder and
-# should be purged on startup. Kept here so stale entries get cleaned up from
-# the store when users upgrade.
-LEGACY_BUILDER_AGENT_IDS: set[str] = {
-    "agent_native_builder_planner_create",
-    "agent_native_builder_planner_update",
-}
+#: Every agent of the builder's, in every release, is `agent_native_builder` or `agent_native_builder_*`: the
+#: product's, never a person's (F1351). One this release's bundle does not ship is an earlier release's (1.9.3's Agent
+#: Creator, Requirements Analyst and two Savers; 2.0's own planner_create and planner_update before them): the importer
+#: leaves it out and the seeder removes it. Known by its id alone: a person's agent called "Builder …" has an ordinary
+#: one. A list of ids named here once missed four of them on REL3's upgrade.
+BUILDER_AGENT_PREFIX = "agent_native_builder"
+
+
+def is_builder_agent(agent_id: Any) -> bool:
+    """Whether `agent_id` is one of the builder's own agents, of this release or an earlier one."""
+    return isinstance(agent_id, str) and (agent_id == BUILDER_AGENT_PREFIX
+                                          or agent_id.startswith(BUILDER_AGENT_PREFIX + "_"))
 
 
 def _load_json(path: str) -> Any:
@@ -160,10 +165,10 @@ async def seed_native_builder() -> dict:
     agents_updated: list[str] = []
     agents_removed: list[str] = []
 
-    for legacy_id in LEGACY_BUILDER_AGENT_IDS:
-        if legacy_id in existing_agents:
-            await delete_agent(legacy_id)
-            agents_removed.append(legacy_id)
+    shipped = {a["id"] for a in bundled_agents}
+    for stale in sorted(aid for aid in existing_agents if is_builder_agent(aid) and aid not in shipped):
+        await delete_agent(stale)
+        agents_removed.append(stale)
 
     for bundled in bundled_agents:
         aid = bundled["id"]
