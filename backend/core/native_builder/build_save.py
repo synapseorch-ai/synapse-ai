@@ -29,9 +29,10 @@ from core import http_tool
 from core.builder_tools import register_builder_tool
 from core.log import get_logger
 from core.native_builder import objects as O, one_writer
-from core.native_builder.build_plan import (FINDINGS_KEY, MADE, _obj, _orch_id, _state, agent_fingerprint, checked_in,
-                                            dry_issues, placeholder_mint, reviewed_of, workspace)
-from core.native_builder.change_tools import _caller, _run
+# The modules, their names read when they run (F1293): each imports builder_tools, which loads this one, so names
+# taken at import would be read from one still half-made when it is imported first. MADE is approved's own.
+from core.native_builder import build_plan as _plan, change_tools as _change_tools
+from core.product_tools.approved import PLACEHOLDER as MADE
 from core.product_tools.errors import AlreadySpent, ToolRefusal
 
 _log = get_logger(__name__)
@@ -73,7 +74,7 @@ SUBMIT_PROMPTS = {"type": "function", "function": {
 async def submit_prompts(args: dict, server_module: Any, events: list[dict]) -> dict:
     from core.native_builder.change_tools import _holds_a_key
 
-    checked = checked_in(_state())
+    checked = _plan.checked_in(_plan._state())
     agents = (checked.get("plan") or {}).get("agents") or []
     names = [a.get("name") for a in agents]
     given = {_text(p.get("agent")): _text(p.get("instructions")) for p in args.get("prompts") or []
@@ -88,7 +89,7 @@ async def submit_prompts(args: dict, server_module: Any, events: list[dict]) -> 
     if any(MADE in text for text in given.values()):
         return {"error": f"Instructions never hold the text {MADE}: it is how the save names an id it has yet to make."}
     # What each was written for, so a plan revised since is written for again (`build_plan.prompts_for`).
-    written_for = {a["name"]: (checked.get("for") or {}).get(a["name"]) or agent_fingerprint(a) for a in agents}
+    written_for = {a["name"]: (checked.get("for") or {}).get(a["name"]) or _plan.agent_fingerprint(a) for a in agents}
     return {"finish": "submit_prompts", "prompts": given, "for": written_for}
 
 
@@ -118,7 +119,7 @@ def save_calls(plan: O.Plan, prompts: dict[str, str], state: dict) -> list[dict]
     from core.native_builder.build_plan import _orch_id, inner_order
     from core.native_builder.compile import compile_plan
 
-    compiled = compile_plan(plan, mint=placeholder_mint(), orch_id=_orch_id(plan, state))
+    compiled = compile_plan(plan, mint=_plan.placeholder_mint(), orch_id=_orch_id(plan, state))
     # A read API's tools first (F944): `step_make_tools` makes them, and the person connects them, before the rest.
     calls: list[dict] = [_tool_call(t) for t in plan.tools if t.status == "found" and t.via == "http_tool" and t.api]
     for kb in compiled.knowledge:
@@ -148,7 +149,7 @@ def save_calls(plan: O.Plan, prompts: dict[str, str], state: dict) -> list[dict]
         calls.append(_workflow_call("create_orchestration", inner.orchestration))
     main = compiled.orchestration
     if plan.kind == "update":
-        _keep_places(main, _obj(state.get(EXISTING_KEY)))
+        _keep_places(main, _plan._obj(state.get(EXISTING_KEY)))
     calls.append(_workflow_call("update_orchestration" if plan.kind == "update" else "create_orchestration", main,
                                 update=plan.kind == "update"))
     meta = {k: main[k] for k in ("result_key", "strict_state_types") if main.get(k) not in (None, "", False)}
@@ -297,25 +298,25 @@ async def approve_plan(args: dict, server_module: Any, events: list[dict]) -> di
     from core.native_builder import review
     from core.product_tools.approved import digest
 
-    run_id, run = _run()
+    run_id, run = _change_tools._run()
     if run is None:
         return {"error": "There is no plan waiting here to approve."}
     state = run.shared_state
-    answer = _obj(state.get(ANSWER_KEY))
+    answer = _plan._obj(state.get(ANSWER_KEY))
     answer = answer.get("feedback") if isinstance(answer, dict) else answer
     if not review.is_yes(answer):
         return {"error": "The plan was not approved, so nothing is built."}
-    checked = checked_in(state)
+    checked = _plan.checked_in(state)
     if checked.get("outcome") != "review" or not checked.get("plan"):
         return {"error": "There is no plan waiting here to approve."}
-    if digest(reviewed_of(checked)) != checked.get("digest"):
+    if digest(_plan.reviewed_of(checked)) != checked.get("digest"):
         return {"error": "What is waiting is not what the review showed, so nothing is built."}
     if "build" not in (checked.get("offers") or []):
         # Back to the same review, with why (SAI2's review, 18): no call is spent, and the plan stays open.
         return {"error": "This plan can't be built as it is yet. "
                          + (checked.get("say") or "It needs something first."), "refused": "not_offered"}
     calls = save_calls(_plan_of(checked), _prompts(checked), state)
-    review.record_approval(state, reviewed_of(checked), _caller(), [(c["tool"], c["args"]) for c in calls],
+    review.record_approval(state, _plan.reviewed_of(checked), _change_tools._caller(), [(c["tool"], c["args"]) for c in calls],
                            run_id=run_id)
     return {"approved": len(calls), "before": await _ids_now()}
 
@@ -331,7 +332,7 @@ async def _moved_since_read(state: dict) -> str | None:
     whole workflow: SAI2's review, 12); None when it reads as it did."""
     from core.store.resources import get_orchestration
 
-    read = _obj(state.get(EXISTING_KEY))
+    read = _plan._obj(state.get(EXISTING_KEY))
     if not isinstance(read, dict) or not read.get("id"):
         return None
     now = await get_orchestration(read["id"])
@@ -385,7 +386,7 @@ def _gates_moved(reviewed: list[O.Gate], now: list[O.Gate]) -> list[str]:
 
 def _why_missing(gone: list[str], plan: O.Plan, state: dict) -> str:
     """F768's words, from the Plan's own tool status and the lookup's findings."""
-    findings = _obj(state.get(FINDINGS_KEY)) or {}
+    findings = _plan._obj(state.get(_plan.FINDINGS_KEY)) or {}
     providers = {t.provider for t in plan.tools if t.name in gone and t.provider}
     found = []
     for option in (findings.get("options") or []) if isinstance(findings, dict) else []:
@@ -459,7 +460,7 @@ async def _keep(run: Any, approval_id: str, made: dict[str, str], done: list[tup
 
 
 def _id_of(call: dict, result: Any) -> str | None:
-    parsed = _obj(result)
+    parsed = _plan._obj(result)
     if not isinstance(parsed, dict):
         return None
     nested = parsed.get({"agent": "agent", "rubric": "rubric", "eval_suite": "golden_set"}.get(call["kind"],
@@ -491,7 +492,7 @@ async def _undo(done: list[tuple[str, str, str]], state: dict, events: list[dict
                 await delete_orchestration(real)
                 _emit(events, "orchestration", "deleted", real, name, reason=reason)
             elif kind == "updated":
-                existing = _obj(state.get(EXISTING_KEY))
+                existing = _plan._obj(state.get(EXISTING_KEY))
                 if isinstance(existing, dict) and existing.get("id") == real:
                     await save_orchestration(existing)
                     _emit(events, "orchestration", "updated", real, name, reason=f"put back as it was: {reason}")
@@ -569,11 +570,11 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
     from core.native_builder.review import approved_review
     from core.product_tools import areas, build, registry
 
-    run_id, run = _run()
+    run_id, run = _change_tools._run()
     if run is None:
         return _stopped(events, "Nothing was built: there is no approved plan here.")
     state = run.shared_state
-    checked = checked_in(state)
+    checked = _plan.checked_in(state)
     approval = approved_review(state)
     if approval is None or not checked.get("plan"):
         return _stopped(events, "Nothing was built: the plan was not approved.")
@@ -601,7 +602,7 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
         # call, or a better fit since, is not what was approved.
         return _stopped(events, "Nothing was built: the models this workspace can use changed since your yes — "
                                 + "; ".join(moved) + ". Ask again to see the plan as it is now.")
-    issues = [i for i in await dry_issues(plan, server_module, await workspace(server_module), state)
+    issues = [i for i in await _plan.dry_issues(plan, server_module, await _plan.workspace(server_module), state)
               # A tool this build makes is not there until `step_make_tools` makes it (F944), nor one connected after
               # the yes until it is (F949).
               if not ("nothing here provides" in i and any(f"'{n}'" in i or f"`{n}`" in i for n in
@@ -620,14 +621,14 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
                                 "your review, so I left it as it is now. Ask again to change it.")
     # One chat writes a workflow at a time (TABS2, F1063): a chat whose turn began earlier and still holds this one goes
     # first, checked before anything is made and again under the workflow's lock at its own write.
-    target = (_orch_id(plan, state) or "") if plan.kind == "update" else ""
+    target = (_plan._orch_id(plan, state) or "") if plan.kind == "update" else ""
     if target and (held := await one_writer.held_by(target, run.session_id, run_id=run_id)):
-        return _stopped(events, one_writer.refusal(held, _caller().user_id)["say"])
+        return _stopped(events, one_writer.refusal(held, _change_tools._caller().user_id)["say"])
 
     calls = save_calls(plan, _prompts(checked), state)
-    reviewed = reviewed_of(checked)
-    before = (_obj(state.get(APPROVAL_KEY)) or {}).get("before") or {}
-    caller = _caller()
+    reviewed = _plan.reviewed_of(checked)
+    before = (_plan._obj(state.get(APPROVAL_KEY)) or {}).get("before") or {}
+    caller = _change_tools._caller()
     areas.ensure_loaded()
     kept = run.step_progress.get(PROGRESS_KEY) or {}
     if kept.get("approval") != approval.id:
@@ -679,7 +680,7 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
                 break
             finally:
                 http_tool.MAKING_TOOLS.reset(making)
-            parsed = _obj(result)
+            parsed = _plan._obj(result)
             if isinstance(parsed, dict) and parsed.get("status") == "needs_confirmation":
                 failure = f"{call['name']}: your approval does not cover this call"
                 break
@@ -845,10 +846,10 @@ async def read_connect_answer(args: dict, server_module: Any, events: list[dict]
     from core.native_builder.build_plan import _WITHOUT
     from core.store.resources import load_tools
 
-    _, run = _run()
+    _, run = _change_tools._run()
     state = run.shared_state if run is not None else {}
-    said = "stop" if args.get("give_up") else str((_obj(state.get("connect_answer")) or {}).get("feedback") or "")
-    plan = _plan_of(checked_in(state))
+    said = "stop" if args.get("give_up") else str((_plan._obj(state.get("connect_answer")) or {}).get("feedback") or "")
+    plan = _plan_of(_plan.checked_in(state))
     made = _made_tools(run)
     # A tool of the person's own API that takes no key is connected as it is made (F1225).
     keyless = {t.name for t in plan.tools if (t.api or {}).get("keyless")}

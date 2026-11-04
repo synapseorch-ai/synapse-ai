@@ -31,7 +31,7 @@ from core.builder_tools import register_builder_tool
 from core.log import get_logger
 from core import feature_census
 from core.native_builder import boards_rule, charts, imitation, objects as O, one_writer, own_api, periods
-from core.native_builder.change_tools import _caller, _run
+from core.native_builder import change_tools as _change_tools  # its names read when they run (F1293)
 from core.product_tools.approved import PLACEHOLDER
 
 _log = get_logger(__name__)
@@ -71,7 +71,7 @@ def placeholder_mint():
 
 
 def _state() -> dict:
-    _, run = _run()
+    _, run = _change_tools._run()
     return run.shared_state if run is not None else {}
 
 
@@ -1541,7 +1541,7 @@ def _revising(state: dict) -> dict:
     what the next plan changed from it is said on the next card."""
     checked = checked_in(state)
     if isinstance(checked.get("plan"), dict):
-        run_id, _ = _run()
+        run_id, _ = _change_tools._run()
         state[PLAN_BEFORE_KEY] = {"plan": checked["plan"], "draft": checked.get("draft"), "run_id": run_id}
     return {"outcome": "revise"}
 
@@ -1671,7 +1671,7 @@ _STRUCTURE_SAID_KEY = "_plan_structure_said"
 
 async def submit_plan(args: dict, server_module: Any, events: list[dict]) -> dict:
     found = await examine(args, server_module)
-    _, here = _run()
+    _, here = _change_tools._run()
     said = list(here.shared_state.get(_STRUCTURE_SAID_KEY) or []) if here is not None else []
     new = [f for f in found.structure if f not in said]
     if not found.errors and new and here is not None:
@@ -1679,13 +1679,13 @@ async def submit_plan(args: dict, server_module: Any, events: list[dict]) -> dic
         return {"error": "Before this goes to the person, a better shape (said once; send it again as it is to keep "
                          "yours):\n" + "\n".join(f"- {e}" for e in new)}
     if found.errors:
-        _, run = _run()
+        _, run = _change_tools._run()
         sent = int((run.shared_state.get(_SENDBACK_KEY) or 0) if run is not None else 0)
         if found.plan is None or sent < SENDBACKS:
             if run is not None:
                 run.shared_state[_SENDBACK_KEY] = sent + 1
             return {"error": "Fix these, then submit the plan again:\n" + "\n".join(f"- {e}" for e in found.errors)}
-    _, run = _run()
+    _, run = _change_tools._run()
     if run is not None:
         run.shared_state.pop(_SENDBACK_KEY, None)
     draft = O.PlanDraft.model_validate(_obj(args) or {})
@@ -2134,7 +2134,7 @@ async def _asked_first(base: dict, draft: dict, carried: list[str], ws: Workspac
     from core.native_builder.change_tools import (_ASKS_WAY_IN, FORM_LEAD, FORM_MAX, QUESTIONS, asked_before,
                                                   form_text, note_question, questions_asked)
 
-    _, run = _run()
+    _, run = _change_tools._run()
     unsaid = [a for a in addresses.unsaid(draft, await _given(state, ws, base.get("asked") or []))
               if asked_before(state, "what", a.subject, a.label()) is None]
     # The plan's own questions as `examine` kept them: one that asked for a key was cut there (F1093).
@@ -2182,14 +2182,14 @@ async def _card(checked: dict) -> None:
     never stops the build itself."""
     from core.boards import assistant
 
-    run_id, _ = _run()
+    run_id, _ = _change_tools._run()
     if not run_id:
         return
     plan = checked.get("plan") or {}
     stage = "needs_connection" if any(o.startswith("without:") for o in checked.get("offers") or []) else "waiting"
     try:
         await assistant.put(run_id, title=(plan.get("title") or "A build")[:200], stage=stage,
-                            owner_id=_caller().user_id, body=checked.get("review") or "",
+                            owner_id=_change_tools._caller().user_id, body=checked.get("review") or "",
                             data={"plan": {k: v for k, v in checked.items() if k != "review"}}, run_id=run_id)
     except Exception as exc:  # noqa: BLE001 — the board is the record, not the build
         _log.warning("build card for run %s not written: %s", run_id, exc)
