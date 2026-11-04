@@ -197,6 +197,7 @@ def _session():
     s.dialog, s.select, s.chooser = None, None, None
     s.replaying, s.replay_sends, s.replay_blocked, s.replay_at, s.fixing = None, None, None, None, None
     s.replay_running = False  # as Session.__init__ sets it (F1363)
+    s.ctx, s._cdp = None, None
     s.page = _Page(s)
     return s
 

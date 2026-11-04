@@ -217,6 +217,8 @@ def _session():
     s = object.__new__(Session)
     s.page, s._cdp, s.viewers, s.log, s.shots, s.id = _Page(), None, [], [], {}, "bs1"
     s.wheel, s.banner = "agent", None
+    s.dialog, s.select, s.chooser, s.held, s.recorder, s.last_frame = None, None, None, None, None, None
+    s.replay_running = False  # as Session.__init__ sets it (F1363)
     cdp = _CDP()
     s.ctx = types.SimpleNamespace(new_cdp_session=lambda page: asyncio.sleep(0, result=cdp), pages=[s.page])
     return s, cdp
