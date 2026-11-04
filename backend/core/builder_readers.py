@@ -116,7 +116,7 @@ SHAPES: dict[str, dict[str, list[str]]] = {
     "recordings": {"keys": ["items", "note"], "item": ["name", "id", "sites", "inputs", "steps", "fixes_waiting"]},
     "variables": {"keys": ["items", "note"], "item": ["name", "reference"]},
     "settings": {"keys": ["items", "note"], "item": ["name", "label", "value", "where"]},
-    "savings": {"keys": ["items", "window", "note"], "item": ["kind", "saves_usd_month", "rule", "op"]},
+    "savings": {"keys": ["items", "top_spenders", "window", "note"], "item": ["kind", "saves_usd_month", "rule", "op"]},
     "dead_jobs": {"keys": ["items", "note"], "item": ["id", "workflow", "run_id", "failed_at", "why", "can_retry"]},
     "audit": {"keys": ["items", "note"], "item": ["at", "who", "action", "target"]},
     "agent_memory": {"keys": ["items", "note"], "item": ["agent", "id", "name", "summary", "archived", "memory_on"]},
@@ -450,8 +450,11 @@ async def _savings(args: dict) -> dict:
     if (args.get("name") or "").strip():
         needle = args["name"].strip().lower()
         items = [i for i in items if needle in str(i.get("agent") or i.get("schedule") or i.get("kind")).lower()]
-    return {**got, "items": items} if items else {**got, "items": [], "note": "Nothing here costs more than it "
-                                                                              "needs to, by code's rules."}
+    if items:
+        return {**got, "items": items}
+    # No saving clears the floor: who spends is still said (F1311), so the answer starts from them.
+    return {**got, "items": [], "note": "No saving clears code's rules here. `top_spenders` are who spent most in "
+                                        "the window: start from them."}
 
 
 #: The most memory items one answer lists, across the agents.

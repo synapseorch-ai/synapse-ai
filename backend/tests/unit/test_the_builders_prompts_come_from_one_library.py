@@ -142,7 +142,10 @@ from core.native_builder import prompt_lint, seed
 #: F1300: "# What you are given" names `signed_in_sites`, and # Structure's rule 1 says a site there is read by a browser
 #: agent with that kept session (an exception, the numbering unchanged), 0c0cb79d….
 #: F1308: rule 12 under # Changing splits a range or a list so the rest reads as it did (TRI1), 7888cfe6….
-BUNDLE_SHA256 = "a7b5fc9e656127a39d50ae4fe66830191c8be601d4e750baf09a5288da215a7f"
+#: F1311: the help answer holds `read_workspace` and its prompt says when it reads, after the help, 2160ed28….
+#: F1311 (TRI1): a question about using the product is answered from the help alone, one about the workspace's own
+#: spending, runs or results reads it, 47b11d21….
+BUNDLE_SHA256 = "31c4638b3e84cc01e3db5f3ad5e3060a4dab1eb4dc6857f0d5206f4ee3614764"
 
 
 def _sha(definitions) -> str:

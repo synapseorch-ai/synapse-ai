@@ -291,10 +291,23 @@ class TestTheAnswerSteps:
         assert agents[talk["agent_id"]]["tools"] == [] and agents[talk["agent_id"]]["skip_default_tools"] is True
         assert "{{ state.answer_pack.pack }}" in talk["prompt_template"]
 
-    def test_help_is_offered_the_help_and_no_workspace_read(self):
+    def test_help_is_offered_the_help_and_the_workspace_read(self):
+        """F1311: a question the route sent to help can still be about this workspace's own data (prod-08's "How can
+        I cut my costs?"); the help answer reads the workspace when the answer turns on it, and the help first."""
         steps, _ = self._bundle()
-        assert set(steps["step_answer_help"]["allowed_tools"]) == {"search_help", "product_capabilities",
-                                                                   "prepare_connection"}
+        help_ = steps["step_answer_help"]
+        assert set(help_["allowed_tools"]) == {"search_help", "product_capabilities", "prepare_connection",
+                                               "read_workspace"}
+        said = help_["prompt_template"]
+        assert "`read_workspace`" in said and "`search_help`" in said, "the prompt says when it reads, and what"
+        assert said.index("`search_help`") < said.index("`read_workspace`"), "the help first"
+
+    def test_every_answer_is_checked_before_it_is_said(self):
+        """F1311: the help answer, now able to read the workspace, still goes through the answer's check (F1243)."""
+        steps, _ = self._bundle()
+        for answer in ("step_answer_help", "step_answer_workspace"):
+            checked = steps[steps[answer]["next_step_id"]]
+            assert checked["type"] == "tool" and checked["forced_tool"] == "check_answer", answer
 
     def test_only_the_workspace_answer_looks_before_it_answers(self):
         steps, agents = self._bundle()
