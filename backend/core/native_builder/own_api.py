@@ -300,8 +300,20 @@ async def server_parts(plan: O.Plan, server_module: Any) -> list[str]:
     here = _servers(server_module)
     records = await load_mcp_servers() if plan.mcp_servers else []
     renamed: dict[str, str | None] = {}
+    # What the plan gives its servers to, read as drawn, before a server not yet connected is taken off its agents
+    # (F1290): an agent's `servers`, or a tool of it (`<server>__tool`) on an agent or a Tool step.
+    steps = [*plan.steps, *(s for w in plan.inner_workflows for s in w.steps)]
+    tools = [*(t for a in plan.agents for t in a.tools), *(s.tool for s in steps if s.type == "tool" and s.tool)]
+    def slug(name: Any) -> str:
+        return re.sub(r"[^a-z0-9]+", "_", str(name or "").lower()).strip("_")
+
+    used = {slug(s) for a in plan.agents for s in a.servers} | {
+        slug(str(t).split("__", 1)[0]) for t in tools if "__" in str(t)}
     for part in plan.mcp_servers:
         part.connected = False
+        if slug(part.name) not in used:
+            errors.append(f"mcp_servers '{part.name}': nothing in the plan uses it: give it to the agent that works "
+                          "with it (in its `servers`), or leave it out")
         if (why := await _outward(part.url)) is not None:
             errors.append(f"mcp_servers '{part.name}': {why}")
             continue

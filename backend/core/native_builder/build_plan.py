@@ -510,6 +510,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     errors += await _knowledge_parts(plan, ws)
     # The person's own server first (F1225): a connected one's name is what its agents' `servers` are held to.
     errors += await own_api.server_parts(plan, server_module)
+    # And the server the person gave is in it (F1290, cap-03 A2: given in an answer, planned without it).
+    errors += await _given_server_left_out(plan, state)
     errors += await _agent_switches(plan, ws, server_module)
     # Its eval (F1255, D340 F): only where this host offers Evals' tools (cloud withholds them until its own Evals
     # host is in: D3ASM), else left out and said, never a save that fails; then held to the Evals forms' own rules.
@@ -2045,6 +2047,41 @@ GIVEN_KEYS = ("user_message", "chat_history", "org_profile", "plan_context", "ex
               "change_clarify", "change_heard",
               # What the planner's own research found (D340 D2): an address it read there was given, not guessed.
               "plan_answers")
+
+
+#: A URL in the person's words, up to the first space, quote or bracket.
+_URL = re.compile(r"https?://[^\s\"'<>()\[\]{}`]+")
+
+
+async def _given_server_left_out(plan: O.Plan, state: dict) -> list[str]:
+    """Each MCP server the person gave that the plan left out (F1290): a URL in their own words (the request, the
+    conversation, their answers) whose path is an MCP endpoint's (ends `/mcp` or `/sse`; never a query string's or a
+    page about MCP), neither one of the plan's `mcp_servers` nor a server saved here. By its shape, never its
+    wording."""
+    from urllib.parse import urlsplit
+
+    from core.native_builder.change_tools import _with_answers
+    from core.native_builder.own_api import _same_url
+    from core.store.resources import load_mcp_servers
+
+    words = [state.get("user_message"), state.get("chat_history"), state.get("plan_answers"),
+             *(a.get("answer") for a in _with_answers(state))]
+    text = " ".join(w if isinstance(w, str) else json.dumps(w, default=str) for w in words if w)
+    given = []
+    for url in dict.fromkeys(u.rstrip(".,;:!?") for u in _URL.findall(text)):
+        path = urlsplit(url).path.rstrip("/")
+        if path.endswith(("/mcp", "/sse")):
+            given.append(url)
+    if not given:
+        return []
+    try:
+        saved = [s.get("url") for s in await load_mcp_servers() if isinstance(s, dict)]
+    except Exception as exc:  # noqa: BLE001 — no servers read: none counted as here
+        _log.warning("the build's MCP servers were not read: %s", exc)
+        saved = []
+    return [f"mcp_servers: the person gave their MCP server at {url}: put it in mcp_servers and give it to the agent "
+            "that uses it (in its `servers`)"
+            for url in given if not any(_same_url(url, u) for u in [*(p.url for p in plan.mcp_servers), *saved])]
 
 
 async def _given(state: dict, ws: Workspace, asked: list[dict]) -> list[Any]:
