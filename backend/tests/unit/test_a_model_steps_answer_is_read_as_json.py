@@ -11,7 +11,8 @@ declared it. Now compile does, for each step that reads an agent's or an llm ste
 * an If/Else or Switch condition that reads a field of it (an object).
 
 A key the plan declares itself is kept as it is; one it declares as text, which such a step cannot read, is said,
-naming the step. What a Tool, Transform or Extract JSON step wrote is already data, and left alone.
+naming the step. What a Transform or Extract JSON step wrote is already data, and left alone; a Tool step's answer
+is text too, and declared as a model's is (F1358, test_a_tools_json_answer_is_read_as_data.py).
 """
 from __future__ import annotations
 
@@ -81,9 +82,10 @@ class TestTheReaderTypesTheAnswer:
 
 
 class TestWhatIsLeftAlone:
-    def test_what_a_tool_step_wrote_is_data_already(self):
-        read = {"id": "read", "type": "tool", "name": "Read", "does": "Reads", "tool": "read_orders",
-                "next": "each"}
+    def test_what_a_transform_step_wrote_is_data_already(self):
+        """A Tool step was here too, until cap-04 showed its answer is the tool's text (F1358)."""
+        read = {"id": "read", "type": "transform", "name": "Read", "does": "Reads",
+                "config": {"transform_code": "result = [1, 2]"}, "next": "each"}
         each = {"id": "each", "type": "loop", "name": "Each", "does": "For each", "loop_over": "read",
                 "body": ["say"], "next": "end"}
         say = {"id": "say", "type": "print", "name": "Say", "does": "Says", "prompt": "{{ state.item }}"}
