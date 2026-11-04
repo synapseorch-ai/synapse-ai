@@ -98,6 +98,9 @@ class TestAParkedPlanComesBack:
             "field": "answer",
             "step_id": asked["orch_step_id"],
             "prompt": asked["prompt"],
+            # The object its live event carried, read back the same (F1333).
+            "context_key": asked["context_key"],
+            **({"context": asked["context"]} if "context" in asked else {}),
         }
         assert conversation["turns"] == [{"user": "build something", "assistant": ""}]
 
