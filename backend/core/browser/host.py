@@ -744,10 +744,15 @@ class Session:
         self.replay_running = True
         self._push_state()
         try:
-            return await self._replay(steps, inputs, unattended=unattended, recording_id=recording_id, from_n=from_n)
+            answer = await self._replay(steps, inputs, unattended=unattended, recording_id=recording_id, from_n=from_n)
         finally:
             self.replay_running = False
             self._push_state()
+        if "done" in answer and not any(k in answer for k in ("miss", "handover", "refused")):
+            # Run to its end, it leaves nobody driving, as an agent's turn does (F1376): never "the agent". A stop
+            # keeps the wheel where it put it: a miss the step's agent's to find the way, a turn the person's.
+            self.go_idle()
+        return answer
 
     async def _replay(self, steps: list[dict], inputs: dict, *, unattended: bool, recording_id: str,
                       from_n: int) -> dict:

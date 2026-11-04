@@ -25,13 +25,16 @@ function modifiers(e: { shiftKey: boolean; ctrlKey: boolean; altKey: boolean; me
  * letterboxed box, scaled to the page's own size (F1197); a press in a bar beside the picture sends nothing. Typing goes through a hidden field that has the focus, so a phone brings up its keyboard on a tap and its
  * words arrive as text. While the agent drives, a press on the page asks first (`onPressWhileWatching`).
  */
-export function PageScreen({ frame, closed, driving, alt, send, onPressWhileWatching }: {
+export function PageScreen({ frame, closed, driving, alt, send, onPressWhileWatching, fill = false }: {
   frame: BrowserFrame;
   closed: boolean;
   driving: boolean;
   alt: string;
   send: (input: BrowserInput) => void;
   onPressWhileWatching: () => void;
+  /** The picture fills the box it is in, larger than the page's own size as well as smaller (F1376: the run page's
+   *  picture and its Enlarge, each a box at the page's shape). Otherwise it is drawn at its own size at most. */
+  fill?: boolean;
 }) {
   const img = useRef<HTMLImageElement>(null);
   const keys = useRef<HTMLTextAreaElement>(null);
@@ -104,7 +107,8 @@ export function PageScreen({ frame, closed, driving, alt, send, onPressWhileWatc
       aria-label={driving ? 'The page: click and type here while you drive' : 'The page, as the agent sees it'}
       onPointerUp={press}
       onWheel={wheel}
-      className={cn('relative flex max-h-full max-w-full', driving ? 'cursor-default' : 'cursor-pointer')}
+      className={cn('relative flex', fill ? 'size-full' : 'max-h-full max-w-full',
+                    driving ? 'cursor-default' : 'cursor-pointer')}
     >
       {/* eslint-disable-next-line @next/next/no-img-element -- a screencast frame, replaced on every repaint */}
       <img
@@ -114,7 +118,8 @@ export function PageScreen({ frame, closed, driving, alt, send, onPressWhileWatc
         width={frame.w || undefined}
         height={frame.h || undefined}
         draggable={false}
-        className={cn('h-auto max-h-full w-auto max-w-full select-none rounded-md border object-contain shadow-sm',
+        className={cn('select-none rounded-md border object-contain shadow-sm',
+          fill ? 'size-full' : 'h-auto max-h-full w-auto max-w-full',
           driving ? 'border-person ring-2 ring-person/60' : 'border-border',
           closed && 'opacity-50 grayscale')}
       />
