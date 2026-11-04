@@ -135,7 +135,9 @@ from core.native_builder import prompt_lint, seed
 #: spot of its own, beside the research ask (1300, 600), 69df0403….
 #: F1295: a save refused after the yes goes back to the planner once (`step_save_route`, after `step_save`), da644451….
 #: F1298 adds nothing here: the specs a conversation read are the engine's own key (`_specs_read`), undeclared.
-BUNDLE_SHA256 = "da6444518dcaf1785efaaa6a3df2dabaef8489b8b0ec09693c62fed3ee092272"
+#: F1288: # Building's rule 9 (a chart is a CSV in the Vault: follow the pack's `chart`, give the plan its
+#: `vault_write`), 97b141a1… (computed by CI2 on 79e0a58b's tree).
+BUNDLE_SHA256 = "385366656fc14b0e64d44ff338e5cece7d767bfba72f26d1a3b1d41174e7d074"
 
 
 def _sha(definitions) -> str:
