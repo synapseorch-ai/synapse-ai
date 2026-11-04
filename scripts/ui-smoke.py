@@ -584,7 +584,10 @@ window.fetch = function (input, init) {
 #: A change's review whose line carries a diff and its code, as F1325's update_python_tool writes them.
 CODE_LINE = ('Change the tool "region_totals" — its code:\n  ```diff\n  @@ -1,3 +1,3 @@\n   import json\n'
              "  -print(json.dumps({'total': round(sum(rows), 0)}))\n  +print(json.dumps({'total': round(sum(rows), 2)}))\n"
-             '  ```\n  tested with {"rows": [1.234, 2.0]}: printed {"total": 3.23}')
+             '  ```\n  tested with {"rows": [1.234, 2.0]}: printed {"total": 3.23}'
+             # Its code as it will be, as change_tools' _fenced writes it: each line indented two for the list item, so
+             # a body's own indentation is the rest (F1374: the card trimmed every line, and a loop's body lost it).
+             '\n  its code as it will be:\n  ```python\n  total = 0\n  for r in rows:\n      total += r\n  ```')
 
 CODE_BOX = """() => {
   const pre = document.querySelector('[data-testid="assistant-panel"] pre');
@@ -639,7 +642,16 @@ async def check_codeblock(browser) -> str:
             raise AssertionError(f"a diff's added and removed lines are not tinted: {box}")
         if not box["tested"]:
             raise AssertionError("the words after the code box were lost")
-        return "a change's diff is a code box: its lines kept, scrolling sideways, + and - tinted"
+        # F1374: every box's lines as written, the item's own indent gone and nothing else.
+        lines = await page.evaluate("""() => [...document.querySelectorAll('[data-testid="assistant-panel"] pre')]
+            .map((pre) => [...pre.querySelectorAll('code > span')].map((l) => l.textContent))""")
+        flat = [line for box_ in lines for line in box_]
+        if len(lines) < 2 or "    total += r" not in flat or "for r in rows:" not in flat:
+            raise AssertionError(f"the code as it will be is not its own box with its indentation kept: {lines}")
+        if " import json" not in flat:
+            raise AssertionError(f"a diff's unchanged line lost its leading space: {lines}")
+        return ("a change's diff is a code box: its lines kept, scrolling sideways, + and - tinted; its code as it will "
+                "be a box of its own, indentation kept")
     finally:
         await ctx.close()
 
