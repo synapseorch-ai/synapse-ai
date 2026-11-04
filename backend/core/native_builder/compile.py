@@ -230,14 +230,24 @@ def _workflow(title: str, summary: str, steps: list[Step], settings: dict[str, A
 
 #: What a model step answers: text, which a step reading it as a list or an object needs declared (F1287).
 _MODEL_TYPES = frozenset({"agent", "llm"})
+#: Steps whose answer is text a later step may read as a structure: a model's, and a Tool step's, which stores what
+#: its tool answered, JSON as text from an MCP tool (F1358).
+_TEXT_WRITERS = _MODEL_TYPES | {"tool"}
+#: What only text has: a code step calling one of these on a value read it as text, never as an object's field
+#: (F1358's dotted reads leave it undeclared; F1359's check reads the same list). The one list: the engine's
+#: `_SynapseState` keeps its own copy in its generated class, held equal to this by a test.
+TEXT_METHODS = frozenset({"split", "rsplit", "strip", "lstrip", "rstrip", "lower", "upper", "casefold", "replace",
+                          "startswith", "endswith", "splitlines", "partition", "rpartition", "encode"})
 #: Calls that go through what they are given, as a list does.
 _GOES_THROUGH = frozenset({"len", "sorted", "list", "enumerate", "sum", "max", "min", "reversed"})
 
 
 def _structure_reads(code: str, keys: set[str]) -> dict[str, str]:
     """What a Transform's code does with each of `keys` it reads out of state: goes through it (`list`: iterated,
-    counted, indexed by a number) or looks a field up in it (`dict`: indexed by a name, `.get`, `.items`). A name
-    assigned from it counts as it, as F1227's reading does."""
+    counted, indexed by a number) or looks a field up in it (`dict`: indexed by a name, `.get`, `.items`, or read by
+    its name, `state.x.content`, as a Transform's `state` answers, F1358). A method called on it is no field, and one
+    only text has (`TEXT_METHODS`) is a use of it as text. A name assigned from it counts as it, as F1227's reading
+    does."""
     import ast
 
     from core.builder_tools import _state_key
@@ -257,6 +267,7 @@ def _structure_reads(code: str, keys: set[str]) -> dict[str, str]:
             return key
         return names.get(node.id) if isinstance(node, ast.Name) else None
 
+    called = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
     out: dict[str, str] = {}
     for node in ast.walk(tree):
         if isinstance(node, (ast.For, ast.comprehension)) and (key := read(node.iter)):
@@ -272,23 +283,30 @@ def _structure_reads(code: str, keys: set[str]) -> dict[str, str]:
         elif isinstance(node, ast.Attribute) and node.attr in ("get", "items", "keys", "values") \
                 and (key := read(node.value)):
             out.setdefault(key, "dict")
+        elif isinstance(node, ast.Attribute) and id(node) not in called and node.attr not in TEXT_METHODS \
+                and (key := read(node.value)):
+            out.setdefault(key, "dict")
     return out
 
 
 def _typed_reads(orch: dict[str, Any], issues: list[str]) -> None:
-    """Declare each model step's answer as the list or object a later step reads it as (F1287, brief 6).
+    """Declare each model or Tool step's answer as the list or object a later step reads it as (F1287, brief 6;
+    F1358, cap-04).
 
-    A model answers text; the engine parses a key declared `list` or `dict` out of it as `extract_json` does (whole
-    text, a fenced block, matching braces), so a JSON list inside a sentence reaches an Ingest as records. Read as a
-    structure by: a Loop over it, an Ingest of its records, a Transform going through it or looking fields up in it,
-    a condition reading one of its fields. The plan's own declaration is kept; one as text is said, naming the step
-    that reads it. What a Tool, Transform or Extract JSON step wrote is already data."""
+    A model answers text, and so does a tool: a Tool step stores what its tool answered, an MCP tool's JSON as text
+    (cap-04: `vault_read`'s `{"path", "content"}`, which a Transform looked `content` up in). The engine parses a key
+    declared `list` or `dict` out of text as `extract_json` does (whole text, a fenced block, matching braces), so a
+    JSON list inside a sentence reaches an Ingest as records; it parses nothing undeclared, so a workflow saved
+    without a declaration reads the text as before. Read as a structure by: a Loop over it, an Ingest of its records,
+    a Transform going through it or looking fields up in it, a condition reading one of its fields. The plan's own
+    declaration is kept; one as text is said, naming the step that reads it. What a Transform or Extract JSON step
+    wrote is already data."""
     import re
 
     from core.state_types import normalize_state_type
 
     steps = orch.get("steps") or []
-    writers = {s["output_key"]: s["id"] for s in steps if s.get("type") in _MODEL_TYPES and s.get("output_key")}
+    writers = {s["output_key"]: s["id"] for s in steps if s.get("type") in _TEXT_WRITERS and s.get("output_key")}
     if not writers:
         return
     wanted: dict[str, tuple[str, str]] = {}
@@ -321,7 +339,7 @@ def _typed_reads(orch: dict[str, Any], issues: list[str]) -> None:
             entry = schema[key]
             if normalize_state_type(entry.get("type") if isinstance(entry, dict) else entry) == "str":
                 issues.append(f"Step '{reader}' reads '{key}' as a {kind}, but settings.state_schema declares it "
-                              f"text: step '{writers[key]}' answers it, and the engine parses a model's answer only "
+                              f"text: step '{writers[key]}' answers it in text, and the engine parses an answer only "
                               f"for a key declared a list or an object. Declare it {{\"type\": \"{kind}\"}}.")
             continue
         schema[key] = {"type": kind, "description": f"The answer of step '{writers[key]}', read as a {kind} by step "
