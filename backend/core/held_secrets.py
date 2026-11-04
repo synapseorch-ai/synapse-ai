@@ -14,6 +14,8 @@ never plaintext). It reads, each time it is asked — a value saved on its card 
 * the HTTP tools' header values, and the token after "Bearer ": a connection's;
 * the settings and variables under a secret-named key (a provider's key, a token): the workspace's.
 
+A reference kept in any of them (`{{ global.X }}`, `${X}`) names a value kept elsewhere and is never held (F1326).
+
 It returns only the held values that occur in the text, so no value leaves here that was not in the person's own words,
 and nothing here is logged.
 """
@@ -27,12 +29,16 @@ _SECRET_KEY = re.compile(r"(?i)(token|secret|password|passwd|api[_-]?key|apikey|
                          r"(?:^|[_-])key$)")
 #: The kind of holder, for the person's notice: a connection's card, or the workspace's own.
 CONNECTION, WORKSPACE = "connection", "workspace"
+#: A reference names a value kept elsewhere (`{{ global.X }}`, `${X}`): a name, never a held secret (F1326), as
+#: F1309's header check reads one. A person who pastes the same reference keeps it.
+_REFERENCE = re.compile(r"\{\{|\$\{[A-Za-z_]")
 
 
 def _values_under(value: Any, *, all_strings: bool = False, key: str = "") -> Iterable[str]:
-    """Every string under a secret-named key in `value` (or every string, for a holder whose values are all secret)."""
+    """Every string under a secret-named key in `value` (or every string, for a holder whose values are all secret);
+    never a reference."""
     if isinstance(value, str):
-        if all_strings or _SECRET_KEY.search(key):
+        if (all_strings or _SECRET_KEY.search(key)) and not _REFERENCE.search(value):
             yield value
             if value.lower().startswith("bearer "):
                 yield value[7:].strip()
