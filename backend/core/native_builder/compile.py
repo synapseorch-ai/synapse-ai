@@ -328,7 +328,7 @@ def text_reads(code: str, keys: set[str]) -> set[str]:
 
 def _template_reads(step: dict[str, Any], keys: set[str]) -> dict[str, str]:
     """What a step's templates read of each of `keys` (F1370, cap-05): `{{ state.X.field }}` (or the older
-    `{state.X.field}`) anywhere in its set arguments or its prompts reads X as an object, `{{ state.X.0 }}` as a list,
+    single-brace form) anywhere in its set arguments or its prompts reads X as an object, `{{ state.X.0 }}` as a list,
     as `state.X.field` reads it in code (F1358); a name only text has is no field. A Transform's code is
     `_structure_reads`'s."""
     from core.templating import _OLD_STATE_REF, STATE_REF
