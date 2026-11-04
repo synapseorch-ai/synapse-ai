@@ -446,7 +446,11 @@ async def resume_orchestration_job(
             final_status = await adapter.resume_failed(interrupted=True, images=images)
         else:
             _log.debug(f"[resume] 🔄 calling adapter.resume() ...")
-            final_status = await adapter.resume(human_response=human_response, images=images)
+            # Where the answer came through (F1303), kept beside this job by its id: none, nothing is granted.
+            from core.orchestration.answers import door_of
+
+            door = await door_of(redis, ctx.get("job_id"))
+            final_status = await adapter.resume(human_response=human_response, images=images, door=door)
         _log.debug(f"[resume] 🏁 adapter.resume() returned final_status={final_status}")
 
         if webhook_url and final_status != "paused":

@@ -396,7 +396,7 @@ class MessagingManager:
 
         app = getattr(self.server_module, "app", None)
         try:
-            await answer_paused_run(app.state, run_id, text)
+            await answer_paused_run(app.state, run_id, text, door="channel")
         except (RunNotWaiting, RunAlreadyActive):
             # Answered a moment ago by someone else, in the app or here.
             return None

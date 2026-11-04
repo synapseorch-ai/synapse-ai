@@ -747,7 +747,8 @@ async def submit_human_input(run_id: str, request: Request):
         BadAnswer, EmptyAnswer, QuestionNotAsked, RunAlreadyActive, RunNotWaiting, answer_paused_run,
     )
     try:
-        answered = await answer_paused_run(request.app.state, run_id, human_response, question_id=question_id)
+        answered = await answer_paused_run(request.app.state, run_id, human_response, question_id=question_id,
+                                           door="app")
     except EmptyAnswer as exc:
         # An answer that says nothing, refused at every door (F842).
         raise HTTPException(status_code=422, detail=str(exc))

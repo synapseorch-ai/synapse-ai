@@ -677,7 +677,8 @@ async def _answer(request: Request, run_id: str, human_response, question_id: st
         raise HTTPException(status_code=422, detail=str(exc))
     await _refuse_builder_run(run_id)
     try:
-        return await answer_paused_run(request.app.state, run_id, human_response, question_id=question_id)
+        return await answer_paused_run(request.app.state, run_id, human_response, question_id=question_id,
+                                       door="api")
     except BadAnswer as exc:
         # An email, date, phone or dropdown answer that is not one (F455).
         raise HTTPException(status_code=422, detail=str(exc))

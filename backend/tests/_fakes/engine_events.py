@@ -94,7 +94,8 @@ def fake_engine(events: list[dict]):
                 yield ev
 
         @classmethod
-        async def resume(cls, run_id, human_response, server_module):
+        async def resume(cls, run_id, human_response, server_module, *, door=None):
+            # The real signature's (F1303): where the answer came through, beside it.
             for ev in events:
                 yield ev
 

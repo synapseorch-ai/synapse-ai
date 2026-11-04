@@ -132,7 +132,7 @@ async def _resume(owner: str, said: str, note: str, request: Request) -> tuple[d
     if kind == "run":
         from core.orchestration.answers import answer_paused_run
         await answer_paused_run(request.app.state, ident,
-                                {"browser_turn": "answered", "note": note or said})
+                                {"browser_turn": "answered", "note": note or said}, door="browser")
         return {"kind": "run", "run_id": ident}, kept
     if kind == "chat":
         from core.models import ChatRequest

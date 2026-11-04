@@ -244,8 +244,32 @@ async def _answer_live(app_state: Any, run_id: str, response: Any, question_id: 
 _WORKING = ("running", "pending", "queued")
 
 
+#: A key an answer might carry to claim a door (F1303): never believed, taken out at the door.
+_CLAIMED = ("_answered_in_app",)
+#: Where a fleet resume's door is kept, by the job's own id, beside the job rather than as its argument: a worker
+#: older than the door never sees it and grants nothing, so the API and the workers deploy in any order (79).
+DOOR_KEY = "synapse:resume-door:{job_id}"
+DOOR_TTL_SECONDS = 86400
+
+
+async def keep_door(redis: Any, job_id: str, door: str | None) -> None:
+    if door and redis is not None:
+        await redis.set(DOOR_KEY.format(job_id=job_id), door, ex=DOOR_TTL_SECONDS)
+
+
+async def door_of(redis: Any, job_id: str | None) -> str | None:
+    """The door kept for `job_id`, read once (a redelivered job grants nothing); None for none."""
+    if not job_id or redis is None:
+        return None
+    try:
+        got = await redis.getdel(DOOR_KEY.format(job_id=job_id))
+    except Exception:  # noqa: BLE001 — a door that cannot be read grants nothing
+        return None
+    return got.decode() if isinstance(got, bytes) else got
+
+
 async def answer_paused_run(app_state: Any, run_id: str, response: Any, *,
-                            question_id: str | None = None) -> Answered:
+                            question_id: str | None = None, door: str | None = None) -> Answered:
     """Resume `run_id` with `response`, on the fleet or in this process.
 
     `question_id` names one of a team step's questions (TEAM1e): it must be one the run asks now. Given while the
@@ -257,7 +281,13 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any, *,
     says nothing (F842), and `human_fields.BadAnswer` for an answer to an email,
     date, phone or dropdown field that is not one (F455), before anything is
     queued or resumed.
+
+    `door` is where the answer came through, the server's to say (F1303): "app" (the app's own Answer
+    control), "browser" (the pane), "api", "mcp", "channel". It rides beside the answer to the resume and is
+    never written into it; a browser turn is granted only from a door the engine names (`GRANTING_DOORS`).
     """
+    if isinstance(response, dict) and any(k in response for k in _CLAIMED):
+        response = {k: v for k, v in response.items() if k not in _CLAIMED}
     refuse_empty(response)
     try:
         row = await worker_run_row(app_state, run_id)
@@ -278,6 +308,8 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any, *,
         from core.scale.config import QUEUE_NAME
 
         resp = _named(response if isinstance(response, dict) else {"response": response}, question_id)
+        job_id = f"resume_{run_id}_{int(time.time() * 1000)}"
+        await keep_door(app_state.arq_redis, job_id, door)
         job = await app_state.arq_redis.enqueue_job(
             "resume_orchestration_job",
             run_id=run_id,
@@ -286,7 +318,7 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any, *,
             # another does not answer it (F111).
             pause_ordinal=pause_ordinal(row.step_history),
             _queue_name=QUEUE_NAME,
-            _job_id=f"resume_{run_id}_{int(time.time() * 1000)}",
+            _job_id=job_id,
         )
         if job is None:
             # ARQ keeps one job per id and answers None for a second: an answer
@@ -325,7 +357,7 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any, *,
         # Registers the pump in `_active_tasks` before it returns, so the claim
         # can be let go as soon as it has.
         _task, queue = spawn_engine_run(
-            OrchestrationEngine.resume(run_id, response, app_state.server_module), run_id
+            OrchestrationEngine.resume(run_id, response, app_state.server_module, door=door), run_id
         )
     finally:
         _answering.discard(run_id)
