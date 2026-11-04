@@ -102,8 +102,17 @@ class TestOnTheRouteAsShipped:
             monkeypatch.setattr(re_mod, "run_agent_step", talker)
             await S.seed_agents([S.make_agent(id="agent_f1323", name="Answers")])
             entry = {**entry, "agent_id": "agent_f1323"}
+        # The slice is Synapse AI's own steps, which run only in its own run (F1315): the host's builder ids name it.
+        from core.native_builder import identity
+
+        orch_id = f"orch_f1323_{entry['id']}"
+
+        async def builder_ids():
+            return [orch_id]
+
+        monkeypatch.setattr(identity, "_host_ids", builder_ids)
         orch = Orchestration.model_validate({
-            "id": f"orch_f1323_{entry['id']}", "name": "Answer slice", "entry_step_id": entry["id"],
+            "id": orch_id, "name": "Answer slice", "entry_step_id": entry["id"],
             "state_schema": {k: DEF["state_schema"][k] for k in ("summary", "answer_checked", "plan_draft")},
             "steps": [entry, STEPS["step_answer_checked"], STEPS["step_answer_said"], STEPS["step_end"]]})
         engine = OrchestrationEngine(orch, types.SimpleNamespace(agent_sessions={}, memory_store=None, tool_router={}))
