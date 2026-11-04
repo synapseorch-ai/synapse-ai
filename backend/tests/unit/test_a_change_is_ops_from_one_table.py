@@ -279,7 +279,11 @@ _EVERY = {"language": "english", "visitor_access": True, "budget_monthly_usd": 2
           "reasoning_effort": "high", "max_output_tokens": 4096, "mode": "co_drive", "at_once": 4, "task_budget": 9,
           "spend_limit_usd": 1.5, "clear_spend_limit": False, "sites": ["portal.example.com"],
           "sessions": ["sess_portal"], "recordings": ["rec_login"], "action_budget": 60, "repos": ["repo_shop"],
-          "db_configs": ["db_orders"], "content": "THE MEMORY'S TEXT", "missed_run_policy": "run_immediately"}
+          "db_configs": ["db_orders"], "content": "THE MEMORY'S TEXT", "missed_run_policy": "run_immediately",
+          # A new HTTP tool's (F1322): `description` and `body` above serve it too.
+          "method": "PATCH", "url": "https://hooks.example.org/v1/orders/{{ order_id }}",
+          "headers": {"X-Trace": "TRACE ON"}, "input_schema": {"type": "object", "properties": {"order_id": {
+              "type": "string"}}}, "group": "ORDERS GROUP", "key": {"header": "X-Api-Key", "scheme": "Bearer"}}
 
 
 def _every_field(op_name):

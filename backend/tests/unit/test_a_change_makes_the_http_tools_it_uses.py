@@ -150,8 +150,8 @@ async def test_prod_13s_change_makes_its_tools_and_gives_them_to_its_agents(clie
     _, checked, done, _ = await _change({"ops": ops})
     assert checked["outcome"] == "review", checked
     lines = checked["review"].splitlines()
-    assert lines[0].startswith('- Make the HTTP tool "fetch_uninvoiced_orders"') and \
-        f"GET {SHOP}/orders?status=uninvoiced" in lines[0], lines
+    assert lines[0].startswith(f'- Make the tool "fetch_uninvoiced_orders" — an HTTP tool: GET '
+                               f'{SHOP}/orders?status=uninvoiced;'), lines
     assert f"POST {BILLING}/invoices" in lines[1] and "order_id" in lines[1] and "total" in lines[1], lines
 
     assert done["applied"] == ["create_tool", "create_tool", "set_agent_tools", "set_agent_tools"], done
@@ -294,7 +294,8 @@ def test_the_planner_is_told_an_http_tools_fields():
         assert field in told.split("create (an HTTP tool", 1)[-1], field
     rules = json.loads((Path(__file__).resolve().parents[2] / "core" / "native_builder" / "agents" /
                         "planner.json").read_text())["system_prompt"]
-    rule = next(line for line in rules.splitlines() if line.startswith("5. "))
+    changing = rules.split("\n# Changing", 1)[1].split("\n# ", 1)[0]  # rule 5 of its own section
+    rule = next(line for line in changing.splitlines() if line.startswith("5. "))
     assert "url" in rule and "what" in rule, rule
 
 

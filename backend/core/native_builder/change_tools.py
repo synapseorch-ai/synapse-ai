@@ -1179,6 +1179,8 @@ def _words(op: C.Op, target: dict, fields: dict, says: str, want: dict | None = 
     what = f"{op.verb} the {kind} {_quoted(target['name'])}"
     if op.name in ("rename_workflow", "rename_schedule", "rename_agent"):
         detail = f"to {_quoted(fields['name'])}"
+    elif op.name == "create_tool":
+        detail = _new_tool_detail(target["name"], fields)
     elif op.internal:
         detail = "as it was before it was deleted"  # an undo's re-create, from the card's before-image
     elif op.kind == "delete":
@@ -1371,23 +1373,21 @@ async def _new_tool_refusal(name: str, fields: dict) -> str | None:
     return f"I can't make the HTTP tool {_quoted(name)}: {'; '.join(found)}" if found else None
 
 
-def _new_tool_line(name: str, fields: dict) -> str:
-    """A new HTTP tool's review line (F1322): its method and URL first, then its inputs, body, headers and what it
-    does, and where its key goes; every value the call is made from, so the person approves what is made."""
+def _new_tool_detail(name: str, fields: dict) -> str:
+    """A new HTTP tool's review line after "Make the tool …" (F1322): its method and URL first, then every other value
+    its call sends as it sends it (its inputs, body, headers, group, what it does), and where its key goes, to which
+    host only; the person approves what is made (MCP2's finding 2)."""
     args = C.http_tool_args(name, fields)
-    inputs = list((json.loads(args["input_schema_json"]).get("properties") or {}))
-    parts = [f"{args['method']} {args['url']}"]
-    if inputs:
-        parts.append(f"inputs: {', '.join(inputs)}")
-    if "body_template" in args:
-        parts.append(f"body: {args['body_template']}")
-    if fields.get("headers"):
-        parts.append("headers: " + ", ".join(f"{k}: {v}" for k, v in fields["headers"].items()))
+    parts = [f"an HTTP tool: {args['method']} {args['url']}", f"inputs: {args['input_schema_json']}"]
+    parts += [f"{label}: {args[arg]}" for label, arg in (("body", "body_template"), ("headers", "headers_json"),
+                                                         ("group", "group")) if arg in args]
     parts.append(f"does: {args['description']}")
-    if isinstance(key := fields.get("key"), dict) and _text(key.get("header")):
+    if "base_lock" in args:
+        key = fields["key"]
         scheme = f" ({key['scheme']})" if _text(key.get("scheme")) else ""
-        parts.append(f"its key goes in its {key['header']} header{scheme}, given on a card after you approve")
-    return f"Make the HTTP tool {_quoted(name)} — {'; '.join(parts)}"
+        parts.append(f"its key goes in its {key['header']} header{scheme}, only ever to {args['base_lock']}, given on "
+                     "a card after you approve")
+    return "; ".join(parts)
 
 
 def _keep(op: C.Op, record: dict | None, want: dict | None) -> dict | None:
@@ -1752,7 +1752,6 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
         if op.target == "memory":
             line = _memory_line(op, target, live, want)
         if op.name == "create_tool":
-            line = _new_tool_line(target["name"], fields)
             made.add(target["name"])
         item.update(status="ready", call={"tool": tool_name, "args": call_args}, expected=want,
                     before=_keep(op, live, want), line=f"{line} ({item['why']})" if item.get("why") else line)
