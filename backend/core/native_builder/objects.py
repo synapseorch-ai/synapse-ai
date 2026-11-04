@@ -530,7 +530,7 @@ class Turn(BaseModel):
     """
 
     route: Literal["pick", "card_label", "plan_answer", "pressed", "yes_without_review", "next_request", "classify",
-                   "effort_continue", "effort_build", "offer_pick", "offer_taken"]
+                   "effort_continue", "effort_build", "offer_pick", "offer_taken", "tool_test"]
     #: What a pick chose: an act's call (code puts its card up) or a change's chosen id (the change route takes it).
     picked: str | dict[str, Any] | None = None
     card: str | None = None

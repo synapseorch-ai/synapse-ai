@@ -31,6 +31,14 @@ _GO_ON = frozenset({"sure", "yes please", "please do", "do that", "yes do that",
                     "yes go ahead", "go ahead please", "please"})
 #: A yes with more after it ("yes, at 7am by email"), said to the offer for a live fact (F1382). "ok thanks" is not one.
 _YES_FIRST = re.compile(r"^(?:yes|yeah|yep|sure)\b(?! thanks?\b| no\b)")
+#: Asking to run, try or test something once, as the message opens (F1383).
+_RUN_ONCE = re.compile(r"^(?:(?:please|pls|can you|could you|would you|will you|just|now)\s+)*"
+                       r"(?:run|try|test|call|execute)\b")
+#: What makes it more than once, or a build: it repeats, it is automated, or a workflow, an agent or a build is asked.
+_MORE_THAN_ONCE = re.compile(r"\b(?:every|each|whenever|daily|weekly|monthly|hourly|nightly|recurring|regularly|"
+                             r"automat\w*|workflows?|agents?|build|create|make|schedul\w*)\b")
+#: The card a waiting fix to a Python tool is tested on (`change_tools._test_this_fix`).
+_FIX_CARD = "Test this fix to "
 #: Go on as it is, said to the effort offer (F1153).
 _JUST = frozenset({"just do it", "just build it", "do it", "build it", "no thanks", "no", "nope", "keep going",
                    "carry on", "proceed", "no just do it", "use the default"})
@@ -121,6 +129,37 @@ _POINTING = frozenset({"card_label", "pressed"})
 LOOK_BACK = 5
 
 
+def tool_run_once(said: str, inventory: dict | None) -> str | None:
+    """The tool here that `said` (plain words) asks to run, try or test once (F1383), or None: never when it asks for
+    it again and again, automated or built, nor when it names a workflow, which runs as before."""
+    if not inventory or not _RUN_ONCE.match(said) or _MORE_THAN_ONCE.search(said):
+        return None
+    padded = f" {said} "
+    if any((w := _words(name)) and f" {w} " in padded for name in inventory.get("workflow") or []):
+        return None
+    for name in inventory.get("tool") or []:
+        if (w := _words(name)) and f" {w} " in padded:
+            return name
+    return None
+
+
+def tool_test_said(name: str, facts: dict) -> str:
+    """Where a tool here runs once (F1383): the "Test this fix" card above when a fix to it waits there, else the
+    Tools screen's Test. Fixed words: the same on every repeat."""
+    for card in facts.get("cards") or []:
+        title = str(card.get("title") or "")
+        if title.startswith(_FIX_CARD) and _words(title[len(_FIX_CARD):]) == _words(name):
+            return (f'Press "Test this fix" on the card above ({title}): it runs the fix to {_quoted(name)} once, with '
+                    "the internet, as the Tools screen's Test does. Nothing is changed until you press Go ahead after "
+                    "it passes.")
+    from core import feature_census
+
+    tools = next((feature_census.link(s) for s in feature_census.current() if s.id == "custom_tools"), "Tools")
+    return (f"{_quoted(name)} is a tool here, so running it once is its Test: open {tools}, pick {_quoted(name)}, give "
+            "it the inputs and press Test. To have it run on its own, on a schedule or as a step, ask me to build a "
+            "workflow that runs it.")
+
+
 def card_above(turns: list[tuple[dict, dict]]) -> dict:
     """The previous turn's facts with the card above filled in. `turns` are this conversation's earlier turns, newest
     first, as (state, facts). When the newest put up no card and was one of code's own pointing replies, the cards and
@@ -139,10 +178,10 @@ def card_above(turns: list[tuple[dict, dict]]) -> dict:
 
 
 def decide(message: str, *, previous: dict, facts: dict, change: dict | None = None,
-           prior_findings: Any = None, pressed: bool = False) -> Turn:
+           prior_findings: Any = None, pressed: bool = False, inventory: dict | None = None) -> Turn:
     """What code makes of `message`, given the previous turn's state (`previous`), its card's facts (`facts`, F977),
     its change card's data (`change`) and the findings it ended on (F766). `pressed`: this turn is the effort offer's
-    press (F1153), whose message is already the ask."""
+    press (F1153), whose message is already the ask. `inventory`: the tools and workflows here, by name (F1383)."""
     said = _plain(message)
     yes = is_yes(message)
 
@@ -167,6 +206,11 @@ def decide(message: str, *, previous: dict, facts: dict, change: dict | None = N
             return Turn(route="offer_taken", then="classify", message=ask)
         if _YES_FIRST.match(said):
             return Turn(route="offer_taken", then="classify", message=f"{ask}\n\n{message}")
+
+    # 0c. Running or trying a tool here once is its Test (F1383; F1368's # Choose, which a repeat tipped into a
+    # workflow): code says where, every time, and no model is asked.
+    if tool := tool_run_once(said, inventory):
+        return Turn(route="tool_test", then="said", say=tool_test_said(tool, facts))
 
     # 1. A yes to the second request the last turn queued.
     also = str(facts.get("also") or "").strip()
@@ -271,6 +315,20 @@ async def _earlier(session_id: str | None, run_id: str, limit: int) -> list[tupl
     return [(row[0], row[1] or {}) for row in rows]
 
 
+async def _tools_and_workflows() -> dict[str, list[str]]:
+    """The tools and workflows here, by name (F1383); a kind that cannot be listed is empty."""
+    from core.native_builder.change_tools import candidates
+
+    out: dict[str, list[str]] = {}
+    for kind in ("tool", "workflow"):
+        try:
+            out[kind] = [str(i["name"]) for i in await candidates(kind) or []]
+        except Exception as exc:  # noqa: BLE001 — not listed: nothing of that kind is named, and the turn goes on
+            _log.warning("read_turn: %ss not listed: %s", kind, exc)
+            out[kind] = []
+    return out
+
+
 async def previous_turns(session_id: str | None, run_id: str, limit: int = 20) -> list[str]:
     """This conversation's earlier turns, newest first, by run id."""
     if not session_id:
@@ -313,7 +371,8 @@ async def read_turn(args: dict, server_module: Any, events: list[dict]) -> dict:
     from core.native_builder.effort import DECLINED_KEY, PRESSED_KEY
 
     turn = decide(message, previous=previous, facts=facts, change=change,
-                  prior_findings=state.get("prior_findings"), pressed=bool(state.get(PRESSED_KEY)))
+                  prior_findings=state.get("prior_findings"), pressed=bool(state.get(PRESSED_KEY)),
+                  inventory=await _tools_and_workflows() if _RUN_ONCE.match(_plain(message)) else None)
     if turn.route == "effort_continue" and run is not None:
         # The ask goes on, on the usual model; the build records the answer, and is not asked again (F1153).
         run.shared_state["user_message"] = turn.message
