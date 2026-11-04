@@ -292,6 +292,120 @@ def test_a_v19_install_is_stopped_backed_up_moved_then_removed(world):
     record = json.loads((world["home"] / "install.json").read_text())
     assert record["migrated_from"]["version"] == "1.9.0"
     assert record["migrated_from"]["backup"] == str(backups[0])
+    # Nothing was running and no setting needs a word: the end is the link alone (F1350, F1353).
+    assert "your old address" not in out and "SYNAPSE_TRANSFORM_RUNTIME" not in out
+
+
+def _v19(tmp: Path, settings: dict) -> Path:
+    """A 1.9 script install as setup.sh left it, its settings.json the 1.x model plus `settings`."""
+    root = tmp / ".local" / "share" / "SynapseAI"
+    data = root / "backend" / "data"
+    (data / "chat_sessions").mkdir(parents=True)
+    (root / "bin").mkdir()
+    (root / "synapse").mkdir()
+    (root / ".installed").write_text("{}")
+    (root / "pyproject.toml").write_text('version = "1.9.0"\n')
+    (root / ".env").write_text("SYNAPSE_DATA_DIR=backend/data\n")
+    (data / "user_agents.json").write_text(json.dumps([{"id": "a1"}]))
+    (data / "settings.json").write_text(json.dumps({"model": "claude-sonnet-4-6", **settings}))
+    return root
+
+
+def _listen(cwd: Path, script: str):
+    """An interpreter running `script` under `cwd` and listening on a free port, in its own session, reaped
+    when it ends. Returns the process and its port."""
+    import subprocess
+    import threading
+    import time
+
+    port_file = cwd / ".port"
+    (cwd / Path(script).parent).mkdir(parents=True, exist_ok=True)
+    (cwd / script).write_text(
+        "import socket, time\n"
+        "s = socket.socket(); s.bind(('127.0.0.1', 0)); s.listen()\n"
+        f"open({str(port_file)!r}, 'w').write(str(s.getsockname()[1]))\n"
+        "time.sleep(120)\n")
+    proc = subprocess.Popen([sys.executable, script, "start"], cwd=cwd, start_new_session=True)
+    threading.Thread(target=proc.wait, daemon=True).start()
+    for _ in range(100):
+        if port_file.exists() and port_file.read_text():
+            return proc, int(port_file.read_text())
+        time.sleep(0.05)
+    proc.kill()
+    raise AssertionError("the listener never started")
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
+def test_a_v19_web_page_left_running_is_stopped_and_its_port_kept(world):
+    """F1350, as REL3 met it upgrading a real 1.9.3: its own `synapse upgrade` stopped the backend and removed the
+    PID files, but the web page kept the old port. The hand-off stops it, says so, and 2.0 takes the old port."""
+    root = _v19(world["tmp"], {})
+    proc, port = _listen(root / "frontend", "scripts/load-env.py")
+    (root / "backend" / "data" / "settings.json").write_text(
+        json.dumps({"model": "claude-sonnet-4-6", "frontend_port": port}))
+    try:
+        code, out, _ = world["install"]()
+
+        assert code == 0, out
+        stopping = next(line for line in out.splitlines() if "Stopping Synapse" in line)
+        assert f"stopped the old web page ({os.path.basename(sys.executable)} … load-env.py start, " \
+               f"pid {proc.pid})" in stopping, stopping
+        assert proc.wait(timeout=10) is not None
+        applied = json.loads(Path(str(world["calls"]) + ".apply").read_text())
+        assert applied["settings"]["frontend_port"] == port
+        assert "your old address" not in out
+    finally:
+        proc.kill()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
+def test_an_old_address_another_program_holds_is_said(world):
+    """F1350: what holds the old port runs no code of the old install's, so it is left alone, and the move to
+    another port is said rather than made quietly."""
+    root = _v19(world["tmp"], {})
+    proc, port = _listen(world["tmp"] / "someone-else", "serve.py")
+    (root / "backend" / "data" / "settings.json").write_text(
+        json.dumps({"model": "claude-sonnet-4-6", "frontend_port": port}))
+    try:
+        code, out, _ = world["install"]()
+
+        assert code == 0, out
+        assert proc.poll() is None
+        applied = json.loads(Path(str(world["calls"]) + ".apply").read_text())
+        assert applied["settings"]["frontend_port"] != port
+        assert (f"Port {port}, your old address, is in use by another program, so Synapse is now on port "
+                f"{applied['settings']['frontend_port']}.") in out
+    finally:
+        proc.kill()
+
+
+def test_the_kept_model_is_named_when_the_browser_step_ran(world, monkeypatch):
+    """F1352: the Browser step keeps its folder in the answers, so they are not empty once it ran; the 1.x model
+    came across all the same, and the screen names it rather than saying to choose one later."""
+    _v19(world["tmp"], {})
+    monkeypatch.setattr(flow.Installer, "_browser",
+                        lambda self: self.s.answers.setdefault("playwright_browsers_path", "/b") and "Chromium")
+
+    code, out, _ = world["install"]()
+
+    assert code == 0, out
+    setting_up = next(line for line in out.splitlines() if "Setting up" in line)
+    assert setting_up.endswith("claude-sonnet-4-6, from 1.9.0"), setting_up
+    assert "choose an AI later" not in out
+
+
+def test_a_host_run_transform_setting_is_said_at_the_end(world):
+    """F1353: 1.x ran Transform steps on this computer from a setting 2.0 no longer reads (F968); the end of the
+    upgrade says how to keep that, before the first Transform meets Docker."""
+    _v19(world["tmp"], {"transform_runtime": "host"})
+
+    code, out, _ = world["install"]()
+
+    assert code == 0, out
+    end = out[out.index("is running"):]
+    assert ("2.0 runs code steps in Docker. To keep running them on this computer, set "
+            "SYNAPSE_TRANSFORM_RUNTIME=host (see Upgrading to 2.0).") in end
+    assert "2.0 runs code steps in Docker" in (world["home"] / "logs" / "install.log").read_text()
 
 
 def test_a_failure_ends_the_open_question(world, monkeypatch):
