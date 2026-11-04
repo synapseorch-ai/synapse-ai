@@ -1228,13 +1228,14 @@
                 "plan_draft",
                 "intent"
             ],
-            "switch_expression": "state.plan_draft.fallback and \"fallback\" or (state.intent == \"manage\" and state.plan_draft.finish in [\"ask_person\", \"cannot\"] and \"on_change\") or state.plan_draft.finish or \"submit_plan\"",
+            "switch_expression": "state.plan_draft.fallback and \"fallback\" or state.plan_draft.kept_plan and \"kept_plan\" or (state.intent == \"manage\" and state.plan_draft.finish in [\"ask_person\", \"cannot\"] and \"on_change\") or state.plan_draft.finish or \"submit_plan\"",
             "switch_cases": {
                 "submit_change": "step_check_change",
                 "say": "step_say",
                 "research_questions": "step_research_answer",
                 "fallback": "step_check_change",
-                "on_change": "step_check_change"
+                "on_change": "step_check_change",
+                "kept_plan": "step_plan_same"
             },
             "switch_default_step_id": "step_check_plan",
             "on_exhausted_step_id": "step_plan_rounds"

@@ -282,6 +282,12 @@ async def submit_change(args: dict, server_module: Any, events: list[dict]) -> d
                          "rest as another change."}
     found: list[str] = []
     _, run = _run()
+    if run is not None and _plan_under_review(run.shared_state):
+        # A reply to this run's build plan is the plan's (F1384, cap-02 c3): a change here made the one part it named
+        # and ended the build, so it goes back for the whole plan; then the plan reviewed is kept and asked about again.
+        if _plan_send_back(run):
+            return {"error": PLAN_UNDER_REVIEW}
+        return {"finish": "submit_change", "kept_plan": _kept_plan(run.shared_state, ops)}
     kinds = run.shared_state.setdefault(_KINDS_KEY, {}) if run is not None else {}
     for n, op in enumerate(ops, 1):
         if not isinstance(op, dict):
@@ -359,6 +365,59 @@ def _send_back(run: Any) -> bool:
         return False
     run.shared_state[_ASKED_SENT] = sent + 1
     return True
+
+
+#: How often a change is sent back while this run's build plan is under review (F1384): twice, never a loop; after that
+#: the plan reviewed is kept (`step_plan_same`), never left for a change that makes one part of it.
+PLAN_SEND_BACKS = 2
+_PLAN_SENT = "_plan_kept_sent_back"
+PLAN_UNDER_REVIEW = ("This run's plan is under review, and the person's reply is to it: finish with submit_plan, the "
+                     "whole plan again with their reply in it. A tool they describe for it is a part of the plan (its "
+                     "API, made at the build's yes), never a change on its own: a change here would make that part "
+                     "alone and leave the rest of the plan unbuilt.")
+#: What is asked again once the plan is kept (F1384), before what still stands in its way.
+KEPT_PLAN = ("I kept the plan above as it is: your reply came back as a change on its own ({lines}), which would make "
+             "only that and leave the rest of the plan unbuilt. Tell me what to change in the plan, or approve it as "
+             "it is.")
+
+
+def _plan_under_review(state: dict) -> bool:
+    """Whether this run's build plan was shown for review and is not yet saved (F1384): approved too, while a save or a
+    connection sends it back. A manage turn's change, a change before any plan, and a change card's own review are
+    not a build plan's."""
+    from core.native_builder.build_plan import _obj, checked_in
+
+    if state.get("intent") == "manage":
+        return False
+    card = checked_in(state)
+    if not card.get("plan") or card.get("outcome") not in ("review", "same"):
+        return False
+    return (_obj(state.get("build_saved")) or {}).get("outcome") != "saved"
+
+
+def _plan_send_back(run: Any) -> bool:
+    """Whether this run may send a change back for its plan once more (`PLAN_SEND_BACKS`); counts the one sent."""
+    sent = int(run.shared_state.get(_PLAN_SENT) or 0)
+    if sent >= PLAN_SEND_BACKS:
+        return False
+    run.shared_state[_PLAN_SENT] = sent + 1
+    return True
+
+
+def _kept_plan(state: dict, ops: list) -> str:
+    """The plan reviewed, kept: what is asked again says what the change would have done, then what still stands in the
+    plan's way. The plan and what its yes covers are untouched."""
+    from core.native_builder.build_plan import CHECKED_KEY, SAME, checked_in
+
+    lines = "; ".join(_text(op.get("says")) or f"{str(op.get('op') or '').replace('_', ' ')} "
+                      f"{_quoted(_text((op.get('target') or {}).get('name')))}"
+                      for op in ops if isinstance(op, dict)) or "an undo"
+    words = KEPT_PLAN.format(lines=lines)
+    card = checked_in(state)
+    stands = str(card.get("same_say") or "").removeprefix(SAME).strip()
+    card["same_say"] = f"{words} {stands}".strip()
+    state[CHECKED_KEY] = json.dumps(card) if isinstance(state.get(CHECKED_KEY), str) else card
+    return words
 
 
 def not_done(asked: Any) -> str:

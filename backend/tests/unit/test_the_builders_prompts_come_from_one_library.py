@@ -166,7 +166,9 @@ from core.native_builder import prompt_lint, seed
 #: # Changing rule 1, rule 26: a skill read before update_skill), e516d60f… (on fix-forward 19).
 #: F1382 (TRI1): the talk step offers a workflow for a live fact and fits "what can you do" to the workspace,
 #: and classify_kinds types `live_fact`, c7e330e4… (7c155764 offered an agent; on fix-forward 19).
-BUNDLE_SHA256 = "c7e330e4cf2c3df0ce6fdd5956506b425a62e7d435fb3091e58ef773c502924e"
+#: F1384 (BLD1): step_plan_finish sends a change kept while the build's plan is under review (`kept_plan`) to
+#: step_plan_same, no prompt change, 90a4faec… (on fix-forward 19).
+BUNDLE_SHA256 = "90a4faecbee08221b17edf02f8f8bfd2589a7f0eb51df13537ca0afaafc0d3f9"
 
 
 def _sha(definitions) -> str:

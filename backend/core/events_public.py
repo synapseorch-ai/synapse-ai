@@ -112,6 +112,8 @@ PRIVATE_STATE_PREFIXES = (
     # send-backs on its test (`change_tools._CODE_TRIES`, F1325); each agent and address the prompt writer went back
     # for once (`build_save._ADDRESS_SAID_KEY`, F1341).
     "_curl_nudged", "_code_tries", "_prompts_address_said",
+    # That a change was sent back while this run's build plan was under review (`change_tools._PLAN_SENT`, F1384).
+    "_plan_kept_sent_back",
 )
 
 
