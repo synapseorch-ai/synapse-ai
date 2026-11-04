@@ -105,7 +105,13 @@ class TestTheCard:
         before_return = build.split("return {", 1)[0]
         assert ".split('\\n')" in before_return, "the line's first line is read apart from the lines under it"
         assert "exact" in before_return and "exact" in build.split("const detail", 1)[1].split(";", 1)[0]
-        # Its before and after keep a line each, as on the review: the row's detail shows the line break.
+        # Its before and after keep a line each, as on the review: the row's detail shows the line break. F1328 draws
+        # the detail through StepDetail: its words keep their lines, and a fenced block is a code box of its own.
+        assert "join('\\n')" in before_return
         cards = (self.ROOT / "cards.tsx").read_text()
-        detail_span = cards[cards.index("{step.detail &&"):].split("</span>", 1)[0]
-        assert "whitespace-pre-line" in detail_span and "join('\\n')" in before_return
+        drawn = cards[cards.index("{step.detail &&"):].split("\n", 1)[0]
+        assert "<StepDetail text={step.detail} />" in drawn, "the row's detail is drawn whole by StepDetail"
+        box = cards[cards.index("function StepDetail"):cards.index("function Steps")]
+        code, words = box.split(") : (", 1)
+        assert "whitespace-pre-line" in words.split("</span>", 1)[0], "its words keep their lines, as on the review"
+        assert "whitespace-pre " in code, "and a code box keeps its own"
