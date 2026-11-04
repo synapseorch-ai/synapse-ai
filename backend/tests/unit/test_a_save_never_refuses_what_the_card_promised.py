@@ -48,6 +48,7 @@ async def _approved(*steps, **state):
     run.shared_state[build_plan.DRAFT_KEY] = draft
     checked, _ = await _call("check_build", {"draft": draft}, run)
     if checked["outcome"] == "prompts":
+        run.shared_state[build_plan.CHECKED_KEY] = checked
         written, _ = await _call("submit_prompts", {"prompts": [{"agent": "Sender",
                                                                  "instructions": "Send the newsletter."}]}, run)
         run.shared_state[build_plan.PROMPTS_KEY] = written
@@ -130,8 +131,11 @@ class TestAStoppedSavesPlanIsNeverLost:
         await _workspace_policy("deny")
         await _call("save_build", {}, run)
         stopped, _ = await _call("save_build", {}, run)
-        assert stopped["outcome"] == "stopped" and run.shared_state.get(WRITES_KEY), "it made its tools, nothing else"
-        previous = {**run.shared_state, "build_saved": stopped}
+        assert stopped["outcome"] == "stopped", stopped
+        # The run's writes as the engine records them from its steps' events (`run_writes.record`): the tool the
+        # tools' pass made, and nothing else.
+        made = {"kind": "tool", "action": "created", "id": TOOL, "name": TOOL}
+        previous = {**run.shared_state, "build_saved": stopped, WRITES_KEY: [made]}
         staged = {T.CARRY_KEY: T.carry_request(previous, [{"step_id": "step_build_done", "status": "completed"}],
                                                run.run_id), "user_message": "Can you show me the updated plan?"}
         assert T.waiting_plan_title(staged) == "Newsletter", "the next turn is told a plan waits"
