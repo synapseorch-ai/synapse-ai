@@ -86,6 +86,23 @@ def last_line(text: str) -> str:
     return lines[-1].strip() if lines else ""
 
 
+async def declared_values(globals_: list[str] | None) -> dict:
+    """The values of the workspace variables a tool declares, name to value: what its output is masked by."""
+    from core import variables
+    from core.execution import declared_globals
+
+    return declared_globals({"globals": globals_}, await variables.load()) if globals_ else {}
+
+
+async def masked_results(results: list[dict], globals_: list[str] | None) -> list[dict]:
+    """Each sample's run with what it printed and raised masked (`secret_scrub.masked_output`, F1381)."""
+    from core.secret_scrub import masked_output
+
+    values = await declared_values(globals_)
+    return [{**r, "printed": masked_output(r.get("printed"), values),
+             **({"error": masked_output(r["error"], values)} if "error" in r else {})} for r in results]
+
+
 def said(results: list[dict]) -> list[str]:
     """Each sample's line for the review: what it was given and what it printed."""
     return [f"tested with {json.dumps(r['args'], ensure_ascii=False)}: printed {r['printed'] or '(nothing)'}"

@@ -210,20 +210,9 @@ async def _tested_said(passed: bool, results: list[dict], globals_: list[str]) -
     sample's run. Never a secret: a press is not a run, so beside the workspace's held secrets (what a run's events
     are masked by) each variable the tool reads is said by its name wherever its value was printed or raised, and a
     credential's shape is masked though nothing holds it."""
-    from core import python_edits, variables
-    from core.execution import declared_globals
-    from core.secret_scrub import _named_out, scrub_credentials, scrub_secrets
+    from core import python_edits
 
-    values = declared_globals({"globals": globals_}, await variables.load()) if globals_ else {}
-    pairs = [(name, str(value)) for name, value in values.items() if value not in (None, "")]
-
-    def masked(text: Any) -> Any:
-        if not isinstance(text, str) or not text:
-            return text
-        return scrub_secrets(scrub_credentials(_named_out(text, pairs) if pairs else text)[0])
-
-    shown = [{**r, "printed": masked(r.get("printed")), **({"error": masked(r["error"])} if "error" in r else {})}
-             for r in results]
+    shown = await python_edits.masked_results(results, globals_)  # F1381's one mask
     if passed:
         n = len(shown)
         say = (f"It passed on its {n} sample{'' if n == 1 else 's'}: " + "; ".join(python_edits.said(shown))

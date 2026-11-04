@@ -448,6 +448,8 @@ async def _code_tested(target: dict, fields: dict, state: dict, *, send_back: bo
         return {**fields, "_test": {"button": "it needs the internet to test"}}, None
     try:
         results = await E.run_samples(new, live.get("globals") or [], samples, Network.NONE)
+        # What it printed reaches the review and the run's state: never a secret (F1381).
+        results = await E.masked_results(results, live.get("globals") or [])
     except ExecUnsupported:
         return {**fields, "_test": {"button": "this install can't run code with no network"}}, None
     if results and all(r["ok"] for r in results):

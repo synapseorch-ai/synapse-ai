@@ -369,6 +369,25 @@ def scrub_secrets(text: str) -> str:
     return _without_held(text)
 
 
+#: A declared variable's value shorter than this is never masked in a tool's output: "eu" or "1" would mask
+#: ordinary words and numbers, and is no secret.
+MASKED_MIN = 4
+
+
+def masked_output(text: Any, variables: dict[str, Any] | None = None) -> Any:
+    """A Python tool's own output (what it printed or raised) as a person or a model may see it (F1381): each variable
+    it declared said by its name wherever its value appears (`variables`, name to value), each credential's shape
+    masked, and each held secret. A press or a test is not a run step, so the held secrets alone are not enough;
+    output that holds none comes back as it is."""
+    if not isinstance(text, str) or not text:
+        return text
+    pairs = [(name, str(value)) for name, value in (variables or {}).items()
+             if value not in (None, "") and len(str(value)) >= MASKED_MIN]
+    if pairs:
+        text = _named_out(text, pairs)
+    return scrub_secrets(scrub_credentials(text)[0])
+
+
 def scrub_secrets_in(value: Any) -> Any:
     """`value` — an event, a snapshot — with every string in it scrubbed. The same object when nothing is held."""
     held = _HELD.get()
