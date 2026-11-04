@@ -385,8 +385,10 @@ async def _models_moved(plan: O.Plan, checked: dict) -> list[str]:
     return out
 
 
-def _gates_moved(reviewed: list[O.Gate], now: list[O.Gate]) -> list[str]:
-    """Each approval or block that is not what the card said, in the card's words: was, and is."""
+def _gates_moved(reviewed: list[O.Gate], now: list[O.Gate], promised: set[str] = frozenset()) -> list[str]:
+    """Each approval or block that is not what the card said, in the card's words: was, and is. `promised` are the
+    tools the card listed under "Asks you first" that had no gate to decide at the yes, being this build's to make or
+    connected after it (F1375, prod-13): their ask, once they are here, is what the card said."""
     from core.native_builder.render import gate_words
 
     def key(g: O.Gate) -> tuple[str, str, str]:
@@ -396,7 +398,7 @@ def _gates_moved(reviewed: list[O.Gate], now: list[O.Gate]) -> list[str]:
     out = []
     for k in dict.fromkeys([*was, *is_]):
         before, after = was.get(k), is_.get(k)
-        if before == after:
+        if before == after or (before is None and after.decision == "confirm" and after.tool in promised):
             continue
         name = f"{(before or after).who} and `{k[2]}`"
         out.append(f"{name}: the card said \"{gate_words(before)}\", now "
@@ -613,7 +615,9 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
             and not (only == "tools" and t.name in later)]
     if gone:
         return _stopped(events, _why_missing(gone, plan, state))
-    if moved := _gates_moved(plan.gates, now.gates):
+    # The asks the card listed for tools that were not here to decide at the yes (F1375): approved as listed.
+    promised = {n for n in plan.approvals.asks_first if n in making or n in later}
+    if moved := _gates_moved(plan.gates, now.gates, promised):
         # The card promised what the run asks for (F964; SAI2's point 3): a policy changed since is not what was
         # approved.
         return _stopped(events, "Nothing was built: what the run asks you for changed since your yes — "
