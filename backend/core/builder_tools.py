@@ -2214,15 +2214,21 @@ async def execute_builder_tool_with_events(
     token = _current_run.set(run_id)
     try:
         # Only what the run's person may do (ASSIST1, F681): a write is refused below builder, by their role now.
-        from core.builder_access import acting_for, refusal
+        from core.builder_access import acting_for, refusal, stops_a_step
         refused, caller = await refusal(tool_name, run_id, door=door)
         if refused:
-            return json.dumps({"error": refused}), []
+            # A refusal no argument changes stops a Tool step's run in its words (F1315, F1319); an agent reads it.
+            stop = door == "step" and await stops_a_step(run_id, refused)
+            return json.dumps({"error": refused, **({"stops_the_step": True} if stop else {})}), []
         from core.native_builder import turn_facts
         if why := await turn_facts.answer_card_refusal(run_id, tool_name, args or {}):
             return json.dumps({"error": why}), []
         with acting_for(caller):
             result = await _dispatch(tool_name, args, server_module, events)
+        if caller is not None and caller.via == "workflow":
+            # An ordinary run's build write, audited once as its person (F1319).
+            from core.product_tools.build import audit_from_a_run
+            await audit_from_a_run(tool_name, args, result, caller)
         # What the call put up is kept on its turn's card, for the next turn to read in code (F977).
         await turn_facts.keep(run_id, getattr(caller, "user_id", None), **turn_facts.facts_of(events))
         return json.dumps(result, default=str), events

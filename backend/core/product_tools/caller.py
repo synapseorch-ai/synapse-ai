@@ -11,8 +11,9 @@ from typing import Any
 
 from core.product_tools.roles import Role
 
-#: The surfaces a call comes through. `assistant` is in the app; the others are not.
-VIAS = frozenset({"mcp", "assistant", "api"})
+#: The surfaces a call comes through. `assistant` is in the app; the others are not. `workflow` is a person's own
+#: workflow or agent run, acting for the person the host says it is for (F1319).
+VIAS = frozenset({"mcp", "assistant", "api", "workflow"})
 
 
 @dataclass(frozen=True)
