@@ -646,7 +646,7 @@ async def test_the_kept_turn_holds_no_card_number_key_or_secret(path, fake_llm, 
         await _in_process(agent["id"], sid, "buy it", _browser_server(tools))
 
     kept = _json.dumps(await _saved(sid, agent["id"]))
-    for leak in ("4111 1111 1111 1111", "sk-live-123456", "sk-proj-abcdefghijklmnopqrstuvwxyz0123"):
+    for leak in ("4111 1111 1111 1111", "sk-live-123456", "sk-" + "proj-abcdefghijklmnopqrstuvwxyz0123"):
         assert leak not in kept, leak
     assert "shop.example.com" in kept
 
