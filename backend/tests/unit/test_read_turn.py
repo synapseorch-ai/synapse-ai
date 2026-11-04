@@ -339,3 +339,47 @@ class TestTheStep:
         turn, events = await self._read(now)
         assert (turn["route"], turn["then"], turn["picked"]["id"]) == ("pick", "change", "agt_2")
         assert now.shared_state["intent"] == "manage" and events == []
+
+
+class TestAPickFromTheOptionsTheLastReplyOffered:
+    """F1347 (CAP3's prod-13): the planner offered options A/B/C in its reply (`say`, where it should have asked), the
+    run ended there, and the person's "Option A works fine" was read as talk: nothing was built. A reply that picks
+    one of those options goes back on the original ask with the choice; anything else is read as before."""
+
+    ASK = "Build me a weekly report of new leads from the CRM"
+    SAY = ("I can do this three ways:\nA) Pull leads from HubSpot every Monday\nB) Read a shared Google Sheet\n"
+           "C) Ask you for a CSV each week\nWhich would you like?")
+
+    def _previous(self, say=SAY, outcome="said"):
+        return {"user_message": self.ASK, "summary": say, "plan_draft": {"outcome": outcome, "say": say}}
+
+    @pytest.mark.parametrize("said,chosen", [
+        ("Option A works fine", "A) Pull leads from HubSpot every Monday"), ("A", "A) Pull leads from HubSpot every Monday"),
+        ("b", "B) Read a shared Google Sheet"), ("the second one", "B) Read a shared Google Sheet"),
+        ("plan C please", "C) Ask you for a CSV each week"), ("Let's go with option b", "B) Read a shared Google Sheet"),
+    ])
+    def test_a_pick_goes_back_on_the_original_ask_with_the_choice(self, said, chosen):
+        turn = decide(said, previous=self._previous(), facts={})
+        assert turn.route == "offer_pick", turn
+        letter, text = chosen.split(") ", 1)
+        assert turn.message.startswith(self.ASK) and f"use {letter}: {text}" in turn.message, turn.message
+
+    def test_a_pick_never_skips_the_review(self):
+        """It goes through classify like any message, so the build or change comes to its card and its yes."""
+        turn = decide("Option A works fine", previous=self._previous(), facts={})
+        assert turn.then == "classify" and turn.picked is None and turn.say is None
+
+    @pytest.mark.parametrize("said", ["How do schedules work?", "thanks", "what is HubSpot?", "none of those"])
+    def test_a_reply_that_picks_none_is_read_as_before(self, said):
+        assert decide(said, previous=self._previous(), facts={}).route == "classify"
+
+    @pytest.mark.parametrize("previous", [
+        {"user_message": "x", "summary": "Here is what I found.\nA) one\nB) two",
+         "plan_draft": {"outcome": "said", "say": "Here is what I found.\nA) one\nB) two"}},
+        {"user_message": "x", "summary": "Which do you want?", "plan_draft": {"outcome": "said",
+                                                                                "say": "Which do you want?"}},
+        {"user_message": "x", "summary": SAY},
+        {"user_message": "x", "summary": SAY, "plan_draft": {"outcome": "plan", "say": SAY}},
+    ])
+    def test_only_a_planners_reply_that_asks_among_listed_options_is_an_offer(self, previous):
+        assert decide("Option A", previous=previous, facts={}).route == "classify"

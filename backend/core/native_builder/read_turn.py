@@ -61,6 +61,37 @@ def pick_from(message: str, options: list[dict]) -> dict | None:
     return named[0] if len(named) == 1 else None
 
 
+#: An option a reply lists, on a line of its own: "A) …", "A. …", "Option A: …", "1. …", "1) …" (F1347).
+_OFFERED = re.compile(r"^\s*(?:\*\*)?(?:option\s+)?([A-Za-z]|\d{1,2})[.):](?:\*\*)?\s+(.+?)\s*$", re.IGNORECASE)
+#: A choice said by its letter or number: "A", "option a", "plan B", "choice 2" (after `_words`).
+_LETTERED = re.compile(r"^(?:[a-z]|\d{1,2})$|\b(?:option|plan|choice|number)\s+([a-z]|\d{1,2})\b")
+
+
+def options_offered(previous: dict) -> list[dict] | None:
+    """The options the last turn's reply offered, as a pick list: only a reply the planner ended on (`say`, a plan
+    outcome `said`) that asks among two or more options listed on lines of their own (F1347). Read from the state that
+    turn kept; None otherwise."""
+    draft = previous.get("plan_draft") if isinstance(previous.get("plan_draft"), dict) else {}
+    say = str(draft.get("say") or "")
+    if draft.get("outcome") != "said" or "?" not in say:
+        return None
+    options = [{"id": m.group(1).upper(), "name": m.group(2)}
+               for m in (_OFFERED.match(line) for line in say.splitlines()) if m]
+    return options if len(options) >= 2 and len({o["id"] for o in options}) == len(options) else None
+
+
+def _offer_picked(message: str, options: list[dict]) -> dict | None:
+    """The one offered option `message` chooses: by its place or name (`pick_from`), or by its letter or number."""
+    if (chosen := pick_from(message, options)) is not None:
+        return chosen
+    said = _plain(message)
+    found = _LETTERED.search(said)
+    if found is None:
+        return None
+    letter = (found.group(1) or said).upper()
+    return next((o for o in options if o["id"] == letter), None)
+
+
 def _list_again(options: list[dict]) -> str:
     return "\n".join(f"{n}. {_quoted(str(o.get('name')))} ({o.get('id')})" for n, o in enumerate(options, 1))
 
@@ -176,6 +207,15 @@ def decide(message: str, *, previous: dict, facts: dict, change: dict | None = N
         return Turn(route="pressed", then="said",
                     say=f"The card above hasn't been pressed yet: press {labels} on it to do it.")
 
+    # 4b. A pick from the options the last reply offered (F1347, CAP3's prod-13): the planner listed them in its reply
+    # and the run ended there. The pick goes back on the original ask with the choice, through classify, so the build or
+    # change still comes to its review and its yes; a reply that picks none is read as before.
+    if options := options_offered(previous):
+        if (chosen := _offer_picked(message, options)) is not None:
+            ask = str(previous.get("user_message") or "").strip()
+            return Turn(route="offer_pick", then="classify",
+                        message=f"{ask}\n\nOf the options you offered, use {chosen['id']}: {chosen['name']}".strip())
+
     # 5. A yes with nothing waiting for one. A yes after findings is a build (F766), and a yes to a question the last
     # reply asked answers it: both go on to classify, which reads the conversation.
     if yes and buttons and not presses:
@@ -273,8 +313,9 @@ async def read_turn(args: dict, server_module: Any, events: list[dict]) -> dict:
         put_up = await prepare_action({"action": turn.picked["action"], **turn.picked["arguments"]}, server_module,
                                       events)
         turn.say = put_up.get("say") or put_up.get("error") or ""
-    if turn.route == "next_request" and run is not None:
-        # The queued request is this turn's message from here on: classify and every route read it.
+    if turn.route in ("next_request", "offer_pick") and run is not None:
+        # The queued request, or the ask with the offered option chosen (F1347), is this turn's message from here on:
+        # classify and every route read it.
         run.shared_state["user_message"] = turn.message
     if turn.then == "change" and run is not None:
         # A change's pick goes back through the role door to the change route (`step_may_change` reads it).
