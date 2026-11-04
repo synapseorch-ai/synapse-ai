@@ -318,6 +318,8 @@ class BrowserTools:
         if name == gate.RUN_RECORDING:
             return await self._run_recording(key, arguments)
         quote = arguments.pop("confirm", None)
+        # A file the agent could never read back is never written (F1340): the page comes back in the answer.
+        left_out = [k for k in sorted(gate.WRITES_A_FILE) if arguments.pop(k, None) is not None]
         press = None
         if name in gate.PRESSES and isinstance(quote, str) and quote.strip():
             press = {"because": quote.strip()[:300], "confirmed": gate.quote_found(quote, await _own_words())}
@@ -355,6 +357,8 @@ class BrowserTools:
             await self._keep_shot(host, key, sid, body["log"])
         await self.keep_lines(key, [*([body["log"]] if body.get("log") else []), *(body.get("notes") or [])])
         text = _scrub(body.get("text", ""))
+        if left_out:
+            text = f"{NO_FILE}\n{text}"
         if body.get("handover"):
             self._handovers[key] = body["handover"]
             text += ("\n### Synapse\nIt is the person's turn in the browser: " + body["handover"]["reason"]
@@ -705,6 +709,9 @@ def _logins():
 
 
 _SCHEMAS = Path(__file__).with_name("tool_schemas.json")
+
+#: What a call that named a file to write is told, above the page it gets instead (F1340).
+NO_FILE = "The page is in this answer: this browser keeps no file of it, so `filename` was left out."
 
 
 def _committed_tool_schemas() -> list[dict] | None:
