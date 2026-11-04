@@ -75,6 +75,13 @@ def host(monkeypatch):
     builder_access.forget_runs()
 
 
+#: The refusals, in the product's own words (the role's label, as every refusal says it).
+BELOW = ("Not done: create_agent changes things, which needs the builder role, and this run acts for Dana Reyes, a "
+         "viewer in this workspace.")
+GONE = ("Not done: this run acts for Dana Reyes, who is no longer a member of this workspace, so create_agent does "
+        "nothing here.")
+
+
 def _plain(run_id: str, state: dict | None = None) -> OrchestrationRun:
     return OrchestrationRun(run_id=run_id, orchestration_id="orch_plain", shared_state=dict(state or {}))
 
@@ -138,16 +145,14 @@ class TestARefusalSaysWhoAndWhy:
     async def test_a_person_below_builder_writes_nothing(self, client, host, peek):
         host["roles"]["u_dana"], host["people"]["run_viewer"] = Role.VIEWER, "u_dana"
         refused = await _call("create_agent", {"name": "Not by a viewer", "system_prompt": "x"}, _plain("run_viewer"))
-        said = refused.get("error") or ""
-        assert all(w in said for w in ("Dana Reyes", "Viewer", "create_agent", "Builder")), said
+        assert refused.get("error") == BELOW, refused
         assert not await _made("Not by a viewer") and host["audited"] == []
         assert "error" not in await _call("read_workspace", {"topic": "agents"}, _plain("run_viewer")), "reads stay"
 
     async def test_a_person_no_longer_here_acts_for_nothing(self, client, host):
         host["people"]["run_gone"] = "u_dana"  # no role: removed from the workspace
         refused = await _call("create_agent", {"name": "Left behind", "system_prompt": "x"}, _plain("run_gone"))
-        said = refused.get("error") or ""
-        assert "Dana Reyes" in said and "no longer a member" in said, said
+        assert refused.get("error") == GONE, refused
         assert not await _made("Left behind")
 
     async def test_a_tool_step_it_refuses_fails_the_run_in_those_words(self, host, driver):
@@ -160,7 +165,7 @@ class TestARefusalSaysWhoAndWhy:
         assert await driver.start(orch, "run_viewer_builds") == "failed"
         run = await _run("run_viewer_builds")
         [entry] = [h for h in run.step_history if h.get("step_id") == "make"]
-        assert all(w in entry["error"] for w in ("Make the helper", "Dana Reyes", "Viewer", "create_agent")), entry
+        assert "Tool step 'Make the helper'" in entry["error"] and BELOW in entry["error"], entry
         assert "made" not in run.shared_state
 
 
