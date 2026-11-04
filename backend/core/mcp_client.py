@@ -23,6 +23,7 @@ on backend restart without re-authenticating (the provider handles refresh).
 import asyncio
 import json
 import os
+import re
 import secrets
 import time
 from contextlib import AsyncExitStack
@@ -408,13 +409,33 @@ def _http_opener(url: str, http_client: httpx.AsyncClient):
 
 # ── Manager ────────────────────────────────────────────────────────────────────
 
-def _reason(exc: BaseException) -> str:
-    """Why a connection failed, in words: the first real error inside an
-    exception group, which is what the transport's task group raises
-    ("unhandled errors in a TaskGroup (1 sub-exception)" said nothing)."""
+#: An address's own credentials (`scheme://user:secret@host`) and the values of its query (`?api_key=…`).
+_USERINFO = re.compile(r"(\b[A-Za-z][A-Za-z0-9+.-]*://)[^\s/@'\"]+@")
+_QUERY_VALUE = re.compile(r"([?&][^=\s&#'\"]+=)[^&\s#'\"]+")
+
+
+def connect_failure(exc: BaseException, config: Optional[Dict] = None) -> str:
+    """Why a server did not connect, as anyone may read it (F1306): the first real error inside the transport's task
+    group, which is what it raises ("unhandled errors in a TaskGroup (1 sub-exception)" said nothing), scrubbed as a
+    stored error is (`run_error.clean`), and without the server's own token, the credentials in an address or its
+    query's values. The one wording: the add's answer, Retry's, the server list and Synapse AI's
+    reconnect all read it, through `MCPClientManager.last_error`."""
     while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
         exc = exc.exceptions[0]
-    return (str(exc).strip() or type(exc).__name__)[:300]
+    return said_safely(str(exc).strip() or type(exc).__name__, config)
+
+
+def said_safely(text: str, config: Optional[Dict] = None) -> str:
+    """`text` about a server with no credential in it: the server's own token, an address's credentials, a query's
+    values, and anything `run_error.clean` takes out of a stored error. Every view of a server's reason reads it so."""
+    from core.orchestration.run_error import clean
+    from core.secret_scrub import CREDENTIAL_MARK
+
+    token = str((config or {}).get("token") or "").strip()
+    if token:
+        text = text.replace(token, CREDENTIAL_MARK)
+    text = _QUERY_VALUE.sub(lambda m: m.group(1) + CREDENTIAL_MARK, _USERINFO.sub(rf"\1{CREDENTIAL_MARK}@", text))
+    return clean(text)[:300]
 
 
 class MCPClientManager:
@@ -518,6 +539,21 @@ class MCPClientManager:
         from core.store.resources import replace_mcp_servers
         await replace_mcp_servers(self.servers_config)
 
+    def last_error(self, name: str) -> Optional[str]:
+        """Why `name` last failed to connect, in `connect_failure`'s words; None once it connects (F1306)."""
+        return (self.get_server_config(name) or {}).get("last_error")
+
+    async def _failed(self, name: str, exc: BaseException, config: Optional[Dict] = None) -> str:
+        """Keep why `name` did not connect, beside its status, and return it (F1306)."""
+        said = connect_failure(exc, config or self.get_server_config(name))
+        if (kept := self.get_server_config(name)) is not None:
+            kept["last_error"] = said
+            await self.save_servers()
+        return said
+
+    def _connected(self, name: str) -> None:
+        (self.get_server_config(name) or {}).pop("last_error", None)
+
     async def _set_status(self, name: str, status: str):
         for s in self.servers_config:
             if s["name"] == name:
@@ -594,8 +630,9 @@ class MCPClientManager:
         try:
             session = await self._hold(name, opener)
         except Exception as e:
-            _log.info(f"Failed stdio connect '{name}': {e}")
+            _log.info(f"Failed stdio connect '{name}': {await self._failed(name, e, config)}")
             return None
+        self._connected(name)
         self.sessions[name] = session
         _log.info(f"Connected to stdio MCP server '{name}'.")
         return session
@@ -613,8 +650,9 @@ class MCPClientManager:
         try:
             session = await self._hold(name, _http_opener(url, httpx.AsyncClient(headers=headers, follow_redirects=True)))
         except Exception as e:
-            _log.info(f"Failed remote connect '{name}': {e}")
+            _log.info(f"Failed remote connect '{name}': {await self._failed(name, e, config)}")
             return None
+        self._connected(name)
         self.sessions[name] = session
         _log.info(f"Connected to remote MCP server '{name}'.")
         return session
@@ -663,6 +701,7 @@ class MCPClientManager:
         try:
             session = await self._hold(
                 name, _http_opener(url, httpx.AsyncClient(auth=oauth_provider, follow_redirects=True)))
+            self._connected(name)
             self.sessions[name] = session
 
             # Record where a refresh goes, now, while the provider still holds
@@ -685,7 +724,7 @@ class MCPClientManager:
                 # Connected without being asked to authorise: a public server.
                 auth_url_future.set_result(None)
         except Exception as e:
-            _log.info(f"OAuth connection failed for '{name}': {e}")
+            _log.info(f"OAuth connection failed for '{name}': {await self._failed(name, e, config)}")
             await self._set_status(name, "disconnected")
             if not auth_url_future.done():
                 auth_url_future.set_exception(e)
@@ -712,7 +751,8 @@ class MCPClientManager:
         except asyncio.TimeoutError:
             return {"connected": False, "status": "connecting", "auth_url": None, "error": None}
         except Exception as e:
-            return {"connected": False, "status": "disconnected", "auth_url": None, "error": _reason(e)}
+            return {"connected": False, "status": "disconnected", "auth_url": None,
+                    "error": self.last_error(config["name"]) or connect_failure(e, config)}
         if auth_url is None:
             return {"connected": True, "status": "connected", "auth_url": None, "error": None}
         return {"connected": False, "status": "oauth_pending", "auth_url": auth_url, "error": None}
@@ -837,19 +877,22 @@ class MCPClientManager:
             try:
                 session = await self._hold(
                     name, _http_opener(url, httpx.AsyncClient(auth=oauth_provider, follow_redirects=True)))
+                self._connected(name)
                 self.sessions[name] = session
                 _log.debug(f"[MCP] Reconnected '{name}' with cached OAuth tokens.")
                 return session
             except Exception as e:
-                _log.debug(f"[MCP] Cached OAuth reconnect failed for '{name}': {e}. Falling back to direct connect.")
+                _log.debug(f"[MCP] Cached OAuth reconnect failed for '{name}': {connect_failure(e, config)}. "
+                       "Falling back to direct connect.")
 
         # ── Direct path: no token, no OAuth — server may not need auth ───────
         _log.debug(f"[MCP] Attempting direct (no-auth) connection to '{name}' ({url})...")
         try:
             session = await self._hold(name, _http_opener(url, httpx.AsyncClient(follow_redirects=True)))
         except Exception as e:
-            _log.debug(f"[MCP] Direct connect also failed for '{name}': {e}")
+            _log.debug(f"[MCP] Direct connect also failed for '{name}': {await self._failed(name, e, config)}")
             return None
+        self._connected(name)
         self.sessions[name] = session
         _log.debug(f"[MCP] Connected '{name}' via direct (no-auth) connection.")
         return session
@@ -951,7 +994,8 @@ class MCPClientManager:
                 await self._set_status(name, "connected")
                 new_config["status"] = "connected"
                 await self._auto_register(name)
-            return {"config": new_config, "connected": bool(session), "status": new_config["status"]}
+            return {"config": new_config, "connected": bool(session), "status": new_config["status"],
+                    "error": None if session else self.last_error(name)}
 
         # Remote, no token: connected, or a URL to authorise at (U61). The
         # config is answered as it stands now, so `connected` and its
@@ -975,7 +1019,8 @@ class MCPClientManager:
                 await self._set_status(config["name"], "connected")
                 config["status"] = "connected"
                 await self._auto_register(config["name"])
-            return {"config": config, "connected": bool(session), "status": config.get("status", "disconnected")}
+            return {"config": config, "connected": bool(session), "status": config.get("status", "disconnected"),
+                    "error": None if session else self.last_error(config["name"])}
         outcome = await self.connect_or_authorise(config)
         return {"config": {**config, "status": "connected" if outcome["connected"] else "disconnected"}, **outcome}
 
