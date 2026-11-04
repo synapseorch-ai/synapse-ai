@@ -21,6 +21,9 @@ import { STEP_TYPE_META, type Orchestration, type StepConfig, type StepType } fr
 
 import { humanFieldType } from '../orchestration/humanFields';
 
+/** What a run is named when its workflow has since been deleted: one set of words wherever a run is listed (F1337). */
+export const DELETED_WORKFLOW = 'Deleted workflow';
+
 // ── Shapes ───────────────────────────────────────────────────────────────────
 
 /** One row of a run list, whatever product it came from. */

@@ -21,6 +21,7 @@ import type { Orchestration } from '@/types/orchestration';
 
 import { isCapStop, isCreditStop } from './failures';
 import {
+    DELETED_WORKFLOW,
     bucketOf, dayKey, dayLabel, glyphOf, money, ordinal, RUN_LIST_GLYPH_MAX, type Clock, type RunBucket, type RunRow,
 } from './model';
 import { PathGlyph } from './PathGlyph';
@@ -304,7 +305,7 @@ function Row({
     href?: string; onOpen?: (row: RunRow) => void; menu?: (row: RunRow) => ReactNode;
 }) {
     const bucket = bucketOf(row.status, row.waitingForHuman);
-    const name = row.workflowName ?? 'Deleted workflow';
+    const name = row.workflowName ?? DELETED_WORKFLOW;
     // The name is the row's one control, stretched over the whole row; the menu
     // sits above it. A keyboard reaches it with Tab and opens it with Enter (F219).
     const stretch = 'after:absolute after:inset-0 after:content-[""]';

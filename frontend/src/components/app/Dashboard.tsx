@@ -41,6 +41,7 @@ import {
 import type { RunSummary } from '@/components/runs/summary';
 import { pickStarters, SELF_HOSTED_STARTERS, StarterPrompts, WORK_IN, type Persona } from '@/components/starters';
 import { assistantChatHref } from '@/components/tabs';
+import { DELETED_WORKFLOW } from '@/components/run/model';
 import { Button, LinkButton, Mark, StatStrip, TextLink, usePersisted } from '@/components/ui';
 import { usdCompact } from '@/lib/money';
 import { plainText } from '@/lib/plainText';
@@ -392,7 +393,7 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
                     waitingSince={pausedSince}
                     failed={stats.failed}
                     failedSub={stats.lastFailure
-                        ? <Link href={runHref(stats.lastFailure.id)} className="text-accent-ink hover:underline">{stats.lastFailure.workflowName ?? 'Deleted workflow'}</Link>
+                        ? <Link href={runHref(stats.lastFailure.id)} className="text-accent-ink hover:underline">{stats.lastFailure.workflowName ?? DELETED_WORKFLOW}</Link>
                         : undefined}
                     completed={stats.completed}
                     runs={stats.runs}

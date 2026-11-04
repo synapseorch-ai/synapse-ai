@@ -40,7 +40,7 @@ import { browserTurnOf } from '../browser/model';
 import { HumanFieldsForm } from '../orchestration/HumanFieldsForm';
 import { humanAnswer, humanFieldLabel, initialHumanValues, type HumanValues } from '../orchestration/humanFields';
 import { useRunHost } from './host';
-import { decisionField, type RunRecord } from './model';
+import { DELETED_WORKFLOW, decisionField, type RunRecord } from './model';
 import { Took } from './When';
 
 export type ApprovalDraft = {
@@ -108,7 +108,7 @@ export function ApprovalCard({
             <section aria-label="Waiting for a person" className="grid grid-cols-[minmax(0,1fr)] gap-3">
                 <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[12.5px] text-text-muted">
                     <Badge tone="person">Waiting for a person</Badge>
-                    {showWorkflow && <span className="font-medium text-text">{run.workflowName ?? 'Deleted workflow'}</span>}
+                    {showWorkflow && <span className="font-medium text-text">{run.workflowName ?? DELETED_WORKFLOW}</span>}
                     {showStep && stepName && <span title={run.currentStepId ?? undefined}>Step {stepName}</span>}
                     {asking?.started_at && <span>· waiting <Took start={asking.started_at} end={null} /></span>}
                 </div>
@@ -144,7 +144,7 @@ export function ApprovalCard({
         <section aria-label="Waiting for a person" className="grid grid-cols-[minmax(0,1fr)] gap-3 rounded-[14px] border border-person/40 bg-person-subtle px-[22px] py-5">
             <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[12.5px] text-text-muted">
                 <Badge tone="person">Waiting for a person</Badge>
-                {showWorkflow && <span className="font-medium text-text">{run.workflowName ?? 'Deleted workflow'}</span>}
+                {showWorkflow && <span className="font-medium text-text">{run.workflowName ?? DELETED_WORKFLOW}</span>}
                 {showStep && stepName && <span title={run.currentStepId ?? undefined}>Step {stepName}</span>}
                 {asking?.started_at && <span>· waiting <Took start={asking.started_at} end={null} /></span>}
             </div>

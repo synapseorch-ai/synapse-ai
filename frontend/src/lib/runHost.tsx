@@ -178,7 +178,7 @@ export function ossRunRow(
     return {
         id: run.run_id,
         workflowId: run.orchestration_id,
-        workflowName: wf?.name ?? run.orchestration_id,
+        workflowName: wf?.name ?? null,
         status: run.status,
         waitingForHuman: Boolean(run.waiting_for_human),
         startedAt: run.started_at ?? null,

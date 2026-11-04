@@ -16,7 +16,7 @@ import type { ReactNode } from 'react';
 import { cn } from '@/lib/cn';
 import type { Orchestration } from '@/types/orchestration';
 
-import { bucketOf, glyphOf, money, type RunRow } from './model';
+import { DELETED_WORKFLOW, bucketOf, glyphOf, money, type RunRow } from './model';
 import { PathGlyph } from './PathGlyph';
 import { RUN_DOT, StatusLine } from './RunList';
 import { Took, useClock, When } from './When';
@@ -40,7 +40,7 @@ export function RecentRuns({ rows, workflows, hrefOf, empty, live = false, label
         <ul aria-label={label} className="m-0 grid list-none border-t border-border p-0">
             {rows.map((row) => {
                 const bucket = bucketOf(row.status, row.waitingForHuman);
-                const name = row.workflowName ?? 'Deleted workflow';
+                const name = row.workflowName ?? DELETED_WORKFLOW;
                 const word = bucket === 'completed' ? 'completed' : bucket === 'needs' ? 'needs input' : bucket;
                 return (
                     <li

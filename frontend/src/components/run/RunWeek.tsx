@@ -15,7 +15,7 @@ import Link from 'next/link';
 import { cn } from '@/lib/cn';
 
 import { barHeights, WEEK_BAR, WEEK_MAX } from './home';
-import { bucketOf, when, type Clock, type RunRow } from './model';
+import { DELETED_WORKFLOW, bucketOf, when, type Clock, type RunRow } from './model';
 
 const WORD = { completed: 'completed', failed: 'failed', needs: 'waiting on a person', running: 'running', queued: 'queued', cancelled: 'cancelled' } as const;
 
@@ -76,7 +76,7 @@ export function RunWeek({ rows, hrefOf, clock, total }: {
                             key={r.id}
                             href={hrefOf(r)}
                             tabIndex={-1}
-                            title={`${r.workflowName ?? 'Deleted workflow'} · ${WORD[b]}${at ? ` · ${when(at, clock)}` : ''}`}
+                            title={`${r.workflowName ?? DELETED_WORKFLOW} · ${WORD[b]}${at ? ` · ${when(at, clock)}` : ''}`}
                             suppressHydrationWarning
                             className={cn('block min-w-[3px] rounded-[2px_2px_1px_1px] transition-opacity hover:opacity-80', WEEK_BAR[b])}
                             style={{ height: `${heights[i]}%` }}
