@@ -39,6 +39,7 @@ CATALOGUE.update({
     "veo-3.1-generate-preview": ["predictLongRunning"],
 })
 
+#: Google's chat models as its list gives them, before any is left out: each is one the router sends to Google.
 CHAT = [
     "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro", "gemini-3-flash-preview",
     "gemini-3.1-flash-lite", "gemini-3.1-flash-lite-preview", "gemini-3.1-pro-preview",
@@ -64,10 +65,19 @@ def gemini_account(monkeypatch):
     install_httpx(monkeypatch, handler)
 
 
+#: Google still lists it, and refuses it to new callers (F1299, `model_availability.RETIRED`): left out, saying why.
+RETIRED = "gemini-2.5-flash-lite"
+
+
 async def test_every_chat_model_is_listed_and_nothing_else(client, gemini_account):
     gemini = (await client.get("/api/models")).json()["providers"]["gemini"]
 
-    assert sorted(gemini["models"]) == sorted(CHAT)
+    assert sorted(gemini["models"]) == sorted(m for m in CHAT if m != RETIRED)
+    # Every chat model Google returned is accounted for: listed, or left out with the provider's own why.
+    left = gemini.get("unavailable") or []
+    assert [x["model"] for x in left] == [RETIRED], left
+    assert "no longer available to new users" in left[0]["reason"]
+    assert sorted([*gemini["models"], *(x["model"] for x in left)]) == sorted(CHAT)
     assert "gemini-embedding-001" in gemini["embedding_models"]
 
 

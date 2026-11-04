@@ -79,11 +79,17 @@ class TestTheMark:
         assert not A.same_model("gemini-2.5-flash-lite", "gemini-2.5-flash")
 
 
+# The mark's own cases, through the choices: a model the product does not know is retired, so only a failed call
+# leaves it out. gemini-2.5-flash-lite is now always left out (F1299, `RETIRED`), and is no longer this case.
+LEARNED = "gemini-3.1-flash-lite-preview"
+LEARNED_GONE = GEMINI_GONE.replace("models/gemini-2.5-flash-lite is", f"models/{LEARNED} is")
+
+
 # ── the choices, the menu and the pick ───────────────────────────────────────────────────────────────────────────
 @pytest.fixture
 def gemini_choices():
     async def listed():
-        return {"gemini": ["gemini-2.5-flash", "gemini-2.5-flash-lite"]}
+        return {"gemini": ["gemini-2.5-flash", LEARNED]}
     model_choices.set_model_choices(listed)
     yield
     model_choices.set_model_choices(None)
@@ -91,43 +97,43 @@ def gemini_choices():
 
 class TestItIsOfferedNowhere:
     async def test_the_workspaces_choices_leave_it_out(self, gemini_choices):
-        await A.note_failure("gemini-2.5-flash-lite", LLMError(GEMINI_GONE))
+        await A.note_failure(LEARNED, LLMError(LEARNED_GONE))
         assert await model_choices.choices() == {"gemini": ["gemini-2.5-flash"]}
 
     async def test_a_404d_model_is_never_picked_again(self, gemini_choices, monkeypatch):
         """CAP3's stage 0, end to end: picked as the lowest-cost fit, refused by its provider, never picked again."""
         # A narrow job's pick, the cheapest that fits (F1251 keeps it for one): the case itself.
         before = M.pick("simple", has_tools=True, menu=await M.menu(), narrow=True)
-        assert before.id == "gemini-2.5-flash-lite", "the case itself: the lowest-cost model that fits"
+        assert before.id == LEARNED, "the case itself: the lowest-cost model that fits"
 
         from core import llm_providers
         from core.providers import registry
 
         async def refused(call, spec):
-            raise LLMError(GEMINI_GONE)
+            raise LLMError(LEARNED_GONE)
 
         spec = types.SimpleNamespace(id="gemini", mode="cloud", chat=refused, error="Gemini LLM Error")
         # `llm_providers._providers` is the registry module itself.
         monkeypatch.setattr(registry, "branch_for", lambda mode, model: spec)
         monkeypatch.setattr(registry, "resolve", lambda chat: chat)
         with pytest.raises(LLMError):
-            await llm_providers.generate_response_ex("hi", "sys", "cloud", "gemini-2.5-flash-lite", {})
+            await llm_providers.generate_response_ex("hi", "sys", "cloud", LEARNED, {})
 
         after = M.pick("simple", has_tools=True, menu=await M.menu(), narrow=True)
         assert after.id == "gemini-2.5-flash"
 
     async def test_the_models_screen_says_why(self, monkeypatch):
-        await A.note_failure("gemini-2.5-flash-lite", LLMError(GEMINI_GONE))
-        info = {"available": True, "models": ["gemini-2.5-flash", "gemini-2.5-flash-lite"]}
+        await A.note_failure(LEARNED, LLMError(LEARNED_GONE))
+        info = {"available": True, "models": ["gemini-2.5-flash", LEARNED]}
         info["models"], left = A.gone_from(info["models"], await A.unavailable())
         assert info["models"] == ["gemini-2.5-flash"]
-        assert left[0]["model"] == "gemini-2.5-flash-lite" and "no longer available" in left[0]["reason"]
+        assert left[0]["model"] == LEARNED and "no longer available" in left[0]["reason"]
 
 
 # ── a mark always has a way back (8a's review) ──────────────────────────────────────────────────────────────────
 class TestAMarkHasAWayBack:
     async def test_a_call_that_works_clears_it(self, gemini_choices, monkeypatch):
-        await A.note_failure("gemini-2.5-flash-lite", LLMError(GEMINI_GONE))
+        await A.note_failure(LEARNED, LLMError(LEARNED_GONE))
         A._forget_cache()
 
         from core import llm_providers
@@ -140,18 +146,18 @@ class TestAMarkHasAWayBack:
         monkeypatch.setattr(registry, "branch_for", lambda mode, model: spec)
         monkeypatch.setattr(registry, "resolve", lambda chat: chat)
         try:
-            await llm_providers.generate_response_ex("hi", "sys", "cloud", "gemini-2.5-flash-lite", {})
+            await llm_providers.generate_response_ex("hi", "sys", "cloud", LEARNED, {})
         except Exception:  # what follows the call (usage, caching) is not this test's; the success hook ran first
             pass
-        assert "gemini-2.5-flash-lite" not in await A.unavailable()
-        assert await model_choices.choices() == {"gemini": ["gemini-2.5-flash", "gemini-2.5-flash-lite"]}
+        assert LEARNED not in await A.unavailable()
+        assert await model_choices.choices() == {"gemini": ["gemini-2.5-flash", LEARNED]}
 
     async def test_try_again_on_the_models_screen_clears_it(self, gemini_choices):
         from core.routes import data
-        await A.note_failure("gemini-2.5-flash-lite", LLMError(GEMINI_GONE))
-        out = await data.try_model_again("models/gemini-2.5-flash-lite")
+        await A.note_failure(LEARNED, LLMError(LEARNED_GONE))
+        out = await data.try_model_again(f"models/{LEARNED}")
         assert out["cleared"] is True
-        assert "gemini-2.5-flash-lite" in (await model_choices.choices())["gemini"]
+        assert LEARNED in (await model_choices.choices())["gemini"]
 
     @pytest.mark.parametrize("provider,settings", [
         ("ollama", {}),
