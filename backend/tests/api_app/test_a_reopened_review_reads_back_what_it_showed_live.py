@@ -99,9 +99,12 @@ class TestItIsMaskedAsTheLiveEventIs:
         await save_tool({"name": "tickets", "description": "Tickets.", "tool_type": "http", "method": "GET",
                          "url": "https://tickets.example.com/x", "headers": {"X-Ticket-Key": CODE}})
         pending = await _pending(client, "f1333-held")
-        assert CODE not in json.dumps(pending["context"]) and CREDENTIAL_MARK in json.dumps(pending["context"])
+        # Read as written (`ensure_ascii=False`): the mark's ‹ › are not ASCII, and an escaped dump never holds them.
+        shown = json.dumps(pending["context"], ensure_ascii=False)
+        assert CODE not in shown and CREDENTIAL_MARK in shown, shown
         run = (await client.get(f"/api/orchestrations/runs/{asked['run_id']}")).json()
-        assert CODE not in json.dumps(run["human_context"]) and CREDENTIAL_MARK in json.dumps(run["human_context"])
+        shown = json.dumps(run["human_context"], ensure_ascii=False)
+        assert CODE not in shown and CREDENTIAL_MARK in shown, shown
 
 
 class TestOnlyTheLiveEventsAudienceReadsIt:
