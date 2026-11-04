@@ -94,9 +94,14 @@ class Downloads:
 
     Playwright prints `|■■■■      |  40% of 164.8 MiB` per browser part, from 0
     again for each; `parts` is how many to expect, so the whole reads 0→1.
+    A part of a few MiB (FFmpeg, 2.3 MiB, beside the browser) is over in a second
+    and takes no share: counted as a part, the bar sat at half for the whole
+    browser and then jumped (F1355).
     """
 
-    _PERCENT = re.compile(r"(\d{1,3})% of ")
+    _PERCENT = re.compile(r"(\d{1,3})% of (?:([\d.]+) ?(B|KiB|MiB|GiB))?")
+    #: A part smaller than this is not counted (bytes).
+    SMALL = 10 * 1024 ** 2
 
     def __init__(self, parts: int = 1):
         self.parts = max(1, parts)
@@ -107,6 +112,8 @@ class Downloads:
     def feed(self, line: str) -> float:
         m = self._PERCENT.search(line)
         if not m:
+            return self.fraction
+        if m.group(2) and float(m.group(2)) * _SIZE[m.group(3)] < self.SMALL:
             return self.fraction
         pct = int(m.group(1))
         if pct < self._last and self.index < self.parts - 1:

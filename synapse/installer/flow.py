@@ -507,7 +507,7 @@ class Installer:
         present = {p.name.split("-")[0] for p in path.iterdir()} if path.is_dir() else set()
         env = self._runtime_env()
         env["PLAYWRIGHT_BROWSERS_PATH"] = str(path)
-        parts = Downloads(parts=2)
+        parts = Downloads(parts=1)   # the headless shell; FFmpeg's 2.3 MiB takes no share
         if "chromium_headless_shell" not in present:
             run([self.s.tool_python, "-m", "playwright", "install", "--only-shell", "chromium"], self.log, env=env,
                 on_line=lambda line: self.screen.progress("browser", parts.feed(line)))
