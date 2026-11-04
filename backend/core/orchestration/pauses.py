@@ -227,3 +227,32 @@ def end_step(step_history: list, entry: dict) -> None:
                 existing.pop("ended_ms", None)
             return
     step_history.append(entry)
+
+
+async def asked_again(definition: Mapping | None, shared_state: Mapping | None, step_history: list | None,
+                      current_step_id: str | None) -> dict:
+    """What a paused run's question carried beside its words, read back from the run as stored (F1333): `context_key`,
+    and `context` when that is an object that names itself. A reopened review is drawn from the very object its live
+    event carried (`steps.asked_context`, the same state, the history up to its pause), masked as the live event was:
+    this task holds the workspace's secret variables and its held secrets first (`variables.load`, `refresh_held`),
+    then the event goes through the one public door (`public_event`). `{}` when the step that asked is not in the run's
+    definition (a nested pause, a run from before definitions were kept): the question's words alone, as before."""
+    from core import variables
+    from core.events_public import public_event
+    from core.orchestration.steps import asked_context
+    from core.secret_scrub import refresh_held
+
+    step_id = asking_step_id(step_history, current_step_id)
+    steps = (definition or {}).get("steps") if isinstance(definition, Mapping) else None
+    step = next((s for s in steps or [] if isinstance(s, Mapping) and s.get("id") == step_id), None)
+    if step is None:
+        return {}
+    history = list(step_history or [])
+    paused = max((i for i, e in enumerate(history) if isinstance(e, Mapping) and e.get("status") == "paused"),
+                 default=len(history))
+    _said, context_key, typed = asked_context(step.get("input_keys"), dict(shared_state or {}), history[:paused])
+    await variables.load()
+    await refresh_held()
+    shown = public_event({"type": "human_input_required", "context_key": context_key,
+                          **({"context": typed} if typed is not None else {})}) or {}
+    return {"context_key": shown.get("context_key"), **({"context": shown["context"]} if "context" in shown else {})}

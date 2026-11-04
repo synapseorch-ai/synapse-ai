@@ -22,7 +22,15 @@ export interface OpenConversation {
     run_id: string;
     status: 'paused' | 'running';
     turns: { user: string; assistant: string }[];
-    pending: { run_id: string; field: string; step_id: string | null; prompt: string } | null;
+    pending: {
+        run_id: string; field: string; step_id: string | null; prompt: string;
+        /**
+         * What the question's live event carried beside its words (F1333): the key its context came from, and that
+         * context when it names itself (a checked change, a checked plan, a form). The card draws from it as live.
+         */
+        context_key?: string | null;
+        context?: Record<string, unknown>;
+    } | null;
     /**
      * Where a working run's journal stood when the conversation was read. The
      * panel follows the journal from its start, which replays the questions
@@ -45,6 +53,9 @@ export function reattachedState(conversation: OpenConversation, welcome: Builder
         messages.push({
             role: 'assistant', content: asked.prompt, kind: 'human_prompt', key: `back-asked-${asked.run_id}`,
             stepId: asked.step_id,
+            // The same object the live event carried, so a reopened review draws the card it drew (F1333).
+            contextKey: asked.context_key ?? null,
+            ...(asked.context && typeof asked.context === 'object' ? { context: asked.context } : {}),
         });
     }
     return {

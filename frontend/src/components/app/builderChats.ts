@@ -96,6 +96,9 @@ async function fromTheRun(runId: string, event: RunEvent): Promise<RunEvent> {
                 prompt: run.human_prompt ?? event.prompt,
                 fields: run.human_fields ?? event.fields,
                 orch_step_id: event.orch_step_id ?? run.current_step_id,
+                // Its object, as the live event carried it (F1333): a shrunk event lost it, and the card drew words.
+                context_key: run.human_context_key ?? event.context_key,
+                ...(run.human_context ? { context: run.human_context } : {}),
             };
         }
     } catch {
