@@ -131,7 +131,8 @@ SHAPES: dict[str, dict[str, list[str]]] = {
 #: answer and a repeat is still seen as one (CAP3's F1236). Each names only read_workspace's own topics: the planner
 #: holds no other tool.
 ELSEWHERE: dict[str, str] = {
-    "tool": "This shows one custom tool by its name: list_custom_tools lists them all.",
+    "tool": "This shows one custom tool, a Python or HTTP tool made in this workspace, by its exact name. Topic "
+            "`agents` lists the agents and how many tools each has; a built-in tool or an MCP server's is not here.",
     "schedules": "This shows schedules. A workflow with none runs only when it is started: topic `workflows` lists "
                  "the workflows, `runs` what ran.",
     "runs": "This shows workflow runs. A workflow that has not run has none: to see its steps, read topic `workflow` "

@@ -38,6 +38,7 @@ async def workspace():
     from core.routes.agents import save_user_agents
     from core.routes.settings import save_settings
     from core.store import schedules
+    from core.store.resources import save_tool
 
     await save_settings({"boards_enabled": True})
     await save_user_agents([{"id": "agent_desk", "name": "Front desk", "type": "conversational",
@@ -59,9 +60,13 @@ async def workspace():
                                  "voice": {"number": "+14155550142", "language": "en-US"}})
     await save_widget({"id": "w1", "name": "Website helper", "agent_id": "agent_desk",
                        "allowed_origins": ["https://harbordental.example"], "enabled": True})
+    await save_tool({"name": "invoice_total", "description": "Totals an invoice's lines", "tool_type": "python",
+                     "code": "print(sum(_args.get('lines') or []))", "globals": ["INVOICE_REGION"],
+                     "inputSchema": {"type": "object", "properties": {"lines": {"type": "array"}}}})
 
 
-ARGS = {"run": {"run_id": "run_ok"}, "workflow": {"name": "Invoice chaser"}, "agent_activity": {"name": "Front desk"}}
+ARGS = {"run": {"run_id": "run_ok"}, "workflow": {"name": "Invoice chaser"}, "agent_activity": {"name": "Front desk"},
+        "tool": {"name": "invoice_total"}}
 
 
 def test_every_topic_has_a_shape():

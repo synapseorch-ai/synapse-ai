@@ -156,7 +156,8 @@ from core.native_builder import prompt_lint, seed
 #: offered, filled in with today's address), bc0b53b4… (on fix-forward 17).
 #: F1325: # Changing rule 25 (a Python tool is fixed with update_python_tool: its code read first, quoted edits,
 #: test_args, tested with no network before the person sees it), 0c27a549… (on fix-forward 17).
-BUNDLE_SHA256 = "0c27a549055065c5dfb816929d089e90512ae5081137510b4f530f937d309cf3"
+#: F1325's readers: topic `tool` named in both topic lists and in rule 25 (the reader guards), 5526f648… (on fix-forward 17).
+BUNDLE_SHA256 = "5526f648e2309c1a60b1a6f3be0e0e37f8f53db005c5c70420c8c870316dad5b"
 
 
 def _sha(definitions) -> str:
