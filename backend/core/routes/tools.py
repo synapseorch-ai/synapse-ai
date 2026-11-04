@@ -561,16 +561,13 @@ async def test_python_tool(req: PythonTestRequest):
 
     timeout = min(int(req.timeout or 30), 60)
 
+    from core.secret_scrub import masked_output
+
+    values = declared_globals({"globals": req.globals}, await variables.load()) if req.globals else {}
     runner = get_runner()
     try:
         result = await runner.run(ExecRequest(
-            code=wrap_args(
-                req.code,
-                req.args or {},
-                declared_globals({"globals": req.globals}, await variables.load())
-                if req.globals
-                else {},
-            ),
+            code=wrap_args(req.code, req.args or {}, values),
             network=Network.INTERNET,
             timeout_s=timeout,
             memory_mb=int(MEMORY_LIMIT.rstrip("m")),
@@ -585,12 +582,14 @@ async def test_python_tool(req: PythonTestRequest):
         raise HTTPException(status_code=500, detail=f"Sandbox error: {e}") from e
 
     if result.timed_out:
-        return {"exit_code": -1, "stdout": "", "stderr": result.stderr}
+        return {"exit_code": -1, "stdout": "", "stderr": masked_output(result.stderr, values)}
     if result.exit_code != 0 and isinstance(runner, DockerRunner) and docker_not_running(result.stderr):
         # Its daemon isn't running: said where the button shows a run's error, never its socket (F1353).
         return {"exit_code": result.exit_code, "stdout": "", "stderr": NO_DOCKER_FOR_TOOLS}
 
-    return {"exit_code": result.exit_code, "stdout": result.stdout, "stderr": result.stderr}
+    # What the code printed and raised, never a secret (F1381): Synapse AI's and an MCP client's test read it too.
+    return {"exit_code": result.exit_code, "stdout": masked_output(result.stdout, values),
+            "stderr": masked_output(result.stderr, values)}
 
 
 # --- External MCP Server Management ---
