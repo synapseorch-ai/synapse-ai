@@ -84,6 +84,27 @@ def test_a_curls_other_parts_are_as_they_were():
     assert _masked(text) == text
 
 
+# A header carries a key by a whole part of its name (eb 11-04): `auth` in `X-Author-Id` is a word, not a key's name.
+@pytest.mark.parametrize("name", ["X-Auth-Token", "Apikey", "X-Goog-Api-Key", "Private-Token", "X-Api-Secret",
+                                  "Ocp-Apim-Subscription-Key", "Auth"])
+def test_a_header_is_a_keys_by_a_whole_part_of_its_name(name):
+    from core import http_facts
+
+    text = f"curl -H '{name}: {SHORT}' {BILLING}/invoices"
+    assert SHORT not in _masked(text), name
+    assert http_facts.from_curl(_masked(text))["key"] == {"header": name, "scheme": ""}
+
+
+@pytest.mark.parametrize("name", ["X-Author-Id", "X-Monkey-Name", "X-Tokenizer", "Keyboard-Layout"])
+def test_a_word_that_only_holds_one_is_no_keys_name(name):
+    from core import http_facts
+
+    text = f"curl -H '{name}: 42' {BILLING}/invoices"
+    assert _masked(text) == text, name
+    facts = http_facts.from_curl(text)
+    assert facts["headers"] == {name: "42"} and facts["key"] is None, facts
+
+
 @pytest.mark.parametrize("part", ["-H 'Authorization: Bearer YOUR_TOKEN'", "-H 'X-Api-Key: <your key>'",
                                   "-H \"Cookie: xxx\"", "--header 'X-Auth-Token: ***'", "-u YOUR_KEY",
                                   "'https://api.example.com/items?api_key={api_key}'"])
