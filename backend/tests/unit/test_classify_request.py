@@ -234,6 +234,33 @@ class TestWhatTheAnswerNeeds:
     def test_how_the_product_works_reads_its_help(self, message):
         assert _route(message, "answer", needs="none").needs == "help"
 
+    @pytest.mark.parametrize("message", ["How do I move my workflows to another Synapse install?",
+                                         "How do I add a tool to my agent?", "Where do I set my API key?",
+                                         "how to schedule a workflow for weekdays"])
+    def test_a_how_to_about_the_product_reads_its_help_whatever_it_names(self, message):
+        """F1342 (CAP3's prod-15): a product how-to that names its nouns or a change ("move my workflows") read the
+        workspace; it is help, whatever the model said."""
+        for said in ("none", "workspace", None):
+            assert _route(message, "answer", needs=said).needs == "help", said
+
+    @pytest.mark.parametrize("message", ["How can I cut my costs?", "How do I see why my run failed?",
+                                         "How can I check what I spent this week?", "How do I fix my workflow?",
+                                         "How can I get my agent working again?", "how do i stop it being stuck",
+                                         "How do I change Nightly invoices?"])
+    def test_a_how_to_about_their_own_state_or_a_named_thing_reads_the_workspace(self, message):
+        """F1342: a how-to about what they spent, what failed or is broken, or a thing they name, depends on the
+        workspace: it reads it (prod-08's "costs" on purpose; eb)."""
+        for said in ("none", "help", None):
+            assert _route(message, "answer", needs=said).needs == "workspace", said
+
+    def test_a_how_to_is_read_before_the_workspaces_nouns(self):
+        import inspect
+
+        from core.native_builder import classify
+
+        body = inspect.getsource(classify._needs)
+        assert body.index("_HOW_TO") < body.index("_WORKSPACE.search") < body.index("_HELP.search")
+
     @pytest.mark.parametrize("message", ["pause it", "turn everything off", "stop it now", "delete that one",
                                          "rename it to Reception"])
     def test_an_act_or_a_change_with_nothing_named_still_reads(self, message):

@@ -83,6 +83,13 @@ _WORKSPACE = re.compile(
     r"failed|failing|failure|errors?|broke|broken|stopped|stuck|waiting|today|yesterday|this week|last week|status|"
     r"history|logs?|happened|did .+ do|is .+ (?:on|off|running)|why did|why didn t|why is|why isn t|why does|"
     r"why doesn t|why was|why wasn t)\b")
+#: A how-to, as the message opens (F1342): about the product, it reads the help whatever product nouns it names.
+_HOW_TO = re.compile(r"^(?:how do i|how can i|how to|where do i|where can i|where is the)\b")
+#: What makes a how-to about this workspace's own state, not the product: what it spent, what failed or is broken.
+_OWN_STATE = re.compile(
+    r"\b(?:spend|spent|spending|costs?|usage|credits?|bills?|billing|failed|failing|failure|errors?|broke|broken|"
+    r"stopped|stuck|waiting|status|history|logs?|happened|today|yesterday|this week|last week|why|fix|fixing|repair|"
+    r"not working|working again|work again|doesn t work|does not work|wrong|isn t running|not running)\b")
 #: How the product works, its API and MCP: the help.
 _HELP = re.compile(
     r"\b(?:how do i|how can i|how to|how does|api|apis|mcp|sdk|docs|documentation|endpoint|python|curl|javascript|"
@@ -212,7 +219,13 @@ def _needs(kind: str, said: str | None, text: str, things: dict) -> str:
     """What the answer reads. `none` only when the model did not ask for more and code finds nothing to read."""
     if kind != "answer":
         return "workspace"
-    if things or _WORKSPACE.search(text) or _ACT.search(text) or _CHANGE_ONLY.search(text):
+    if things or _ACT.search(text):
+        return "workspace"  # a thing it names, or an act said to it: the workspace
+    if _HOW_TO.search(text):
+        # A how-to (F1342): about the product it is the help's, whatever nouns or change it names ("move my
+        # workflows"); about what this workspace spent, or what of theirs failed or is broken, it reads the workspace.
+        return "workspace" if _OWN_STATE.search(text) else "help"
+    if _WORKSPACE.search(text) or _CHANGE_ONLY.search(text):
         return "workspace"  # an act or a change with nothing named is the model's to place, but never talk
     if said in ("workspace", "help"):
         return said
