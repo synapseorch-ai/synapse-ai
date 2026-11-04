@@ -356,13 +356,16 @@ SECRET_NAMED = re.compile(
     r"(?:your|their|its|the)\s+(?:[\w.-]+\s+){0,2}(?:keys?|tokens?|logins?|secrets?)\b(?!\s+(?:dates?|points?|metrics?|"
     r"words?|people|accounts?|questions?|steps?|results?)))")
 #: Prose that asks someone for something: the person addressed ("you'll need to provide", "once you have", "please
-#: paste") or told to be asked ("ask the user for"), then a verb of handing over; or what Synapse AI needs ("I'll need"). "Reminds the team to rotate API keys"
-#: and "the key is kept in the Vault" ask for nothing.
+#: paste") or told to be asked ("ask the user for"), then a verb of handing over; or what Synapse AI needs ("I'll need"),
+#: or what is handed to it ("give me your …", "send it to us": F1313's prod-10, "Just give me your bot token"; never
+#: "send me a digest", a workflow's own words, TRI1's review). "Reminds
+#: the team to rotate API keys" and "the key is kept in the Vault" ask for nothing.
 _ASKING = re.compile(
     r"(?i)\b(?:(?:you(?:'ll|'d|'re| will| would| can| could| should| must| need)?|please|"
     r"(?:ask|prompt|request)(?:s|ed|ing)?\s+(?:the\s+)?(?:user|person|customer|client|caller|them|him|her)s?)"
     r"\b[^.?!\n]{0,60}?\b(?:provide|give|share|send|paste|enter|type|supply|tell|have|ready|for)\b|"
-    r"(?:i|we)(?:'ll| will| would)?\s+need\b)")
+    r"(?:i|we)(?:'ll| will| would)?\s+need\b|"
+    r"(?:give|send|share|paste|tell|post|dm)\s+(?:(?:me|us)\s+(?:your|the)\b|(?:it|them)\s+(?:over\s+)?to\s+(?:me|us)\b))")
 _SENTENCES = re.compile(r"(?<=[.?!])\s+|\n+")
 
 #: Code's line in place of what asked (the manager's net, 10-27).
@@ -370,35 +373,100 @@ NEVER_IN_CHAT = ("A key, a token or a password never goes in this chat: connect 
                  "add the key in Settings → Vault, where it is kept encrypted.")
 
 
+#: Where a secret is said to go, never where it comes from (TRI1's review of F1313): put on its Connect card, in
+#: Settings, the Vault or Variables; the card above or below; not in this chat; never pasted or sent. "Find it in your
+#: dashboard's settings", "I'll keep it secure" and "send it to me privately" name no place for it.
+SAFE_PLACE = re.compile(
+    r"(?i)\b(?:add|enter|type|put|paste|save|store)\b[^.?!\n]{0,40}?\b(?:on|in|into)\s+(?:the\s+|its\s+|a\s+)?"
+    r"(?:connect\s+card|card|settings|vault|variables)\b|"
+    r"\bcard\s+(?:above|below)\b|\bconnect\s+card\b|\bsettings\s*[›>→]\s*vault\b|"
+    r"\bnot\s+(?:here|in\s+(?:this|the)\s+chat)\b|"
+    r"\b(?:never|don'?t|do\s+not)\s+(?:paste|send|share|type|enter|give|post)\b")
+_LIST_ITEM = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
+
+
 def _asks(sentence: str) -> bool:
     asking = _ASKING.search(sentence)
     return asking is not None and SECRET_NAMED.search(sentence, asking.start()) is not None
+
+
+#: Emphasis and code marks, read through; `_` is a space ("`TELEGRAM_BOT_TOKEN`" reads as its words, TRI1's review).
+_MARKUP = re.compile(r"[*`]+")
+#: A secret an item under an asking lead-in names with no determiner ("1. **Bot token** – from BotFather"): the ask is
+#: the lead-in's, so a bare name counts there, and only there (TRI1's review).
+_ITEM_SECRET = re.compile(r"(?i)\b(?:[\w-]+\s+){0,2}(?:tokens?|keys?|passwords?|secrets?)\b")
+#: Words with a secret's name in them that name none: a token limit, a password reset, the key points. Struck from an
+#: item before it is read, so "I'll need: - the token limit for the model" asks for nothing (CI2's single on F1313).
+#: Never "page": a screenshot of an API key page shows the key.
+_NOT_A_SECRET = re.compile(
+    r"(?i)\b(?:tokens?|keys?|passwords?|secrets?)\s+(?:limits?|counts?|budgets?|usage|resets?|dates?|points?|"
+    r"metrics?|words?|people|accounts?|questions?|steps?|results?)\b")
+
+
+def _lead_ins(lines: list[str]) -> dict[int, list[int]]:
+    """Each asking lead-in, by line, with the list items under it: a line that asks and ends in ":" ("To set it up,
+    I'll need:"), then the numbered or bulleted lines right after it (blank lines between them kept)."""
+    out: dict[int, list[int]] = {}
+    for i, lead in enumerate(lines):
+        if not lead.rstrip().endswith(":") or _ASKING.search(lead) is None:
+            continue
+        items = []
+        for j in range(i + 1, len(lines)):
+            if not lines[j].strip():
+                continue
+            if not _LIST_ITEM.match(lines[j]):
+                break
+            items.append(j)
+        out[i] = items
+    return out
+
+
+def _asked_item(line: str) -> bool:
+    """An item under an asking lead-in that names a secret with no safe place for it asks for it (F1313's prod-10:
+    "I'll need:" on one line, "1. **Your Telegram bot token** – from BotFather" on the next; TRI1's shape). Markup is
+    read through. A list under no asking lead-in ("Steps: 1. rotate your API keys") asks for nothing."""
+    plain = _NOT_A_SECRET.sub("", _MARKUP.sub("", line).replace("_", " "))
+    named = SECRET_NAMED.search(plain) is not None or _ITEM_SECRET.search(plain) is not None
+    return named and SAFE_PLACE.search(plain) is None
 
 
 def asks_for_a_secret(text: str, *, strict: bool = True) -> bool:
     """Whether `text` asks the person for a key, a token or a password. `strict`, for a question (or a `cannot`,
     which is said to the person as it is): naming one is asking for it. Otherwise, for prose that describes a
     workflow (a summary, a step, an agent, a reply): only a sentence that asks for one, so a workflow that reminds a
-    team to rotate API keys may still be described."""
+    team to rotate API keys may still be described; and a list item under an asking lead-in that names one with no
+    safe place for it (`_lead_ins`, `_asked_item`: F1313)."""
     if not isinstance(text, str) or not text:
         return False
     if strict:
         return SECRET_NAMED.search(text) is not None
-    return any(_asks(s) for s in _SENTENCES.split(text))
+    lines = text.split("\n")
+    return any(_asks(s) for s in _SENTENCES.split(text)) or any(
+        _asked_item(lines[j]) for items in _lead_ins(lines).values() for j in items)
 
 
 def without_secret_asks(text: str, *, line: str | None = NEVER_IN_CHAT) -> tuple[str, bool]:
-    """`text` with each sentence that asks for a secret taken out, and code's `line` once in their place (none when
+    """`text` with each sentence that asks for a secret taken out, each list item an asking lead-in carries its ask to
+    (whole, F1313) and the lead-in with them when every item went, and code's `line` once in their place (none when
     `line` is None); `(text, whether any was)`. Lines and paragraphs stay as they were."""
     if not asks_for_a_secret(text, strict=False):
         return text, False
-    lines = []
-    for raw in text.split("\n"):
+    raw_lines = text.split("\n")
+    gone: set[int] = set()
+    for lead, items in _lead_ins(raw_lines).items():
+        asked = {j for j in items if _asked_item(raw_lines[j])}
+        gone |= asked
+        if asked and asked == set(items):
+            gone.add(lead)  # every item asked: the lead-in says nothing now
+    out = []
+    for i, raw in enumerate(raw_lines):
+        if i in gone:
+            continue
         parts = re.split(r"(?<=[.?!])(\s+)", raw)
-        kept = "".join(p for i, p in enumerate(parts) if i % 2 or not _asks(p)).strip()
+        kept = "".join(p for n, p in enumerate(parts) if n % 2 or not _asks(p)).strip()
         if kept or not raw.strip():
-            lines.append(kept if raw.strip() else raw)
-    cleaned = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+            out.append(kept if raw.strip() else raw)
+    cleaned = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
     if line:
         cleaned = f"{cleaned}\n\n{line}" if cleaned else line
     return cleaned, True

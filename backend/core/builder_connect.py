@@ -222,6 +222,17 @@ async def _channel(args: dict, options: Options) -> dict:
     from core.messaging import fields
 
     platform = (args.get("platform") or "").strip().lower()
+    # Connecting one is the Channels screen's, a builder's there and on cloud's routes (F1313, 79): one who may not
+    # gets no card they cannot use, and is told who can.
+    from core.builder_actions import _caller
+    from core.product_tools.roles import Role
+
+    role = _caller().role
+    if not role.can_act_as(Role.BUILDER):
+        article = "an" if role.label[:1] in "aeiou" else "a"
+        return {"error": f"Connecting a chat channel needs the builder role, and they are {article} {role.label} here: "
+                         "put up no card, and say someone with the builder role can connect it on the Channels "
+                         "screen.", "role": role.label}
     hosted = options.get("channels")
     offered = hosted if hosted is not None else fields.PLATFORMS
     if platform in ("twilio_voice", "phone", "voice"):

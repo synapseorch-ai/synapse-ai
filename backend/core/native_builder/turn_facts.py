@@ -21,8 +21,10 @@ def card_fact(card: dict) -> dict:
 
 
 def connect_what(card: dict) -> str:
-    """What a Connect card connects, one key per thing: an app's slug, a server's URL, a provider, a tool, a screen."""
-    for part, field in (("app", "slug"), ("server", "url"), ("provider", "id"), ("tool", "name"), ("screen", "id")):
+    """What a Connect card connects, one key per thing: an app's slug, a server's URL, a provider, a tool, a chat
+    platform, a screen."""
+    for part, field in (("app", "slug"), ("server", "url"), ("provider", "id"), ("tool", "name"),
+                        ("channel", "platform"), ("screen", "id")):
         if isinstance(card.get(part), dict) and card[part].get(field):
             return str(card[part][field]).lower()
     return str(card.get("title") or "").lower()
@@ -30,7 +32,7 @@ def connect_what(card: dict) -> str:
 
 def connect_what_args(args: dict) -> str:
     """What a `prepare_connection` call would connect, as `connect_what` keys the card it would put up."""
-    for field in ("catalog_slug", "url", "provider", "tool_name", "screen"):
+    for field in ("catalog_slug", "url", "provider", "tool_name", "platform", "screen"):
         if args.get(field):
             return str(args[field]).strip().lower()
     return str(args.get("title") or "").strip().lower()
