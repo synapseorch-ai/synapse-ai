@@ -28,6 +28,8 @@ from core.secret_scrub import KEY_HEADER
 
 #: The most curls one text is read for.
 MAX_CURLS = 3
+#: A curl's text with no URL in it: the word in a sentence, never a command.
+NO_URL = "it names no URL"
 #: A query parameter that carries a key, by its name: a workspace variable, never a value in the tool.
 KEY_QUERY = re.compile(r"(?i)^(?:api[_-]?key|apikey|key|token|access[_-]?token|auth|secret|client[_-]?secret|"
                        r"signature|sig)$")
@@ -58,7 +60,8 @@ def curls_in(text: str) -> list[str]:
         chunk = text[start:stop]
         if end := _END.search(chunk):
             chunk = chunk[:end.start()]
-        if chunk.strip():
+        # The word in a sentence ("this curl works from my terminal: …") names no URL: no curl, never numbered (CAP3).
+        if chunk.strip() and from_curl(chunk.strip()).get("problem") != NO_URL:
             out.append(chunk.strip())
         if len(out) == MAX_CURLS:
             break
@@ -144,7 +147,7 @@ def from_curl(command: str) -> dict[str, Any]:
         i += 1
 
     if not urls:
-        return {"problem": "it names no URL"}
+        return {"problem": NO_URL}
     if len(urls) > 1:
         return {"problem": "it calls more than one URL: a tool calls one URL, so paste one call at a time"}
     url = urls[0] if "://" in urls[0] else f"https://{urls[0]}"
