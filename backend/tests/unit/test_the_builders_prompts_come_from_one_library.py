@@ -147,7 +147,10 @@ from core.native_builder import prompt_lint, seed
 #: spending, runs or results reads it, 47b11d21….
 #: F1310: # Changing rule 22 (a "don't know" is answered with a change to approve) and step_change_clarify, run out,
 #: back to step_plan, 558f132c….
-BUNDLE_SHA256 = "60e18a4dfe0d60e80309a73bcf8fad71d9aa10346b20fdcc947e7d5d34342694"
+#: F1308: rule 12 under # Changing splits a range or a list so the rest reads as it did (TRI1), 7888cfe6….
+#: F1322: the planner's rule 5 (an HTTP tool whose address it knows is made in the change, by its own fields), on
+#: F1310 and F1308 together, e9b9dcbe….
+BUNDLE_SHA256 = "8270965471e29f1ad5fccc52a381bd9880a040a253ce776108a77241fce9c1df"
 
 
 def _sha(definitions) -> str:

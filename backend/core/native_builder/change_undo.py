@@ -128,6 +128,9 @@ def _inverse(applied: dict) -> tuple[dict | None, str | None]:
     if name == "create_schedule":
         return {"op": "delete_schedule", "target": _target(applied), "fields": {},
                 "says": "undo: the schedule it made"}, None
+    if name == "create_tool":
+        return {"op": "delete_tool", "target": _target(applied), "fields": {},
+                "says": "undo: the HTTP tool it made"}, None
     if name == "delete_schedule":
         runs = {"kind": "workflow" if before.get("target_type") == "orchestration" else "agent",
                 "id": before.get("target_id")}
