@@ -105,3 +105,7 @@ class TestTheCard:
         before_return = build.split("return {", 1)[0]
         assert ".split('\\n')" in before_return, "the line's first line is read apart from the lines under it"
         assert "exact" in before_return and "exact" in build.split("const detail", 1)[1].split(";", 1)[0]
+        # Its before and after keep a line each, as on the review: the row's detail shows the line break.
+        cards = (self.ROOT / "cards.tsx").read_text()
+        detail_span = cards[cards.index("{step.detail &&"):].split("</span>", 1)[0]
+        assert "whitespace-pre-line" in detail_span and "join('\\n')" in before_return
