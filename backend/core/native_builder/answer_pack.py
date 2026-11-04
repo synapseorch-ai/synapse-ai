@@ -157,7 +157,8 @@ def failure_said(block: dict | None) -> str:
 
 def build_pack(*, routed: dict, workspace_name: str, profile: str, asker_name: str, asker_role: Role, last: str,
                capabilities: str, help_hits: list[dict], named: list[dict], connect: str = "",
-               workflows: list[str] | None = None, failure: str = "") -> str:
+               workflows: list[str] | None = None, failure: str = "", live_fact: str = "",
+               may_build: bool = True) -> str:
     """The pack's text, section by section."""
     needs = routed.get("needs") or "none"
     described = describe_workspace(workspace_name, "" if profile.strip().startswith(_NOT_RECORDED) else profile)
@@ -182,6 +183,11 @@ def build_pack(*, routed: dict, workspace_name: str, profile: str, asker_name: s
     if connect:
         parts.append(connect)
     parts.append(capabilities.strip())
+    if live_fact:
+        # The fact the talk step offers an agent for (F1382); building one is a builder's, so a viewer is told who.
+        said = f"What they asked for is outside this workspace and changes over time: {live_fact}."
+        parts.append(said if may_build else f"{said} Building an agent that gets it is for an owner or a builder of "
+                                            "this workspace: say they can ask for one.")
     if needs == "help":
         parts.append("What this product's help says about the question:\n" + (
             "\n".join(_hit_lines(help_hits)) if help_hits else
@@ -355,10 +361,12 @@ async def answer_pack(args: dict, server_module: Any, events: list[dict]) -> dic
         routed=routed, workspace_name=str(state.get("workspace_name") or ""),
         profile=str(state.get("org_profile") or ""), asker_name=str(state.get("asker_name") or ""),
         asker_role=_caller().role, last=str(turn.get("last") or ""),
-        capabilities=builder_help._capabilities or builder_help.SELF_HOSTED_CAPABILITIES,
+        capabilities=builder_help.capabilities(examples=True),
         help_hits=builder_help.search(message) if needs == "help" else [],
         named=named if needs == "workspace" else [], connect=connect,
-        workflows=await _workflows_said(turn, named, server_module), failure=failed)
+        workflows=await _workflows_said(turn, named, server_module), failure=failed,
+        live_fact=str(routed.get("live_fact") or "").strip() if routed.get("overridden_by") == "live_fact" else "",
+        may_build=state.get("may_change") is not False)
     return {"needs": needs, "pack": pack}
 
 
@@ -442,16 +450,44 @@ def no_change_claimed(text: str, writes: Any = None) -> str:
     return f"{rest}\n\n{NOTHING_CHANGED_HERE}" if rest else NOTHING_CHANGED_HERE
 
 
+# ── a live fact's offer is always made (F1382) ────────────────────────────────────────────────────────────────────
+
+def offer_line(fact: str) -> str:
+    """Code's own offer, said when the reply to a live fact did not ask: fixed words but the fact, as NO_YES_HERE."""
+    return (f"I can build an agent that gets {fact} for you: run it now, and on a schedule if you like, sent by email "
+            "or a chat channel. Want it?")
+
+
+def offer_kept(text: str, offered: Any) -> str:
+    """`text`, ending with the offer when this turn kept one (`classify.OFFERED_KEY`) and the reply does not end
+    asking (F1382): the next turn's yes takes it, so a yes always has an offer behind it."""
+    fact = str(offered.get("fact") or "").strip() if isinstance(offered, dict) else ""
+    if not fact or str(text or "").rstrip().endswith("?"):
+        return text
+    return f"{str(text or '').rstrip()}\n\n{offer_line(fact)}".strip()
+
+
+def checked_answer(said: str, writes: Any, offered: Any) -> str:
+    """The answer as said: no change claimed that this turn did not make (F1323); no yes asked for that nothing can
+    take (F1243), unless this turn kept a live fact's offer, which the next turn's yes takes; and that offer made
+    (F1382)."""
+    text = str(said or "")
+    kept = isinstance(offered, dict) and bool(str(offered.get("fact") or "").strip())
+    return offer_kept(no_change_claimed(text if kept else no_yes_offered(text), writes), offered)
+
+
 async def check_answer(args: dict, server_module: Any, events: list[dict]) -> dict:
     """After every answer (talk, help, workspace, the planner's plain reply): the run's answer with no yes asked for
-    that nothing can take (F1243), and no change claimed that this turn did not make (F1323)."""
+    that nothing can take (F1243), no change claimed that this turn did not make (F1323), and a live fact's offer made
+    (F1382)."""
     from core.native_builder.change_tools import _run
+    from core.native_builder.classify import OFFERED_KEY
     from core.orchestration.run_writes import WRITES_KEY
 
     _, run = _run()
     state = run.shared_state if run is not None else {}
     said = state.get("summary") or ""
-    return {"object": "answer_checked", "text": no_change_claimed(no_yes_offered(str(said)), state.get(WRITES_KEY))}
+    return {"object": "answer_checked", "text": checked_answer(said, state.get(WRITES_KEY), state.get(OFFERED_KEY))}
 
 
 CHECK_SCHEMA = {"type": "function", "function": {

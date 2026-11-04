@@ -218,8 +218,15 @@ CAPABILITIES_SCHEMA = {
 }
 
 
+def capabilities(examples: bool = False) -> str:
+    """Who Synapse AI is (F1382), then what this host's product does and does not do: every route reads this. The
+    answering steps also read what the product delivers, with an example of each (`examples`); the planner never."""
+    delivers = f"{feature_census.WHAT_IT_DELIVERS.strip()}\n\n" if examples else ""
+    return f"{feature_census.WHO_YOU_ARE.strip()}\n\n{delivers}{(_capabilities or SELF_HOSTED_CAPABILITIES).strip()}"
+
+
 async def product_capabilities(args: dict, server_module: Any, events: list[dict]) -> dict:
-    return {"capabilities": _capabilities or SELF_HOSTED_CAPABILITIES}
+    return {"capabilities": capabilities()}
 
 
 register_builder_tool(HELP_SCHEMA, search_help)

@@ -9,4 +9,5 @@
 - `providers`: the outside services the message names, as it writes them. Empty when it names none.
 - `also`: a second, separate request in the same message, in its words. Empty otherwise.
 - `language`: the language the message is written in, e.g. en, hi.
+- `live_fact`, for an answer: what they ask to be told from outside this workspace that changes over time (an exchange rate, a flight's status, a score), in their words. Empty when the answer is in this workspace or the product, or when they ask for something to be built.
 - `feature`: `evals` when the ask is to measure or read how well a workflow does: an eval, a rubric that scores its runs, golden test cases, running them, or its scores and regressions. Then `kind` is `change`, even when the message says 'create' or 'build': Evals does it, never a new workflow. Leave it out otherwise.

@@ -164,7 +164,9 @@ from core.native_builder import prompt_lint, seed
 #: `needs` (# Changing rules 2 and 20), 815d6552… (on fix-forward 18).
 #: F1377 + F1379 (TRI1): rule 23 makes a curl's one-call value an input, and the planner holds get_skill (its tools,
 #: # Changing rule 1, rule 26: a skill read before update_skill), e516d60f… (on fix-forward 19).
-BUNDLE_SHA256 = "e516d60f717bd2e07e876e37fec7f8f299a9d0897f4fda05e5070a8556099f23"
+#: F1382 (TRI1): the talk step offers the agent for a live fact and fits "what can you do" to the workspace,
+#: and classify_kinds types `live_fact`, 7c155764… (on fix-forward 19).
+BUNDLE_SHA256 = "7c155764be21b6e2705b85b343eccec258e90a35433f03a1b07aef5dfb9b02db"
 
 
 def _sha(definitions) -> str:

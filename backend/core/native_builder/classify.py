@@ -121,6 +121,22 @@ def _fix_half(message: str, said: str | None) -> str:
     return rest or FIX_IT
 
 
+#: A question about Synapse AI itself (F1382): answered by the talk step, with things it could build here.
+_ABOUT_YOU = re.compile(r"\b(?:what|how) (?:can|could) (?:you|synapse ai) (?:do|help)\b|\bwhat (?:do|are) you\b|"
+                        r"\bwho are you\b|\bwhat can i (?:ask|use) you for\b")
+#: Words about this workspace's own things or state (F1382): a fact that changes over time here is read, never offered.
+#: `_WORKSPACE` without its time words, which an outside fact says too ("the rate today").
+_OURS = re.compile(
+    r"\b(?:agents?|workflows?|orchestrations?|runs?|ran|schedules?|scheduled|tools?|skills?|channels?|boards?|cards?|"
+    r"knowledge|bases?|credits?|usage|spend|spent|spending|bills?|billing|keys?|variables?|widgets?|failed|failing|"
+    r"failure|errors?|broke|broken|stuck|waiting|logs?|history|workspace|synapse)\b")
+#: What a turn that offered to build the agent for a live fact keeps (F1382), `{fact, ask}`, for a builder only; and
+#: the next turn's mark that its yes took the offer, which goes to the build route through the role door.
+OFFERED_KEY = "offered_build"
+OFFER_TAKEN_KEY = "offer_taken"
+#: How a route that leaves the talk step's work to code reads: nothing else moved it.
+_MAY_TALK = (None, "question", "musing")
+
 _KINDS = {"schedule": ("schedule", "schedules"), "agent": ("agent", "agents"),
           "workflow": ("workflow", "workflows", "orchestration"), "recording": ("recording", "recordings")}
 _STOP = frozenset("the a an my our this that for to of and on off in at with every each daily nightly".split())
@@ -194,7 +210,10 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
     also = request.also
     # Why something failed is said before it is fixed (F1378, prod-07): the answer reads the failed run, and the fix
     # waits for after it. The quick model's order of the two asks never decides it.
-    if kind in ("change", "build") and by is None and _CAUSE.search(text):
+    if state.get(OFFER_TAKEN_KEY):
+        # A yes to the offer to build the agent for a live fact (F1382): its ask is this turn's message.
+        kind, by = "build", "offer_taken"
+    elif kind in ("change", "build") and by is None and _CAUSE.search(text):
         kind, by, also = "answer", "cause_first", _fix_half(message, request.also)
     # A request to run, schedule or repeat a recording builds the workflow whose Browser step replays it; a name that
     # is a workflow's too is asked about first, on the change route (F1231). An edit of the recording is the app's.
@@ -230,6 +249,12 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
         kind, by = "research", "provider_unknown"
 
     needs = _needs(kind, request.needs, text, things)
+    if kind == "answer" and by in _MAY_TALK and not things and not request.providers and _ABOUT_YOU.search(text):
+        # What it can do for them is the talk step's, from the workspace's description (F1382), never the help's list.
+        needs, by = "none", "about_you"
+    elif kind == "answer" and by in _MAY_TALK and offers(request, text, things):
+        # A fact from outside that changes: the talk step offers the agent that gets it, never a read here (F1382).
+        needs, by = "none", "live_fact"
     # What a recording's request names is the recording: not the conversation's last build (F1229's "it"), nor a
     # workflow found by the recording's own name.
     source = state.get("current_orchestration_source")
@@ -243,6 +268,18 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
         route = "step_not_yours"
     return Routed(**{**request.model_dump(), "kind": kind, "needs": needs, "also": also}, route=route,
                   overridden_by=by, model_kind=request.kind, model_needs=request.needs)
+
+
+def offers(request: Request, text: str, things: dict) -> bool:
+    """Whether the live fact the model typed is one to offer an agent for (F1382): never on what the message names
+    here, a how-to, an act, or this workspace's own state ("how many runs failed today?")."""
+    return bool((request.live_fact or "").strip()) and not things and not _ACT.search(text) and not \
+        _HOW_TO.match(text) and not _OURS.search(text)
+
+
+def offer_ask(fact: str) -> str:
+    """The build a yes to the offer asks for (F1382), as the person would ask it."""
+    return f"Build an agent that gets {fact} each time it runs, so I can run it now and put it on a schedule."
 
 
 def _needs(kind: str, said: str | None, text: str, things: dict) -> str:
@@ -385,6 +422,10 @@ async def _classified(request: Request, events: list[dict]) -> dict:
     if run is not None:
         # The role door (`step_may_change`) and the build route read the legacy intent.
         run.shared_state["intent"] = intent_of(routed)
+        if routed.overridden_by == "live_fact" and _may("build", state):
+            # The offer the talk step makes, kept for the next turn's yes (F1382); a viewer's turn keeps none.
+            fact = (routed.live_fact or "").strip()
+            run.shared_state[OFFERED_KEY] = {"fact": fact, "ask": offer_ask(fact)}
         if routed.overridden_by == "recording_or_workflow":
             # The change route asks which, once (F1231).
             named = _named(_words(message), inventory).get("recording") or []

@@ -417,6 +417,12 @@ class Request(_Written):
     providers: list[str] = Field(default_factory=list, description="Outside services the message names")
     also: str | None = Field(None, description="A second request in the same message, in its words, if any")
     language: str | None = Field(None, description="The language the person wrote in, e.g. en, hi")
+    #: A fact from outside that changes over time, asked for now (F1382): code sends it to the talk step, which offers
+    #: to build the agent that gets it. Code checks it against what the message names (`classify.override`).
+    live_fact: str | None = Field(
+        None, description="A fact from outside this workspace that changes over time, which the message asks to be "
+                          "told now (an exchange rate, a flight's status, a score), in its words. Empty when it asks about this "
+                          "workspace or the product, or for something to be built")
     #: Whether this message goes on with the previous one's request (F1226): the questions it asked carry only when
     #: true. Left out or unsure starts afresh.
     continues: bool | None = Field(
@@ -524,7 +530,7 @@ class Turn(BaseModel):
     """
 
     route: Literal["pick", "card_label", "plan_answer", "pressed", "yes_without_review", "next_request", "classify",
-                   "effort_continue", "effort_build", "offer_pick"]
+                   "effort_continue", "effort_build", "offer_pick", "offer_taken"]
     #: What a pick chose: an act's call (code puts its card up) or a change's chosen id (the change route takes it).
     picked: str | dict[str, Any] | None = None
     card: str | None = None
@@ -533,7 +539,8 @@ class Turn(BaseModel):
     #: Where the turn goes next (F978): code said it all, back to the change route with a pick, or on to classify.
     then: Literal["said", "change", "classify", "build"] = "classify"
     #: The message classify reads: the person's, the request a yes took from the queue (`next_request`), or the ask a
-    #: pick from the last reply's options goes back on, with the choice (`offer_pick`, F1347).
+    #: pick from the last reply's options goes back on, with the choice (`offer_pick`, F1347), or the build a yes to the
+    #: offer for a live fact asks for (`offer_taken`, F1382).
     message: str | None = None
 
 
