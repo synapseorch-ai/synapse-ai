@@ -97,7 +97,9 @@ class TestWhatItSays:
 
         first = " ".join(WHO_YOU_ARE.split())
         assert first.startswith("Who you are: Synapse AI") and "build" in first and "schedule" in first, first
-        assert "plain steps" in first and "an agent where the work needs judgement" in first, first
+        assert "plain steps" in first and "the work needs judgement" in first, first
+        # An agent people ask things of is # Structure rule 2's, never a chain of steps (CAP3's gate c1, cap-02; eb).
+        assert "an agent where people ask it things" in first, first
         # The planner reads it: an approval named as a step could become a Human step nobody asked for (F1368,
         # fix-02; eb). A person in the loop is WHAT_IT_DELIVERS', which only the answer pack reads.
         assert "approv" not in WHO_YOU_ARE.lower(), WHO_YOU_ARE
