@@ -130,7 +130,7 @@ SUBMIT = {"type": "function", "function": {
         "board_describe {text}; board_access {who, access: add | work | none}; board_card_text {title, text}; recording_approve_edit and "
         "recording_discard_edit {edit_id}; recording_rename {name}; settings_set (target {kind: settings, id: "
         "workspace}) {<setting's name>: <new value>, …}, only the settings topic `settings` lists; talk_to_agent "
-        "{message}; dead_job_retry and dead_job_discard (target {kind: dead_job, id}); support_request (target {kind: "
+        "{message, needs: [each tool or knowledge base its answer needs, by name]}; dead_job_retry and dead_job_discard (target {kind: dead_job, id}); support_request (target {kind: "
         "support, name: its subject}) {text, category, severity, run_id}; eval_rubric {name, "
         "criteria: [{name, weight, guidance}], floor} or {rubric}; eval_cases {cases: [{name, input, notes}]} or "
         "{count, steer}; eval_run and eval_cancel {golden_set}; knowledge_edit_document {find: the passage as it "
@@ -151,9 +151,19 @@ SUBMIT = {"type": "function", "function": {
     ),
     "parameters": {"type": "object", "properties": {
         "ops": {"type": "array", "items": _op_schema()},
+        "asked": {"type": "array", "description": (
+            "Always, with ops: every part of what the person asked, one entry per thing they want, in their words, with the numbers of "
+            "the ops that do it (1 is the first; one op may serve several parts, a part may take several ops, an op "
+            "another needs first goes under the part it serves), or why_not: why this change does not do it (another "
+            "route builds it, a card does it, it can't be done here). One part and one op for a simple change."),
+            "items": {"type": "object", "properties": {
+                "part": {"type": "string"},
+                "ops": {"type": "array", "items": {"type": "integer"}},
+                "why_not": {"type": "string"},
+            }, "required": ["part"]}},
         "undo_of": {"type": "string", "description": "The key of the change to undo, from the context you were "
                                                      "given."},
-    }},
+    }, "required": ["asked"]},
 }}
 
 _SUBJECT = ("The thing the question is about, in a few words: the knowledge base 'competitor_pricing', the Monday "
@@ -302,10 +312,58 @@ async def submit_change(args: dict, server_module: Any, events: list[dict]) -> d
               if isinstance(op, dict) and asks_for_a_secret(_text(op.get("says")), strict=False)]
     if not found and run is not None and (nudge := _curl_unnamed(ops, run.shared_state)):
         found.append(nudge)
+    asked = args.get("asked") if isinstance(args.get("asked"), list) else []
+    if not found and ops and asked and (gaps := _unaccounted(ops, asked)) and _send_back(run):
+        found += gaps
     if found:
         return {"error": "Fix these and call submit_change again: " + "; ".join(found)}
-    change = Change.model_validate({"ops": ops, "undo_of": undo_of or None})
+    parts = [p for p in asked if isinstance(p, dict) and _text(p.get("part"))]
+    change = Change.model_validate({"ops": ops, "asked": (parts or None) if ops else None, "undo_of": undo_of or None})
     return {"finish": "submit_change", **change.model_dump(exclude_none=True)}
+
+
+#: How often a change whose parts don't account for the ask is sent back in a run (F1364): twice, never a loop; after
+#: that it goes on as written, and what it says it isn't doing is said.
+ASKED_SEND_BACKS = 2
+_ASKED_SENT = "_asked_sent_back"
+
+
+def _unaccounted(ops: list, asked: list) -> list[str]:
+    """What `asked` leaves unsaid (F1364): a part with neither ops nor why_not, an op no part names, an op number that
+    is no op. One op may serve several parts and one part several ops. A change sent without it is taken as it was
+    (one op is one part; code can't see a part nobody wrote down, so the list is the planner's to give)."""
+    out, named = [], set()
+    for part in asked:
+        if not isinstance(part, dict) or not _text(part.get("part")):
+            out.append("each entry of asked needs its part, in the person's words")
+            continue
+        numbers = [n for n in part.get("ops") or [] if isinstance(n, int)]
+        if not numbers and not _text(part.get("why_not")):
+            out.append(f"part {_quoted(_text(part['part']))}: no op does it and no why_not says why")
+        if bad := [n for n in numbers if not 1 <= n <= len(ops)]:
+            out.append(f"part {_quoted(_text(part['part']))}: op {bad[0]} is not one of the ops")
+        named.update(numbers)
+    out += [f"op {n}: no part of the ask names it; put it under the part it serves" for n in range(1, len(ops) + 1)
+            if n not in named]
+    return out
+
+
+def _send_back(run: Any) -> bool:
+    """Whether this run may send its change back for its parts once more (`ASKED_SEND_BACKS`); counts the one sent."""
+    if run is None:
+        return True
+    sent = int(run.shared_state.get(_ASKED_SENT) or 0)
+    if sent >= ASKED_SEND_BACKS:
+        return False
+    run.shared_state[_ASKED_SENT] = sent + 1
+    return True
+
+
+def not_done(asked: Any) -> str:
+    """The parts of the ask a change says it isn't doing, and why, as the review and the answer say them (F1364)."""
+    lines = [f"{_text(p.get('part'))}: {_text(p.get('why_not'))}" for p in asked or []
+             if isinstance(p, dict) and _text(p.get("why_not")) and not p.get("ops")]
+    return ("Not done by this change: " + "; ".join(lines) + ".") if lines else ""
 
 
 #: The kind each new thing of this step's change was first submitted as, by name (F1242), engine-private.
@@ -1710,7 +1768,22 @@ async def _runs_found(chosen: dict | None, n: int, item: dict, picks: list[dict]
 
 async def check_change(args: dict, server_module: Any, events: list[dict]) -> dict:
     """Every fact about the planner's change, decided here; see the module's docstring. `draft` is the planner's
-    finish (E2's object); the person and their role are the run's, read now, never an argument."""
+    finish (E2's object); the person and their role are the run's, read now, never an argument. What its parts say it
+    isn't doing, and why, is said with whatever it does (F1364), on the review or as the answer."""
+    out = await _check_change(args, server_module, events)
+    draft = args.get("draft")
+    if isinstance(draft, str):
+        try:
+            draft = json.loads(draft)
+        except ValueError:
+            draft = None
+    left = not_done((draft or {}).get("asked")) if isinstance(draft, dict) else ""
+    if left and out.get("outcome") in ("review", "said", "create", "steps"):
+        out["say"] = " ".join(x for x in (out.get("say") or "", left) if x)
+    return out
+
+
+async def _check_change(args: dict, server_module: Any, events: list[dict]) -> dict:
     from core.builder_actions import _FeatureOff, _NotOffered, _offer, _pressed, feature_switch
     from core.product_tools import areas, registry
     from core.product_tools.approved import digest

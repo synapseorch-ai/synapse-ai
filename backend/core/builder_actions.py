@@ -146,6 +146,8 @@ SCHEMA = {
                 "golden_set": {"type": "string", "description": "The golden set's name; omit for the workflow's one."},
                 "recording": {"type": "string", "description": "The recording's name or id."},
                 "agent": {"type": "string", "description": "talk_to_agent: the agent's name or id."},
+                "needs": {"type": "array", "items": {"type": "string"},
+                          "description": "talk_to_agent: each tool or knowledge base its answer needs, by name."},
                 "job_id": {"type": "string", "description": "dead_job_retry, dead_job_discard: from topic `dead_jobs`."},
                 "category": {"type": "string", "enum": ["bug", "question", "billing", "account", "feature", "security"]},
                 "severity": {"type": "string", "enum": ["blocking", "degraded", "minor"]},
@@ -648,9 +650,36 @@ async def _talk(args: dict) -> dict:
     message = str(args.get("message") or "").strip()
     if not message:
         raise _NotOffered("Say what to ask it.")
+    needs = [str(n).strip() for n in args.get("needs") or [] if str(n).strip()]
+    if needs and (gone := await _not_held(agent, needs)):
+        # An agent without the tool answers from nothing it can read (F1364, cap-02): no card, and why.
+        holders = [f'"{a.get("name")}"' for a in agents if a is not agent and not await _not_held(a, needs)]
+        has = ("has" if len(holders) == 1 else "have") + (" it" if len(needs) == 1 else " them")
+        raise _NotOffered(f'"{agent.get("name")}" ' + "; ".join(gone)
+                          + (f". {', '.join(holders)} {has}." if holders else "."))
     call = {"message": message, "agent": agent["id"], "wait_seconds": TALK_WAIT_SECONDS}
     return _card(f'Ask "{agent.get("name")}"', detail=f"{message[:500]}\n{await _reply_cost(agent, message)}",
                  buttons=[await _button("Ask", "chat_with_agent", call)])
+
+
+async def _not_held(agent: dict, needs: list[str]) -> list[str]:
+    """What of `needs` the agent does not hold, each said with how to give it (F1364): a knowledge base of this
+    workspace, by name or id, is held when the agent answers from it; any other name is a tool, held when the agent
+    is given it, or every tool (`all`)."""
+    from core.knowledge import bases
+
+    kbs = await bases.list_bases()
+    tools, knows = set(agent.get("tools") or []), set(agent.get("knowledge") or [])
+    gone: list[str] = []
+    for need in needs:
+        kb = next((k for k in kbs if need == k.id or need.casefold() == k.name.casefold()), None)
+        if kb is not None:
+            if kb.id not in knows:
+                gone.append(f'does not answer from the knowledge base "{kb.name}": add it to its `knowledge` first '
+                            "(set_agent_settings), or ask an agent that does")
+        elif "all" not in tools and need not in tools:
+            gone.append(f"has no `{need}`: give it the tool first (set_agent_tools), or ask an agent that has it")
+    return gone
 
 
 async def _dead_job(action: str, args: dict) -> dict:

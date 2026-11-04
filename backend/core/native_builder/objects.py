@@ -492,10 +492,20 @@ class ChangeOp(_Written):
         return _change_ops.OPS[self.op].is_act
 
 
+class AskedPart(_Written):
+    """One part of what the person asked, and what the change does about it (F1364): its ops, or why not here."""
+
+    part: str = Field(description="The part, in the person's words")
+    ops: list[int] = Field(default_factory=list, description="The numbers of the ops that do it (1 is the first)")
+    why_not: str | None = Field(None, description="Why it is not done by this change, when no op does it")
+
+
 class Change(_Written):
     """What the change planner writes (`submit_change`)."""
 
     ops: list[ChangeOp] = Field(default_factory=list)
+    #: Every part of the ask, each with the ops that do it or why not (F1364: cap-02's two parts dropped unsaid).
+    asked: list[AskedPart] | None = None
     questions: list[str] = Field(default_factory=list)
     #: "Undo that": the board card of the change to undo. Code builds the inverse ops from its record (F797).
     undo_of: str | None = None
