@@ -13680,9 +13680,11 @@ async def _brw_hero(page, region) -> list[str]:
       return {img: r && r.width, left: dr.left, right: dr.right, vw: window.innerWidth, vh: window.innerHeight,
               wide: document.documentElement.scrollWidth <= window.innerWidth + 1};
     }""")
-    # Wide, the column's picture is near the most a 16:10 page can be under the dialog's height (1268 of 1600×900):
-    # large there is never smaller than the column's; on a phone it is the screen's width.
-    if not large["img"] or large["img"] < got["w"] * (0.98 if large["vw"] > 600 else 0.85):
+    # At 1600×900 the column's picture is near the most a 16:10 page can be under the dialog's height (1268), so
+    # Enlarge is never smaller there; on a wider screen (1920×1080) it is larger, by 5% at least; on a phone it is
+    # the screen's width (eb 11-04).
+    need = 1.05 if large["vw"] >= 1900 else 1.0 if large["vw"] > 600 else 0.85
+    if not large["img"] or large["img"] < got["w"] * need:
         bad.append(f"Enlarge does not show the page large: {large} against {got['w']}")
     if large["left"] < 0 or large["right"] > large["vw"] + 1 or not large["wide"]:
         bad.append(f"the enlarged page does not fit the screen: {large}")
@@ -13748,17 +13750,18 @@ async def check_brwrunpage(browser) -> str:
         # Live: the stream stays open, as a running run's does.
         _M2B_STREAM = events
         live = {**_M2B_RUNS["run_smoke_m2b_done"], "status": "running", "ended_at": None}
-        ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done", runs={"run_smoke_m2b_done": live},
-                                       before=_held_frames("bsR"))
-        try:
-            region = page.get_by_role("region", name="Live browser")
+        for width in (WIDE, (1920, 1080)):  # on a wider screen Enlarge must enlarge (eb 11-04)
+            ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done", width=width,
+                                           runs={"run_smoke_m2b_done": live}, before=_held_frames("bsR"))
             try:
-                await region.wait_for(timeout=8_000)
-                bad += await _brw_hero(page, region)
-            except Exception as e:
-                bad.append(f"a running run with a browser shows no live browser ({str(e)[:120]})")
-        finally:
-            await ctx.close()
+                region = page.get_by_role("region", name="Live browser")
+                try:
+                    await region.wait_for(timeout=8_000)
+                    bad += [f"{width[0]}×{width[1]}: {b}" for b in await _brw_hero(page, region)]
+                except Exception as e:
+                    bad.append(f"{width[0]}: a running run with a browser shows no live browser ({str(e)[:120]})")
+            finally:
+                await ctx.close()
 
         # Ended: the viewer, from the kept screenshots.
         _M2B_STREAM = events + _frame({"type": "stream_complete"})
