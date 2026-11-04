@@ -42,6 +42,16 @@ ALLOWED: dict[str, dict[str, bool]] = {
     "browser_run_recording": {"open_world": True},
 }
 
+def held_by(tools: list, agent_type: str | None) -> list:
+    """What an agent holds at run time: its own tools and, a Browser agent, the browser's however it was made (DESIGN
+    #3). The one rule the engine gives it (`react_engine._type_tools`) and the builder holds it to (decision 4, its
+    confirm policy; F1301)."""
+    tools = list(tools)
+    if agent_type == "browser" and "all" not in tools:
+        tools += [name for name in ALLOWED if name not in tools]
+    return tools
+
+
 #: Actions after which the page may look different: each gets a screenshot.
 CHANGES_PAGE = frozenset(ALLOWED) - {"browser_snapshot", "browser_find", "browser_wait_for", "browser_hand_over",
                                      "browser_run_recording"}
