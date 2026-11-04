@@ -19,6 +19,24 @@ async def test_a_replay_that_ran_to_its_end_leaves_nobody_driving():
     assert s.state()["wheel"] == "nobody" and s.state()["replaying"] is False
 
 
+async def test_an_unattended_replays_send_list_and_the_agents_gate_outlast_its_idle():
+    """A page may send late (test_browser_host_e2e's late send): the replay's own send list, and the agent's gate
+    over what the page sends, stay until the agent's next call or the next replay, idle or not."""
+    s = _session()
+    sending = [{**STEPS[0], "sends": ["POST shop.example"]}, *STEPS[1:]]
+    await s.replay(sending, {}, unattended=True, recording_id="rec_e014a4ab03517d2ee981")
+    assert s.state()["wheel"] == "nobody" and s.idle
+    assert s.replay_sends == {"POST shop.example"}, "the send list outlasts the replay's end"
+    assert s.gates_as_agent(), "what the page sends now is held to the agent's rules, as while the replay drove"
+
+
+async def test_a_person_who_took_over_is_never_gated_as_the_agent():
+    s = _session()
+    s.page.during["https://example.com/"] = s.take
+    await _replay(s)
+    assert not s.gates_as_agent()
+
+
 async def test_the_agents_next_call_takes_the_idle_browser_back():
     s = _session()
     await _replay(s)

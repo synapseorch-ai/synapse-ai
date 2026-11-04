@@ -322,10 +322,16 @@ class Session:
             _offer(q, {"closed": True})
 
     # ── the network gate ─────────────────────────────────────────────────────
+    def gates_as_agent(self) -> bool:
+        """Whether what the page sends now is held to the agent's rules: its wheel, or its idle browser between its
+        calls (F1376: a replay that ran to its end goes idle, and an unattended replay's send list, its sites and the
+        money backstop hold for what the page sends late, as they did while it drove)."""
+        return self.wheel == "agent" or (self.wheel == "nobody" and self.idle)
+
     async def _route(self, route) -> None:
         req = route.request
         # As the request starts, before any wait: the replay's send list, and whether a replay is running.
-        agent, only, replaying = self.wheel == "agent", self.replay_sends, self.replaying is not None
+        agent, only, replaying = self.gates_as_agent(), self.replay_sends, self.replaying is not None
         try:
             nav = req.is_navigation_request()
             top = nav and _is_main_frame(req)
@@ -389,7 +395,7 @@ class Session:
         self.banner = {"kind": "send", "reason": reason,
                        "held": {"method": req.method.upper(), "url": req.url, "money": True}}
         self.handover = {"kind": "send", "reason": reason}
-        self.wheel = "nobody"
+        self.wheel, self.idle = "nobody", False  # a held send is the person's, never an idle browser to take back
         self._note("guard", "held", f"a {req.method.upper()} to {host}")
         self._push_state()
         try:
