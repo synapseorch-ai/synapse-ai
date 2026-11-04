@@ -17,6 +17,7 @@ from core.browser import client as _browser_client
 from core import chat_turns as _chat_turns
 from core.telemetry import spans as _spans
 from core.tool_result import mcp_text
+from core import tool_availability as _tool_availability
 from core.tool_scope import call_kwargs_for
 from core.vault import maybe_vault, MentionReader
 from core.compaction import maybe_compact
@@ -1293,6 +1294,10 @@ async def run_agent_step(
         _log.debug(f"RUN_AGENT: aggregate_all_tools done, tool_count={len(all_tools)}")
     allowed_tools = narrow_allowed_tools(allowed_tools_override, _type_tools(active_agent))
     agent_type = active_agent.get("type", "conversational")
+    # The app tools it names that this turn does not offer, each with its app's reason (F1349): it runs with the
+    # rest, and is told which and why. A fixed tool set (the builder's) is its caller's, never read so.
+    _unavailable = ([] if tools_override is not None
+                    else _tool_availability.unavailable_for(active_agent, tool_schema_map, server_module))
 
     # ── TEAM: a delegate whose members work as a team (TEAM1a, D283) ──
     # In the app's chat, a member's channel, OAI1 and a workflow Agent step (TEAM1e, inside
@@ -2386,6 +2391,9 @@ async def run_agent_step(
     _left_note = _left_out_note(_tools_left_out)
     if _left_note and _visitor is None:
         yield {"type": "status", "message": _left_note}
+    _unavailable_note = _tool_availability.agent_note(_unavailable)
+    if _unavailable_note and _visitor is None:
+        yield {"type": "status", "message": _unavailable_note}
 
     async with httpx.AsyncClient() as client, _team_mod.guard(_team):
         for turn in _itertools.count(start_turn):
@@ -2534,6 +2542,8 @@ async def run_agent_step(
                     _log.warning(f"board digest not read this turn: {_bd_exc}")
             if browser_action_history or _browser_snapshot:
                 tail_parts.append(_render_browser_state(browser_action_history, _browser_snapshot))
+            if _unavailable_note:
+                tail_parts.append(_unavailable_note)
             tail_parts.append(build_volatile_tail(session_id, _get_session_state, turns_remaining, max_turns))
             volatile_tail = "\n\n".join(part for part in tail_parts if part)
 
@@ -3910,6 +3920,13 @@ async def run_agent_step(
                                                      f"{str(e) or type(e).__name__}{_maybe}\n")
                             continue
 
+                    # A tool it names whose app isn't here now (F1349): its app's reason, never "does not exist".
+                    _missing = next((u for u in _unavailable if u.name == tool_name), None)
+                    if _missing is not None:
+                        current_context_text += f"\nSystem: {_missing.answer()}\n"
+                        yield {"type": "tool_result", "tool_name": tool_name, "preview": f"Error: {_missing.answer()}"}
+                        continue
+
                     # Hallucinated / unknown tool
                     available_tool_names = [_tool_label(t) for t in all_tools]
                     names_str = ", ".join(available_tool_names[:30])
@@ -3928,7 +3945,13 @@ async def run_agent_step(
                 # ===== MCP TOOLS =====
 
                 agent_name, actual_tool_name = server_module.tool_router[tool_name]
-                session = server_module.agent_sessions[agent_name]
+                session = server_module.agent_sessions.get(agent_name)
+                if session is None:
+                    # Offered, then its app's session went (F1349): said as the app's, never a KeyError.
+                    _gone = _tool_availability.why_unavailable(tool_name, server_module, where="this agent")
+                    current_context_text += f"\nSystem: {_gone.answer()}\n"
+                    yield {"type": "tool_result", "tool_name": tool_name, "preview": f"Error: {_gone.answer()}"}
+                    continue
 
                 # Before the call, not after: the guard exists so a `db_id` the
                 # agent was not given never reaches a connection.
@@ -4115,6 +4138,12 @@ async def run_agent_step(
                 except Exception as e:
                     error_msg = str(e)
                     _log.warning(f"❌ Tool '{tool_name}' failed: {error_msg}")
+                    from core.mcp_client import connect_failure as _connect_failure
+
+                    if _tool_availability.signed_out(_connect_failure(e)):
+                        # Its app refused the sign-in, a token expired mid-run (F1349): said as the app's.
+                        error_msg = _tool_availability.why_unavailable(
+                            tool_name, server_module, error=_connect_failure(e), where="this agent").answer()
                     current_context_text += f"\nSystem: Error executing tool {tool_name}: {error_msg}\n"
                     try:
                         if agent_name and agent_name.startswith("ext_mcp_"):
