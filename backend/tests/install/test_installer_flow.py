@@ -216,6 +216,32 @@ def test_the_browser_step_fetches_the_headless_shell_only(world, monkeypatch):
     assert ran == [], "the headless shell was there, and it was fetched again"
 
 
+def test_the_browser_step_s_bar_is_full_when_the_shell_is(world, monkeypatch):
+    """F1355: what `--only-shell chromium` prints is the headless shell's bar and then FFmpeg's (2.3 MiB): the step's
+    bar reads full when the shell is down, never half, and FFmpeg does not move it."""
+    lines = [f"|{'■' * (p * 80 // 100):<80}| {p:>3}% of 114.7 MiB" for p in (0, 40, 100)]
+    lines += [f"|{'■' * (p * 80 // 100):<80}| {p:>3}% of 2.3 MiB" for p in (0, 100)]
+    shown = []
+
+    def run(cmd, log, on_line=None, **kw):
+        for line in lines:
+            on_line(line)
+
+    class Screen:
+        def progress(self, key, fraction):
+            shown.append((key, fraction))
+
+    monkeypatch.setattr(flow, "run", run)
+    monkeypatch.setattr(flow, "_playwright_dir", lambda: world["tmp"] / "ms-playwright")
+    installer = flow.Installer(flow.Options(uv="uv", yes=True, home=world["home"]), term=tui.Term(stream=io.StringIO()))
+    installer.s.tool_python = Path("/tool/python")
+    installer.screen = Screen()
+
+    _REAL_BROWSER(installer)
+
+    assert [f for _, f in shown] == [0.0, 0.4, 1.0, 1.0, 1.0]
+
+
 def test_the_installed_cli_runs_with_the_working_directory_off_sys_path(world, monkeypatch):
     """The 1.x hand-off runs from inside the old folder, whose synapse/ is 2.0's
     source: `python -m synapse` without -P imported that, not the new install,
