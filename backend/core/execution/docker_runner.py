@@ -35,6 +35,11 @@ _NOT_RUNNING = re.compile(r"failed to connect to the docker API|Cannot connect t
                           r"pipe/docker_engine: The system cannot find", re.IGNORECASE)
 
 
+#: What a Python tool says when the sandbox finds no Docker (F1353): a step and the editor's Test button alike. Its
+#: fix is only Docker: SYNAPSE_TRANSFORM_RUNTIME switches Transforms alone, and a Python tool always runs here.
+NO_DOCKER_FOR_TOOLS = "Python tools run in Docker, and Docker isn't running here. Start Docker, then try again."
+
+
 def docker_not_running(stderr: str | None) -> bool:
     """Whether a `docker run` failed because Docker's daemon isn't running here (F1353)."""
     return bool(_NOT_RUNNING.search(stderr or ""))

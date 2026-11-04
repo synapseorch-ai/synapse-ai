@@ -1356,7 +1356,8 @@ class ToolStepExecutor:
         (F90) — retried with the error, then the run fails.
         """
         from core import variables as _variables
-        from core.execution import ExecRequest, Network, declared_globals, get_runner, wrap_args
+        from core.execution import (NO_DOCKER_FOR_TOOLS, DockerRunner, DockerUnavailable, ExecRequest, Network,
+                                    declared_globals, docker_not_running, get_runner, wrap_args)
         from core.vault import _vault_root
 
         python_code = tool.get("code", "")
@@ -1367,13 +1368,20 @@ class ToolStepExecutor:
         # globals the tool declares go in beside them (F28, `declared_globals`).
         granted = declared_globals(tool, await _variables.load()) if tool.get("globals") else {}
 
-        result = await get_runner().run(ExecRequest(
-            code=wrap_args(python_code, tool_args, granted),
-            network=Network.INTERNET,
-            timeout_s=30,
-            vault_path=_vault_root(),
-        ))
+        runner = get_runner()
+        try:
+            result = await runner.run(ExecRequest(
+                code=wrap_args(python_code, tool_args, granted),
+                network=Network.INTERNET,
+                timeout_s=30,
+                vault_path=_vault_root(),
+            ))
+        except DockerUnavailable as exc:
+            raise ToolCallFailed(NO_DOCKER_FOR_TOOLS, retryable=False) from exc  # no docker here at all (F1353)
 
+        if result.exit_code != 0 and isinstance(runner, DockerRunner) and docker_not_running(result.stderr):
+            # Its daemon isn't running: what to do, not its socket; no other arguments change it (F1353).
+            raise ToolCallFailed(NO_DOCKER_FOR_TOOLS, retryable=False)
         if result.exit_code != 0:
             # The end of the output is where a traceback says what went wrong.
             detail = (result.stderr or result.stdout or "").strip()[-800:]
