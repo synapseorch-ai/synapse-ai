@@ -3574,10 +3574,14 @@ function saveTabs({ state, pins }: SavedChatTabs) {
 
 /** One status read for every open tab (`POST /api/sessions/status`). */
 async function readTabStatus(tabs: ChatTab[]): Promise<Record<string, TabStatus>> {
+  // Only a tab with a conversation and an agent has a status to read; one opened before its agent was picked asks
+  // nothing until it has one (F1336).
+  const asked = tabs.filter(t => t.sessionId && t.agentId);
+  if (!asked.length) return {};
   const res = await fetch('/api/sessions/status', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessions: tabs.map(t => ({ session_id: t.sessionId, agent_id: t.agentId })) }),
+    body: JSON.stringify({ sessions: asked.map(t => ({ session_id: t.sessionId, agent_id: t.agentId })) }),
   });
   if (!res.ok) return {};
   const rows: { session_id: string; agent_id: string; running: boolean; automated?: boolean; pending_approval: boolean;

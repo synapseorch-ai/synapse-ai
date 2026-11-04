@@ -10,9 +10,11 @@ GET  /api/sessions/{session_id}/snapshot    → {last_response, last_updated}
 DELETE /api/sessions/{session_id}           → delete a session
 POST /api/sessions/{session_id}/last-turn/pop → take the last turn back (retry)
 """
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from core import chat_turns
 from core.default_agent import DEFAULT_AGENT_ID
@@ -92,7 +94,18 @@ class TabSession(BaseModel):
 
 
 class TabStatusRequest(BaseModel):
-    sessions: list[TabSession] = Field(max_length=MAX_TABS)
+    #: Each read on its own (F1336): one entry it can't take is answered with why, never a refusal of the rest.
+    sessions: list[Any] = Field(max_length=MAX_TABS)
+
+
+def _a_tab(item: Any) -> tuple[TabSession | None, dict]:
+    """The tab an entry names, or why it names none, with what it said as its row's keys."""
+    said = item if isinstance(item, dict) else {}
+    keys = {k: str(said.get(k) or "")[:255] for k in ("session_id", "agent_id")}
+    try:
+        return TabSession.model_validate(item), keys
+    except ValidationError:
+        return None, {**keys, "error": "not a tab: it needs a conversation and an agent"}
 
 
 @router.post("/api/sessions/status")
@@ -109,7 +122,11 @@ async def get_sessions_status(body: TabStatusRequest):
     from core.store import sessions as store
 
     rows = []
-    for tab in body.sessions:
+    for item in body.sessions:
+        tab, keys = _a_tab(item)
+        if tab is None:
+            rows.append(keys)
+            continue
         if tab.agent_id == DEFAULT_AGENT_ID:
             # A Synapse AI chat is its builder runs, not a chat row (TABS2, F1061).
             rows.append({"session_id": tab.session_id, "agent_id": tab.agent_id, "automated": False,
