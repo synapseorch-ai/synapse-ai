@@ -11,6 +11,7 @@ import pytest
 
 import core.llm_providers as _llm_mod
 from core.llm_providers import _match_auth
+from tests._fakes.cli_process import fake_cli_process
 
 # Captured at collection, before the autouse `fake_llm` fixture replaces it.
 _REAL_GENERATE = _llm_mod.generate_response
@@ -73,7 +74,7 @@ def claude(monkeypatch):
         return _Proc(seen["answer"])
 
     monkeypatch.setattr("shutil.which", lambda cmd: f"/usr/bin/{cmd}")
-    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+    fake_cli_process(monkeypatch, fake_exec)  # the CLI runs off the loop (F1320)
     return seen
 
 

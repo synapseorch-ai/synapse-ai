@@ -216,6 +216,7 @@ def _claude(variant, *, workdir, system_prompt, prompt, effort, environ, **_):
             "--disable-slash-commands",
             "--no-session-persistence",         # no transcript
             "--permission-mode", "dontAsk",
+            "--max-turns", "1",                 # F1320: a turn of its own ends at once, refused as one
             "--effort", "low" if level == "off" else level,
             "--system-prompt-file", str(system_file)]
     if variant:

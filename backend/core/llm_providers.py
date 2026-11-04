@@ -13,6 +13,8 @@ No API key needed — tool calling is emulated via system prompt injection + <to
 import os
 import re
 import json
+import signal
+import subprocess
 import hashlib
 import hmac
 from collections import OrderedDict
@@ -919,8 +921,115 @@ def cli_takes_effort(model: str) -> bool:
     return any(name == base or name.startswith(base + ".") for base in CLI_EFFORT_BASES)
 
 
-# Seconds to wait for a CLI process before giving up
+# Seconds to wait for a CLI process before giving up: the floor of a CLI call's deadline (F1320, `cli_deadline`).
 _CLI_TIMEOUT = 300.0
+
+
+def cli_deadline() -> float:
+    """How long a CLI provider's call may run (F1320): SYNAPSE_LLM_TIMEOUT, read when the call is made, never under
+    the CLI's own floor (a CLI call is slower than an API's: it starts a process and reads its whole prompt)."""
+    from core import config
+
+    return max(float(config.LLM_REQUEST_TIMEOUT), _CLI_TIMEOUT)
+
+
+class CliRun(NamedTuple):
+    """What one CLI process did: its exit code, what it printed, and whether its deadline ended it."""
+    returncode: int | None
+    stdout: bytes
+    stderr: bytes
+    timed_out: bool
+
+
+def _kill_cli_tree(proc: "subprocess.Popen | None", *, posix: bool = os.name == "posix") -> None:
+    """End a CLI and everything it started (F1320): its process group on POSIX (it runs in a session of its own), its
+    tree on Windows (`taskkill /T /F`; where that cannot run, the CLI itself, as before). Never raises."""
+    if proc is None:
+        return
+    if posix:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        return
+    try:
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=10)
+    except Exception:  # noqa: BLE001 — no taskkill: the CLI alone, as before
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _run_cli_blocking(argv: list[str], stdin_path: str | None, cwd: str, env: dict, deadline: float,
+                      holder: dict) -> CliRun:
+    """One CLI process, in a thread of its own (F1320): its own process group, its deadline held here whatever the
+    server's loop does; at the deadline the group is killed, and after a finish what the CLI left running is too.
+    `holder` shares the process with the loop, which kills it when the awaiting call is cancelled."""
+    posix = os.name == "posix"
+    group = {"start_new_session": True} if posix else {
+        "creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    stdin = open(stdin_path, "rb") if stdin_path else subprocess.DEVNULL
+    try:
+        proc = subprocess.Popen(argv, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd,
+                                env=env, **group)
+    finally:
+        if stdin is not subprocess.DEVNULL:
+            stdin.close()
+    holder["proc"] = proc
+    if holder.get("cancelled"):
+        _kill_cli_tree(proc, posix=posix)
+    try:
+        out, err = proc.communicate(timeout=deadline)
+    except subprocess.TimeoutExpired:
+        _kill_cli_tree(proc, posix=posix)
+        try:
+            out, err = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:  # something left its own group and holds the pipes: it is let go
+            out, err = b"", b""
+        return CliRun(proc.returncode, out or b"", err or b"", True)
+    if posix:
+        _kill_cli_tree(proc, posix=True)  # a helper it started and left behind ends with the call
+    return CliRun(proc.returncode, out or b"", err or b"", False)
+
+
+async def _run_cli(argv: list[str], *, stdin_path: str | None, cwd: str, env: dict, deadline: float) -> CliRun:
+    """Run a CLI off the server's event loop (F1320): the loop only awaits a thread of the call's own (never the
+    shared pool, which the loop's DNS lookups wait on), so it serves while the CLI works, and a cancelled call (its
+    run stopped, a shutdown) kills the CLI's whole group at once, then re-raises."""
+    loop = asyncio.get_running_loop()
+    done: asyncio.Future = loop.create_future()
+    holder: dict = {}
+
+    def settle(result: CliRun | None, error: BaseException | None) -> None:
+        if done.done():
+            return
+        if error is not None:
+            done.set_exception(error)
+        else:
+            done.set_result(result)
+
+    def work() -> None:
+        try:
+            result, error = _run_cli_blocking(argv, stdin_path, cwd, env, deadline, holder), None
+        except BaseException as e:  # noqa: BLE001 — handed to the awaiting call
+            result, error = None, e
+        try:
+            loop.call_soon_threadsafe(settle, result, error)
+        except RuntimeError:  # the loop closed while the CLI ran: nobody is waiting
+            pass
+
+    threading.Thread(target=work, name="synapse-cli", daemon=True).start()
+    try:
+        return await done
+    except asyncio.CancelledError:
+        holder["cancelled"] = True
+        _kill_cli_tree(holder.get("proc"))
+        raise
+
+
+def _within(seconds: float) -> str:
+    return f"{seconds / 60:g} min" if seconds >= 60 and seconds % 60 == 0 else f"{seconds:g} s"
 
 
 def _build_cli_prompt(
@@ -975,7 +1084,7 @@ async def call_cli_provider(
     full_prompt: str,
     sys_prompt: str | None = None,
     messages: list[dict] | None = None,
-    timeout: float = _CLI_TIMEOUT,
+    timeout: float | None = None,
     effort: str | None = None,
     tools: list[dict] | None = None,
 ) -> tuple[str, int, int]:
@@ -989,7 +1098,7 @@ async def call_cli_provider(
     Args:
         cli_model: 'cli.claude', 'cli.gemini', 'cli.codex' or 'cli.copilot', with an optional '.<model>'
         full_prompt: Complete flat-text prompt (system + tools + transcript)
-        timeout: Seconds before we kill the process and raise LLMError
+        timeout: Seconds before we kill the process and raise LLMError; `cli_deadline()` when not given (F1320)
         effort: The agent's or workspace's `reasoning_effort` — `cli.claude`
             sends it as `--effort`. The CLI has no "off", so off and None are low.
         tools: The agent's tools. A bridged CLI (Codex) is offered them as real
@@ -1025,41 +1134,24 @@ async def call_cli_provider(
                                         prompt=full_prompt, effort=effort, codex_catalog=catalog,
                                         github_token=token, tools=tools)
         # Fed from a file (like `< file`), keeping the prompt out of the process list.
-        stdin_source = asyncio.subprocess.DEVNULL
+        stdin_path = None
         if inv.stdin is not None:
             stdin_path = workdir / "stdin.txt"
             stdin_path.write_text(inv.stdin, encoding="utf-8")
-            stdin_source = open(stdin_path, "rb")
+        deadline = cli_deadline() if timeout is None else float(timeout)
         _log.debug(f"🖥️  CLI provider '{cli_model}' — spawning {binary} in {inv.cwd}")
-        try:
-            process = await asyncio.create_subprocess_exec(
-                executable, *inv.argv[1:],
-                stdin=stdin_source,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(inv.cwd),
-                env=inv.env,
-            )
-        finally:
-            if stdin_source is not asyncio.subprocess.DEVNULL:
-                stdin_source.close()
-
-        try:
-            stdout_b, stderr_b = await asyncio.wait_for(process.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
-            try:
-                process.kill()
-                await process.wait()
-            except Exception:
-                pass
+        # Off the loop, its deadline held by its own thread, its whole group killed at the deadline or a cancel (F1320).
+        run = await _run_cli([executable, *inv.argv[1:]], stdin_path=str(stdin_path) if stdin_path else None,
+                             cwd=str(inv.cwd), env=inv.env, deadline=deadline)
+        if run.timed_out:
             raise LLMError(
-                f"CLI provider '{cli_model}' timed out after {timeout}s. "
-                "Is the CLI authenticated and responsive?"
+                f"CLI provider '{cli_model}' timed out: the model didn't answer within {_within(deadline)}, so "
+                "Synapse stopped it and everything it started. Is the CLI signed in and responsive?"
             )
 
-        stdout_text = _ANSI_ESCAPE.sub("", stdout_b.decode("utf-8", errors="replace")).strip()
-        stderr_text = stderr_b.decode("utf-8", errors="replace").strip()
-        answer = _read_cli_answer(base, cli_model, process.returncode, stdout_text, stderr_text, inv.output_file,
+        stdout_text = _ANSI_ESCAPE.sub("", run.stdout.decode("utf-8", errors="replace")).strip()
+        stderr_text = run.stderr.decode("utf-8", errors="replace").strip()
+        answer = _read_cli_answer(base, cli_model, run.returncode, stdout_text, stderr_text, inv.output_file,
                                   bridge_calls=inv.bridge_calls)
         _log.debug(f"✅ CLI '{cli_model}' response ({len(answer)} chars)")
         return (answer, usage_tracker.estimate_tokens_from_text(full_prompt),
@@ -1119,11 +1211,24 @@ def _cli_failure(base: str, cli_model: str, text: str, *, auth: bool = False) ->
     return LLMError(f"CLI provider '{cli_model}' failed: {tail[-400:]}")
 
 
-def _refuse_own_tools(cli_model: str, tools: list[str]) -> LLMError:
+def _refuse_own_tools(cli_model: str, tools: list[str], said: str = "") -> LLMError:
     """An answer reached through a tool of the CLI's own is not the model's
-    answer to Synapse's prompt: the CLI was to run no tool at all (CLIM1)."""
+    answer to Synapse's prompt: the CLI was to run no tool at all (CLIM1).
+    `said`: what the CLI said of it, its own words after ours (F1320)."""
+    told = f" ({said})" if said else ""
     return LLMError(f"CLI provider '{cli_model}' ran its own tool ({', '.join(sorted(set(tools)))}) instead of "
-                    "answering; Synapse runs these CLIs for their model only, so its answer was refused.")
+                    f"answering{told}; Synapse runs these CLIs for their model only, so its answer was refused.")
+
+
+def _cli_said(base: str, text: object) -> str:
+    """A CLI's own words for an error, as a refusal carries them (F1320): its held secrets named, key shapes taken
+    out, one line, capped; empty when it said nothing."""
+    from core.secret_scrub import for_storage, scrub_credentials
+
+    words = " ".join(str(text or "").split())
+    if not words:
+        return ""
+    return f"{_CLI_LABELS.get(base, base)} said: {scrub_credentials(for_storage(words))[0][:200]}"
 
 
 def _read_cli_answer(base: str, cli_model: str, returncode: int | None, stdout: str, stderr: str,
@@ -1143,6 +1248,10 @@ def _read_cli_answer(base: str, cli_model: str, returncode: int | None, stdout: 
             obj = None
         if isinstance(obj, dict):
             err_text = " ".join(str(obj.get(k, "")) for k in ("result", "error", "subtype"))
+            if obj.get("subtype") == "error_max_turns":
+                # It runs with --max-turns 1 (F1320): the model reached for a turn of its own and the CLI stopped it.
+                raise _refuse_own_tools(cli_model, [f"{obj.get('num_turns') or 2} turns"],
+                                        _cli_said(base, obj.get("result") or obj.get("error")))
             if obj.get("is_error"):
                 # An error is not an answer: returned as one, the run would carry
                 # on with the error text as the model's reply.
