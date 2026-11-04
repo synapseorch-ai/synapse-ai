@@ -74,3 +74,58 @@ async def test_a_transforms_own_failure_still_says_its_line(client, docker):
     docker(_Docker(stderr=traceback, exit_code=1))
     said = await _failure("raise ValueError('boom')")
     assert "boom" in said and WORDS not in said, said
+
+
+# ── Python tools: a tool step and the editor's Test button (eb 11-04: a 1.9 user who upgrades meets these too) ────
+# The same first sentence; its fix is only Docker, since SYNAPSE_TRANSFORM_RUNTIME switches Transforms alone (a Python
+# tool always runs on the sandbox's runner), so naming it there would send a person to a switch that changes nothing.
+TOOL_WORDS = "Python tools run in Docker, and Docker isn't running here. Start Docker, then try again."
+TOOL = {"name": "region_totals", "tool_type": "python", "code": "print(1)"}
+
+
+def _no_socket(said: str) -> None:
+    assert "unix://" not in said and "docker.sock" not in said and "pipe" not in said, said
+
+
+async def _tool_failure() -> str:
+    from core.orchestration.steps import ToolCallFailed, ToolStepExecutor
+
+    with pytest.raises(ToolCallFailed) as caught:
+        await ToolStepExecutor()._execute_python_tool(dict(TOOL), {})
+    assert caught.value.retryable is False and caught.value.ran is False, "no argument changes it; nothing ran"
+    return str(caught.value)
+
+
+@pytest.mark.parametrize("stderr", [NEW, OLD, WINDOWS], ids=["docker-api", "docker-daemon", "windows-pipe"])
+async def test_a_python_tool_steps_daemon_not_running_says_the_fix(client, docker, stderr):
+    docker(_Docker(stderr=stderr))
+    said = await _tool_failure()
+    assert TOOL_WORDS in said, said
+    _no_socket(said)
+
+
+async def test_a_python_tool_step_with_no_docker_says_the_same(client, docker, monkeypatch):
+    monkeypatch.setattr("core.execution.docker_runner.shutil.which", lambda name: None)
+    docker(DockerRunner())
+    assert TOOL_WORDS in await _tool_failure()
+
+
+async def test_the_test_buttons_daemon_not_running_says_the_fix(client, docker):
+    from core.routes.tools import PythonTestRequest, test_python_tool
+
+    docker(_Docker(stderr=NEW))
+    out = await test_python_tool(PythonTestRequest(code="print(1)"))
+    assert out["stderr"] == TOOL_WORDS and out["exit_code"] != 0, out
+    _no_socket(str(out))
+
+
+async def test_the_test_button_with_no_docker_says_the_same(client, docker, monkeypatch):
+    from fastapi import HTTPException
+
+    from core.routes.tools import PythonTestRequest, test_python_tool
+
+    monkeypatch.setattr("core.execution.docker_runner.shutil.which", lambda name: None)
+    docker(DockerRunner())
+    with pytest.raises(HTTPException) as caught:
+        await test_python_tool(PythonTestRequest(code="print(1)"))
+    assert caught.value.status_code == 503 and caught.value.detail == TOOL_WORDS, caught.value.detail
