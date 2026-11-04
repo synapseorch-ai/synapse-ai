@@ -217,21 +217,27 @@ def _names_tool(named: object, tool: str) -> bool:
     return isinstance(named, str) and (named == tool or named.endswith(f".{tool}") or named.endswith(f"__{tool}"))
 
 
-async def what_uses_tool(name: str) -> list[Dependent]:
-    """What uses tool `name` in this tenant (F1348), so that deleting it never leaves a step calling nothing: each live
-    workflow step that calls it (a Tool step) or holds its agent to it (`allowed_tools`), as a "step" with its
-    workflow's name and the step's in `via`; and each agent that holds it, as an "agent". Every read is a reason, so
-    none is skipped. A workflow deleted and kept as a record (F423) uses nothing."""
-    from core.store.resources import load_agents, load_orchestrations
-
+def tool_users(orchestrations: list[dict], agents: list[dict], name: str) -> list[Dependent]:
+    """What uses tool `name` among these workflows and agents (F1348), as plain documents, so every host reads them the
+    same way (cloud passes its rows' definitions): each live workflow step that calls it (a Tool step) or holds its
+    agent to it (`allowed_tools`), as a "step" with its workflow's name and the step's in `via`; and each agent that
+    holds it, as an "agent". A workflow deleted and kept as a record (F423) uses nothing."""
     found = [Dependent("step", o.get("name") or o["id"], via=step.get("name") or step.get("id"), id=o.get("id"))
-             for o in await load_orchestrations() if not _gone(o)
+             for o in orchestrations if not _gone(o)
              for step in o.get("steps") or []
              if _names_tool(step.get("forced_tool"), name)
              or any(_names_tool(t, name) for t in step.get("allowed_tools") or [])]
-    found += [Dependent("agent", a.get("name") or a["id"]) for a in await load_agents()
+    found += [Dependent("agent", a.get("name") or a["id"]) for a in agents
               if not a.get("system") and any(_names_tool(t, name) for t in a.get("tools") or [])]
     return found
+
+
+async def what_uses_tool(name: str) -> list[Dependent]:
+    """What uses tool `name` in this tenant (`tool_users`, F1348), so that deleting it never leaves a step calling
+    nothing. Every read is a reason, so none is skipped."""
+    from core.store.resources import load_agents, load_orchestrations
+
+    return tool_users(await load_orchestrations(), await load_agents(), name)
 
 
 def tool_refusal(name: str, dependents: list[Dependent]) -> str | None:
