@@ -950,7 +950,8 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
     if plan.agents and state.get("can_create_agents") is False:
         errors.append("agents: this conversation uses existing agents only; give each step one of theirs by id")
     errors += _api_names(plan, state)
-    errors += _a_second_of_a_name(plan, ws, state)
+    # A second of a workflow: by its name (F1229), else by the last build's agents (F1292); said once.
+    errors += _a_second_of_a_name(plan, ws, state) or _the_last_build_again(plan, ws, state)
     return errors
 
 
@@ -974,6 +975,27 @@ def _a_second_of_a_name(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
             "save a second of the same name: when the person means that one, this is a change to it (plan it as kind "
             "update of that one); if they may want two, ask once which with ask_person, and give a second one a name "
             "of its own"]
+
+
+def _the_last_build_again(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
+    """The workflow this conversation built, made again under another name (F1292, CAP3's cap-04 A1): a new
+    workflow whose steps use its agents, at least two of them or all of them when it has fewer, is that one again.
+    Sent back: a change to it, or, when the person may want two, one question. One shared agent is a workflow of its
+    own; F1229's same-name rule is said first."""
+    from core.native_builder.target import LAST_BUILT_KEY
+
+    ident = state.get(LAST_BUILT_KEY)
+    last = ws.workflows.get(str(ident)) if plan.kind == "create" and ident else None
+    if not last:
+        return []
+    theirs = {str(s.get("agent_id")) for s in last.get("steps") or [] if isinstance(s, dict) and s.get("agent_id")}
+    steps = [*plan.steps, *(s for w in plan.inner_workflows for s in w.steps)]
+    shared = theirs & {str(s.agent) for s in steps if s.agent}
+    if not theirs or len(shared) < min(2, len(theirs)):
+        return []
+    return [f"title: this is \"{last.get('name')}\", which this conversation built (id {ident}), made again with its "
+            "agents. When the person means that one, this is a change to it: plan it as kind update of that one; if "
+            "they may want a second, ask once with ask_person, and give it a name of its own"]
 
 
 def _api_names(plan: O.Plan, state: dict) -> list[str]:
