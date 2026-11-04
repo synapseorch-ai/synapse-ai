@@ -65,6 +65,8 @@ ACTS: dict[str, str] = {
     "deploy_orchestration": "orchestration.deployed",
     "create_http_tool": "tool.created",
     "update_http_tool": "tool.updated",
+    "update_python_tool": "tool.updated",
+    "test_code_change": "tool.tested",
     "create_python_tool": "tool.created",
     "test_python_tool": "tool.tested",
     "import_openapi": "tool.created",
@@ -84,15 +86,16 @@ OVERWRITES: frozenset[str] = frozenset({
     "create_http_tool",
     "update_http_tool",
     "create_python_tool",
+    "update_python_tool",
     "create_skill",
 })
 
 #: Acts the person sees before they are done, with a token, though they can be undone (F1198, Naveen 10-29): a Python
 #: tool is code that will run with the internet, so its preview shows the code.
-CONFIRMED: frozenset[str] = frozenset({"create_python_tool"})
+CONFIRMED: frozenset[str] = frozenset({"create_python_tool", "update_python_tool"})
 
 #: Acts that reach outside the workspace.
-OPEN_WORLD: frozenset[str] = frozenset({"import_openapi", "test_python_tool"})
+OPEN_WORLD: frozenset[str] = frozenset({"import_openapi", "test_python_tool", "test_code_change"})
 
 #: Deletes: what each removes, its id argument, and the host's audit action.
 DELETES: dict[str, tuple[str, str, str]] = {

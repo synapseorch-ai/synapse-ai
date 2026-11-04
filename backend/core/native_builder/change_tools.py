@@ -31,6 +31,7 @@ from typing import Any
 from core import feature_census
 from core.builder_registry import register_builder_tool
 from core.log import get_logger
+from core import python_edits as E
 from core.native_builder import change_ops as C, one_writer
 from core.product_tools.roles import Role
 from core.secret_scrub import SECRET_NAMED, asks_for_a_secret
@@ -135,7 +136,9 @@ SUBMIT = {"type": "function", "function": {
         "or from: {curl: n}, a curl in the context's curls, or from: {spec, operation}, an operation of a spec you "
         "read with read_api_spec, and code fills its fields, your url and body marking only what varies with "
         "{{ }}}, before the ops that give it to an agent; update_tool {url, method, description} or {from: {curl: n}} "
-        "(an HTTP tool's address, method or what it does, in place: never its headers or its key). Deletes and the other acts take none. For \"undo that\", send "
+        "(an HTTP tool's address, method or what it does, in place: never its headers or its key); update_python_tool "
+        "{edits: [{find, replace}] or code, test_args: [{…}], needs_network, description} (a Python tool's code, "
+        "its fix tested with no network before the person sees it). Deletes and the other acts take none. For \"undo that\", send "
         "undo_of with no ops."
     ),
     "parameters": {"type": "object", "properties": {
@@ -275,7 +278,16 @@ async def submit_change(args: dict, server_module: Any, events: list[dict]) -> d
                 found.append(f"op {n}: {why}")
                 continue
             op["fields"] = fields
-        found += [f"op {n}: {line}" for line in C.issues(str(op.get("op") or ""), op.get("target") or {}, fields)]
+        lines = C.issues(str(op.get("op") or ""), op.get("target") or {}, fields)
+        found += [f"op {n}: {line}" for line in lines]
+        if op.get("op") == "update_python_tool" and not lines:
+            # Its fix tested with no network before anything is shown (F1325): a first failure is the planner's to fix.
+            fields, why = await _code_tested(op.get("target") or {}, fields, run.shared_state if run else {},
+                                             send_back=True)
+            if why:
+                found.append(f"op {n}: {why}")
+            else:
+                op["fields"] = fields
         if op.get("op") in ("create", "create_tool") and (switched := _kind_switch(kinds, op.get("target") or {})):
             found.append(f"op {n}: {switched}")
     found += [f"op {n}: {SAYS_ASKS}" for n, op in enumerate(ops, 1)
@@ -313,6 +325,47 @@ def _curl_unnamed(ops: list, state: dict) -> str | None:
     state[_CURL_NUDGED] = True
     listed = "; ".join(f"curl {c['n']}: {c['method']} {c['url']}" for c in found)
     return f"{CURL_UNNAMED} ({listed}), and mark only what varies with {{{{ }}}}; or send it again as it is"
+
+
+#: The Python tools whose fix has failed its test once in this run (F1325): the next failure is said, not sent back.
+_CODE_TRIES = "_code_tries"
+
+
+async def _code_tested(target: dict, fields: dict, state: dict, *, send_back: bool) -> tuple[dict, str | None]:
+    """A Python tool's fix with its test before the yes (F1325): run on each sample with **no network** (Naveen: no
+    internet before the yes). Its fields with `_test` (`passed`, `failed`, or `button` where the network is needed
+    or can't be off), or why to send it back: a passage not in its code, or a first failure when `send_back`."""
+    from core.execution import ExecUnsupported, Network
+    from core.store.resources import load_tools
+
+    name = _text(target.get("name") or target.get("id"))
+    live = next((t for t in await load_tools() if t.get("name") == name), None)
+    if live is None or live.get("tool_type") != "python":
+        return fields, None  # the check says what it is
+    if fields.get("code") is None:
+        _, why = E.apply_edits(str(live.get("code") or ""), fields.get("edits") or [])
+        if why:
+            return fields, why
+    new = C.expected(C.OPS["update_python_tool"], fields, live)["code"]
+    samples = list(fields.get("test_args") or [])
+    if fields.get("needs_network"):
+        return {**fields, "_test": {"button": "it needs the internet to test"}}, None
+    try:
+        results = await E.run_samples(new, live.get("globals") or [], samples, Network.NONE)
+    except ExecUnsupported:
+        return {**fields, "_test": {"button": "this install can't run code with no network"}}, None
+    if results and all(r["ok"] for r in results):
+        return {**fields, "_test": {"passed": results}}, None
+    if E.needed_network(results):
+        return {**fields, "_test": {"button": "it needs the internet to test"}}, None
+    failed = next(r for r in results if not r["ok"])
+    line = E.last_line(failed.get("error") or "")
+    tries = state.setdefault(_CODE_TRIES, {}) if isinstance(state, dict) else {}
+    if send_back and not tries.get(name):
+        tries[name] = 1
+        return fields, (f"the fix to {_quoted(name)} fails its test with {json.dumps(failed['args'])}: {line}. Fix "
+                        "it and call submit_change again")
+    return {**fields, "_test": {"failed": {"args": failed["args"], "error": line}}}, None
 
 
 async def _from_source(fields: dict, state: dict, *, update: bool = False) -> tuple[dict, str | None]:
@@ -1301,6 +1354,8 @@ def _words(op: C.Op, target: dict, fields: dict, says: str, want: dict | None = 
         detail = _new_tool_detail(target["name"], fields)
     elif op.name == "update_tool":
         detail = _tool_change_detail(fields, want or {}, live)
+    elif op.name == "update_python_tool":
+        detail = _code_change_detail(fields, want or {}, live)
     elif op.internal:
         detail = "as it was before it was deleted"  # an undo's re-create, from the card's before-image
     elif op.kind == "delete":
@@ -1529,6 +1584,54 @@ def _new_tool_detail(name: str, fields: dict) -> str:
     return "; ".join(parts)
 
 
+def _fenced(kind: str, text: str) -> str:
+    """A block inside the review's list item: indented, so it stays the item's."""
+    body = "\n".join(f"  {line}" for line in (text or "").splitlines())
+    return f"\n  ```{kind}\n{body}\n  ```"
+
+
+def _code_change_detail(fields: dict, want: dict, live: dict | None) -> str:
+    """A Python tool's change, after "Change the tool …" (F1325): its code before and after as a diff, what each
+    sample printed with no network (or why it waits on "Test this fix"), what it does in new words, and its code as it
+    will be (every value its call sends: the person approves what is made)."""
+    new = str(want.get("code") or "")
+    parts = [f"its code:{_fenced('diff', E.diff(str((live or {}).get('code') or ''), new))}"]
+    tested = E.is_tested(fields) or {}
+    if tested.get("passed"):
+        parts.append("; ".join(E.said(tested["passed"])))
+    elif tested.get("button"):
+        parts.append(f"not tested yet: {tested['button']}; press Test this fix after reading it, then Go ahead")
+    if "description" in want:
+        parts.append(f"does: {want['description']}")
+    parts.append(f"its code as it will be:{_fenced('python', new)}")
+    return "\n  ".join(parts)
+
+
+async def _code_change_refusal(name: str, fields: dict, live: dict | None) -> str | None:
+    """Why this Python tool's code can't be changed as asked, before the review (F1325): `update_python_tool`'s own
+    refusal, in its own words (`python_code_issues`: create_python_tool's draft and the host's plan gate among it)."""
+    from core.builder_tools import python_code_issues
+
+    if live and live.get("tool_type") == "python" and fields.get("code") is None:
+        if why := E.apply_edits(str(live.get("code") or ""), fields.get("edits") or [])[1]:
+            return f"I can't change the tool {_quoted(name)}: {why}"
+    args = {"name": name, **(C.expected(C.OPS["update_python_tool"], fields, live)
+                             if live and live.get("tool_type") == "python" else {"code": ""})}
+    refused = await python_code_issues(live, args)
+    return f"I can't change the tool {_quoted(name)}: {refused['error']}" if refused else None
+
+
+async def _test_this_fix(run_id: str, n: int, name: str) -> dict:
+    """The card that tests a fix on the person's press, with the internet (F1325): its button runs the change's own
+    fix (`test_code_change`, by the run and its place), never code given to it."""
+    from core.builder_actions import _button, _card
+
+    return _card(f"Test this fix to {_quoted(name)}", detail=(
+        "It can't be tested here with no network. Pressing this runs the fix above on its sample inputs, with the "
+        "internet, as the Tools screen's Test does; nothing is changed until you press Go ahead after it passes."),
+        buttons=[await _button("Test this fix", "test_code_change", {"run_id": run_id, "op": n})])
+
+
 def _tool_change_detail(fields: dict, want: dict, live: dict | None) -> str:
     """An HTTP tool's change, after "Change the tool …" (F1312b): its address before and after (the call's own values,
     so the person approves what is sent), the inputs a new address adds, and what it does in new words."""
@@ -1559,6 +1662,8 @@ def _keep(op: C.Op, record: dict | None, want: dict | None) -> dict | None:
         if op.target == "schedule" and any(k in C._SCHEDULE_TIME for k in want):
             # The clock its time is on, though a time change does not set it: the card says the new time there (F1010).
             kept.setdefault("timezone", record.get("timezone"))
+        if op.name == "update_python_tool":
+            kept["code"] = record.get("code")
         if op.name == "update_tool":
             # The inputs it had, so its undo takes out only the ones this change added (F1312b).
             kept["inputSchema"] = record.get("inputSchema")
@@ -1720,6 +1825,9 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
                         from core.builder_actions import agent_eval_words
 
                         said = await agent_eval_words(target.get("name") or target.get("id") or "")
+                    if op.name == "update_python_tool":
+                        said = (f"No Python tool is called {_quoted(target.get('name') or target.get('id'))}: a new "
+                                "one is made with create.")
                     item.update(status="refused", say=said or await _not_found(op.target, target))
                     continue
                 if len(found) > 1:
@@ -1876,6 +1984,18 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
         if op.name == "create_tool" and (said := await _new_tool_refusal(target["name"], fields)):
             item.update(status="refused", say=said)
             continue
+        if op.name == "update_python_tool":
+            if said := await _code_change_refusal(target["name"], fields, live):
+                item.update(status="refused", say=said)
+                continue
+            if E.is_tested(fields) is None and fields.get("test_args"):
+                fields, _ = await _code_tested(target, fields, {}, send_back=False)
+                item["fields"] = fields
+            if failed := (E.is_tested(fields) or {}).get("failed"):
+                item.update(status="refused", say=(
+                    f"The fix I wrote for {_quoted(target['name'])} fails its test with "
+                    f"{json.dumps(failed['args'], ensure_ascii=False)}: {failed['error']}. Nothing was changed."))
+                continue
         if op.name == "update_tool" and (said := await _tool_change_refusal(target["name"], fields, live)):
             item.update(status="refused", say=said)
             continue
@@ -1918,6 +2038,9 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             made.add(target["name"])
         if op.name == "update_tool" and (used := (await _used_by(C.OPS["delete_tool"], target["id"]))[0]):
             line = f"{line}; used by {', '.join(used)}"
+        if op.name == "update_python_tool" and (E.is_tested(fields) or {}).get("button"):
+            # Tested on the person's press, with the internet, after they read it (Naveen 11-04): the yes waits on it.
+            events.append(await _test_this_fix(_run()[0], checked.index(item), target["name"]))
         item.update(status="ready", call={"tool": tool_name, "args": call_args}, expected=want,
                     before=_keep(op, live, want), line=f"{line} ({item['why']})" if item.get("why") else line)
         if op.kind != "create":

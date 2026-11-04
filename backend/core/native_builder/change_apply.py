@@ -209,6 +209,13 @@ async def apply_change(args: dict, server_module: Any, events: list[dict]) -> di
                               "it as it is now. Ask again to change it.")
                 continue
             call = item["call"]
+            if op.name == "update_python_tool" and ((item.get("fields") or {}).get("_test") or {}).get("button"):
+                from core import python_edits
+
+                # Tested on the person's press first, with the internet (F1325; Naveen 11-04): never made untested.
+                if not await python_edits.passed(call["args"]["code"], list(item["fields"].get("test_args") or [])):
+                    failed.append(f"Not done: {label} waits on Test this fix: press it, and once it passes, Go ahead.")
+                    continue
             said_before = len(events)
             # One chat writes a workflow at a time (TABS2, F1063): under its lock, a chat whose turn began earlier
             # and still holds it goes first.

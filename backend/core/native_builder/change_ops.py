@@ -231,6 +231,9 @@ _WRITES = (
     # An HTTP tool's address, method or what it does, changed in place (F1312b): never its headers or its key.
     Op("update_tool", "write", "tool", "update_http_tool", ("url", "method", "description", "from"), any_of=True,
        verb="Change"),
+    # A Python tool's code, by passages quoted as they stand or its whole code, tested before the yes (F1325).
+    Op("update_python_tool", "write", "tool", "update_python_tool",
+       ("edits", "code", "description", "test_args", "needs_network"), any_of=True, verb="Change"),
     # The workspace's settings on Synapse AI's list (F1264; Naveen 10-30), each field a setting by its own name:
     # anything off the list is refused by name, with where it is done (`settings_allow`).
     Op("settings_set", "write", "settings", "set_settings", tuple(settings_allow.ALLOWED), any_of=True,
@@ -376,7 +379,25 @@ def _http_tool_field_issue(key: str, value: Any) -> str | None | bool:
     return False
 
 
+def _code_field_issue(key: str, value: Any) -> str | None | bool:
+    """A Python tool's change's field's own rule (F1325); False when `key` is not one of them."""
+    if key == "edits":
+        ok = isinstance(value, list) and 1 <= len(value) <= 20 and all(
+            isinstance(e, dict) and set(e) <= {"find", "replace"} and isinstance(e.get("find"), str)
+            and e["find"].strip() and isinstance(e.get("replace", ""), str) for e in value)
+        return None if ok else ("`edits` is a list of {find: a passage of its code quoted exactly as it stands, "
+                                "replace: its new text}")
+    if key == "test_args":
+        ok = isinstance(value, list) and 1 <= len(value) <= 3 and all(isinstance(a, dict) for a in value)
+        return None if ok else "`test_args` is one to three sample inputs, each an object like a real call's"
+    if key == "needs_network":
+        return None if isinstance(value, bool) else "`needs_network` is true or false"
+    return False
+
+
 def _field_issue(op: Op, key: str, value: Any) -> str | None:
+    if op.name == "update_python_tool" and (said := _code_field_issue(key, value)) is not False:
+        return said
     if op.name in ("create_tool", "update_tool") and (said := _http_tool_field_issue(key, value)) is not False:
         return said
     if op.target == "agent" and op.name.startswith("set_agent_") and \
@@ -497,6 +518,13 @@ def issues(op_name: str, target: dict[str, Any], fields: dict[str, Any], *, inte
         # Letting a browser agent type and send is a change of its own, never bundled (Naveen 10-31).
         found.append("`set_agent_browser`: letting it type and send (co_drive) is a change of its own; send the other "
                      "settings as another op")
+    if op.name == "update_python_tool" and not found:
+        if bool(fields.get("edits")) == bool(fields.get("code")):
+            found.append("`update_python_tool` takes its `edits` (passages quoted as they stand) or a short tool's "
+                         "whole `code`: one of them")
+        if not fields.get("test_args") and not internal:  # an undo puts back code that ran before: no samples
+            found.append("`update_python_tool` needs `test_args`: one to three sample inputs its fix is tested on "
+                         "before the person sees it")
     if op.name == "set_agent_team" and not found and fields.get("clear_spend_limit") and \
             fields.get("spend_limit_usd") is not None:
         found.append("`set_agent_team` sets a spend limit or clears it, not both")
@@ -699,6 +727,13 @@ def expected(op: Op, fields: dict[str, Any], live: dict[str, Any] | None) -> dic
                 **{k: fields[k] for k in ("prompt", "description", "missed_run_policy") if k in fields}}
     if name == "retarget_schedule":
         return _starts(fields["runs"])
+    if name == "update_python_tool":
+        from core.python_edits import apply_edits
+
+        new = str(fields["code"]) if fields.get("code") is not None else \
+            apply_edits(str(live.get("code") or ""), fields.get("edits") or [])[0]
+        return {"code": new, **({"description": str(fields["description"]).strip()}
+                                if fields.get("description") is not None else {})}
     if name == "update_tool":
         out = {}
         if fields.get("url"):
@@ -787,6 +822,11 @@ def call(op: Op, target_id: str, fields: dict[str, Any], live: dict[str, Any] | 
         return op.tool, {"name": name, **after}
     if op.name == "create_tool":
         return op.tool, http_tool_args(name, fields)
+    if op.name == "update_python_tool":
+        from core.python_edits import code_sha
+
+        # The code it was read from: one changed since is refused, not written over (F1258's way, `was_sha256`).
+        return op.tool, {"name": target_id, **after, "was_sha256": code_sha(str((live or {}).get("code") or ""))}
     if op.name == "update_tool":
         # An undo's `drop_inputs` (change_undo, never the planner's): the inputs this change added, taken out again.
         return op.tool, {"name": target_id, **after,

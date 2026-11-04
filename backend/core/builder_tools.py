@@ -155,6 +155,64 @@ async def http_tool_issues(args: dict) -> dict | None:
     return None
 
 
+async def python_code_issues(before: dict | None, args: dict) -> dict | None:
+    """What `update_python_tool` refuses before it saves anything (F1325), as it answers it, or None: no Python tool by
+    that name; a variable named by a caller; code changed since the change was read; a key in its code (F1309: a
+    shape, or a value the workspace holds); and create_python_tool's own draft, the host's plan gate among it."""
+    from core.secret_scrub import held_in, holds_credential
+
+    name = str(args.get("name") or "").strip()
+    if before is None:
+        return {"error": f"No Python tool is called `{name}`: a new one is made with create_python_tool."}
+    if before.get("tool_type") != "python":
+        return {"error": f"`{name}` is not a Python tool: an HTTP tool's address is changed with update_http_tool."}
+    if "globals" in args:
+        return {"error": _PYTHON_VARIABLES_ARE_A_PERSONS}
+    code = str(args.get("code") or "")
+    if args.get("was_sha256"):
+        from core.python_edits import code_sha
+
+        if args["was_sha256"] != code_sha(str(before.get("code") or "")):
+            return {"error": f"`{name}`'s code changed since this change was read: ask again to change it."}
+    if holds_credential(code) or await held_in(code):
+        return {"error": "A key never goes in a tool's code here: a person gives it as a variable in the tool's "
+                         "editor, which the code reads."}
+    _, _, refused = await python_tool_draft(_python_update_args(before, args))
+    return refused
+
+
+def _python_update_args(before: dict, args: dict) -> dict:
+    """create_python_tool's arguments for an update: the new code and words, its inputs as they are."""
+    return {"name": before.get("name"), "code": str(args.get("code") or ""),
+            "description": str(args.get("description") or before.get("description") or ""),
+            "input_schema_json": json.dumps(before.get("inputSchema") or {"type": "object", "properties": {}})}
+
+
+async def _change_fix(args: dict) -> tuple[dict | None, str | None]:
+    """The fix a change proposed, from its own run (F1325): `(its checked op, None)`, or `(None, why)`."""
+    from sqlalchemy import select
+
+    from core.store import session
+    from core.store.models import OrchestrationRunDB
+    from core.tenancy import get_tenant
+
+    run_id, n = str(args.get("run_id") or ""), args.get("op")
+    async with session() as s:
+        row = (await s.execute(select(OrchestrationRunDB.shared_state).where(
+            OrchestrationRunDB.tenant_id == get_tenant(), OrchestrationRunDB.run_id == run_id))).first()
+    state = row[0] if row else None
+    state = json.loads(state) if isinstance(state, str) else (state or {})
+    checked = state.get("change_checked")
+    checked = json.loads(checked) if isinstance(checked, str) else (checked or {})
+    ops = checked.get("ops") if isinstance(checked, dict) else None
+    if not isinstance(n, int) or not isinstance(ops, list) or not 0 <= n < len(ops):
+        return None, "There is no change with that fix to test."
+    item = ops[n]
+    if item.get("op") != "update_python_tool" or item.get("status") != "ready" or not item.get("call"):
+        return None, "That part of the change is not a Python tool's fix waiting on its test."
+    return item, None
+
+
 async def http_tool_update_issues(before: dict | None, args: dict) -> dict | None:
     """What `update_http_tool` refuses before it saves anything (F1312b), as it answers it, or None: no HTTP tool by
     that name; its new address or method by create_http_tool's own check (never its headers, which keep its key); a
@@ -290,6 +348,8 @@ OPT_IN_BUILDER_TOOLS: set[str] = set(KNOWLEDGE_BUILDER_TOOLS)
 OPT_IN_BUILDER_TOOLS |= {"create_python_tool", "test_python_tool"}
 #: A tool's address changed in place (F1312b): a change's own write, through the registry; no "all" agent's.
 OPT_IN_BUILDER_TOOLS |= {"update_http_tool"}
+#: A Python tool's code changed by a reviewed change, and its fix tested on a person's press (F1325): no "all" agent's.
+OPT_IN_BUILDER_TOOLS |= {"update_python_tool", "test_code_change"}
 
 #: Why the builder's Python tool names no variable (F1198, Naveen 10-29).
 _PYTHON_VARIABLES_ARE_A_PERSONS = (
@@ -1486,6 +1546,47 @@ BUILDER_TOOL_SCHEMAS = [
                                     "description": "Inputs to take out that its address no longer reads (an undo's)"},
                 },
                 "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_python_tool",
+            "description": (
+                "Change a Python tool's code, or what it does, in place: the variables a person gave it to read, its "
+                "inputs and its group stay. Held to create_python_tool's own checks; its code holds no key."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "The Python tool's name"},
+                    "code": {"type": "string", "description": "Its whole new code. Reads `_args`, prints its result."},
+                    "description": {"type": "string", "description": "What it does, in new words"},
+                    "was_sha256": {"type": "string",
+                                   "description": "The sha256 of the code this change was read from: a tool changed "
+                                                  "since is refused"},
+                },
+                "required": ["name", "code"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "test_code_change",
+            "description": (
+                "Run a Python tool's fix that a change proposed, on its own sample inputs, as the editor's Test button "
+                "runs it (with the internet): the change's card offers it where the fix could not be tested with no "
+                "network. The fix is read from the change itself, never given here."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "run_id": {"type": "string", "description": "The Synapse AI run whose change proposed the fix"},
+                    "op": {"type": "integer", "description": "The fix's place in that change, from 0"},
+                },
+                "required": ["run_id", "op"],
             },
         },
     },
@@ -3534,6 +3635,44 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         await save_tool(_builder_tags(tool, before, None))
         _emit(events, "tool", "updated", name, name, tool)
         return {"status": "updated", "name": name, **({"added_inputs": added} if added else {})}
+
+    elif tool_name == "update_python_tool":
+        from core.store.resources import load_tools, save_tool
+
+        name = str(args.get("name") or "").strip()
+        before = next((t for t in await load_tools() if t.get("name") == name), None)
+        if refused := await python_code_issues(before, args):
+            return refused
+        tool, _, refused = await python_tool_draft(_python_update_args(before, args))
+        if refused:
+            return refused
+        if before.get("group"):
+            tool["group"] = before["group"]
+        await save_tool(_builder_tags(tool, before, None))
+        _emit(events, "tool", "updated", name, name, tool)
+        return {"status": "updated", "name": name}
+
+    elif tool_name == "test_code_change":
+        from core import python_edits
+        from core.execution import ExecUnsupported, Network
+        from core.store.resources import load_tools
+
+        item, why = await _change_fix(args)
+        if why:
+            return {"error": why}
+        code, samples = item["call"]["args"]["code"], list((item.get("fields") or {}).get("test_args") or [])
+        name = item["target"].get("name")
+        tool = next((t for t in await load_tools() if t.get("name") == name), {}) or {}
+        try:
+            results = await python_edits.run_samples(code, tool.get("globals") or [], samples, Network.INTERNET)
+        except ExecUnsupported as exc:
+            return {"error": f"This install can't run Python code: {exc}"}
+        passed = bool(results) and all(r["ok"] for r in results)
+        if passed:
+            await python_edits.keep_pass(code, samples)
+        return {"passed": passed, "results": results,
+                "next": "Press Go ahead on the change to make it." if passed else
+                        "It failed: say what to change, or stop the change."}
 
     elif tool_name == "create_python_tool":
         from core.store.resources import save_tool

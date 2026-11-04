@@ -187,6 +187,8 @@ def _samples():
         # An HTTP tool's address changed in place (F1312b), and an undo's taking out what it added.
         ("update_tool", {"url": "https://x.example/api/{{ id }}", "method": "POST", "description": "d"}),
         ("update_tool", {"url": "https://x.example/api", "drop_inputs": ["id"]}),
+        # A Python tool's code changed in place (F1325).
+        ("update_python_tool", {"code": "print(1)\n", "test_args": [{}]}),
         # One that sends a key carries its lock (F1322): declared by the tool, so this pin holds it too.
         ("create_tool", {"description": "d", "url": "https://x.example/api", "key": {"header": "X-Api-Key",
                                                                                      "scheme": "Bearer"}}),
@@ -288,7 +290,10 @@ _EVERY = {"language": "english", "visitor_access": True, "budget_monthly_usd": 2
           "headers": {"X-Trace": "TRACE ON"}, "input_schema": {"type": "object", "properties": {"order_id": {
               "type": "string"}}}, "group": "ORDERS GROUP", "key": {"header": "X-Api-Key", "scheme": "Bearer"},
           # Where code reads a new tool's facts from (F1312a): a curl the person pasted, by its number.
-          "from": {"curl": 1}}
+          "from": {"curl": 1},
+          # A Python tool's change (F1325): its whole code given, so the line shows what is made.
+          "code": "PRINT THE TOTALS", "edits": [{"find": "OLD PASSAGE", "replace": "NEW PASSAGE"}],
+          "test_args": [{"rows": [1, 2]}], "needs_network": False}
 
 
 def _every_field(op_name):

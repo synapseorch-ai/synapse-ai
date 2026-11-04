@@ -131,6 +131,14 @@ def _inverse(applied: dict) -> tuple[dict | None, str | None]:
     if name == "create_tool":
         return {"op": "delete_tool", "target": _target(applied), "fields": {},
                 "says": "undo: the HTTP tool it made"}, None
+    if name == "update_python_tool":
+        # Its code as it was (F1325): written back through the same tool, whose checks it is held to again.
+        if before.get("code") is None:
+            return None, f"{label}'s old code held a key, so it was not kept and can't be put back."
+        back = {"code": before["code"], **({"description": before["description"]}
+                                           if before.get("description") is not None else {})}
+        return {"op": "update_python_tool", "target": _target(applied), "fields": back,
+                "says": "undo: its code as it was"}, None
     if name == "update_tool":
         # Its address, method and words as they were, and the inputs this change added taken out (F1312b): never one
         # it had before, which the tool keeps.

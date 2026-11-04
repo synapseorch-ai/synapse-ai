@@ -54,6 +54,8 @@ TOPICS: dict[str, str] = {
              "agent, a setting), `days` the window; an admin's, on a plan with the audit log",
     "agents": "the workspace's agents: name, type, model, how many tools",
     "workflows": "the workspace's workflows: name, how many steps, whether a schedule runs it",
+    "tool": "one custom tool by `name`: a Python tool's code (to quote exactly in a change's edits), its inputs and "
+            "the variables it reads by name; an HTTP tool's method, address and inputs (never its headers or key)",
     # What happened, not only what is set up (ASSIST1, D291).
     "today": "what happened over the last `days` days (default 1, today): runs by status, each failure and why, "
              "what waits on a person, schedules that ran, cost",
@@ -102,6 +104,8 @@ SHAPES: dict[str, dict[str, list[str]]] = {
                         "note", "models_you_can_pick?"]},
     "agents": {"keys": ["items"], "item": ["name", "type", "model", "tools"]},
     "workflows": {"keys": ["items", "count"], "item": ["name", "steps", "scheduled"]},
+    "tool": {"keys": ["name", "kind", "description", "inputs", "note", "code?", "code_cut?", "reads_variables?",
+                      "method?", "url?"]},
     "today": {"keys": ["window", "runs", "failed", "waiting_for_a_person", "running", "schedules_that_ran",
                        "model_dollars", "credits?", "note"]},
     "run": {"keys": ["run_id", "status", "workflow", "started_at", "ended_at", "steps", "response", "shared_state",
@@ -127,6 +131,7 @@ SHAPES: dict[str, dict[str, list[str]]] = {
 #: answer and a repeat is still seen as one (CAP3's F1236). Each names only read_workspace's own topics: the planner
 #: holds no other tool.
 ELSEWHERE: dict[str, str] = {
+    "tool": "This shows one custom tool by its name: list_custom_tools lists them all.",
     "schedules": "This shows schedules. A workflow with none runs only when it is started: topic `workflows` lists "
                  "the workflows, `runs` what ran.",
     "runs": "This shows workflow runs. A workflow that has not run has none: to see its steps, read topic `workflow` "
@@ -556,6 +561,37 @@ async def _agents(args: dict) -> dict:
     return {"items": _named(out, args.get("name"))}
 
 
+#: The most of a Python tool's code the planner reads at once: past it, a change quotes only what it was shown.
+TOOL_CODE_CHARS = 8000
+
+
+async def _tool(args: dict) -> dict:
+    """One custom tool, for a change to it (F1325): a Python tool's code (key shapes taken out) and the variables it
+    reads by name; an HTTP tool's method and address. Never a header or a key."""
+    from core.secret_scrub import scrub_credentials
+    from core.store.resources import load_tools
+
+    wanted = str(args.get("name") or "").strip()
+    tool = next((t for t in await load_tools() if str(t.get("name") or "").lower() == wanted.lower()), None)
+    if tool is None:
+        return {"error": f"No custom tool is called {wanted!r}."}
+    kind = tool.get("tool_type") or "http"
+    out: dict[str, Any] = {"name": tool["name"], "kind": kind, "description": tool.get("description") or "",
+                           "inputs": tool.get("inputSchema") or {}}
+    if kind == "python":
+        code = scrub_credentials(str(tool.get("code") or ""))[0]
+        out["code"] = code[:TOOL_CODE_CHARS]
+        if len(code) > TOOL_CODE_CHARS:
+            out["code_cut"] = f"{len(code) - TOOL_CODE_CHARS} more characters: quote only what is shown here"
+        out["reads_variables"] = list(tool.get("globals") or [])
+        out["note"] = ("Change it with update_python_tool: edits quoting its code exactly as it is here, and "
+                       "test_args to test the fix on.")
+    else:
+        out.update(method=tool.get("method") or "GET", url=tool.get("url") or "")
+        out["note"] = "Change its address, method or what it does with update_tool."
+    return out
+
+
 async def _workflows(args: dict) -> dict:
     from core.routes.orchestrations import load_orchestrations
     from core.store import schedules as store
@@ -739,7 +775,7 @@ async def _evals(args: dict) -> dict:
 _SELF_HOSTED: dict[str, Reader] = {
     "schedules": _schedules, "runs": _runs, "channels": _channels, "phone": _phone, "widgets": _widgets,
     "tool_policy": _tool_policy, "knowledge": _knowledge, "usage": _usage, "plan": _plan, "models": _models,
-    "agents": _agents, "workflows": _workflows,
+    "agents": _agents, "workflows": _workflows, "tool": _tool,
     "today": _today, "run": _run, "workflow": _workflow, "waiting": _waiting, "agent_activity": _agent_activity,
     "boards": _boards, "recordings": _recordings, "variables": _variables, "settings": _settings,
     "savings": _savings, "evals": _evals, "agent_memory": _agent_memory, "dead_jobs": _dead_jobs, "audit": _audit,

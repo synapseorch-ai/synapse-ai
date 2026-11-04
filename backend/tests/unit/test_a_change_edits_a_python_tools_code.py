@@ -49,20 +49,21 @@ class Runner:
         if request.network == Network.NONE and not self.no_network:
             raise ExecUnsupported("this host's sandbox can't run code with no network")
         out, err, code = io.StringIO(), "", 0
-        real = socket.socket.connect
+        real, resolve = socket.socket.connect, socket.getaddrinfo
 
         def refused(*a, **k):
             raise OSError(101, "Network is unreachable")
 
-        if request.network == Network.NONE:
+        if request.network == Network.NONE:  # no name resolved, no connection made: nothing leaves this test
             socket.socket.connect = refused
+            socket.getaddrinfo = refused
         try:
             with contextlib.redirect_stdout(out):
                 exec(compile(request.code, "<tool>", "exec"), {"__name__": "__main__"})
         except Exception:  # noqa: BLE001 — what the code raised is its stderr
             err, code = traceback.format_exc(), 1
         finally:
-            socket.socket.connect = real
+            socket.socket.connect, socket.getaddrinfo = real, resolve
         return ExecResult(exit_code=code, stdout=out.getvalue(), stderr=err)
 
 

@@ -154,7 +154,9 @@ from core.native_builder import prompt_lint, seed
 #: link through research_questions, the ask in words), c665edb5… (on fix-forward 17).
 #: F1312b: # Changing rule 24 (a wrong address is fixed with update_tool on the tool, asked in words with the form
 #: offered, filled in with today's address), bc0b53b4… (on fix-forward 17).
-BUNDLE_SHA256 = "bc0b53b476bdbec3fd108e440d297c1c0814ba98016370f51fe63ba7e0ba2d5b"
+#: F1325: # Changing rule 25 (a Python tool is fixed with update_python_tool: its code read first, quoted edits,
+#: test_args, tested with no network before the person sees it), 0c27a549… (on fix-forward 17).
+BUNDLE_SHA256 = "0c27a549055065c5dfb816929d089e90512ae5081137510b4f530f937d309cf3"
 
 
 def _sha(definitions) -> str:
