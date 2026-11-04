@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import urlsplit
 
+from core import http_tool
 from core.builder_tools import register_builder_tool
 from core.native_builder import change_ops as C, one_writer
 # The module, its names read when they run (F1293): change_tools imports builder_tools, which loads this one, so
@@ -216,6 +218,9 @@ async def apply_change(args: dict, server_module: Any, events: list[dict]) -> di
                 if held is not None:
                     failed.append(f"Not done: {label}: {one_writer.refusal(held, caller.user_id)['say']}")
                     continue
+                # A new HTTP tool that sends a key keeps to its host (F1322): the lock code set from the URL the person
+                # approved, entering by the build's own channel (F944), for this one call.
+                making = http_tool.MAKING_TOOLS.set(op.name == "create_tool" and "base_lock" in call["args"])
                 try:
                     result = await registry.invoke(call["tool"], caller, call["args"],
                                                    confirm_policy="approved_review", review=approval, reviewed=reviewed)
@@ -224,6 +229,8 @@ async def apply_change(args: dict, server_module: Any, events: list[dict]) -> di
                 except ToolRefusal as why:
                     failed.append(f"Not done: {label}: {why}")
                     continue
+                finally:
+                    http_tool.MAKING_TOOLS.reset(making)
             if isinstance(result, dict) and result.get("status") == "needs_confirmation":
                 failed.append(f"Not done: {label}: your approval does not cover this call.")
                 continue
@@ -237,12 +244,41 @@ async def apply_change(args: dict, server_module: Any, events: list[dict]) -> di
                             "before": item.get("before"), "fields": item.get("fields")})
             if not _said_its_write(events, said_before):
                 _say_write(events, op, target, target_id)
-    effect = " ".join(failed)
+    connect = await _key_cards(applied, events)
+    effect = " ".join([*failed, *connect])
     if applied or failed:
         await _change_tools._card({**checked, "ops": checked.get("ops") or []}, stage=_change_tools.CHANGED if applied else _change_tools.SET_ASIDE,
                     data={"change": checked, "applied": applied, "failed": failed})
     return {"object": "change_applied", "applied": [a["op"] for a in applied], "failed": failed,
             "effect": (" " + effect) if effect else ""}
+
+
+async def _key_cards(applied: list[dict], events: list[dict]) -> list[str]:
+    """The Connect card for the new HTTP tools of one host that send a key (F1322): the build's own (F945), its
+    header and scheme as the change said them, its key given there, never in the chat; what the answer says of it."""
+    from core.builder_connect import prepare_connection
+
+    by: dict[tuple[str, str, str], list[str]] = {}
+    for a in applied:
+        if a["op"] == "create_tool" and not a.get("already") and isinstance((a.get("fields") or {}).get("key"), dict):
+            key, url = a["fields"]["key"], str(a["fields"].get("url") or "")
+            by.setdefault((C.http_tool_origin(url), str(key.get("header") or "").strip(),
+                           str(key.get("scheme") or "").strip()), []).append(a["target"]["name"])
+    said: list[str] = []
+    for (origin, header, scheme), names in by.items():
+        host = urlsplit(origin).netloc
+        shown = await prepare_connection({
+            "kind": "tool_secret", "title": f"Connect {host}", "provider": host, "tools": names, "header": header,
+            "scheme": scheme, "why": f"The tool{'s' if len(names) > 1 else ''} {', '.join(_quoted(n) for n in names)} "
+                                     f"send{'' if len(names) > 1 else 's'} your {host} key. Give it here; it is kept "
+                                     "with them, never in this conversation."}, None, events)
+        if isinstance(shown, dict) and shown.get("status") == "card_shown":
+            said.append(f"Give your {host} key on the card above: {', '.join(_quoted(n) for n in names)} "
+                        f"{'need' if len(names) > 1 else 'needs'} it.")
+        else:
+            said.append(f"I made {', '.join(_quoted(n) for n in names)}, but couldn't put up the card for "
+                        f"{host}'s key: add it in the tool's editor.")
+    return said
 
 
 #: How the run's record names an op's target where the builder's tools name it otherwise (a workflow is an

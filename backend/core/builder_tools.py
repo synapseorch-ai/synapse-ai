@@ -127,6 +127,34 @@ def _tool_name(raw: Any) -> str:
     return name if name and name.replace("_", "a").isalnum() and not name[0].isdigit() else ""
 
 
+async def http_tool_issues(args: dict) -> dict | None:
+    """What `create_http_tool` refuses before it saves anything, as it answers it, or None: a name that is no tool
+    name, a tool that would place calls, an address inside our own network, headers that are not a JSON object or
+    that hold a key (F1309: a shape, or a value the workspace holds), an input schema that is not a JSON object. One
+    check: the change route holds a new tool to it before its review (F1322)."""
+    if not _tool_name(args.get("name")):
+        return {"error": "name must be a tool-style identifier (letters, digits, underscores)"}
+    url = str(args.get("url") or "").strip()
+    from core.builder_guard import PLACES_CALLS, places_calls
+    if places_calls(url, args.get("method")):
+        # Outbound calls wait for VOX2's consent model (V20, F497): the builder never makes a tool that dials.
+        return {"error": PLACES_CALLS}
+    refused = await _refuse_inward_url(url)
+    if refused:
+        return refused
+    headers = _parse_json_field(args.get("headers_json"), {})
+    if not isinstance(headers, dict):
+        return {"error": "headers_json must decode to a JSON object"}
+    if await _header_holds_a_key(headers):
+        # F1309: a key written into a made tool's header came out of the chat (prod-02); it goes on the tool's
+        # Connect card once the tool is made, where it is kept encrypted, never in the tool's definition.
+        return {"error": "A key never goes in a tool's headers here: make the tool without it (leave the header "
+                         "out); its Connect card asks the person for the key once the tool is made."}
+    if not isinstance(_parse_json_field(args.get("input_schema_json"), {"type": "object", "properties": {}}), dict):
+        return {"error": "input_schema_json must decode to a JSON Schema object"}
+    return None
+
+
 async def _refuse_inward_url(url: str) -> dict | None:
     """Refuse a tool URL that points back inside our own network.
 
@@ -1393,6 +1421,9 @@ BUILDER_TOOL_SCHEMAS = [
                     "input_schema_json": {"type": "string", "description": "JSON Schema object describing the tool's arguments, e.g. '{\"type\":\"object\",\"properties\":{\"user_id\":{\"type\":\"string\"}},\"required\":[\"user_id\"]}'"},
                     "body_template": {"type": "string", "description": "Request body template for POST/PUT/PATCH, with {{ placeholders }}. Omit to send the arguments as JSON."},
                     "group": {"type": "string", "description": "Optional group name to file the tool under"},
+                    # Declared so the calls that carry it name only what the tool takes (F1322): the build's save and a
+                    # change's own, each under MAKING_TOOLS. Its handler takes it nowhere else (SAI2's blocker 1).
+                    "base_lock": {"type": "string", "description": "Set by Synapse's own save; a value a caller gives is never taken."},
                     **_TAG_PARAMS,
                 },
                 "required": ["name", "description", "url"],
@@ -3357,28 +3388,12 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
     elif tool_name == "create_http_tool":
         from core.store.resources import save_tool
 
-        name = _tool_name(args.get("name"))
-        if not name:
-            return {"error": "name must be a tool-style identifier (letters, digits, underscores)"}
-        url = str(args.get("url") or "").strip()
-        from core.builder_guard import PLACES_CALLS, places_calls
-        if places_calls(url, args.get("method")):
-            # Outbound calls wait for VOX2's consent model (V20, F497): the builder never makes a tool that dials.
-            return {"error": PLACES_CALLS}
-        refused = await _refuse_inward_url(url)
-        if refused:
+        if refused := await http_tool_issues(args):
             return refused
+        name = _tool_name(args.get("name"))
+        url = str(args.get("url") or "").strip()
         headers = _parse_json_field(args.get("headers_json"), {})
-        if not isinstance(headers, dict):
-            return {"error": "headers_json must decode to a JSON object"}
-        if await _header_holds_a_key(headers):
-            # F1309: a key written into a made tool's header came out of the chat (prod-02); it goes on the tool's
-            # Connect card once the tool is made, where it is kept encrypted, never in the tool's definition.
-            return {"error": "A key never goes in a tool's headers here: make the tool without it (leave the header "
-                             "out); its Connect card asks the person for the key once the tool is made."}
         input_schema = _parse_json_field(args.get("input_schema_json"), {"type": "object", "properties": {}})
-        if not isinstance(input_schema, dict):
-            return {"error": "input_schema_json must decode to a JSON Schema object"}
         group_name = str(args.get("group") or "").strip()
         group_id = None
         if group_name:

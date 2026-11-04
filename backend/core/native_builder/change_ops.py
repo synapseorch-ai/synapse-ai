@@ -15,11 +15,14 @@ A change is a list of ops, each `{op, target: {kind, id | name}, fields}` (`obje
 Three ops hand the request to another route instead: `edit_steps` (a workflow's steps: the build route's update
 path, on the typed Plan since P3), `create` (a new agent, skill, HTTP tool or OpenAPI import: today's create
 path, which holds those tools' checks — F769's host rule, TAG1's method defaults, the Connect card, F489; Naveen's
-split, 10-22) and `use_recording` (running, scheduling or repeating a recording: the build route makes the workflow
+split, 10-22; an HTTP tool whose url the planner has is `create_tool` instead, made by code in the change itself, F1322)
+and `use_recording` (running, scheduling or repeating a recording: the build route makes the workflow
 whose Browser step replays it, F1231). None is a second way to make those things.
 """
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -77,6 +80,13 @@ AGENT_SECTIONS = ("set_agent_settings", "set_agent_team", "set_agent_browser", "
 TEAM_SETTINGS = ("add", "remove", "mode", "at_once", "task_budget", "spend_limit_usd", "clear_spend_limit")
 #: A browser agent's: where it may go, the sessions it starts with, how it works, its recordings and actions.
 BROWSER_SETTINGS = ("sites", "sessions", "mode", "recordings", "action_budget")
+
+#: What a new HTTP tool is made from (F1322): `create_http_tool`'s own facts, in a change's words. `key` says where its
+#: key goes, {header, scheme}, never the key, which the person gives on its Connect card after the yes.
+HTTP_TOOL_FIELDS = ("description", "method", "url", "headers", "body", "input_schema", "group", "key")
+HTTP_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
+#: What a key may be sent after, as the Connect card saves it (`routes.tools.connect_made_tools`): or nothing.
+KEY_SCHEMES = ("Bearer", "Token")
 
 #: What a card sets on a website widget, in the card's words (`builder_actions._WIDGET_ARGS`).
 _WIDGET_FIELDS = ("agent", "sites", "visitor_tools", "greeting", "title", "accent", "theme", "position",
@@ -213,6 +223,9 @@ _WRITES = (
     Op("knowledge_settings", "write", "knowledge_base", "update_knowledge_base",
        ("language", "visitor_access", "budget_monthly_usd", "clear_budget"), any_of=True, verb="Change the settings of"),
     Op("delete_tool", "delete", "tool", "delete_custom_tool", verb="Delete"),
+    # A new HTTP tool from its own facts (F1322; Naveen's pick, 11-04): `create` of a tool with its url is this op,
+    # made by `create_http_tool` itself and held to that tool's own checks before the review.
+    Op("create_tool", "create", "tool", "create_http_tool", HTTP_TOOL_FIELDS, ("description", "url"), verb="Make"),
     # The workspace's settings on Synapse AI's list (F1264; Naveen 10-30), each field a setting by its own name:
     # anything off the list is refused by name, with where it is done (`settings_allow`).
     Op("settings_set", "write", "settings", "set_settings", tuple(settings_allow.ALLOWED), any_of=True,
@@ -320,7 +333,35 @@ def _agent_field_issue(op: Op, key: str, value: Any) -> str | None | bool:
     return False
 
 
+def _http_tool_field_issue(key: str, value: Any) -> str | None | bool:
+    """A new HTTP tool's field's own rule (F1322); False when `key` is not one of them."""
+    if key == "method":
+        return None if isinstance(value, str) and value.strip().upper() in HTTP_METHODS else \
+            f"`method` is one of {', '.join(HTTP_METHODS)}"
+    if key == "headers":
+        ok = isinstance(value, dict) and all(isinstance(k, str) and k.strip() and isinstance(v, str)
+                                             for k, v in value.items())
+        return None if ok else "`headers` maps a header's name to its text"
+    if key == "input_schema":
+        ok = isinstance(value, dict) and value.get("type", "object") == "object" and \
+            isinstance(value.get("properties", {}), dict)
+        return None if ok else "`input_schema` is a JSON Schema object, {type: object, properties: {…}}"
+    if key == "body":
+        return None if isinstance(value, (str, dict, list)) else "`body` is the request's text, or its JSON"
+    if key == "key":
+        header, scheme = (value.get("header"), value.get("scheme", "")) if isinstance(value, dict) else (None, None)
+        ok = (isinstance(value, dict) and set(value) <= {"header", "scheme"} and isinstance(header, str)
+              and re.fullmatch(r"[A-Za-z0-9-]{1,64}", header.strip()) is not None
+              and scheme in ("", None, *KEY_SCHEMES))
+        # Never its value back, whatever was sent: these words go to the planner.
+        return None if ok else ("`key` says where its key goes, {header: the header that carries it, scheme: Bearer, "
+                                "Token or none}, never the key itself: the person gives that on a card after the yes")
+    return False
+
+
 def _field_issue(op: Op, key: str, value: Any) -> str | None:
+    if op.name == "create_tool" and (said := _http_tool_field_issue(key, value)) is not False:
+        return said
     if op.target == "agent" and op.name.startswith("set_agent_") and \
             (said := _agent_field_issue(op, key, value)) is not False:
         return said
@@ -452,6 +493,89 @@ def issues(op_name: str, target: dict[str, Any], fields: dict[str, Any], *, inte
     return found
 
 
+def as_planned(ops: list[Any]) -> list[Any]:
+    """The ops as code reads them (F1322): `create` of an HTTP tool with its url is `create_tool`, and each new tool
+    comes before the ops that give it to an agent, the rest in the planner's order."""
+    out: list[Any] = []
+    for raw in ops:
+        if isinstance(raw, dict) and raw.get("op") == "create" and (raw.get("target") or {}).get("kind") == "tool" \
+                and isinstance(raw.get("fields"), dict) and "url" in raw["fields"]:
+            raw = {**raw, "op": "create_tool"}
+        out.append(raw)
+    return sorted(out, key=lambda o: not (isinstance(o, dict) and o.get("op") == "create_tool"))
+
+
+def _http_body(value: Any) -> str:
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+
+
+def http_tool_reads(fields: dict[str, Any]) -> list[str]:
+    """The arguments a new HTTP tool's URL, headers and body read (`{{ order_id }}`), as a call fills them."""
+    from core import http_tool, templating
+
+    texts = [str(fields.get("url") or ""), *(str(v) for v in (fields.get("headers") or {}).values()),
+             _http_body(fields["body"]) if fields.get("body") not in (None, "") else ""]
+    found: list[str] = []
+    for text in texts:
+        for reference in templating.references(text):
+            if (name := http_tool._argument_of(reference)) and name not in found:
+                found.append(name)
+    return found
+
+
+def http_tool_schema(fields: dict[str, Any]) -> dict[str, Any]:
+    """Its inputs: the schema given, or, with none, each argument it reads, as text it needs."""
+    if isinstance(fields.get("input_schema"), dict):
+        return {"type": "object", **fields["input_schema"]}
+    reads = http_tool_reads(fields)
+    return {"type": "object", "properties": {n: {"type": "string"} for n in reads}, "required": reads}
+
+
+def http_tool_origin(url: str) -> str:
+    from urllib.parse import urlsplit
+
+    got = urlsplit(url.strip())
+    return f"{got.scheme}://{got.netloc}"
+
+
+def http_tool_problems(fields: dict[str, Any]) -> list[str]:
+    """What would make a new HTTP tool fail or send its key astray, by code (F1322): an argument its URL, headers or
+    body read that its schema leaves out; for a tool that sends a key, a host it fills from its arguments."""
+    from urllib.parse import urlsplit
+
+    out: list[str] = []
+    if isinstance(fields.get("input_schema"), dict):
+        declared = set((fields["input_schema"].get("properties") or {}))
+        if left := [n for n in http_tool_reads(fields) if n not in declared]:
+            out.append(f"it reads {', '.join(left)}, which its input_schema leaves out")
+    if isinstance(fields.get("key"), dict) and "{" in urlsplit(str(fields.get("url") or "").strip()).netloc:
+        out.append("a tool that sends a key keeps its host fixed: its host takes no {{ }}")
+    return out
+
+
+def http_tool_args(name: str, fields: dict[str, Any]) -> dict[str, Any]:
+    """`create_http_tool`'s arguments for a new HTTP tool (F1322): its fields under the tool's own names, its inputs
+    as `http_tool_schema` says them; a tool that sends a key keeps to its host (`base_lock`, F944: what its Connect
+    card shows the key goes to), set by code from the URL the person approves, never from a field."""
+    url = str(fields.get("url") or "").strip()
+    args: dict[str, Any] = {"name": name, "description": str(fields.get("description") or "").strip(), "url": url,
+                            "method": str(fields.get("method") or "GET").strip().upper(),
+                            "input_schema_json": json.dumps(http_tool_schema(fields))}
+    if fields.get("headers"):
+        args["headers_json"] = json.dumps(fields["headers"], ensure_ascii=False)
+    if fields.get("body") not in (None, ""):
+        args["body_template"] = _http_body(fields["body"])
+    if _text_of(fields.get("group")):
+        args["group"] = _text_of(fields.get("group"))
+    if isinstance(fields.get("key"), dict):
+        args["base_lock"] = http_tool_origin(url)
+    return args
+
+
+def _text_of(value: Any) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
 def _settings_issues(fields: dict[str, Any]) -> list[str]:
     """A settings change's: each name on the list here (the host's narrowing too), each value by its own check. An
     empty value is a value here (a model left to the default), so every one is checked, never skipped."""
@@ -486,6 +610,8 @@ def _saved_as(op: Op, fields: dict[str, Any]) -> list[str]:
                 clean(fields[key], credits=key == "max_run_credits")
             except ValueError as why:
                 out.append(str(why))
+    if op.name == "create_tool":
+        out += http_tool_problems(fields)
     return out
 
 
@@ -555,6 +681,10 @@ def expected(op: Op, fields: dict[str, Any], live: dict[str, Any] | None) -> dic
                 **{k: fields[k] for k in ("prompt", "description", "missed_run_policy") if k in fields}}
     if name == "retarget_schedule":
         return _starts(fields["runs"])
+    if name == "create_tool":
+        args = http_tool_args("", fields)
+        return {"tool_type": "http", "url": args["url"], "method": args["method"], "description": args["description"],
+                **({"body": args["body_template"]} if "body_template" in args else {})}
     if name == "create_schedule":
         return {**_starts(fields["runs"]), "prompt": fields["prompt"], **_schedule_time(fields),
                 **{k: fields[k] for k in ("description", "missed_run_policy") if fields.get(k)}}
@@ -628,6 +758,8 @@ def call(op: Op, target_id: str, fields: dict[str, Any], live: dict[str, Any] | 
         return op.tool, {"orch_id": target_id, **after}
     if op.name == "create_schedule":
         return op.tool, {"name": name, **after}
+    if op.name == "create_tool":
+        return op.tool, http_tool_args(name, fields)
     if op.target == "schedule":
         return op.tool, {"schedule_id": target_id, **after}
     if op.name == "set_agent_skills":

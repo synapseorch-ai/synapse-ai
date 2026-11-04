@@ -129,7 +129,11 @@ SUBMIT = {"type": "function", "function": {
         "visitor_access (opening it to visitors, on its own), budget_monthly_usd | clear_budget}; widget_create {agent, sites, visitor_tools, greeting, title, accent, theme, "
         "position, launcher_label, font, header_style, launcher, daily_cap}; widget_update {the same, on}; widget_logo "
         "{path}; channel_connect {platform, agent}; channel_agents {agents, agent}; edit_steps, create "
-        "and use_recording {what}. Deletes and the other acts take none. For \"undo that\", send undo_of with no ops."
+        "and use_recording {what}; create (an HTTP tool whose address you know: target {kind: tool, name: its "
+        "snake_case name}) {description, url with {{ placeholders }} for what it reads, method: GET | POST | PUT | "
+        "PATCH | DELETE, headers, body, input_schema, group, key: {header, scheme} where its key goes, never the key}, "
+        "before the ops that give it to an agent. Deletes and the other acts take none. For \"undo that\", send "
+        "undo_of with no ops."
     ),
     "parameters": {"type": "object", "properties": {
         "ops": {"type": "array", "items": _op_schema()},
@@ -245,7 +249,7 @@ def asked_text(question: str, options: list[str]) -> str:
 async def submit_change(args: dict, server_module: Any, events: list[dict]) -> dict:
     from core.native_builder.objects import Change
 
-    ops = args.get("ops") if isinstance(args.get("ops"), list) else []
+    ops = C.as_planned(args.get("ops") if isinstance(args.get("ops"), list) else [])
     undo_of = _text(args.get("undo_of"))
     if not ops and not undo_of:
         return {"error": "Send at least one op, or undo_of for \"undo that\"."}
@@ -261,7 +265,7 @@ async def submit_change(args: dict, server_module: Any, events: list[dict]) -> d
             continue
         fields = op.get("fields") if isinstance(op.get("fields"), dict) else {}
         found += [f"op {n}: {line}" for line in C.issues(str(op.get("op") or ""), op.get("target") or {}, fields)]
-        if op.get("op") == "create" and (switched := _kind_switch(kinds, op.get("target") or {})):
+        if op.get("op") in ("create", "create_tool") and (switched := _kind_switch(kinds, op.get("target") or {})):
             found.append(f"op {n}: {switched}")
     found += [f"op {n}: {SAYS_ASKS}" for n, op in enumerate(ops, 1)
               if isinstance(op, dict) and asks_for_a_secret(_text(op.get("says")), strict=False)]
@@ -1343,6 +1347,49 @@ async def _skill_names(fields: dict) -> str | None:
     return f"No skill is called {', '.join(_quoted(n) for n in missing)}." if missing else None
 
 
+async def _tool_names(fields: dict, made: set[str], server_module: Any) -> str | None:
+    """An agent is given only a tool that is here, or one this change makes (F1322: prod-13's four names nothing had
+    made reached the review); the refusal names each other one, with the nearest that are here (`builder_guard`'s
+    own check, the agent editor's)."""
+    from core import builder_guard
+
+    wanted = [n for n in fields.get("add") or [] if n not in made]
+    gone = await builder_guard.missing(wanted, server_module) if wanted else []
+    return " ".join(f"No tool is called {_quoted(n)}" + (f": the nearest here {'is' if len(near) == 1 else 'are'} "
+                                                         f"{', '.join(_quoted(c) for c in near)}." if near else ".")
+                    for n, near in gone) or None
+
+
+async def _new_tool_refusal(name: str, fields: dict) -> str | None:
+    """Why this new HTTP tool can't be made as asked, before the review (F1322): code's own reading of it, then
+    `create_http_tool`'s own refusal in its own words (`http_tool_issues`, the check the tool itself runs)."""
+    from core.builder_tools import http_tool_issues
+
+    found = C.http_tool_problems(fields)
+    if not found and (refused := await http_tool_issues(C.http_tool_args(name, fields))):
+        found = [refused["error"]]
+    return f"I can't make the HTTP tool {_quoted(name)}: {'; '.join(found)}" if found else None
+
+
+def _new_tool_line(name: str, fields: dict) -> str:
+    """A new HTTP tool's review line (F1322): its method and URL first, then its inputs, body, headers and what it
+    does, and where its key goes; every value the call is made from, so the person approves what is made."""
+    args = C.http_tool_args(name, fields)
+    inputs = list((json.loads(args["input_schema_json"]).get("properties") or {}))
+    parts = [f"{args['method']} {args['url']}"]
+    if inputs:
+        parts.append(f"inputs: {', '.join(inputs)}")
+    if "body_template" in args:
+        parts.append(f"body: {args['body_template']}")
+    if fields.get("headers"):
+        parts.append("headers: " + ", ".join(f"{k}: {v}" for k, v in fields["headers"].items()))
+    parts.append(f"does: {args['description']}")
+    if isinstance(key := fields.get("key"), dict) and _text(key.get("header")):
+        scheme = f" ({key['scheme']})" if _text(key.get("scheme")) else ""
+        parts.append(f"its key goes in its {key['header']} header{scheme}, given on a card after you approve")
+    return f"Make the HTTP tool {_quoted(name)} — {'; '.join(parts)}"
+
+
 def _keep(op: C.Op, record: dict | None, want: dict | None) -> dict | None:
     """The before-image an undo needs, never a secret's value: the fields the op touches, or for a delete the
     record with its credentials, memory and bookkeeping left out (F797)."""
@@ -1429,6 +1476,7 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
         ops, refusal, notes = await inverse_ops(str(draft["undo_of"]))
         if refusal:
             return {**base, "outcome": "said", "say": refusal}
+    ops = C.as_planned(ops)
 
     handoffs = [o for o in ops if C.OPS.get(o.get("op", ""), C.OPS["create"]).kind == "handoff"]
     goes_on_its_own = (len(ops) == 1 and ops[0].get("op") == "create") or (handoffs and len(handoffs) == len(ops)) or any(
@@ -1546,6 +1594,8 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
     # and a remove of tools, two policy rules) each build on the last, rather than the second undoing the first
     # (the branch review's finding 3).
     leaves: dict[tuple[str, str], dict | None] = {}
+    #: The HTTP tools this change makes, by name: an agent may be given one (F1322).
+    made: set[str] = set()
     for item in checked:
         if item.get("status") != "resolved":
             continue
@@ -1663,6 +1713,12 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
         if op.name == "knowledge_edit_document" and (said := _edit_refusal(target, fields, live)):
             item.update(status="refused", say=said)
             continue
+        if op.name == "create_tool" and (said := await _new_tool_refusal(target["name"], fields)):
+            item.update(status="refused", say=said)
+            continue
+        if op.name == "set_agent_tools" and (said := await _tool_names(fields, made, server_module)):
+            item.update(status="refused", say=said)
+            continue
         want = C.expected(op, fields, live)
         if (op.name in C.AGENT_SECTIONS or op.name == "set_agent_fields") and \
                 (said := await _agent_problem(op, live, want)):
@@ -1695,6 +1751,9 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             line = await _agent_lines(op, target, live, want)
         if op.target == "memory":
             line = _memory_line(op, target, live, want)
+        if op.name == "create_tool":
+            line = _new_tool_line(target["name"], fields)
+            made.add(target["name"])
         item.update(status="ready", call={"tool": tool_name, "args": call_args}, expected=want,
                     before=_keep(op, live, want), line=f"{line} ({item['why']})" if item.get("why") else line)
         if op.kind != "create":

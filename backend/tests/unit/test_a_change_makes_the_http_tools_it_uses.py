@@ -52,6 +52,17 @@ def fresh():
     builder_access.forget_runs()
 
 
+@pytest.fixture(autouse=True)
+def _public_dns(monkeypatch):
+    """Every named host is a public address: these tests are about the change, never the network's DNS (F1238)."""
+    from core import egress_guard
+
+    async def resolve(host):
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(egress_guard, "resolve", resolve)
+
+
 _N = {"n": 0}
 
 
@@ -285,3 +296,50 @@ def test_the_planner_is_told_an_http_tools_fields():
                         "planner.json").read_text())["system_prompt"]
     rule = next(line for line in rules.splitlines() if line.startswith("5. "))
     assert "url" in rule and "what" in rule, rule
+
+
+# ── the lock: code's own, from the URL the person approved (eb 11-04, option (1)) ─────────────────────────────────
+
+async def _invoked_as_a_client(args: dict) -> dict:
+    """`create_http_tool` called as an MCP client calls it: its confirm token redeemed when it asks for one."""
+    from core.product_tools import areas, build, confirm, registry
+    from core.product_tools.caller import Caller
+
+    areas.ensure_loaded()
+    caller = Caller(role=Role.OWNER, via="mcp", user_id="u1")
+    with build.using_module(_Server()):
+        out = await registry.invoke("create_http_tool", caller, dict(args))
+        if isinstance(out, dict) and out.get("status") == "needs_confirmation":
+            out = await registry.invoke("create_http_tool", caller, {**args, confirm.TOKEN_ARG: out["confirm_token"]})
+    return json.loads(out) if isinstance(out, str) else out
+
+
+@pytest.mark.parametrize("path", ["mcp_client", "maker"])
+async def test_a_callers_lock_is_never_stored(client, path):
+    args = {"name": "someones_tool", "description": "d", "url": f"{SHOP}/orders", "method": "GET",
+            "base_lock": "https://elsewhere.example"}
+    if path == "mcp_client":
+        await _invoked_as_a_client(args)
+    else:
+        out, _ = await _call("create_http_tool", args, await _run())
+        assert out.get("status") == "created", out
+    assert "base_lock" not in (await _tools())["someones_tool"], "only Synapse's own save sets a lock"
+
+
+async def test_the_changes_lock_is_the_approved_urls_origin_and_never_wider(client):
+    from core.native_builder import change_ops as C
+
+    ops = await _submitted([_new_tool("get_order", f"{SHOP}/v2/orders/{{{{ order_id }}}}",
+                                      key={"header": "Authorization", "scheme": "Bearer"})])
+    _, checked, done, _ = await _change({"ops": ops})
+    assert done["applied"] == ["create_tool"], (checked, done)
+    assert (await _tools())["get_order"]["base_lock"] == SHOP, "its origin: the host the person approved"
+    assert C.http_tool_args("x", {"url": f"{SHOP}/a/b", "key": {"header": "X"}})["base_lock"] == SHOP
+    # A change names no lock of its own, and never re-makes a tool that has one.
+    out, _ = await _call("submit_change", {"ops": [_new_tool("other", f"{SHOP}/x", key={"header": "X-Api-Key"},
+                                                             base_lock="https://")]}, await _run())
+    assert "cannot set base_lock" in out.get("error", ""), out
+    _, again, _, _ = await _change({"ops": await _submitted([
+        _new_tool("get_order", "https://elsewhere.example/orders", key={"header": "X-Api-Key"})])})
+    assert again["outcome"] == "said" and "already called" in again["say"], again
+    assert (await _tools())["get_order"]["base_lock"] == SHOP

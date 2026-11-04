@@ -7,8 +7,9 @@ what a change could do was whatever the operator's tools allowed, and F755's car
 of the markdown. Now the change planner proposes `{op, target, fields}` and code decides the rest from
 `change_ops.OPS`: a field an op does not take is refused by name (F784's rule), each write is exactly one call of a
 registry tool (audited by id, F697) whose schema takes those arguments, and the same `expected` is the no-op check
-before and the effect check after. Making a new agent, skill, HTTP tool or OpenAPI import is not an op: it is handed
-to today's create path, which holds their checks (Naveen's split, 10-22).
+before and the effect check after. Making a new agent, skill, Python tool or OpenAPI import is not an op: it is handed
+to today's create path, which holds their checks (Naveen's split, 10-22). An HTTP tool whose url the planner has is
+one, `create_tool`, made by `create_http_tool` itself (F1322: Naveen moved his split for HTTP tools only, 11-04).
 """
 import pytest
 
@@ -38,8 +39,8 @@ def test_an_undo_s_re_create_is_code_s_only():
         f"`restore_agent` is not an op. The ops are: {', '.join(C.PLANNER_OPS)}."]
 
 
-@pytest.mark.parametrize("tool", ["create_agent", "create_agents", "create_skill", "create_http_tool",
-                                  "import_openapi", "create_python_tool"])
+@pytest.mark.parametrize("tool", ["create_agent", "create_agents", "create_skill", "import_openapi",
+                                  "create_python_tool"])
 def test_making_something_new_is_handed_over_not_an_op(tool):
     """No op a model may propose reaches a create tool: only an undo's re-create, which code builds from what a
     change deleted (F797), may call one."""
@@ -48,6 +49,18 @@ def test_making_something_new_is_handed_over_not_an_op(tool):
     assert {op.name for op in C.OPS.values() if op.tool == tool} <= {"restore_agent", "restore_tool",
                                                                       "restore_python_tool", "restore_skill"}
     assert C.OPS["create"].kind == "handoff"
+
+
+def test_an_http_tool_is_made_by_one_op_the_planner_may_propose():
+    """F1322 (Naveen's pick (A), 11-04): an HTTP tool whose url the planner has is made in the change itself, by
+    `create_http_tool` and its own checks, through one op, `create_tool` (`create` of a tool with its url reads as it);
+    beside it only an undo's re-create calls that tool. Every other new thing is still handed over (above)."""
+    assert "create_http_tool" not in C.OPS
+    assert {n for n in C.PLANNER_OPS if C.OPS[n].tool == "create_http_tool"} == {"create_tool"}
+    assert {op.name for op in C.OPS.values() if op.tool == "create_http_tool"} == {"create_tool", "restore_tool"}
+    assert C.OPS["create"].kind == "handoff" and C.OPS["create_tool"].kind == "create"
+    assert C.as_planned([{"op": "create", "target": {"kind": "tool", "name": "t"}, "fields": {"what": "x"}}])[0][
+        "op"] == "create", "a tool asked for in words is still handed over"
 
 
 def test_the_operator_s_writes_on_what_exists_are_ops():
@@ -168,6 +181,12 @@ def _samples():
         ("restore_python_tool", {"name": "N", "description": "d", "code": "print(1)\n"}),
         ("delete_skill", {}),
         ("restore_skill", {"name": "N", "description": "d", "body": "Use the house style."}),
+        ("create_tool", {"description": "d", "url": "https://x.example/api/{{ id }}", "method": "POST",
+                         "headers": {"Content-Type": "application/json"}, "body": {"id": "{{ id }}"},
+                         "group": "X"}),
+        # One that sends a key carries its lock (F1322): declared by the tool, so this pin holds it too.
+        ("create_tool", {"description": "d", "url": "https://x.example/api", "key": {"header": "X-Api-Key",
+                                                                                     "scheme": "Bearer"}}),
     ]
 
 
