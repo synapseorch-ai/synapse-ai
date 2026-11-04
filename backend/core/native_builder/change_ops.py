@@ -280,6 +280,10 @@ _RESTORES = (
 )
 
 OPS: dict[str, Op] = {op.name: op for op in (*_ACTS, *_WRITES, *_HANDOFFS, *_RESTORES)}
+#: Fields an op takes only from code's own undo (`change_undo`), never from the planner: checked as what an undo
+#: builds (`issues(internal=True)`), refused by name from a model (F1312b: the inputs a change added, taken out again).
+UNDO_ONLY: dict[str, tuple[str, ...]] = {"update_tool": ("drop_inputs",)}
+
 #: What a model may propose: every op but the internal ones.
 PLANNER_OPS = tuple(n for n, op in OPS.items() if not op.internal)
 #: (Every button act in `builder_actions.ACTIONS` is an op of kind act, and only those: a test holds it, since this
@@ -465,7 +469,7 @@ def issues(op_name: str, target: dict[str, Any], fields: dict[str, Any], *, inte
         found.append(f"`{op.name}` is about a {op.target}: target.kind is {op.target}")
     if not any(isinstance((target or {}).get(k), str) and target[k].strip() for k in ("id", "name")):
         found.append(f"`{op.name}` needs its target's id (or its name)")
-    unknown = [k for k in fields if k not in op.fields]
+    unknown = [k for k in fields if k not in op.fields and not (internal and k in UNDO_ONLY.get(op.name, ()))]
     if op.name == "settings_set":
         return found + _settings_issues(fields)
     if unknown:

@@ -280,6 +280,8 @@ async def submit_change(args: dict, server_module: Any, events: list[dict]) -> d
             found.append(f"op {n}: {switched}")
     found += [f"op {n}: {SAYS_ASKS}" for n, op in enumerate(ops, 1)
               if isinstance(op, dict) and asks_for_a_secret(_text(op.get("says")), strict=False)]
+    if not found and run is not None and (nudge := _curl_unnamed(ops, run.shared_state)):
+        found.append(nudge)
     if found:
         return {"error": "Fix these and call submit_change again: " + "; ".join(found)}
     change = Change.model_validate({"ops": ops, "undo_of": undo_of or None})
@@ -288,6 +290,29 @@ async def submit_change(args: dict, server_module: Any, events: list[dict]) -> d
 
 #: The kind each new thing of this step's change was first submitted as, by name (F1242), engine-private.
 _KINDS_KEY = "_change_kinds"
+
+
+#: Asked once a run (Naveen 11-04): a curl the person pasted, which a new or changed HTTP tool did not name.
+_CURL_NUDGED = "_curl_nudged"
+CURL_UNNAMED = "a curl is in the context: name it with from {curl: n}"
+
+
+def _curl_unnamed(ops: list, state: dict) -> str | None:
+    """A create_tool or update_tool with no `from` while the person pasted a curl this turn (F1312b, Naveen's ruling):
+    sent back once, so code reads the curl rather than the planner retyping it; never twice, never a loop."""
+    from core.native_builder.build_plan import curls
+
+    if state.get(_CURL_NUDGED):
+        return None
+    if not any(isinstance(o, dict) and o.get("op") in ("create_tool", "update_tool") and
+               not (o.get("fields") or {}).get("from") for o in ops):
+        return None
+    found = [c for c in curls(state) if not c.get("problem")]
+    if not found:
+        return None
+    state[_CURL_NUDGED] = True
+    listed = "; ".join(f"curl {c['n']}: {c['method']} {c['url']}" for c in found)
+    return f"{CURL_UNNAMED} ({listed}), and mark only what varies with {{{{ }}}}; or send it again as it is"
 
 
 async def _from_source(fields: dict, state: dict, *, update: bool = False) -> tuple[dict, str | None]:
@@ -694,7 +719,8 @@ async def ask_person(args: dict, server_module: Any, events: list[dict]) -> dict
         return {"error": ASKED_ENOUGH.format(n=asked)}
     if run is not None:
         note_question(state, about, subject, question)
-    return {"finish": "ask_person", "question": question, "about": about, "options": options}
+    return {"finish": "ask_person", "question": _with_address_hint(question, [question, subject]), "about": about,
+            "options": options}
 
 
 def _ask_form(lead: str, items: list[dict]) -> dict:
@@ -729,7 +755,26 @@ def _ask_form(lead: str, items: list[dict]) -> dict:
     if run is not None:
         for about, subject, question, _, field in asked:
             note_question(state, about, subject, question, field=field["name"])
-    return {"finish": "ask_person", "question": lead, "form": [field for *_, field in asked]}
+    return {"finish": "ask_person", "question": _with_address_hint(lead, [w for a in asked for w in a[1:3]]),
+            "form": [field for *_, field in asked]}
+
+
+#: Code's own line under a question for a tool's address (Naveen 11-04): what else the person may give.
+ADDRESS_HINT = "You can also paste a curl, its OpenAPI spec, or a link to its docs."
+#: A question for where a tool calls: a URL or an endpoint, or an address said with what calls it (a ship-from address,
+#: an email address, is a person's and gets no line).
+_ASKS_URL = re.compile(r"(?i)\b(?:url|urls|endpoint|endpoints)\b")
+_ASKS_ADDRESS = re.compile(r"(?i)\baddress\b")
+_A_TOOLS = re.compile(r"(?i)\b(?:tool|api|service|webhook|server)\b")
+
+
+def _with_address_hint(question: str, said: list[str]) -> str:
+    """`question`, and under it ADDRESS_HINT when it, or what it is about, asks where a tool calls."""
+    words = " ".join(w for w in said if w)
+    if ADDRESS_HINT in question or not (_ASKS_URL.search(words) or
+                                        (_ASKS_ADDRESS.search(words) and _A_TOOLS.search(words))):
+        return question
+    return f"{question}\n\n{ADDRESS_HINT}"
 
 
 async def cannot(args: dict, server_module: Any, events: list[dict]) -> dict:

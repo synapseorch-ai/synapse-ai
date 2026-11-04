@@ -260,9 +260,10 @@ async def test_the_address_question_says_what_else_helps_in_codes_words(client, 
 async def test_a_question_about_anything_else_has_no_such_line(client):
     from test_a_change_makes_the_http_tools_it_uses import _run
 
-    out, _ = await _call("ask_person", {"question": "What is the finance team's email address?", "about": "who",
-                                        "subject": "finance email"}, await _run())
-    assert ADDRESS_HINT not in out.get("question", ""), out
+    for question in ("What is the finance team's email address?", "Which ship-from address?"):
+        out, _ = await _call("ask_person", {"question": question, "about": "who", "subject": question},
+                             await _run())
+        assert ADDRESS_HINT not in out.get("question", ""), out
 
 
 async def test_update_http_tool_is_served_to_mcp_clients_destructive_and_never_with_headers(client):
@@ -277,7 +278,9 @@ async def test_update_http_tool_is_served_to_mcp_clients_destructive_and_never_w
     await _tool()
     areas.ensure_loaded()
     caller, args = Caller(role=Role.OWNER, via="mcp", user_id="u1"), {"name": "fetch_orders", "url": f"{SHOP}/v2"}
-    with build.using_module(None):
+    from test_a_change_makes_the_http_tools_it_uses import _Server
+
+    with build.using_module(_Server()):
         out = await registry.invoke("update_http_tool", caller, args)
         if isinstance(out, dict) and out.get("status") == "needs_confirmation":
             assert KEY not in json.dumps(out), "its preview never shows the key"
