@@ -60,6 +60,17 @@ def app_of(name: Any) -> str | None:
     return app or None
 
 
+def _app_named(name: str, server_module: Any) -> str | None:
+    """The app `name` is a tool of: the longest of the host's apps it begins with (OSS lets an app's name hold the
+    separator, so a name is never only split), else its first part."""
+    manager = getattr(server_module, "mcp_manager", None)
+    known = {str(c.get("name")) for c in (getattr(manager, "servers_config", None) or []) if isinstance(c, dict)}
+    for attr in ("mcp_disabled", "mcp_reauth_needed", "mcp_errors", "_user_configs"):
+        known |= {str(k) for k in (getattr(server_module, attr, None) or ())}
+    matches = [app for app in known if app and isinstance(name, str) and name.startswith(app + SEP)]
+    return max(matches, key=len) if matches else app_of(name)
+
+
 def is_native(app: str | None) -> bool:
     from core.tools_registry import ALL_NATIVE_TOOLS
 
@@ -98,7 +109,7 @@ def _said(text: Any) -> str:
 def why_unavailable(name: str, server_module: Any, *, error: Any = None, where: str = "this step") -> Unavailable:
     """Why `name` isn't available, as its app's record says, and what to do: for a Tool step (`where` "this step")
     or an agent ("this agent"). `error` is a call's own failure, when one said it."""
-    app = app_of(name)
+    app = _app_named(name, server_module)
     status, reason = app_state(server_module, app)
     said = _said(error or reason)
     because = f": {said}" if said else ""
