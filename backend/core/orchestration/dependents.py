@@ -209,3 +209,42 @@ def agent_refusal(name: str, dependents: list[Dependent]) -> str:
         parts.append(f"{_join(things)} {one if len(things) == 1 else many}")
     them = "it" if len(dependents) == 1 else "them"
     return f"'{name}' was not deleted: {'; '.join(parts)}. Point {them} at another agent, or delete {them}, first."
+
+
+def _names_tool(named: object, tool: str) -> bool:
+    """Whether a step's or an agent's tool name is `tool`: as saved, or as an MCP server's tool is spelled with its
+    server in front (`server.tool`, `server__tool`)."""
+    return isinstance(named, str) and (named == tool or named.endswith(f".{tool}") or named.endswith(f"__{tool}"))
+
+
+async def what_uses_tool(name: str) -> list[Dependent]:
+    """What uses tool `name` in this tenant (F1348), so that deleting it never leaves a step calling nothing: each live
+    workflow step that calls it (a Tool step) or holds its agent to it (`allowed_tools`), as a "step" with its
+    workflow's name and the step's in `via`; and each agent that holds it, as an "agent". Every read is a reason, so
+    none is skipped. A workflow deleted and kept as a record (F423) uses nothing."""
+    from core.store.resources import load_agents, load_orchestrations
+
+    found = [Dependent("step", o.get("name") or o["id"], via=step.get("name") or step.get("id"), id=o.get("id"))
+             for o in await load_orchestrations() if not _gone(o)
+             for step in o.get("steps") or []
+             if _names_tool(step.get("forced_tool"), name)
+             or any(_names_tool(t, name) for t in step.get("allowed_tools") or [])]
+    found += [Dependent("agent", a.get("name") or a["id"]) for a in await load_agents()
+              if not a.get("system") and any(_names_tool(t, name) for t in a.get("tools") or [])]
+    return found
+
+
+def tool_refusal(name: str, dependents: list[Dependent]) -> str | None:
+    """The sentence a tool's delete is refused with when a workflow's step uses it (F1348, Naveen: "refuse"): that
+    step would fail every run after. Agents alone refuse nothing: they run on without it, and are named, not refused.
+
+    "'order_lookup' was not deleted: the step 'Look up order' of the workflow 'Order status check' uses it. Point it
+    at another tool, or remove it, first."
+    """
+    steps = [d for d in dependents if d.kind == "step"]
+    if not steps:
+        return None
+    things = [f"the step '{d.via}' of the workflow '{d.name}'" for d in steps]
+    them = "it" if len(steps) == 1 else "them"
+    return (f"'{name}' was not deleted: {_join(things)} {'uses' if len(steps) == 1 else 'use'} it. "
+            f"Point {them} at another tool, or remove {them}, first.")
