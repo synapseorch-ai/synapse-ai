@@ -160,11 +160,33 @@ def test_an_unknown_line_changes_nothing():
     assert parser.feed("warning: something new") == 0.05
 
 
-def test_playwright_parts_read_as_one_bar():
+def _bar(pct: int, size: str) -> str:
+    """One of Playwright's own progress lines, as REL3's rc3 install log has them (11-04)."""
+    return f"|{'■' * (pct * 80 // 100):<80}| {pct:>3}% of {size}"
+
+
+def test_the_headless_shell_alone_reads_as_one_full_bar():
+    """F1355: `playwright install --only-shell chromium` prints two bars, the headless shell (114.7 MiB) and FFmpeg
+    (2.3 MiB, over in a second). Counted as two equal parts, the bar sat at half for the whole shell and then jumped.
+    A download of a few MiB takes no share of the bar, so the shell alone fills it, in either order."""
+    shell_first = progress.Downloads(parts=1)
+    values = [shell_first.feed(_bar(p, "114.7 MiB")) for p in (0, 10, 50, 100)]
+    values += [shell_first.feed(_bar(p, "2.3 MiB")) for p in (0, 100)]
+    assert values == [0.0, 0.1, 0.5, 1.0, 1.0, 1.0]
+
+    ffmpeg_first = progress.Downloads(parts=1)
+    values = [ffmpeg_first.feed(_bar(p, "2.3 MiB")) for p in (0, 100)]
+    values += [ffmpeg_first.feed(_bar(p, "114.7 MiB")) for p in (0, 50, 100)]
+    assert values == [0.0, 0.0, 0.0, 0.5, 1.0]
+
+
+def test_several_large_parts_read_as_one_bar_and_a_small_one_takes_no_share():
+    """The full install's three bars, in the order it printed them: Chromium, FFmpeg, the headless shell."""
     parts = progress.Downloads(parts=2)
-    values = [parts.feed(f"|■■■   | {p}% of 164.8 MiB") for p in (10, 50, 100)]
-    values += [parts.feed(f"|■     | {p}% of 2.3 MiB") for p in (0, 100)]
-    assert values == [0.05, 0.25, 0.5, 0.5, 1.0]
+    values = [parts.feed(_bar(p, "184.3 MiB")) for p in (10, 50, 100)]
+    values += [parts.feed(_bar(p, "2.3 MiB")) for p in (0, 100)]
+    values += [parts.feed(_bar(p, "114.7 MiB")) for p in (0, 50, 100)]
+    assert values == [0.05, 0.25, 0.5, 0.5, 0.5, 0.5, 0.75, 1.0]
 
 
 # ── the screen ───────────────────────────────────────────────────────────────

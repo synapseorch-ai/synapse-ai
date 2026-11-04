@@ -93,7 +93,7 @@ const CREDENTIAL_FIELDS: Record<Platform, { key: string; label: string; placehol
         { key: 'app_password', label: 'App password / client secret', placeholder: '', secret: true, note: 'Azure Bot → Certificates & Secrets' },
     ],
     whatsapp: [
-        // These are conditionally rendered based on whatsapp_mode — see component
+        // The Cloud API's fields are drawn by the component itself (its notes are WhatsApp's own)
     ],
 };
 
@@ -204,9 +204,6 @@ export const MessagingTab = () => {
     const [refreshing, setRefreshing] = useState(false);
     const [assigning, setAssigning] = useState(false);
 
-    // WhatsApp sub-mode UI state
-    const [waMode, setWaMode] = useState<'meta_api' | 'unofficial'>('meta_api');
-    const [waRiskAck, setWaRiskAck] = useState(false);
     const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
     // Channel that mirrors run notifications ("" = in-app only)
@@ -311,10 +308,6 @@ export const MessagingTab = () => {
     const selectChannel = useCallback((ch: Channel) => {
         setSelectedId(ch.id || null);
         setDraft({ ...ch });
-        if (ch.platform === 'whatsapp') {
-            setWaMode((ch.credentials?.whatsapp_mode as any) || 'meta_api');
-            setWaRiskAck(false);
-        }
     }, []);
 
     useEffect(() => {
@@ -326,8 +319,6 @@ export const MessagingTab = () => {
     const newChannel = () => {
         setSelectedId(null);
         setDraft({ ...EMPTY_CHANNEL });
-        setWaMode('meta_api');
-        setWaRiskAck(false);
         showDetail(detailRef.current);
     };
 
@@ -354,7 +345,6 @@ export const MessagingTab = () => {
             last_error: draft.last_error,
             ...(back ? { mode: back.mode, credentials: back.credentials, credentials_set: back.credentials_set } : {}),
         });
-        if (back?.platform === 'whatsapp') setWaMode((back.credentials?.whatsapp_mode as any) || 'meta_api');
     };
 
     const saveAndConnect = async () => {
@@ -367,9 +357,10 @@ export const MessagingTab = () => {
 
         setSaving(true);
         try {
-            // Inject waMode into credentials for whatsapp
+            // WhatsApp's one way in is the Cloud API: WhatsApp Web (the QR sign-in) is removed in 2.0 (F1355), and a
+            // channel carried over in that mode is reconnected by saving it here.
             const base = draft.platform === 'whatsapp'
-                ? { ...draft, credentials: { ...draft.credentials, whatsapp_mode: waMode } }
+                ? { ...draft, credentials: { ...draft.credentials, whatsapp_mode: 'meta_api' } }
                 : draft;
             // `agent_ids` is a read projection of the join, and `agent_id` is the
             // legacy scalar the join replaced — POSTing either back would have
@@ -930,79 +921,30 @@ export const MessagingTab = () => {
                         <Section title={`Credentials — ${platformMeta?.label}`} variant="plain" collapsible={false}>
                             {draft.platform === 'whatsapp' ? (
                                 <div className="grid gap-4">
-                                    {(() => {
-                                        const modes = [
-                                            { value: 'meta_api' as const, label: 'Business (Meta API)', hint: 'Official. Requires Meta Business account + verified number.' },
-                                            { value: 'unofficial' as const, label: 'Unofficial (Playwright)', hint: 'No business account. Uses WhatsApp Web automation.' },
-                                        ];
-                                        return (
-                                            <div className="grid gap-1.5">
-                                                <Segmented
-                                                    label="WhatsApp mode"
-                                                    value={waMode}
-                                                    onChange={v => { setWaMode(v); setWaRiskAck(false); }}
-                                                    options={modes}
-                                                />
-                                                <p className="m-0 text-xs text-text-faint">{modes.find(m => m.value === waMode)?.hint}</p>
-                                            </div>
-                                        );
-                                    })()}
-
-                                    {waMode === 'meta_api' && (
-                                        <div className="grid gap-4">
-                                            {[
-                                                { key: 'phone_number_id', label: 'Phone number ID', placeholder: '123456789012345', secret: false },
-                                                { key: 'access_token', label: 'Access token', placeholder: 'EAA...', secret: true },
-                                                { key: 'app_secret', label: 'App secret', placeholder: '', secret: true,
-                                                  note: 'App settings → Basic. Meta signs every delivery with it; a delivery without a matching signature is refused.' },
-                                                { key: 'verify_token', label: 'Verify token (your choice)', placeholder: 'synapse_verify', secret: false,
-                                                  note: 'Used to verify Meta webhook. Set the same value in your Meta App settings.' },
-                                            ].map(f => (
-                                                <div key={f.key} className="grid gap-1.5">
-                                                    <label htmlFor={`messaging-cred-${f.key}`} className="block text-sm font-medium text-text">{f.label}</label>
-                                                    {credInput(f)}
-                                                    {f.note && <p className="m-0 text-xs text-text-faint">{f.note}</p>}
-                                                </div>
-                                            ))}
+                                    {draft.id && (channels.find(c => c.id === draft.id)?.credentials?.whatsapp_mode ?? 'meta_api') !== 'meta_api' && (
+                                        // Carried over from 1.x in WhatsApp Web mode, removed in 2.0 (F1355): kept, switched off.
+                                        <div className="flex gap-2.5 rounded-md border border-person/50 bg-person-subtle p-3 text-[13px] text-text">
+                                            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-person-ink" aria-hidden />
+                                            <p className="m-0">WhatsApp Web sign-in was removed in Synapse 2.0; reconnect this channel through the WhatsApp Cloud API.</p>
                                         </div>
                                     )}
-
-                                    {waMode === 'unofficial' && (
-                                        <div className="grid gap-3">
-                                            {/* A person has to decide: the warm ground (UX1, amber is a person). */}
-                                            <div className="flex gap-2.5 rounded-md border border-person/50 bg-person-subtle p-3 text-[13px] text-text">
-                                                <AlertTriangle className="mt-0.5 size-4 shrink-0 text-person-ink" aria-hidden />
-                                                <div className="grid gap-1">
-                                                    <p className="m-0 font-semibold">Unofficial approach — use at your own risk</p>
-                                                    <p className="m-0">This mode uses Playwright to drive WhatsApp Web in a browser window. It requires scanning a QR code. It may:</p>
-                                                    <ul className="m-0 list-disc space-y-0.5 pl-4">
-                                                        <li>Violate WhatsApp&apos;s Terms of Service</li>
-                                                        <li>Break when WhatsApp updates their web app</li>
-                                                        <li>Result in your number being temporarily banned</li>
-                                                    </ul>
-                                                    <p className="m-0">We recommend using the official Meta Business path instead.</p>
-                                                </div>
+                                    <p className="m-0 text-xs text-text-faint">Through Meta&apos;s WhatsApp Cloud API: a Meta Business account and a verified number.</p>
+                                    <div className="grid gap-4">
+                                        {[
+                                            { key: 'phone_number_id', label: 'Phone number ID', placeholder: '123456789012345', secret: false },
+                                            { key: 'access_token', label: 'Access token', placeholder: 'EAA...', secret: true },
+                                            { key: 'app_secret', label: 'App secret', placeholder: '', secret: true,
+                                              note: 'App settings → Basic. Meta signs every delivery with it; a delivery without a matching signature is refused.' },
+                                            { key: 'verify_token', label: 'Verify token (your choice)', placeholder: 'synapse_verify', secret: false,
+                                              note: 'Used to verify Meta webhook. Set the same value in your Meta App settings.' },
+                                        ].map(f => (
+                                            <div key={f.key} className="grid gap-1.5">
+                                                <label htmlFor={`messaging-cred-${f.key}`} className="block text-sm font-medium text-text">{f.label}</label>
+                                                {credInput(f)}
+                                                {f.note && <p className="m-0 text-xs text-text-faint">{f.note}</p>}
                                             </div>
-                                            <div className="flex items-start gap-3">
-                                                <Checkbox
-                                                    id="wa-risk-ack"
-                                                    label="I understand the risks and accept responsibility for using the unofficial path."
-                                                    checked={waRiskAck}
-                                                    onChange={setWaRiskAck}
-                                                    className="mt-0.5"
-                                                />
-                                                <label htmlFor="wa-risk-ack" className="cursor-pointer text-sm leading-tight text-text">
-                                                    I understand the risks and accept responsibility for using the unofficial path.
-                                                </label>
-                                            </div>
-                                            {waRiskAck && (
-                                                <div className="grid gap-1 rounded-md bg-surface-2 p-3 text-[13px] text-text-muted">
-                                                    <p className="m-0">After saving & connecting, Synapse will open WhatsApp Web in a Chromium browser window.</p>
-                                                    <p className="m-0">Scan the QR code shown in the browser to authenticate. The session is saved and persists across restarts.</p>
-                                                </div>
-                                            )}
-                                        </div>
-                                    )}
+                                        ))}
+                                    </div>
                                 </div>
                             ) : (
                                 /* Standard credential fields */

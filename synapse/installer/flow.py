@@ -507,12 +507,13 @@ class Installer:
         present = {p.name.split("-")[0] for p in path.iterdir()} if path.is_dir() else set()
         env = self._runtime_env()
         env["PLAYWRIGHT_BROWSERS_PATH"] = str(path)
-        parts = Downloads(parts=2)
-        if "chromium" not in present:
-            run([self.s.tool_python, "-m", "playwright", "install", "chromium"], self.log, env=env,
+        parts = Downloads(parts=1)   # the headless shell; FFmpeg's 2.3 MiB takes no share
+        if "chromium_headless_shell" not in present:
+            run([self.s.tool_python, "-m", "playwright", "install", "--only-shell", "chromium"], self.log, env=env,
                 on_line=lambda line: self.screen.progress("browser", parts.feed(line)))
-        # The browser component (BRW1) drives this Chromium; Playwright MCP no
-        # longer needs its own Chrome for Testing (525 MB), and is not fetched here.
+        # The browser component (BRW1) and the web reader launch headless Chromium, which runs on the headless shell.
+        # Playwright's full build (184 MiB) was WhatsApp Web's alone, removed in 2.0 (F1355), and Playwright MCP's own
+        # Chrome for Testing (525 MB) is not needed either: neither is fetched here.
         self.s.answers.setdefault("playwright_browsers_path", str(path))
         return "Chromium"
 

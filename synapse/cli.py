@@ -320,15 +320,16 @@ def _playwright_browsers_json() -> "Path | None":
 
 
 def _wanted_chromium_folders() -> "set[str] | None":
-    """The Chromium folders this Playwright runs, by build (`chromium-1234`, `chromium_headless_shell-1234`), or
-    None when its list cannot be read."""
+    """The Chromium folder this Playwright runs, by build (`chromium_headless_shell-1234`), or None when its list
+    cannot be read. Only the headless shell: everything Synapse launches is headless Chromium, and the full build was
+    WhatsApp Web's alone, removed in 2.0 (F1355). A full build already here is left alone."""
     import json
     try:
         listed = json.loads(_playwright_browsers_json().read_text("utf-8"))["browsers"]
     except Exception:
         return None
     wanted = {f"{b['name'].replace('-', '_')}-{b['revision']}" for b in listed
-              if b.get("installByDefault") and b.get("name") in ("chromium", "chromium-headless-shell")}
+              if b.get("installByDefault") and b.get("name") == "chromium-headless-shell"}
     return wanted or None
 
 
@@ -381,9 +382,9 @@ def _ensure_playwright_browsers():
     if wanted is not None:
         need_chromium = not wanted <= names
     else:
-        has_any = any(n.startswith("chromium-") for n in names)
+        has_any = any(n.startswith("chromium_headless_shell-") for n in names)
         need_chromium = not has_any or (current is not None and _saved_playwright_version() != current)
-    # The browser component (BRW1) drives Python Playwright's Chromium; the
+    # The browser component (BRW1) drives Python Playwright's headless shell; the
     # separate Chrome for Testing Playwright MCP used to download is not needed.
     if not need_chromium:
         return
@@ -393,8 +394,8 @@ def _ensure_playwright_browsers():
 
     print("Installing Playwright browsers...", end="", flush=True)
     try:
-        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], env=env, check=True,
-                       capture_output=True)
+        subprocess.run([sys.executable, "-m", "playwright", "install", "--only-shell", "chromium"], env=env,
+                       check=True, capture_output=True)
         if current:
             _save_playwright_version(current)
         print(" done.")

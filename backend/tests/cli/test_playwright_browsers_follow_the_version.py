@@ -71,6 +71,21 @@ def test_the_builds_this_playwright_wants_are_enough(browsers):
     assert not _installs(ran), "every build Playwright wants was there, and it installed anyway"
 
 
+def test_the_headless_shell_alone_is_enough(browsers):
+    """F1355: everything Synapse runs launches headless Chromium, which is the headless shell; the full build was
+    WhatsApp Web's alone, and that is gone. A start with the shell there installs nothing."""
+    path, ran = browsers
+    (path / "chromium_headless_shell-1234").mkdir()
+    cli._ensure_playwright_browsers()
+    assert not _installs(ran), "only the headless shell is run, it was there, and the full build was fetched anyway"
+
+
+def test_an_install_fetches_the_headless_shell_only(browsers):
+    path, ran = browsers
+    cli._ensure_playwright_browsers()
+    assert _installs(ran) and all("--only-shell" in c for c in _installs(ran)), _installs(ran)
+
+
 def test_chromium_without_its_headless_shell_is_installed(browsers):
     path, ran = browsers
     (path / "chromium-1234").mkdir()

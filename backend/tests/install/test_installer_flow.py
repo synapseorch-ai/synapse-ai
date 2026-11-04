@@ -27,6 +27,9 @@ sys.path.insert(0, str(REPO))
 
 from synapse.installer import flow, legacy, runtime, tui  # noqa: E402
 
+#: The Browser step as shipped: the `world` replaces it with a stub for every other test.
+_REAL_BROWSER = flow.Installer._browser
+
 FAKE_CLI = r'''
 import json, os, sys
 args = sys.argv[1:]
@@ -192,6 +195,51 @@ def test_a_fresh_install_ends_with_the_link(world):
     assert record["tool_python"].endswith("synapse-orch-ai/bin/python")
     log = (world["home"] / "logs" / "install.log").read_text()
     assert "Downloaded big" in log
+
+
+def test_the_browser_step_fetches_the_headless_shell_only(world, monkeypatch):
+    """F1355: the browser component and the web reader launch headless Chromium, which runs on the headless shell;
+    the full build (184 MiB, about 30 s of every install and upgrade) was WhatsApp Web's alone, and that is gone."""
+    ran = []
+    monkeypatch.setattr(flow, "run", lambda cmd, log, **kw: ran.append([str(a) for a in cmd]))
+    browsers = world["tmp"] / "ms-playwright"
+    monkeypatch.setattr(flow, "_playwright_dir", lambda: browsers)
+    installer = flow.Installer(flow.Options(uv="uv", yes=True, home=world["home"]), term=tui.Term(stream=io.StringIO()))
+    installer.s.tool_python = Path("/tool/python")
+
+    assert _REAL_BROWSER(installer) == "Chromium"      # the world stubs _browser; this is the real one
+    assert ran == [["/tool/python", "-m", "playwright", "install", "--only-shell", "chromium"]]
+
+    ran.clear()
+    (browsers / "chromium_headless_shell-1234").mkdir(parents=True)
+    _REAL_BROWSER(installer)
+    assert ran == [], "the headless shell was there, and it was fetched again"
+
+
+def test_the_browser_step_s_bar_is_full_when_the_shell_is(world, monkeypatch):
+    """F1355: what `--only-shell chromium` prints is the headless shell's bar and then FFmpeg's (2.3 MiB): the step's
+    bar reads full when the shell is down, never half, and FFmpeg does not move it."""
+    lines = [f"|{'■' * (p * 80 // 100):<80}| {p:>3}% of 114.7 MiB" for p in (0, 40, 100)]
+    lines += [f"|{'■' * (p * 80 // 100):<80}| {p:>3}% of 2.3 MiB" for p in (0, 100)]
+    shown = []
+
+    def run(cmd, log, on_line=None, **kw):
+        for line in lines:
+            on_line(line)
+
+    class Screen:
+        def progress(self, key, fraction):
+            shown.append((key, fraction))
+
+    monkeypatch.setattr(flow, "run", run)
+    monkeypatch.setattr(flow, "_playwright_dir", lambda: world["tmp"] / "ms-playwright")
+    installer = flow.Installer(flow.Options(uv="uv", yes=True, home=world["home"]), term=tui.Term(stream=io.StringIO()))
+    installer.s.tool_python = Path("/tool/python")
+    installer.screen = Screen()
+
+    _REAL_BROWSER(installer)
+
+    assert [f for _, f in shown] == [0.0, 0.4, 1.0, 1.0, 1.0]
 
 
 def test_the_installed_cli_runs_with_the_working_directory_off_sys_path(world, monkeypatch):

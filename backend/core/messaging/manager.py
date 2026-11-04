@@ -90,6 +90,13 @@ class MessagingManager:
             await self.stop_channel(channel_id)
 
         platform = ch.get("platform", "")
+        if channel_store.is_whatsapp_web(ch):
+            # WhatsApp Web is removed in 2.0 (F1355). A 1.x channel in that mode is kept as it was, switched off so
+            # no start of everything tries it again, and says how to reconnect it: no adapter, no browser.
+            await channel_store.save_channel({**ch, "enabled": False, "status": "stopped",
+                                              "last_error": channel_store.WHATSAPP_WEB_PAUSED})
+            logger.info("[Manager] Channel %s is WhatsApp Web, removed in 2.0: kept switched off", channel_id)
+            return
 
         # The adapter's default agent comes from the assignment join, with the
         # legacy scalar as fallback (core/messaging/store.py). Injected into the

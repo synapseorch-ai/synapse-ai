@@ -150,7 +150,10 @@ async def test_an_import_after_the_builder_seeded_still_runs(layout):
     assert counts is not None and counts["user_agents"] == 1
 
 
-def test_vault_datasets_and_whatsapp_files_land_under_their_blob_keys(tmp_path):
+def test_vault_and_datasets_land_under_their_blob_keys_and_whatsapp_web_sign_ins_are_left_out(tmp_path):
+    """F1355 (eb 11-04): a 1.x WhatsApp Web profile is a live sign-in to the person's WhatsApp, and nothing in 2.0 reads
+    it (WhatsApp Web is removed). It used to be copied under `runtime/whatsapp_sessions`; it is left out now, and stays
+    where it was, which the installer's backup of the old data holds."""
     from core.storage import get_blob_store
     from core.store.legacy_files import import_legacy_files
 
@@ -173,15 +176,15 @@ def test_vault_datasets_and_whatsapp_files_land_under_their_blob_keys(tmp_path):
 
     counts = import_legacy_files(root)
 
-    assert counts == {"vault": 2, "datasets": 1, "whatsapp_sessions": 1, "skipped": 0}
+    assert counts == {"vault": 2, "datasets": 1, "skipped": 0}
     store = get_blob_store()
     assert store.get("vault/tool_outputs/page.md") == "# saved"
     assert store.path_for("vault/chart.png").read_bytes() == binary
     assert store.get("datasets/qa.jsonl") == '{"q": 1}\n'
     assert not store.exists("datasets/notes.txt")
-    assert store.path_for("runtime/whatsapp_sessions/chn_1/Default/Cookies").read_bytes() \
-        == b"\x00cookie"
-    assert not store.path_for("runtime/whatsapp_sessions/chn_1/SingletonLock").exists()
+    assert not store.exists("runtime/whatsapp_sessions/chn_1/Default/Cookies")
+    assert not store.path_for("runtime/whatsapp_sessions/chn_1").exists()
+    assert (profile / "Cookies").read_bytes() == b"\x00cookie"      # left where it was, never deleted
 
 
 def test_a_file_the_store_already_has_is_not_overwritten(tmp_path):
