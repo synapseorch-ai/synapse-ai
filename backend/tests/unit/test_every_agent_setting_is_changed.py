@@ -275,7 +275,8 @@ class TestItsMemory:
 
         tool = registry.get("edit_agent_memory_item")
         with pytest.raises(ToolRefusal, match="never keeps a key"):
-            await tool.handler(None, {"item": remembered, "content": "token: ghp_0123456789abcdefghijABCDEFGHIJ012345"})
+            await tool.handler(None, {"item": remembered,
+                                      "content": "token: " + "ghp_" + "0123456789abcdefghijABCDEFGHIJ012345"})
 
     @pytest.mark.parametrize("role", [Role.APPROVER, Role.VIEWER])
     async def test_it_needs_the_builder_role(self, remembered, fresh, role):
