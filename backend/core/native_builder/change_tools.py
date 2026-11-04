@@ -814,11 +814,15 @@ def carry_request(previous: dict | None, history: list[dict] | None = None, run_
 
 def _stopped_with_only_its_tools(previous: dict) -> bool:
     """Whether the run's save stopped after the yes having written nothing but the tools it made (F1375): the tools'
-    pass (`tools_made`) or the save (`build_saved`), each the step's output."""
+    pass (`tools_made`) or the save (`build_saved`), each the step's output, under the run's own approval, so no
+    plan without a yes is ever carried as one waiting (BLD1's read)."""
     from core.native_builder.build_plan import _obj
+    from core.native_builder.review import approved_review
     from core.orchestration.run_writes import WRITES_KEY
 
     if not any((_obj(previous.get(k)) or {}).get("outcome") == "stopped" for k in ("tools_made", "build_saved")):
+        return False
+    if approved_review(previous) is None:
         return False
     return all(isinstance(w, dict) and w.get("kind") == "tool" for w in previous.get(WRITES_KEY) or [])
 
