@@ -30,7 +30,8 @@ import { cn } from '@/lib/cn';
 
 import { ChangeRows } from './ChangeRows';
 import {
-    aloneWords, askedLead, askedWords, changeOf, planDefinition, planFromChange, planFromPlanObject, planOf, readPlan,
+    aloneWords, askedLead, askedWords, changeOf, detailParts, planDefinition, planFromChange, planFromPlanObject, planOf,
+    readPlan,
     splitQuestion, featureName, strongerWords, turnOnWords, withoutWords,
     type AskedField, type Plan, type PlanStep,
 } from './plan';
@@ -197,6 +198,37 @@ const NUMBER: Record<PlanStep['role'], string> = {
     person: 'bg-person text-person-fg',
 };
 
+/**
+ * A step's detail (F1328): its words as text, each fenced block as a box of code — monospace, its lines kept, scrolling
+ * sideways on a phone, a diff's added and removed lines tinted with the design's own success and danger tokens.
+ */
+function StepDetail({ text }: { text: string }) {
+    return (
+        <div className="text-xs text-text-muted">
+            {detailParts(text).map((part, i) => part.kind === 'code' ? (
+                <pre key={i} className="my-1 max-w-full overflow-x-auto whitespace-pre rounded-md border border-border bg-surface-2 p-2 font-mono text-[11px] leading-snug text-text">
+                    <code>
+                        {part.text.split('\n').map((line, j) => (
+                            <span
+                                key={j}
+                                className={cn(
+                                    'block',
+                                    part.lang === 'diff' && /^\+(?!\+\+)/.test(line) && 'bg-success-subtle text-success',
+                                    part.lang === 'diff' && /^-(?!--)/.test(line) && 'bg-danger-subtle text-danger',
+                                )}
+                            >
+                                {line || ' '}
+                            </span>
+                        ))}
+                    </code>
+                </pre>
+            ) : (
+                <span key={i} className="block whitespace-pre-line break-words">{part.text}</span>
+            ))}
+        </div>
+    );
+}
+
 function Steps({ plan }: { plan: Plan }) {
     return (
         <ol aria-label={plan.kind === 'change' ? 'What it would do' : 'What it will do'} className="flex flex-col">
@@ -214,7 +246,7 @@ function Steps({ plan }: { plan: Plan }) {
                     >
                         {step.n}
                     </span>
-                    <span className="min-w-0">
+                    <div className="min-w-0">
                         <span className={cn('block break-words text-sm', step.deletes ? 'font-medium text-danger' : 'text-text')}>
                             {step.deletes && <AlertTriangle className="mr-1 inline size-3.5 -translate-y-px" aria-hidden />}
                             {step.name}
@@ -224,9 +256,9 @@ function Steps({ plan }: { plan: Plan }) {
                                 <span className="text-text-faint">Described as: </span>{step.says}
                             </span>
                         )}
-                        {step.detail && <span className="block whitespace-pre-line break-words text-xs text-text-muted">{step.detail}</span>}
+                        {step.detail && <StepDetail text={step.detail} />}
                         {step.rows && <ChangeRows rows={step.rows} className="mt-1.5" />}
-                    </span>
+                    </div>
                     {step.label ? (
                         <span className={cn('text-right text-xs', step.role === 'person' ? 'font-medium text-person-ink' : 'text-text-faint')}>
                             {step.label}

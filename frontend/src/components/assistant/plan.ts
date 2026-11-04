@@ -480,6 +480,36 @@ export function valueWords(o: ChangeOpView): string | null {
     }
 }
 
+/** One part of a step's detail: words, or a fenced block of code (```diff, ```python …) as its own box (F1328). */
+export interface DetailPart {
+    kind: 'text' | 'code';
+    text: string;
+    /** The fence's language, when it names one: `diff` tints its added and removed lines. */
+    lang?: string;
+}
+
+/**
+ * A step's detail split into its words and its fenced blocks (F1328): the card draws a block as code, its lines as
+ * they are less the indent its fence has, and the words around it as text. A detail with no fence is one text part.
+ */
+export function detailParts(detail: string): DetailPart[] {
+    // A fence at a line's start, its language, its lines, and the fence that closes it: indented as a list item's are.
+    const fenced = /^([ \t]*)```([\w-]*)[ \t]*\n([\s\S]*?)\n[ \t]*```[ \t]*$/gm;
+    const parts: DetailPart[] = [];
+    let at = 0;
+    for (const m of detail.matchAll(fenced)) {
+        const before = detail.slice(at, m.index).trim();
+        if (before) parts.push({ kind: 'text', text: before });
+        const indent = m[1];
+        const lines = m[3].split('\n').map((line) => (line.startsWith(indent) ? line.slice(indent.length) : line.trimStart()));
+        parts.push({ kind: 'code', text: lines.join('\n'), ...(m[2] ? { lang: m[2] } : {}) });
+        at = (m.index ?? 0) + m[0].length;
+    }
+    const rest = detail.slice(at).trim();
+    if (rest) parts.push({ kind: 'text', text: rest });
+    return parts.length ? parts : [{ kind: 'text', text: detail }];
+}
+
 /** The checked change a review carries when its object is one (`context.object === 'change'`). */
 export interface ChangeView {
     object: 'change';
