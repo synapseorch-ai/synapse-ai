@@ -385,10 +385,12 @@ async def _models_moved(plan: O.Plan, checked: dict) -> list[str]:
     return out
 
 
-def _gates_moved(reviewed: list[O.Gate], now: list[O.Gate], promised: set[str] = frozenset()) -> list[str]:
+def _gates_moved(reviewed: list[O.Gate], now: list[O.Gate], promised: dict[str, str] | None = None) -> list[str]:
     """Each approval or block that is not what the card said, in the card's words: was, and is. `promised` are the
     tools the card listed under "Asks you first" that had no gate to decide at the yes, being this build's to make or
-    connected after it (F1375, prod-13): their ask, once they are here, is what the card said."""
+    connected after it, each with who holds it (F1375, prod-13): their ask, once they are here, is what the card said,
+    and one with no ask then is not (BLD1's read)."""
+    promised = promised or {}
     from core.native_builder.render import gate_words
 
     def key(g: O.Gate) -> tuple[str, str, str]:
@@ -404,11 +406,28 @@ def _gates_moved(reviewed: list[O.Gate], now: list[O.Gate], promised: set[str] =
         out.append(f"{name}: the card said \"{gate_words(before)}\", now "
                    + (f"\"{gate_words(after)}\"" if after else "it acts without asking") if before
                    else f"{name}: now \"{gate_words(after)}\"")
+    out += [f"{who} and `{tool}`: the card said \"asks you first\", now it acts without asking"
+            for tool, who in promised.items() if not any(g.tool == tool for g in now)]
     return out
+
+
+def _holder(plan: O.Plan, tool: str) -> str:
+    """Who in the plan calls `tool`: the new agent that holds it, else its Tool step."""
+    steps = [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)]
+    return (next((a.name for a in plan.agents if tool in a.tools), None)
+            or next((s.name for s in steps if s.type == "tool" and s.tool == tool), None) or "the run")
 
 
 def _why_missing(gone: list[str], plan: O.Plan, state: dict) -> str:
     """F768's words, from the Plan's own tool status and the lookup's findings."""
+    found = _found_for(gone, plan, state)
+    return ("Nothing was built: " + _gone_words(gone) + ". "
+            + (("The research found: " + "; ".join(found) + ". ") if found else "")
+            + "Connect the app or service it needs, then ask me to build it again.")
+
+
+def _found_for(gone: list[str], plan: O.Plan, state: dict) -> list[str]:
+    """What the lookup found for the providers of the tools `gone`, each in a line."""
     findings = _obj(state.get(FINDINGS_KEY)) or {}
     providers = {t.provider for t in plan.tools if t.name in gone and t.provider}
     found = []
@@ -417,9 +436,7 @@ def _why_missing(gone: list[str], plan: O.Plan, state: dict) -> str:
             way = "its own MCP server" if option["how"] == "mcp" else "a public API"
             page = next(iter(option.get("sources") or []), "")
             found.append(f"{option['provider']} has {way}" + (f" ({page})" if page else ""))
-    return ("Nothing was built: " + _gone_words(gone) + ". "
-            + (("The research found: " + "; ".join(found) + ". ") if found else "")
-            + "Connect the app or service it needs, then ask me to build it again.")
+    return found
 
 
 def _gone_words(gone: list[str]) -> str:
@@ -628,9 +645,14 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
     gone = [t.name for t in now.tools if t.status != "present" and t.name not in making
             and not (only == "tools" and t.name in later)]
     if gone:
-        return _refused_after_the_yes(state, events, only, _gone_words(gone), _why_missing(gone, plan, state))
-    # The asks the card listed for tools that were not here to decide at the yes (F1375): approved as listed.
-    promised = {n for n in plan.approvals.asks_first if n in making or n in later}
+        # The planner is given what the research found too, so the plan it draws again can use it (BLD1's read).
+        found = _found_for(gone, plan, state)
+        words = _gone_words(gone) + (f" (the research found: {'; '.join(found)})" if found else "")
+        return _refused_after_the_yes(state, events, only, words, _why_missing(gone, plan, state))
+    # The asks the card listed for tools that were not here to decide at the yes (F1375): approved as listed, and
+    # held to it once the tool is here.
+    here = {t.name for t in now.tools if t.status == "present"}
+    promised = {n: _holder(plan, n) for n in plan.approvals.asks_first if (n in making or n in later) and n in here}
     if moved := _gates_moved(plan.gates, now.gates, promised):
         # The card promised what the run asks for (F964; SAI2's point 3): a policy changed since is not what was
         # approved.
