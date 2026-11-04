@@ -75,3 +75,13 @@ class TestLeftAlone:
         fields = {**ASK, "config": {"human_fields": [{"name": "request", "type": "textarea", "label": "Request"}]}}
         assert await _read_as_text(fields, _code("import re\nresult = re.findall('SO-\\\\d+', "
                                                  "state.receive_request.request)")) == []
+
+
+def test_the_engine_and_the_plan_check_know_one_list_of_what_only_text_has():
+    """The plan check (compile.TEXT_METHODS, F1358's and F1359's one list) and the engine's state class (its answer to
+    `.split` on an object) read the same names: a runner's script imports nothing of the builder, so it keeps a copy."""
+    from core.execution import scripts
+    from core.native_builder.compile import TEXT_METHODS
+
+    assert set(scripts.STATE_TEXT_METHODS) == set(TEXT_METHODS)
+    assert repr(scripts.STATE_TEXT_METHODS) in scripts._STATE_CLASS

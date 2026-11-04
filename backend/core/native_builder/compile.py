@@ -290,10 +290,6 @@ def _structure_reads(code: str, keys: set[str]) -> dict[str, str]:
 
 
 
-#: What only text has: a code step calling one of these on a value means it read the value as text (F1359).
-_TEXT_METHODS = frozenset({"split", "rsplit", "strip", "lstrip", "rstrip", "lower", "upper", "casefold", "replace",
-                           "startswith", "endswith", "splitlines", "partition", "rpartition", "encode"})
-
 
 def text_reads(code: str, keys: set[str]) -> set[str]:
     """The keys among `keys` a Transform's code uses as text (F1359): handed to one of `re`'s functions, a text method
@@ -323,7 +319,7 @@ def text_reads(code: str, keys: set[str]) -> set[str]:
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             if isinstance(node.func.value, ast.Name) and node.func.value.id == "re":
                 out |= {key for arg in node.args if (key := read(arg))}
-            elif node.func.attr in _TEXT_METHODS and (key := read(node.func.value)):
+            elif node.func.attr in TEXT_METHODS and (key := read(node.func.value)):
                 out.add(key)
         elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add) and any(
                 isinstance(side, ast.Constant) and isinstance(side.value, str) for side in (node.left, node.right)):
