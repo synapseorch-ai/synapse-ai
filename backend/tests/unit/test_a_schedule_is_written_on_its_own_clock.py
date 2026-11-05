@@ -261,6 +261,34 @@ def test_no_help_or_docs_line_says_a_schedules_time_is_utc(name):
     assert said == [], said
 
 
+# ── the send-back's record is the engine's: no public read shows it (CI2 on FF20 465d0488) ───────────────────────
+
+class TestTheRecordIsTheEngines:
+    def test_the_key_is_one_both_routes_write(self):
+        from core.native_builder import build_plan, change_tools
+
+        assert build_plan.SCHEDULE_SENT_KEY == change_tools._SCHEDULE_SENT == "_schedule_clock_sent_back"
+
+    def test_no_public_read_shows_it(self):
+        from types import SimpleNamespace
+
+        from core.events_public import public_event, public_state
+        from core.routes.orchestrations import _public_run_view
+
+        state = {"_schedule_clock_sent_back": True, "order": "A-1"}
+        assert public_state(state) == {"order": "A-1"}
+        shown = public_event({"type": "orchestration_complete", "run_id": "r1", "status": "completed",
+                              "final_state": state})
+        assert "_schedule_clock_sent_back" not in json.dumps(shown), shown
+
+        class _Run(SimpleNamespace):
+            def model_dump(self, exclude=None):
+                return {"run_id": "r1", "status": "completed", "shared_state": dict(state), "step_history": []}
+
+        view = _public_run_view(_Run(status="completed", step_history=[], step_progress={}))
+        assert view["shared_state"] == {"order": "A-1"}, view["shared_state"]
+
+
 # ── no timezone is UTC, as every 1.x schedule is (REL3) ──────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("tz", [None, "", "UTC"])

@@ -19,6 +19,11 @@ CORE = pathlib.Path(__file__).resolve().parents[2] / "core"
 
 #: `X_KEY = "_name"` constants, and a state read or write by a literal `_name` (or an f-string's `_name_{…}`).
 _CONSTANT = re.compile(r'^\s*([A-Z_]*KEY)\s*=\s*"(_[A-Za-z0-9_]+)"', re.M)
+#: Any other upper-case constant holding a `_name` (`_ASKED_SENT = "_asked_sent_back"`), counted when the same file uses
+#: it as a state key (F1400: such a key reached public reads, named neither `*KEY` nor written as a literal).
+_NAMED = re.compile(r'^\s*(_?[A-Z][A-Z0-9_]*)\s*=\s*"(_[a-z][a-z0-9_]*)"', re.M)
+_BY_NAME = re.compile(r'(?:shared_state|state)(?:\[|\.get\(|\.setdefault\(|\.pop\()\s*(?:[A-Za-z_][A-Za-z0-9_]*\.)?'
+                      r'(_?[A-Z][A-Z0-9_]*)\b')
 _IN_STATE = re.compile(r'(?:shared_state|state)(?:\[|\.get\(|\.setdefault\(|\.pop\()\s*f?"(_[a-z][a-z0-9_]*)')
 _F_KEY = re.compile(r'f"(_[a-z][a-z0-9_]*_)\{')
 
@@ -39,6 +44,10 @@ def engine_keys() -> dict[str, str]:
         where = str(path.relative_to(CORE))
         for m in _CONSTANT.finditer(text):
             found.setdefault(m.group(2), f"{where}:{m.group(1)}")
+        used = {m.group(1) for m in _BY_NAME.finditer(text)}
+        for m in _NAMED.finditer(text):
+            if m.group(1) in used:
+                found.setdefault(m.group(2), f"{where}:{m.group(1)}")
         for m in _IN_STATE.finditer(text):
             found.setdefault(m.group(1), where)
         if path.parent.name in ("orchestration", "browser", "native_builder"):
@@ -50,7 +59,7 @@ def engine_keys() -> dict[str, str]:
 def test_the_walk_finds_the_keys_it_is_for():
     keys = engine_keys()
     for known in ("_browser_sessions", "_caller", "_model_override", "_run_writes", "_step_tasks",
-                  "_step_progress_s1", "_exec_memory_s1", "_routing_decision_s1"):
+                  "_step_progress_s1", "_exec_memory_s1", "_routing_decision_s1", "_asked_sent_back"):
         assert known in keys, f"the walk no longer finds {known}: fix the walk, not this list"
 
 

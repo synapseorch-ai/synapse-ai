@@ -109,12 +109,17 @@ PRIVATE_STATE_PREFIXES = (
     # The calls a step's reply made after its finish tool, which were not made (`steps.NOT_MADE_PREFIX`, F1242); and
     # the kinds a change named its new things as, within its step (`change_tools._KINDS_KEY`).
     "_not_made_", "_change_kinds",
-    # That a pasted curl was asked to be named once (`change_tools._CURL_NUDGED`, F1312b); a Python tool's fix's
-    # send-backs on its test (`change_tools._CODE_TRIES`, F1325); each agent and address the prompt writer went back
-    # for once (`build_save._ADDRESS_SAID_KEY`, F1341).
-    "_curl_nudged", "_code_tries", "_prompts_address_said",
+    # That a pasted curl was asked to be named once (`change_tools._CURL_NUDGED`, F1312b), and its literal value once
+    # (`change_tools._CURL_LITERAL`); a Python tool's fix's send-backs on its test (`change_tools._CODE_TRIES`, F1325);
+    # each agent and address the prompt writer went back for once (`build_save._ADDRESS_SAID_KEY`, F1341).
+    "_curl_nudged", "_curl_literal_nudged", "_code_tries", "_prompts_address_said",
+    # How often a change whose parts don't account for the ask went back (`change_tools._ASKED_SENT`, F1364; F1400).
+    "_asked_sent_back",
     # That a change was sent back while this run's build plan was under review (`change_tools._PLAN_SENT`, F1384).
     "_plan_kept_sent_back",
+    # That a plan or a change went back once for a schedule whose words and cron disagree
+    # (`build_plan.SCHEDULE_SENT_KEY`, `change_tools._SCHEDULE_SENT`, F1393).
+    "_schedule_clock_sent_back",
 )
 
 
