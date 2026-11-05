@@ -105,6 +105,9 @@ class Workspace:
     #: The workspace's shared boards, by name: a workflow's agents post to its own board, never to one of these
     #: (giving a workflow access to a shared board has no product tool yet: BOARD's lane, B2b).
     shared_boards: list[str] = field(default_factory=list)
+    #: What each tool here takes, its input schema by name (F1402): the check's, kept beside `tools`, which the
+    #: planner reads.
+    takes: dict[str, dict] = field(default_factory=dict)
 
     def inventory(self) -> O.Inventory:
         return O.Inventory(agents={i: a.get("name") or i for i, a in self.agents.items()},
@@ -140,6 +143,7 @@ async def workspace(server_module: Any) -> Workspace:
         _log.warning("the custom tools' answers were not read: %s", exc)
         declared = {}
     tools = []
+    takes: dict[str, dict] = {}
     for t in catalogue:
         name = getattr(t, "name", None) or (t.get("function", {}).get("name") if isinstance(t, dict) else None)
         if name:
@@ -148,6 +152,10 @@ async def workspace(server_module: Any) -> Workspace:
             out = getattr(t, "outputSchema", None) or declared.get(name)
             tools.append({"name": name, "does": " ".join(str(does or "").split())[:140],
                           **({"outputSchema": out} if isinstance(out, dict) else {})})
+            took = getattr(t, "inputSchema", None) or (t.get("function", {}).get("parameters")
+                                                        if isinstance(t, dict) else None)
+            if isinstance(took, dict):
+                takes[name] = took
     kbs = None
     if knowledge_enabled():
         from core.knowledge import bases
@@ -162,7 +170,8 @@ async def workspace(server_module: Any) -> Workspace:
         except Exception as exc:  # noqa: BLE001 — no board table yet is a workspace with no shared boards
             _log.warning("the build's shared boards were not read: %s", exc)
     return Workspace(agents=agents, workflows=flows, tools=tools, kbs=kbs, boards_on=boards_enabled(),
-                     code_steps=bool(load_settings().get("code_execution_enabled", True)), shared_boards=shared)
+                     code_steps=bool(load_settings().get("code_execution_enabled", True)), shared_boards=shared,
+                     takes=takes)
 
 
 def _base(state: dict) -> O.Plan | None:
@@ -1047,6 +1056,69 @@ def _fields_its_answer_lacks(s: O.Step, plan: O.Plan, ws: Workspace) -> list[str
     return out
 
 
+#: Said once a run (Naveen 11-05, F1402): a Tool step's argument that writes an object answer as text.
+_OBJECT_TEXT_SAID = "_object_text_said"
+
+
+def _objects_put_as_text(s: O.Step, plan: O.Plan, ws: Workspace) -> list[str]:
+    """A Tool step's argument writing a whole object as text (F1402: prod-14's `vault_write` path was
+    `summaries/launch_notes_{{ state.fetch_launch_notes }}`, the whole `scrape_url` answer written as its JSON, and the
+    run failed with Errno 36). A reference inside text is written as text, an object as its JSON; one alone keeps its
+    type (`steps.render_tool_arguments`), so it is text only where the tool declares the argument as text
+    (`Workspace.takes`). An object is a known answer (`structure.answer_fields`) or a field of it that is a list or an
+    object (`structure.answer_objects`)."""
+    from core.native_builder.structure import answer_fields, answer_objects
+    from core.templating import STATE_REF
+
+    args = (s.config or {}).get("tool_arguments")
+    if s.type != "tool" or not isinstance(args, dict):
+        return []
+    known = {}
+    for x in [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)]:
+        if x.type == "tool" and x.id != s.id and (fields := answer_fields(x.tool, ws.tools)) is not None:
+            known[str((x.config or {}).get("output_key") or x.id)] = (x, fields, answer_objects(x.tool, ws.tools))
+    if not known:
+        return []
+    props = (ws.takes.get(s.tool or "") or {}).get("properties") or {}
+
+    def strings(value: Any) -> list[str]:
+        if isinstance(value, dict):
+            return [t for v in value.values() for t in strings(v)]
+        if isinstance(value, list):
+            return [t for v in value for t in strings(v)]
+        return [value] if isinstance(value, str) else []
+
+    out = []
+    for arg, value in args.items():
+        for text in strings(value):
+            alone = STATE_REF.fullmatch(text.strip())
+            if alone and not (value is text and isinstance(props.get(arg), dict) and
+                              props[arg].get("type") == "string"):
+                continue
+            for ref in STATE_REF.findall(text):
+                head, _, rest = ref.partition(".")
+                if head not in known:
+                    continue
+                writer, has, objects = known[head]
+                if not rest:
+                    plain = [f for f in has if f not in objects]
+                    meant = "markdown" if "markdown" in has else (plain or has)[0]
+                    what = (f"the whole answer of step {writer.id}, the object `{writer.tool}` answers with "
+                            f"{', '.join(f'`{f}`' for f in has)}")
+                    then = f"put in the field meant, e.g. `{{{{ state.{head}.{meant} }}}}`"
+                elif rest in objects:
+                    schema = next((t.get("outputSchema") for t in ws.tools if t.get("name") == writer.tool), None)
+                    kind = ("an object" if isinstance(schema, dict) and
+                            ((schema.get("properties") or {}).get(rest) or {}).get("type") == "object" else "a list")
+                    what = f"{kind} in the answer of step {writer.id}"
+                    then = "put in the one item's field meant, or have a step write the text first"
+                else:
+                    continue
+                out.append(f"step {s.id}: its argument `{arg}` puts `{{{{ state.{ref} }}}}` into text, but that is "
+                           f"{what}, which would be written as its JSON: {then}")
+    return out
+
+
 async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
     """The planner's rules a structure check cannot see (P1's findings, F866b)."""
     from core.boards import TOOL_NAMES
@@ -1089,6 +1161,10 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
             x for w in plan.inner_workflows for x in w.steps)] for line in _fields_its_answer_lacks(s, plan, ws)]):
         state[_ANSWER_FIELDS_SAID] = True
         errors += lacks
+    if not state.get(_OBJECT_TEXT_SAID) and (as_text := [line for s in [*written, *(
+            x for w in plan.inner_workflows for x in w.steps)] for line in _objects_put_as_text(s, plan, ws)]):
+        state[_OBJECT_TEXT_SAID] = True
+        errors += as_text
     # A feature that is off, where the plan needs it, is the person's to turn on, never the planner's to take out
     # (F1203): `features_needed`, a block on the card with its switch. Board tools are still never looked up as a
     # missing tool (F866b's invented "Board" provider; SAI2's review, 7).
