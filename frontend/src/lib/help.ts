@@ -118,7 +118,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         steps: [
             'Press “New workflow” for a blank canvas, “Build with AI” to describe one to Synapse AI, or “Templates” to start from a ready-made one.',
             'Click a workflow’s row to open it on the canvas; its ⋯ menu duplicates it, copies its ID or deletes it.',
-            'The chip says what starts it — a schedule’s time (in UTC) or Manual — and the row shows its last run’s status, time, duration and cost.',
+            'The chip says what starts it — a schedule’s time on its own clock, or Manual — and the row shows its last run’s status, time, duration and cost.',
             'Search by name or description, or sort by name, steps, last run, trigger or when it was updated.',
             'Switch to “Active”, “Recent” or “All runs” for runs; click one to open it on its canvas. “Needs input” means it is waiting for you.',
         ],
@@ -231,7 +231,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         steps: [
             'Click “New schedule”, name it, choose “Agent” or “Workflow” under “Run as”, and pick which one.',
             'Write the “Prompt”: the instruction it is given every time the schedule fires.',
-            'Choose “Interval” and how often, or “Fixed time (cron)” with a preset and an hour; times are in UTC, and the words under the expression say when it runs.',
+            'Choose “Interval” and how often, or “Fixed time (cron)” with a preset and an hour, on your own clock (the hour says its time zone), and the words under the expression say when it runs.',
             'Leave it enabled and click “Create schedule”. Each row shows how often it runs, when it runs next and how its last run went; its switch pauses it, and it can be run now, edited or deleted.',
             'Each run’s log is in Runs › Logs, under “Schedule logs”.',
         ],
