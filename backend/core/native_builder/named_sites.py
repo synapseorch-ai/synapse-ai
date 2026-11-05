@@ -142,6 +142,14 @@ _SPEC_HREF = re.compile(r"(openapi|swagger)[^/]*\.(json|ya?ml)$|/(openapi|swagge
 _SPEC_WORDS = re.compile(r"\b(openapi|swagger|api reference|api spec)\b", re.I)
 
 
+def spec_address(url: Any) -> bool:
+    """Whether `url` is an API spec's address by its path, as a named site's spec link or usual address is read."""
+    if not isinstance(url, str) or not url.startswith(("https://", "http://")):
+        return False
+    path = urlsplit(url).path or ""
+    return bool(_SPEC_HREF.search(path)) or path.rstrip("/") in SPEC_PATHS
+
+
 def _facts(page: NamedPage, body: str) -> NamedPage:
     """The typed facts of an HTML page: its title, what it says it is, one page or a site, an API spec it links."""
     from core.sites import registrable_domain

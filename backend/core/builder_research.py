@@ -728,6 +728,7 @@ async def report_findings(args: dict, server_module: Any, events: list[dict]) ->
     if not options and not answers:
         return {"error": "Give at least one option, with its provider and how it would connect, or an answer to "
                          "each question you were asked."}
+    answers = await _with_their_specs(answers)
     findings = {"goal": str(args.get("goal") or "")[:200], "options": options, **({"answers": answers}
                                                                                   if answers else {})}
     # Spent by the report: the next research counts and reads afresh.
@@ -745,6 +746,44 @@ async def report_findings(args: dict, server_module: Any, events: list[dict]) ->
 
 
 register_builder_tool(FINDINGS_SCHEMA, report_findings)
+
+
+#: The spec addresses this run's reports read (F1385), each to what it gave (`{"name", "api"}`, or None when it could
+#: not be read): one read per address a run. The engine's own, under `own_api.SPECS_KEY`'s private prefix.
+SPEC_READS_KEY = "_specs_read_by_research"
+
+
+async def _with_their_specs(answers: list[dict]) -> list[dict]:
+    """Each sure answer whose source is an API spec's address (`named_sites.spec_address`), with that spec read once a
+    run as the person's own (F1385, cap-02 c3): kept for the conversation by its title (`own_api.keep_read`) and its
+    tools given with the answer (`api`), as a spec the planner reads itself is (`read_api_spec`) or a named site's is
+    (F1317). A spec that cannot be read leaves the answer as the research said it."""
+    from core.native_builder import own_api
+    from core.native_builder.build_plan import _state
+    from core.native_builder.named_sites import spec_address
+
+    state = _state()
+    tried = state.get(SPEC_READS_KEY) if isinstance(state.get(SPEC_READS_KEY), dict) else {}
+    for answer in answers:
+        for url in answer["sources"] if answer["sure"] else []:
+            if not spec_address(url):
+                continue
+            if url not in tried:
+                try:
+                    got = await own_api.read("", url)
+                except Exception as exc:  # noqa: BLE001 — a spec unread is an answer without its tools, as said
+                    logger.warning("a spec the research cited was not read (%s)", type(exc).__name__)
+                    got = {"problem": "unread"}
+                tried[url] = None if got.get("problem") else {"name": got["name"],
+                                                              "api": own_api.answer_of(got["name"], got)}
+                if tried[url]:
+                    own_api.keep_read(state, got["name"], url)
+            if tried[url]:
+                answer["api"] = tried[url]["api"]
+                break
+    if tried:
+        state[SPEC_READS_KEY] = tried
+    return answers
 
 
 #: Where `look_up_providers` keeps what code found, per provider, in the research's record (SAI2-P5): apart from

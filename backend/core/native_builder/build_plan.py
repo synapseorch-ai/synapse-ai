@@ -591,6 +591,9 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     plan, renamed, room_notes = await _make_room(plan, state)
     filled = await O.fill(plan, server_module, found={**_found(plan, state, renamed), **own_tools},
                           agents=ws.agents)
+    # A tool nothing here provides, while a spec this conversation read is in no part of the plan (F1385).
+    if filled.missing and (back := await own_api.left_out(filled, state)):
+        return Examined(filled, back, missing=list(filled.missing))
     misnamed = _misnamed(filled, server_module, ws, state)
     if misnamed:
         # What it is instead, the planner's to fix, before any lookup or card (F950, F1043).

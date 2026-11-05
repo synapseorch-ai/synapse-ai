@@ -129,7 +129,8 @@ def _path(url: str, base: str) -> str:
 
 
 async def read(name: str, spec: str) -> dict:
-    """The spec as the build uses it: `{"tools": [the parser's tool], "base", "auth", "problem"}`."""
+    """The spec as the build uses it: `{"tools": [the parser's tool], "base", "auth", "problem", "name"}`. With no
+    `name`, the API is named by the spec's own title, else its server's host (F1385: a spec the research read)."""
     from core.builder_guard import places_calls
     from core.builder_tools import _refuse_inward_url
     from core.openapi_import import _base_url_from_spec, parse_openapi_spec
@@ -153,6 +154,7 @@ async def read(name: str, spec: str) -> dict:
     auth, why = key_of(parsed)
     if why:
         return {**out, "problem": why}
+    name = name or str((parsed.get("info") or {}).get("title") or "").strip()[:60] or got.hostname or "API"
     try:
         tools = parse_openapi_spec(parsed, name_prefix=prefix_of(name))
     except ValueError as exc:
@@ -161,7 +163,7 @@ async def read(name: str, spec: str) -> dict:
     tools = [t for t in tools if not places_calls(t.get("url") or "", t.get("method"))]
     if not tools:
         return {**out, "problem": "its spec has no operation a build can make a tool of"}
-    return {**out, "tools": tools, "base": base, "auth": auth}
+    return {**out, "tools": tools, "base": base, "auth": auth, "name": name}
 
 
 def _status(part: O.ApiPart, tool: dict, base: str, auth: dict | None) -> O.ToolStatus:
@@ -265,6 +267,33 @@ async def from_read_specs(plan: O.Plan, state: dict) -> list[str]:
         if renames:
             _rename(plan, renames)
             plan.apis.append(O.ApiPart(name=spec["name"], spec=spec["spec"]))
+    return errors
+
+
+#: That a plan leaving out a read spec went back once this run (F1385): the engine's own, as `SPECS_KEY` is.
+SENT_BACK_KEY = f"{SPECS_KEY}_sent_back"
+
+
+async def left_out(plan: O.Plan, state: dict) -> list[str]:
+    """A plan with a tool nothing here provides, while a spec this conversation read is in no part of it, goes back
+    once a run with that spec's tools by name and call (F1385, cap-02 c3: the research read the Orders API's spec and
+    the redraft still had its tool missing). The planner's to use or leave: a second plan in the run is not held."""
+    read = carried(state)
+    named = {p.name.strip().lower() for p in plan.apis}
+    unused = [read[k] for k in read if k not in named]
+    if not plan.missing or not unused or state.get(SENT_BACK_KEY):
+        return []
+    state[SENT_BACK_KEY] = True
+    missing = ", ".join(f"`{m}`" for m in plan.missing)
+    errors: list[str] = []
+    for spec in unused:
+        got = await read_spec(spec)
+        if got["problem"]:
+            continue
+        tools = ", ".join(f"{t['name']} ({t['method']} {_path(t['url'], got['base'])})" for t in got["tools"][:12])
+        errors.append(f"{missing}: nothing here provides {'it' if len(plan.missing) == 1 else 'them'}, and "
+                      f"{spec['name']}'s own spec ({spec['spec']}, read in this conversation) is in no part of the "
+                      f"plan: if it does this, put it in `apis` and use its tools: {tools}")
     return errors
 
 
