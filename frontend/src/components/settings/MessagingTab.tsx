@@ -147,14 +147,12 @@ const SETUP_GUIDES: Record<Platform, { title: string; steps: string[] }> = {
     whatsapp: {
         title: 'WhatsApp Setup',
         steps: [
-            'BUSINESS ACCOUNT PATH: Go to developers.facebook.com → My Apps → Create App (type: Business)',
+            'Go to developers.facebook.com → My Apps → Create App (type: Business)',
             'Add WhatsApp product → Phone Numbers → select a test or production number',
             'In WhatsApp → Configuration, set Webhook URL to: https://<your-synapse-address>/api/messaging/whatsapp/webhook/<channel-id> (the public address of the Synapse app, not the backend port)',
             'Set your Verify Token (any string), subscribe to the messages webhook field',
             'Copy the Phone Number ID and generate a temporary/permanent Access Token',
             'In App settings → Basic, copy the App Secret: Synapse refuses any delivery it does not sign',
-            '--- OR ---',
-            'UNOFFICIAL PATH: No business account needed. Synapse will open WhatsApp Web in a browser window and you scan the QR code to authenticate. This may violate WhatsApp\'s Terms of Service.',
         ],
     },
 };
