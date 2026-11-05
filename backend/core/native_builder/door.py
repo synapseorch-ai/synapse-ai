@@ -222,6 +222,10 @@ _ASKS_PASSWORD = re.compile(r"(?i)\b(?:pass(?:word|wd|code|phrase)|pwd|log\s*in\
 _ASKS_KEY = re.compile(r"(?i)\b(?:api[\s_-]?key|key|token|secret|bearer|access\s+code|client\s+secret|"
                        r"authenticat\w*)\b")
 _LONE_WORD = re.compile(r"^\s*[\"'`]?(?P<value>[^\s\"'`]{6,200})[\"'`]?\s*[.!]?\s*$")
+#: A value after a bare "key" in an answer while a key is asked for (F1387): 12+ characters mixing letters and digits.
+#: "the key user_id1" is a sentence; a model's name, with no "key" before it, is not a key.
+_BARE_KEY = re.compile(r"(?i)(\bkey\s+)(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])"
+                       r"[A-Za-z0-9][A-Za-z0-9_-]{10,}[A-Za-z0-9](?![A-Za-z0-9_-])")
 
 
 def _secret_looking(value: str) -> bool:
@@ -264,9 +268,10 @@ def check_answer(response: Any, question: str | None = None, *, step: str | None
     refused as one; in reply to one that asks for a key or token, it is masked as one. `step`: the step the run waits
     at; at a Connect card's (`CONNECT_WAITS`), whose key belongs on the card, a lone secret-looking word is masked as a
     key whatever the card's words say (F1280: a key of no known shape, pasted alone at the wait, reached the run, its
-    events and logs). `card_up`: the run put up a Connect card (`turn_facts.card_up`), whatever step asks now — its
-    plan's review, a question — and a lone secret-looking word is the card's key the same (F1345). The run's own
-    state, never a guess from words. `held`: the secrets the workspace holds that occur in it
+    events and logs). `card_up`: the run put up a Connect card, or its plan asks for a key on one after the yes
+    (`turn_facts.card_up`), whatever step asks now — its plan's review, a question — and a lone secret-looking word is
+    the card's key the same (F1345, F1387). The run's own state, never a guess from words. While a key is asked for, a
+    value after a bare "key" in the answer is that key (F1387). `held`: the secrets the workspace holds that occur in it
     (`secret_scrub.held_in`), taken out by exact value (F1307).
     """
     removed = 0
@@ -280,14 +285,19 @@ def check_answer(response: Any, question: str | None = None, *, step: str | None
             if checked.refused:
                 raise Refused(checked.refused)
             removed += checked.removed
-            lone = _LONE_WORD.match(checked.text)
-            if lone and (asks_password or asks_key) and CREDENTIAL_MARK not in checked.text \
+            text = checked.text
+            if asks_key:
+                # While a key is asked for, a value after a bare "key" is that key (F1387).
+                text, bare = _BARE_KEY.subn(lambda m: f"{m.group(1)}{CREDENTIAL_MARK}", text)
+                removed += bare
+            lone = _LONE_WORD.match(text)
+            if lone and (asks_password or asks_key) and CREDENTIAL_MARK not in text \
                     and _secret_looking(lone.group("value")):
                 if asks_password:
                     raise Refused("password")
                 removed += 1
                 return CREDENTIAL_MARK
-            return checked.text
+            return text
         if isinstance(value, dict):
             return {k: walk(v) for k, v in value.items()}
         if isinstance(value, list):

@@ -62,11 +62,42 @@ async def keep(run_id: str | None, owner_id: str | None, **facts: Any) -> None:
         _log.warning("turn %s: facts not kept: %s", run_id, exc)
 
 
-async def card_up(run_id: str | None) -> bool:
-    """Whether turn `run_id` put up a Connect card, by its own card: a lone key the person answers it with is the
-    card's (F1345: cap-03's token, pasted as feedback on the plan's review while its card was up, reached the run)."""
+def key_card_pending(state: Any) -> bool:
+    """Whether the plan a builder run waits on asks for a key on a card after the yes (F1387): a tool its build makes
+    from an API that takes one (`build_save._connect_cards`' key card). A key typed with it before that card is up is
+    the card's."""
+    from core.native_builder.build_plan import checked_in
+
+    if not isinstance(state, dict):
+        return False
+    plan = checked_in(state).get("plan")
+    tools = plan.get("tools") if isinstance(plan, dict) else None
+    return any(isinstance(t, dict) and t.get("status") != "present" and isinstance(t.get("api"), dict)
+               and not t["api"].get("keyless") for t in tools or [])
+
+
+async def _state_of(run_id: str) -> dict:
+    """Run `run_id`'s state as it was kept, or {} when it cannot be read."""
+    from core.orchestration.state import SharedState
+
+    try:
+        return (await SharedState.restore(run_id)).run.shared_state or {}
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:  # noqa: BLE001 — unread, the shapes and the held values still run
+        _log.warning("run %s: its state not read (%s)", run_id, type(exc).__name__)
+        return {}
+
+
+async def card_up(run_id: str | None, state: dict | None = None) -> bool:
+    """Whether turn `run_id` put up a Connect card, by its own card, or its plan asks for a key on one after the yes
+    (`key_card_pending`, from `state`, the run's own, read when not given): a lone key the person answers it with is
+    the card's (F1345: cap-03's token, pasted as feedback on the plan's review while its card was up, reached the run;
+    F1387: cap-02's, typed with the plan's review before its key card was up)."""
     if not run_id:
         return False
+    if key_card_pending(state if state is not None else await _state_of(run_id)):
+        return True
     from core.boards import assistant
 
     try:

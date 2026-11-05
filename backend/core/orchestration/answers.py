@@ -203,15 +203,16 @@ async def _held_for(run_id: str, response: Any) -> list:
     return await held_in(json.dumps(response, default=str, ensure_ascii=False))
 
 
-async def _card_up(run_id: str) -> bool:
-    """Whether a builder run put up a Connect card (its turn's own card, F1345); never asked of any other run."""
+async def _card_up(run_id: str, state: dict | None = None) -> bool:
+    """Whether a builder run put up a Connect card (its turn's own card, F1345), or its plan asks for a key on one after
+    the yes (F1387; `state`, the run's, when the caller holds it); never asked of any other run."""
     from core.native_builder.seed import BUILDER_RUN_PREFIX
 
     if not str(run_id).startswith(BUILDER_RUN_PREFIX):
         return False
     from core.native_builder.turn_facts import card_up
 
-    return await card_up(run_id)
+    return await card_up(run_id, state)
 
 
 def _held_out(value: Any, held: Any) -> Any:
@@ -387,7 +388,7 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any, *,
             raise RunNotWaiting(run_id, run.status)
         check_question(run, question_id)
         response = _through_door(run_id, response, run.human_prompt, run.current_step_id,
-                                 await _held_for(run_id, response), await _card_up(run_id))
+                                 await _held_for(run_id, response), await _card_up(run_id, run.shared_state))
         response = check_answer(run.human_fields, response)
         await refuse_card_for_browser(run, response)
         response = _named(response, question_id)

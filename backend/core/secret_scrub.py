@@ -116,6 +116,20 @@ _KEY_NAME_PART = (r"(?:keys?|tokens?|secrets?|auth|authori[sz]ation|authenticati
 _KEY_HEADER_NAME = (r"(?:proxy-authori[sz]ation|cookie|(?:[A-Za-z0-9]+[-_])*" + _KEY_NAME_PART +
                     r"(?:[-_][A-Za-z0-9]+)*)")
 KEY_HEADER = re.compile(r"(?i)^" + _KEY_HEADER_NAME + r"$")
+#: A key's header named in a sentence (F1387): Authorization, an `…api-key`, an `X-…` header named for a key, or any
+#: key-named header said as a header. "primary_key" or an "x-request-id header" is none.
+_A_KEY_HEADER = (r"(?:(?:proxy-)?authori[sz]ation|(?:[A-Za-z0-9]+[-_])*api[-_]?key|x-(?:[A-Za-z0-9]+-)*"
+                 + _KEY_NAME_PART + r"(?:-[A-Za-z0-9]+)*|(?:[A-Za-z0-9]+[-_])+" + _KEY_NAME_PART +
+                 r"(?:[-_][A-Za-z0-9]+)*(?=[\"'`]?\s+header\b))")
+#: What follows a bare "key" when it is one: 12+ characters mixing letters and digits, as no word of a sentence does.
+_KEY_VALUE = (r"(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])"
+              r"([A-Za-z0-9][A-Za-z0-9_-]{10,}[A-Za-z0-9])(?![A-Za-z0-9_-])")
+#: A value after a bare "key", with no "is", ":" or "=", is a key when the same sentence names a key's header (F1387,
+#: cap-02: "the X-Api-Key header (key …)"), before it or after it. Without one it is a sentence: "the key user_id1".
+_NAMED_BY_A_HEADER: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(?i)(\b" + _A_KEY_HEADER + r"\b[^.!?\n]{0,80}?\bkey\s+)" + _KEY_VALUE),
+    re.compile(r"(?i)(\bkey\s+)" + _KEY_VALUE + r"(?=[^.!?\n]{0,80}?\b" + _A_KEY_HEADER + r"\b)"),
+)
 _CURL_PARTS: tuple[re.Pattern[str], ...] = (
     # -H 'Authorization: Bearer …', --header "X-Api-Key: …", -H 'Cookie: …': the value, its scheme word kept.
     re.compile(r"(?i)((?<![\w-])(?-i:-H|--header)(?=[\s=])\s*=?\s*[\"']\s*" + _KEY_HEADER_NAME +
@@ -134,7 +148,8 @@ _CURL_PARTS: tuple[re.Pattern[str], ...] = (
 
 def _parts_of(text: str) -> tuple[re.Pattern[str], ...]:
     """The patterns `text` is read with: the credential shapes, and a curl's key-carrying parts when it holds one."""
-    return _CREDENTIALS + _CURL_PARTS if _CURL.search(fold(text or "")) else _CREDENTIALS
+    shapes = _CREDENTIALS + _NAMED_BY_A_HEADER
+    return shapes + _CURL_PARTS if _CURL.search(fold(text or "")) else shapes
 
 
 def scrub_credentials(text: str) -> tuple[str, int]:
