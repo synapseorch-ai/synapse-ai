@@ -292,7 +292,9 @@ def _structure_reads(code: str, keys: set[str]) -> dict[str, str]:
 def field_reads(code: str, keys: set[str]) -> dict[str, list[str]]:
     """The fields a Transform's code (or a condition) looks up in each of `keys`, by name, first level only (F1394):
     `state.k['f']`, `state.k.get('f')`, `state.k.f`, and the same on a name assigned from it, as `_structure_reads`
-    reads one. A method called on it is no field; what is read out of a field is that field's own."""
+    reads one. A method called on it is no field; what is read out of a field is that field's own. A Tool step stores
+    its answer as its JSON, so `json.loads` of it, or of a name holding it, is the same answer (F1404: the hero build's
+    `data = json.loads(state['get_forecast'])`, then `data['daily']`); `json.loads` of a field is that field's own."""
     import ast
 
     from core.builder_tools import _state_key
@@ -301,16 +303,34 @@ def field_reads(code: str, keys: set[str]) -> dict[str, list[str]]:
         tree = ast.parse(code)
     except SyntaxError:
         return {}
+    # json's own `loads`, imported by name.
+    loads = {a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module == "json"
+             for a in n.names if a.name == "loads" and not a.asname}
+
+    def parsed(node: Any) -> Any:
+        """What a `json.loads(…)` call parses, or None for any other node."""
+        if not isinstance(node, ast.Call) or len(node.args) != 1:
+            return None
+        f = node.func
+        if (isinstance(f, ast.Attribute) and f.attr == "loads" and isinstance(f.value, ast.Name)
+                and f.value.id == "json") or (isinstance(f, ast.Name) and f.id in loads):
+            return node.args[0]
+        return None
+
     names: dict[str, str] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and (key := _state_key(node.value)) in keys:
-            names.update({t.id: key for t in node.targets if isinstance(t, ast.Name)})
 
     def read(node: Any) -> str | None:
+        if (inner := parsed(node)) is not None:
+            return read(inner)
         key = _state_key(node)
         if key in keys:
             return key
         return names.get(node.id) if isinstance(node, ast.Name) else None
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and \
+                (key := (read(node.value) if parsed(node.value) is not None else _state_key(node.value))) in keys:
+            names.update({t.id: key for t in node.targets if isinstance(t, ast.Name)})
 
     called = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
     out: dict[str, list[str]] = {}
