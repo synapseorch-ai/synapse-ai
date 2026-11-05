@@ -28,8 +28,9 @@ NOT_EVENTS = frozenset({
     # Agent, tool and vault kinds; a native-builder step; voice relay frames; ASGI messages; a header name.
     "builder", "conversational", "orchestrator", "mcp_native", "file", "folder", "end",
     "http.response.start", "http.response.body", "SHARED_KEY",
-    # A human field's type: the person's turn in the browser, carried on `human_input_required` (BRW1, F1099).
-    "browser_turn",
+    # A human field's type: the person's turn in the browser, carried on `human_input_required` (BRW1, F1099);
+    # a choice on a form the builder's code asks, such as a name already here (F1395).
+    "browser_turn", "choice",
     # The engine's input to the browser component's viewer `/input` (mouse, key, text, scroll, nav): an HTTP body to
     # the component, never yielded to a client (BRW1, F1142's "Record a task" opens at its start address).
     "nav",
