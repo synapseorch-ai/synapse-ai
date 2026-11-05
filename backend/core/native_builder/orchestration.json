@@ -961,7 +961,7 @@
             "timeout_seconds": 180,
             "allowed_tools": null,
             "next_step_id": "step_plan_lookup_route",
-            "max_iterations": 3,
+            "max_iterations": 5,
             "position_x": 1300,
             "position_y": 350,
             "tool_arguments": {
@@ -993,7 +993,7 @@
             "max_turns": 1,
             "timeout_seconds": 60,
             "allowed_tools": null,
-            "max_iterations": 3,
+            "max_iterations": 5,
             "position_x": 1300,
             "position_y": 400,
             "input_keys": [
@@ -1038,7 +1038,7 @@
             "timeout_seconds": 180,
             "allowed_tools": null,
             "next_step_id": "step_plan",
-            "max_iterations": 3,
+            "max_iterations": 5,
             "position_x": 1450,
             "position_y": 400,
             "tool_arguments": {
