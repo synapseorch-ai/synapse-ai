@@ -289,6 +289,50 @@ def _structure_reads(code: str, keys: set[str]) -> dict[str, str]:
     return out
 
 
+def field_reads(code: str, keys: set[str]) -> dict[str, list[str]]:
+    """The fields a Transform's code (or a condition) looks up in each of `keys`, by name, first level only (F1394):
+    `state.k['f']`, `state.k.get('f')`, `state.k.f`, and the same on a name assigned from it, as `_structure_reads`
+    reads one. A method called on it is no field; what is read out of a field is that field's own."""
+    import ast
+
+    from core.builder_tools import _state_key
+
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return {}
+    names: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and (key := _state_key(node.value)) in keys:
+            names.update({t.id: key for t in node.targets if isinstance(t, ast.Name)})
+
+    def read(node: Any) -> str | None:
+        key = _state_key(node)
+        if key in keys:
+            return key
+        return names.get(node.id) if isinstance(node, ast.Name) else None
+
+    called = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
+    out: dict[str, list[str]] = {}
+
+    def add(key: str, field: str) -> None:
+        if field not in out.setdefault(key, []):
+            out[key].append(field)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant) \
+                and isinstance(node.slice.value, str) and (key := read(node.value)):
+            add(key, node.slice.value)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" \
+                and node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str) \
+                and (key := read(node.func.value)):
+            add(key, node.args[0].value)
+        elif isinstance(node, ast.Attribute) and id(node) not in called and node.attr not in TEXT_METHODS \
+                and node.attr not in ("get", "items", "keys", "values") and (key := read(node.value)):
+            add(key, node.attr)
+    return out
+
+
 
 
 def text_reads(code: str, keys: set[str]) -> set[str]:

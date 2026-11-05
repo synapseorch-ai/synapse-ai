@@ -45,6 +45,29 @@ if TYPE_CHECKING:
 CODE_TOOL = "execute_python"
 #: The built-in page reads a workflow's agent can call (the scraper's, `build_plan._BUILT_IN_SCRAPE`).
 PAGE_READS = ("scrape_url", "scrape_structured", "search_page", "extract_links")
+#: What each page read answers a Tool step, every field it may have (`tools/web_scraper.py`'s own response keys, held
+#: equal by a test): what a page says is text in `markdown` (or `data`), an API's JSON fetched as a page too (F1394).
+ANSWERS: dict[str, tuple[str, ...]] = {
+    "scrape_url": ("success", "url", "markdown", "wait_missed", "links", "images"),
+    "scrape_structured": ("success", "url", "count", "data"),
+    "search_page": ("success", "url", "scrolls_executed", "data", "markdown"),
+    "extract_links": ("success", "url", "count", "links"),
+}
+
+
+def answer_fields(tool: str | None, tools: list[dict]) -> tuple[str, ...] | None:
+    """Every field a Tool step calling `tool` gets in its answer, or None when that is not known (F1394): a page read's
+    own shape, or the properties a tool here declares in its `outputSchema` (an HTTP tool's answer is narrowed to
+    them); one open to more properties is not known."""
+    if not tool:
+        return None
+    if tool in ANSWERS:
+        return ANSWERS[tool]
+    schema = next((t.get("outputSchema") for t in tools if t.get("name") == tool), None)
+    if not isinstance(schema, dict) or schema.get("additionalProperties") or \
+            not isinstance(schema.get("properties"), dict) or not schema["properties"]:
+        return None
+    return tuple(schema["properties"])
 
 
 def _reads(name: str, custom: dict[str, dict]) -> bool:
