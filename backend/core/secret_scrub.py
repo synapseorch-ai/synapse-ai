@@ -134,45 +134,45 @@ _CURL_PARTS: tuple[re.Pattern[str], ...] = (
 
 def _parts_of(text: str) -> tuple[re.Pattern[str], ...]:
     """The patterns `text` is read with: the credential shapes, and a curl's key-carrying parts when it holds one."""
-    return _CREDENTIALS + _CURL_PARTS if _CURL.search(text or "") else _CREDENTIALS
+    return _CREDENTIALS + _CURL_PARTS if _CURL.search(fold(text or "")) else _CREDENTIALS
 
 
 def scrub_credentials(text: str) -> tuple[str, int]:
-    """`text` with each credential replaced by `CREDENTIAL_MARK`, and how many."""
+    """`text` with each credential replaced by `CREDENTIAL_MARK`, and how many. Each shape reads the text with its
+    lookalikes folded (F1386), and what it finds is masked as it was written: the rest of the text is kept as it is."""
     removed = 0
-
-    def _mark(match: re.Match[str]) -> str:
-        nonlocal removed
-        removed += 1
-        groups = match.groups()
-        if not groups:
-            return CREDENTIAL_MARK
-        if len(groups) == 2:  # (prefix, secret)
-            return f"{groups[0]}{CREDENTIAL_MARK}"
-        prefix, quote, _ = groups  # (prefix, quote, secret)
-        return f"{prefix}{quote}{CREDENTIAL_MARK}{quote}"
-
     for pattern in _parts_of(text):
-        text = pattern.sub(_mark, text)
+        folded, where = _fold_map(text)
+        spans: list[tuple[int, int]] = []
+        for match in pattern.finditer(folded):
+            start, end = match.span(len(match.groups())) if match.groups() else match.span()
+            if end <= start:
+                continue
+            spans.append((start, end) if where is None else (where[start], where[end - 1] + 1))
+        for start, end in reversed(spans):
+            text = f"{text[:start]}{CREDENTIAL_MARK}{text[end:]}"
+        removed += len(spans)
     return text, removed
 
 
 def holds_credential(text: str) -> bool:
     """Whether `text` holds anything `scrub_credentials` would take out."""
-    return bool(text) and any(pattern.search(text) for pattern in _parts_of(text))
+    return bool(text) and any(pattern.search(fold(text)) for pattern in _parts_of(text))
 
 
-# ── Lookalikes (F1280, F1339) ────────────────────────────────────────────────
+# ── Lookalikes (F1280, F1339, F1386) ─────────────────────────────────────────
 #
 # Smart punctuation (macOS, Word, a shared doc) pastes a key's hyphens as U+2011 and its spaces as no-break spaces, and
 # a copy from the web can carry zero-width characters. The door folds them before its patterns read a message (F1280:
 # such a key went past every pattern), and a held value is matched through the same fold (F1339: cap-02's held key,
-# pasted with U+2011, matched no exact text and reached the planner's logs), masked as it was written.
+# pasted with U+2011, matched no exact text and reached the planner's logs), masked as it was written. The credential
+# shapes read through it wherever they are read (F1386), each found key masked as it was written.
 
 #: Characters that look like a dash, a space or like nothing: dashes become "-", no-break spaces " ", zero-width ones go.
-LOOKALIKES = {**{ord(c): "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d"},
+LOOKALIKES = {**{ord(c): "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d"
+                                       "\u2043\ufe31\ufe32\u2e3a\u2e3b\u02d7"},
               **{ord(c): " " for c in "\u00a0\u2007\u202f"},
-              **{ord(c): None for c in "\u200b\u200c\u200d\u2060\ufeff"}}
+              **{ord(c): None for c in "\u200b\u200c\u200d\u2060\ufeff\u00ad"}}
 
 
 def fold(text: str) -> str:
@@ -180,13 +180,19 @@ def fold(text: str) -> str:
     return text.translate(LOOKALIKES)
 
 
+def _fold_map(text: str) -> tuple[str, list[int] | None]:
+    """`text` folded, and where each folded character stands in `text` (the dropped ones skipped); None when folding
+    changed nothing, so a span of the folded text is that span of `text`."""
+    folded = fold(text)
+    if folded == text:
+        return text, None
+    return folded, [i for i, c in enumerate(text) if LOOKALIKES.get(ord(c), c) is not None]
+
+
 def written_as(text: str, values: Any) -> list[tuple[str, str]]:
     """(value, as written) for each of `values` that `text` holds, its lookalikes folded on both sides (F1339): the
     span of `text` as it stands, so replacing it takes out exactly what was written. In the order of `values`."""
-    folded = fold(text)
-    where = None
-    if folded != text:  # where each folded character stands in `text`, the dropped ones skipped
-        where = [i for i, c in enumerate(text) if LOOKALIKES.get(ord(c), c) is not None]
+    folded, where = _fold_map(text)
     out: dict[tuple[str, str], None] = {}
     for value in values:
         want = fold(value) if isinstance(value, str) else ""
