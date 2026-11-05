@@ -367,6 +367,8 @@ export function WorkflowTabs({ initialOrchId, openSettings }: {
         isTabLink: (url) => tabLink(url) !== null,
         othersDirty: behindDirty,
         strip,
+        // The ask effect above reads the address once the kept tabs are read (F1403).
+        addressRead: ready,
     };
 
     return (

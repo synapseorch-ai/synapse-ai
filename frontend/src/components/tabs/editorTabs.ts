@@ -39,5 +39,9 @@ export interface EditorTabs {
     othersDirty?: boolean;
     /** The strip, drawn at the top of the editor and of the list. */
     strip: React.ReactNode;
+    /** The page has read what its address asks for (a workflow, a run, a new one); until then the editor leaves the
+     *  address as it is. The list wrote the bare `/workflows` over a link's `?id=` before the page read it, so a link
+     *  from another page opened nothing (F1403). Absent: read. */
+    addressRead?: boolean;
 }
 
