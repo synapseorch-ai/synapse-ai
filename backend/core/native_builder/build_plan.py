@@ -126,13 +126,25 @@ async def workspace(server_module: Any) -> Workspace:
     except Exception as exc:  # noqa: BLE001 — a server that cannot list is not a workspace with no tools
         _log.warning("the build's catalogue was not read: %s", exc)
         catalogue = []
+    # What a tool here declares it answers (F1394): an MCP tool's `outputSchema`, or a custom tool's, which the
+    # catalogue does not carry.
+    try:
+        from core.routes.tools import load_custom_tools
+
+        declared = {c["name"]: c["outputSchema"] for c in await load_custom_tools()
+                    if c.get("name") and isinstance(c.get("outputSchema"), dict)}
+    except Exception as exc:  # noqa: BLE001 — a tool's answer not known is a check not made, never a plan refused
+        _log.warning("the custom tools' answers were not read: %s", exc)
+        declared = {}
     tools = []
     for t in catalogue:
         name = getattr(t, "name", None) or (t.get("function", {}).get("name") if isinstance(t, dict) else None)
         if name:
             does = getattr(t, "description", None) or (t.get("function", {}).get("description")
                                                         if isinstance(t, dict) else "")
-            tools.append({"name": name, "does": " ".join(str(does or "").split())[:140]})
+            out = getattr(t, "outputSchema", None) or declared.get(name)
+            tools.append({"name": name, "does": " ".join(str(does or "").split())[:140],
+                          **({"outputSchema": out} if isinstance(out, dict) else {})})
     kbs = None
     if knowledge_enabled():
         from core.knowledge import bases
@@ -965,6 +977,67 @@ def _objects_read_as_text(s: O.Step, plan: O.Plan) -> list[str]:
     return out
 
 
+#: Said once a run (Naveen 11-05, F1394): a field a step reads out of a Tool step's answer that the answer has not.
+_ANSWER_FIELDS_SAID = "_answer_fields_said"
+
+
+def _fields_its_answer_lacks(s: O.Step, plan: O.Plan, ws: Workspace) -> list[str]:
+    """A step reading a field a Tool step's answer has not (F1394: the Porto plan fetched Open-Meteo with `scrape_url`
+    and its Transform read `daily` out of `{success, url, markdown}`, a KeyError on the first run). Read where the
+    answer is known (`structure.answer_fields`): in a Transform's code, an if/else's or a switch's condition, and the
+    `{{ state.x.field }}` templates in its prompt and arguments."""
+    from core.native_builder.compile import field_reads
+    from core.native_builder.structure import answer_fields
+    from core.templating import _OLD_STATE_REF, STATE_REF
+
+    steps = [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)]
+    known = {}
+    for x in steps:
+        if x.type == "tool" and x.id != s.id and (fields := answer_fields(x.tool, ws.tools)) is not None:
+            known[str((x.config or {}).get("output_key") or x.id)] = (x, fields)
+    if not known:
+        return []
+    config = dict(s.config or {})
+    reads: list[tuple[str, dict[str, list[str]]]] = []
+    if s.type == "transform":
+        reads.append(("code", field_reads(config.pop("transform_code", "") or "", set(known))))
+    for expr in (s.condition, config.get("if_condition"), config.get("switch_expression")):
+        if isinstance(expr, str):
+            reads.append(("condition", field_reads(expr, set(known))))
+    templated: dict[str, list[str]] = {}
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for v in value.values():
+                walk(v)
+        elif isinstance(value, list):
+            for v in value:
+                walk(v)
+        elif isinstance(value, str):
+            for ref in [*STATE_REF.findall(value), *_OLD_STATE_REF.findall(value)]:
+                head, _, rest = ref.partition(".")
+                if head in known and (field := rest.split(".", 1)[0]) and field not in templated.setdefault(head, []):
+                    templated[head].append(field)
+
+    walk([s.prompt or "", config])
+    reads.append(("template", templated))
+    out = []
+    for where, by_key in reads:
+        for key, fields in by_key.items():
+            writer, has = known[key]
+            lacks = [f for f in fields if f not in has]
+            if not lacks:
+                continue
+            page = (" (a page's text is in `markdown`, and so is an API's JSON fetched as a page: parse it there)"
+                    if "markdown" in has else "")
+            out.append(f"step {s.id}: its {where} reads {', '.join(f'`{f}`' for f in lacks)} from `state.{key}`, an "
+                       f"answer with no such field: step {writer.id} calls `{writer.tool}`, which answers an object "
+                       f"with {', '.join(f'`{f}`' for f in has)}. Read a field it has{page}, or call a JSON API with a "
+                       "GET tool, which answers its JSON (a tool nothing here provides is looked up, and made after "
+                       "the yes)")
+    return out
+
+
 async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
     """The planner's rules a structure check cannot see (P1's findings, F866b)."""
     from core.boards import TOOL_NAMES
@@ -1003,6 +1076,10 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
                           "nothing here provides is looked up, or built without); code works on the run's own data")
         if s.type == "transform":
             errors += _objects_read_as_text(s, plan)
+    if not state.get(_ANSWER_FIELDS_SAID) and (lacks := [line for s in [*written, *(
+            x for w in plan.inner_workflows for x in w.steps)] for line in _fields_its_answer_lacks(s, plan, ws)]):
+        state[_ANSWER_FIELDS_SAID] = True
+        errors += lacks
     # A feature that is off, where the plan needs it, is the person's to turn on, never the planner's to take out
     # (F1203): `features_needed`, a block on the card with its switch. Board tools are still never looked up as a
     # missing tool (F866b's invented "Board" provider; SAI2's review, 7).

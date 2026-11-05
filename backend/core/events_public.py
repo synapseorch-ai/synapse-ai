@@ -94,8 +94,9 @@ PRIVATE_STATE_PREFIXES = (
     # A build's record of what it wrote, what failed and why it stopped (`run_writes`); its words are `run_changes`.
     "_run_writes", "_run_failures", "_run_stopped",
     # Synapse AI's approved review and its send-backs (`review.REVIEW_KEY`, `build_plan._SENDBACK_KEY`), and the
-    # structure findings a build has said already (`build_plan._STRUCTURE_SAID_KEY`, D340 D3).
-    "_approved_review", "_plan_sendbacks", "_plan_structure_said",
+    # structure findings a build has said already (`build_plan._STRUCTURE_SAID_KEY`, D340 D3), and that a field its
+    # answer lacks was said (`build_plan._ANSWER_FIELDS_SAID`, F1394).
+    "_approved_review", "_plan_sendbacks", "_plan_structure_said", "_answer_fields_said",
     # That a save refused after the yes went back to the planner once (`build_save.SAVE_REPLAN_KEY`, F1295).
     "_save_replanned",
     # That a change request's words went back once for a card (`change_tools.WORDS_SENT_KEY`, F1310).
