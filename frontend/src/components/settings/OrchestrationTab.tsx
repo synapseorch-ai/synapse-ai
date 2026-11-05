@@ -1774,8 +1774,12 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
     // and a reload went back to the original (F198). A `?run=` link stays only
     // while the orchestration it opened is still the one shown. Written with
     // `history.replaceState`, which Next keeps in step, so nothing re-renders.
+    // Not before the page's tabs have read the address: the list's bare address
+    // went over a link's `?id=` first, and the link opened nothing (F1403).
     const urlOrchRef = useRef<string | null>(null);
+    const addressRead = tabs?.addressRead !== false;
     useEffect(() => {
+        if (!addressRead) return;
         if (initialRunId && !initialRunConsumedRef.current) return;  // the run link is still to open
         const url = new URL(window.location.href);
         const run = url.searchParams.get('run');
@@ -1788,7 +1792,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
         const search = next.toString();
         if (search === url.searchParams.toString()) return;
         window.history.replaceState(null, '', `${url.pathname}${search ? `?${search}` : ''}`);
-    }, [realOrchId, initialRunId]);
+    }, [realOrchId, initialRunId, addressRead]);
 
     useBuilderShortcuts({
         enabled: !!draft,
