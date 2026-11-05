@@ -318,6 +318,12 @@ def effective_allowed_tools(active_agent: dict) -> list[str]:
             for tool_name in DEFAULT_TOOLS_BY_TYPE.get(category, set()):
                 if tool_name not in allowed:
                     allowed.append(tool_name)
+    # What its type brings, by the guard's own rule (`gate.held_by`, `react_engine._type_tools`): a Browser agent is
+    # offered the browser however its list was saved, and `skip_default_tools` does not take it away (F1405: one made
+    # with `"tools": []` held the browser at run time and was never shown it).
+    from core.browser.gate import held_by
+
+    allowed = held_by(allowed, active_agent.get("type"))
 
     if not load_settings().get("embed_code", False):
         allowed = [t for t in allowed if t not in _EMBED_TOOLS]
