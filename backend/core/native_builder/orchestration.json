@@ -1109,7 +1109,7 @@
             "timeout_seconds": 120,
             "allowed_tools": null,
             "next_step_id": "step_plan_context",
-            "max_iterations": 2,
+            "max_iterations": 5,
             "position_x": 300,
             "position_y": 200,
             "tool_arguments": {
@@ -1524,7 +1524,8 @@
                 "said": "step_plan_said",
                 "error": "step_build_failed",
                 "prompts": "step_agent_prompts",
-                "same": "step_plan_same"
+                "same": "step_plan_same",
+                "refetch": "step_fetch_existing"
             },
             "switch_default_step_id": "step_build_failed",
             "on_exhausted_step_id": "step_plan_rounds"

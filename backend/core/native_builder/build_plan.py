@@ -1111,31 +1111,161 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
     if plan.agents and state.get("can_create_agents") is False:
         errors.append("agents: this conversation uses existing agents only; give each step one of theirs by id")
     errors += _api_names(plan, state)
-    # A second of a workflow: by its name (F1229), else by the last build's agents (F1292); said once.
-    errors += _a_second_of_a_name(plan, ws, state) or _the_last_build_again(plan, ws, state)
+    # A second of a workflow by the last build's agents (F1292). One by its name, or an agent by its name, is the
+    # person's question, which `check_build` asks (F1395): never sent back here, so F1292 is not said beside it.
+    if not name_clashes(plan.model_dump(), ws) and not _chose_a_second(state):
+        errors += _the_last_build_again(plan, ws, state)
     return errors
 
 
-def _a_second_of_a_name(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
-    """A new workflow named like one already here is never saved beside it (F1229, CAP3's stage 1): brief 4's "run it"
-    and brief 7's follow-up each saved a second, same-named workflow. Sent back to the planner: an update of that one,
-    or, when the person may want two, one question (counted with the request's, F1226) and a name of its own."""
-    from core.native_builder.target import LAST_BUILT_KEY
+# ── a name already here: the person's question, asked by code (F1395) ────────────────────────────────────────────
+# A new workflow named like one here was sent back to the planner (F1229), which once answered in words and ended in
+# "Say it another way" (BLD1's media dry run, 11-05). Now `check_build` asks the person on F1253's form before any
+# plan, for a workflow or a new agent named like one here, and carries out their answer itself.
 
-    if plan.kind != "create":
-        return []
-    def key(name: Any) -> str:
-        return "".join(c for c in unicodedata.normalize("NFKC", str(name or "")).casefold() if c.isalnum())
-    want = key(plan.title)
-    same = next(((i, w) for i, w in ws.workflows.items() if want and key(w.get("name")) == want), None)
-    if same is None:
-        return []
-    ident, row = same
-    whose = " (this conversation built it)" if state.get(LAST_BUILT_KEY) == ident else ""
-    return [f"title: a workflow called \"{row.get('name')}\" is already in this workspace{whose}, id {ident}. Never "
-            "save a second of the same name: when the person means that one, this is a change to it (plan it as kind "
-            "update of that one); if they may want two, ask once which with ask_person, and give a second one a name "
-            "of its own"]
+#: Each name asked about, by `kind:id`: {kind, id, name, new_of, new, label, options, chosen}. `chosen` is "change"
+#: or "reuse" (the first option), or "new" (the second), once the person answered.
+CLASH_KEY = "name_clashes"
+_WORKFLOW_ASKS = "A workflow called “{name}” is already here. Should this change it, or be a new one?"
+_AGENT_ASKS = "An agent called “{name}” is already here. Should this use it, or make a new one?"
+
+
+def _name_key(name: Any) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKC", str(name or "")).casefold() if c.isalnum())
+
+
+def name_clashes(draft: dict, ws: Workspace) -> list[dict]:
+    """What a draft names like something already here: a new workflow's title (a create only: an update keeps its
+    own), and each new agent's name. `{kind, id, name, new_of}`, `new_of` the draft's own name for it."""
+    found = []
+    if draft.get("kind") == "create" and (want := _name_key(draft.get("title"))):
+        found += [{"kind": "workflow", "id": i, "name": str(w.get("name")), "new_of": str(draft.get("title"))}
+                  for i, w in ws.workflows.items() if _name_key(w.get("name")) == want][:1]
+    for agent in draft.get("agents") or []:
+        want = _name_key(agent.get("name")) if isinstance(agent, dict) else ""
+        found += [{"kind": "agent", "id": i, "name": str(a.get("name")), "new_of": str(agent.get("name"))}
+                  for i, a in ws.agents.items() if want and _name_key(a.get("name")) == want][:1]
+    return found
+
+
+def _free_name(name: str, taken: set[str], words: str, beside: str) -> str:
+    """A name for a second of `name`, free among `taken` (keys): with the first proper name the draft's words have
+    mid-sentence that the one here doesn't ("the Delft desk" → "… – Delft"), else numbered from 2."""
+    here = {_name_key(w) for w in re.findall(r"[^\W\d_]+", beside)}
+    own = [w for w in re.findall(r"(?<=[^\W\d_] )[A-Z][^\W\d_]{2,}", words) if _name_key(w) not in here]
+    for candidate in [f"{name} – {w}" for w in own[:1]] + [f"{name} {n}" for n in range(2, 100)]:
+        if _name_key(candidate) not in taken:
+            return candidate
+    return f"{name} {len(taken) + 2}"
+
+
+def _clash_record(clash: dict, draft: dict, ws: Workspace) -> dict:
+    name = clash["name"]
+    if clash["kind"] == "workflow":
+        row = ws.workflows.get(clash["id"]) or {}
+        new = _free_name(name, {_name_key(w.get("name")) for w in ws.workflows.values()},
+                         f"{draft.get('title') or ''}. {draft.get('summary') or ''}",
+                         f"{name} {row.get('description') or ''}")
+        return {**clash, "new": new, "label": _WORKFLOW_ASKS.format(name=name),
+                "options": [f"Change “{name}” to do this", f"Build a new one named “{new}”"]}
+    purpose = next((str(a.get("purpose") or "") for a in draft.get("agents") or []
+                    if isinstance(a, dict) and a.get("name") == clash["new_of"]), "")
+    row = ws.agents.get(clash["id"]) or {}
+    new = _free_name(name, {_name_key(a.get("name")) for a in ws.agents.values()}, purpose,
+                     f"{name} {row.get('description') or ''}")
+    return {**clash, "new": new, "label": _AGENT_ASKS.format(name=name),
+            "options": [f"Use the “{name}” already here", f"Make a new one named “{new}”"]}
+
+
+def _chosen(answer: Any, record: dict) -> str:
+    """The person's answer as code's choice: the first option ("change" a workflow, "reuse" an agent) or the second
+    ("new"), by the option's words or, typed in the chat box, by what it says. Anything unclear is a new one: a
+    second is undone by deleting it, a change to the one here is not."""
+    first = "change" if record["kind"] == "workflow" else "reuse"
+    said = _name_key(answer)
+    if said == _name_key(record["options"][0]):
+        return first
+    if said == _name_key(record["options"][1]) or _name_key(record["new"]) in said:
+        return "new"
+    words = str(answer or "").casefold()
+    if re.search(r"\b(new|another|second|separate)\b", words):
+        return "new"
+    return first if re.search(r"\b(change|update|use|that one|existing)\b", words) else "new"
+
+
+def _clash_answers(state: dict) -> dict[str, dict]:
+    """The names asked about, each with the person's choice once they answered (read through F1226's seam)."""
+    from core.native_builder.change_tools import asked_before
+
+    records = state.get(CLASH_KEY) if isinstance(state.get(CLASH_KEY), dict) else {}
+    for key, record in records.items():
+        if not record.get("chosen") and (was := asked_before(state, "which", key, record["label"])) and (
+                was.get("answer") not in (None, "")):
+            record["chosen"] = _chosen(was["answer"], record)
+    return records
+
+
+def _chose_a_second(state: dict | None) -> bool:
+    return any(r.get("chosen") == "new" for r in _clash_answers(state or {}).values())
+
+
+def change_it_waits(state: dict) -> dict | None:
+    """The workflow the person chose to change on the name question, until the run reads it as the one to change."""
+    return next((r for r in _clash_answers(state).values() if r["kind"] == "workflow" and r.get("chosen") == "change"
+                 and state.get("current_orchestration_id") != r["id"]), None)
+
+
+def _as_chosen(draft: dict, records: dict[str, dict]) -> dict:
+    """The draft with each answered name carried out: a new workflow's or agent's new name, or the agent here in
+    place of a new one of its name (its steps, a team's members and `reuse_agents` name it by id)."""
+    draft = json.loads(json.dumps(draft))
+    for record in records.values():
+        chosen, mine = record.get("chosen"), _name_key(record["new_of"])
+        if record["kind"] == "workflow" and chosen == "new" and _name_key(draft.get("title")) == mine:
+            draft["title"] = record["new"]
+        ours = [a for a in draft.get("agents") or [] if isinstance(a, dict) and _name_key(a.get("name")) == mine]
+        if record["kind"] != "agent" or chosen not in ("new", "reuse") or not ours:
+            continue
+        to, names = (record["new"] if chosen == "new" else record["id"]), {str(a.get("name")) for a in ours}
+        if chosen == "new":
+            for a in ours:
+                a["name"] = to
+        else:
+            draft["agents"] = [a for a in draft.get("agents") or [] if a not in ours]
+            draft["reuse_agents"] = list(dict.fromkeys([*(draft.get("reuse_agents") or []), to]))
+        for step in draft.get("steps") or []:
+            if isinstance(step, dict) and step.get("agent") in names:
+                step["agent"] = to
+        for a in draft.get("agents") or []:
+            if isinstance(a, dict) and a.get("members"):
+                a["members"] = [to if m in names else m for m in a["members"]]
+    return draft
+
+
+def _ask_names(base: dict, draft: dict, ws: Workspace, state: dict) -> tuple[dict | None, dict, list[str]]:
+    """The names a draft shares with what is here, asked once on a form (F1253), each one of the request's questions
+    (F1226); once the request has asked enough, each is a new one, said on the review. Returns the ask (or None),
+    the draft as the person's answers have it, and what the review says."""
+    from core.native_builder.change_tools import QUESTIONS, asked_before, form_text, note_question, questions_asked
+
+    records = _clash_answers(state)
+    fresh = [c for c in name_clashes(_as_chosen(draft, records), ws) if f"{c['kind']}:{c['id']}" not in records]
+    _, run = _run()
+    form, said = [], []
+    for clash in fresh:
+        key, record = f"{clash['kind']}:{clash['id']}", _clash_record(clash, draft, ws)
+        records[key] = record
+        if questions_asked(state, run) >= QUESTIONS or asked_before(state, "which", key, record["label"]):
+            record["chosen"] = "new"
+            said.append(f"“{record['name']}” is already here, so this one is named “{record['new']}”.")
+            continue
+        form.append({"name": f"q{len(form) + 1}", "type": "choice", "label": record["label"],
+                     "options": record["options"]})
+        note_question(state, "which", key, record["label"], field=form[-1]["name"])
+    state[CLASH_KEY] = records
+    if form:
+        return {**base, "outcome": "ask", "question": form_text("Before I plan it:", form), "form": form}, draft, []
+    return None, _as_chosen(draft, records), said
 
 
 def _the_last_build_again(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
@@ -2021,6 +2151,15 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
                                                   f"{draft.get('nearest', '')}".strip()}
     if finish != "submit_plan":
         return {**base, "outcome": "said", "say": "I could not work out what to build. Say it again in other words."}
+    ws = await workspace(server_module)
+    # A name already here is the person's question, before any plan; their answer is carried out here (F1395).
+    asking, draft, names_said = _ask_names(base, draft, ws, state)
+    if asking is not None:
+        return asking
+    if draft.get("kind") == "create" and (waits := change_it_waits(state)) is not None:
+        # "Change it": read as the workflow to change, as if it were open, then planned as its update (`refetch`).
+        state["current_orchestration_id"], state["intent"] = waits["id"], "update"
+        return {**base, "outcome": "refetch"}
     if state.get("intent") == "update" and _base(state) is None:
         return {**base, "outcome": "said", "say": "I could not read the workflow to change, so I changed nothing. "
                                                   "Open it and ask again."}
@@ -2044,7 +2183,6 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     stronger = list(dict.fromkeys([*(prior.get("stronger") or []),
                                    *((answer.get("stronger") or []) if answer.get("outcome") == "stronger" else [])]))
     base["stronger"] = stronger
-    ws = await workspace(server_module)
     found = await examine(draft, server_module, ws=ws, state=state, without=without, alone=alone)
     plan = found.plan
     if plan is None:
@@ -2143,7 +2281,7 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
         said.append("It can't be saved as it is: " + " ".join(found.errors[:3]))
     said += [f"{why}." for why in found.blocks.values()]
     said += found.notes
-    said += unsaid_said
+    said += unsaid_said + names_said
     # A reused agent's blocked tools, said too (SAI2's nit on point 1): on the card under "Blocked here", and here.
     said += [f"{render_gate(g)}." for g in plan.gates if g.decision == "deny" and g.tool not in found.blocks]
     buildable = not (no_way or connect or found.errors or found.blocks)

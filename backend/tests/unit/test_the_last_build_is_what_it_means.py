@@ -5,8 +5,9 @@ Brief 4: after "Built the workflow 'Sales Analysis by Region'", the person said 
 was planned as a new build ("Where is the CSV?") and saved a second workflow and board. Brief 7: details given after
 the build planned a second "Book Train and Hotel for Next Tuesday". Now the route carries the workflow the conversation
 built last, and with nothing open on screen and nothing named it is the turn's target (`built`): a build request
-about it goes to its update unless the person asks for a new one, and "run it" runs it. And the build's check sends
-back a new workflow named like one already here.
+about it goes to its update unless the person asks for a new one, and "run it" runs it. And a new workflow named like
+one already here is the person's question (F1395, which replaced F1229's send-back to the planner): its own tests are
+tests/unit/test_a_name_clash_is_asked.py.
 """
 from __future__ import annotations
 
@@ -81,18 +82,21 @@ async def test_the_route_s_target_for_run_it_is_the_last_build(client):
     assert state["current_orchestration_id"] == "orch_sales" and state["current_orchestration_source"] == BUILT
 
 
-# ── the check: a second of the same name goes back to the planner ───────────────────────────────────────────────
+# ── the check: a second of the same name is the person's question (F1395) ───────────────────────────────────────
 class TestASecondOfAName:
-    async def test_a_new_workflow_named_like_one_here_is_sent_back(self, client):
+    async def test_a_new_workflow_named_like_one_here_is_asked_never_sent_back(self, client):
         from tests._fakes import seed as S
 
         await S.seed_orchestrations([S.make_orchestration(id="orch_wind", name="Rotterdam Wind Warning",
                                                           entry_step_id="end",
                                                           steps=[{"id": "end", "name": "End", "type": "end"}])])
         run = await _run(**{LAST_BUILT_KEY: "orch_wind"})
-        # The planner's own finish sends it back to the planner (SENDBACKS), as every rule's issue is.
+        # Never back to the planner, which once answered in words and ended in "Say it another way" (F1395).
         out, _ = await _call("submit_plan", _plan(CHECK, TELL), run)
-        assert "already in this workspace (this conversation built it)" in out["error"] and "orch_wind" in out["error"]
+        assert out.get("finish") == "submit_plan", out
+        asked, _ = await _call("check_build", {"draft": out}, run)
+        assert asked["outcome"] == "ask", asked
+        assert [f["options"][0] for f in asked["form"]] == ["Change “Rotterdam Wind Warning” to do this"], asked
 
     async def test_a_name_of_its_own_is_built(self, client):
         out, _ = await _call("submit_plan", _plan(CHECK, TELL, title="Rotterdam gusts"), await _run())

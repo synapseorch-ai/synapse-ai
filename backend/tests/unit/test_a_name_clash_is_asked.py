@@ -29,10 +29,12 @@ ORCH = Path(build_plan.__file__).with_name("orchestration.json")
 HERE = "Rotterdam wind warning"
 
 
-async def _seed_here(name: str = HERE, description: str = "Warns the desk when the wind is strong."):
-    await S.seed_orchestrations([S.make_orchestration(id="orch_wind", name=name, description=description,
+async def _seed_here(*more: str, description: str = "Warns the desk when the wind is strong."):
+    """The workflow named like the build, and any others by name (one save: it is the whole list)."""
+    await S.seed_orchestrations([S.make_orchestration(id=f"orch_wind{n or ''}", name=name, description=description,
                                                       entry_step_id="end",
-                                                      steps=[{"id": "end", "name": "End", "type": "end"}])])
+                                                      steps=[{"id": "end", "name": "End", "type": "end"}])
+                                 for n, name in enumerate([HERE, *more])])
 
 
 def _field(out: dict, about: str) -> dict:
@@ -75,9 +77,7 @@ class TestAWorkflow:
         assert new.startswith("Build a new one named “") and new != f"Build a new one named “{HERE}”", field
 
     async def test_the_new_name_is_free_and_the_plan_takes_it(self, client):
-        await _seed_here()
-        await S.seed_orchestrations([S.make_orchestration(id="orch_wind2", name=f"{HERE} 2", entry_step_id="end",
-                                                          steps=[{"id": "end", "name": "End", "type": "end"}])])
+        await _seed_here(f"{HERE} 2")
         run = await _run()
         out, _ = await _check(run, {"finish": "submit_plan", **_plan(CHECK, TELL)})
         field = _field(out, f"“{HERE}”")
@@ -146,7 +146,8 @@ class TestAWorkflow:
         out, _ = await _check(await _run(), {"finish": "submit_plan", **_plan(CHECK, TELL)})
         assert out["outcome"] == "review", out
         assert out["plan"]["title"] == f"{HERE} 2"
-        assert f"“{HERE}” is already here" in out["review"], out["review"]
+        # Said with the card, as an address the request could not ask about is (F1253).
+        assert f"“{HERE}” is already here, so this one is named “{HERE} 2”." in out["say"], out["say"]
 
 
 # ── an agent named like one here ──────────────────────────────────────────────────────────────────────────────────
