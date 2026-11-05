@@ -1,5 +1,6 @@
 """F1292 through the plan check itself, as the planner meets it (79): `examine` sends cap-04 A1's second workflow
-back, and a second of the same name hears F1229's words alone, never F1292's beside them. The rule's own edges are in
+back, and a second of the same name is never sent back at all, F1229's words or F1292's: it is the person's question,
+which `check_build` asks (F1395, tests/unit/test_a_name_clash_is_asked.py). The rule's own edges are in
 tests/unit/test_the_last_build_is_changed_not_made_again.py.
 """
 from __future__ import annotations
@@ -45,7 +46,10 @@ async def test_cap_04s_second_workflow_is_sent_back_by_the_plan_check(client):
     assert any(MADE_AGAIN in e and "Sales by Region Weekly Report" in e for e in errors), errors
 
 
-async def test_a_second_of_the_same_name_hears_f1229_alone(client):
+async def test_a_second_of_the_same_name_is_the_persons_question_never_sent_back(client):
     errors = await _errors("Sales by Region Weekly Report")
-    assert any(SAME_NAME in e for e in errors), errors
-    assert not any(MADE_AGAIN in e for e in errors), "one finding for one second, never both"
+    assert not any(SAME_NAME in e for e in errors), errors
+    assert not any(MADE_AGAIN in e for e in errors), "a name the person is asked about is never also sent back"
+    ws = build_plan.Workspace(agents=AGENTS, workflows={"orch_weekly": LAST})
+    clash = build_plan.name_clashes(_draft("Sales by Region Weekly Report"), ws)
+    assert [(c["kind"], c["id"]) for c in clash] == [("workflow", "orch_weekly")], clash

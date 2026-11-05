@@ -273,6 +273,7 @@ def asked_text(question: str, options: list[str]) -> str:
 
 
 async def submit_change(args: dict, server_module: Any, events: list[dict]) -> dict:
+    from core.native_builder.build_plan import change_it_waits
     from core.native_builder.objects import Change
 
     ops = C.as_planned(args.get("ops") if isinstance(args.get("ops"), list) else [])
@@ -284,6 +285,10 @@ async def submit_change(args: dict, server_module: Any, events: list[dict]) -> d
                          "rest as another change."}
     found: list[str] = []
     _, run = _run()
+    if run is not None and (waits := change_it_waits(run.shared_state)) is not None:
+        # The person chose to change the workflow named like their build (F1395): planned as its update, never as a
+        # change here, which the planner's words once ended in "Say it another way".
+        return {"error": CHANGE_IT_WAITS.format(name=waits["name"])}
     if run is not None and _plan_under_review(run.shared_state):
         # A reply to this run's build plan is the plan's (F1384, cap-02 c3): a change here made the one part it named
         # and ended the build, so it goes back for the whole plan; then the plan reviewed is kept and asked about again.
@@ -400,6 +405,8 @@ def _send_back(run: Any) -> bool:
 #: the plan reviewed is kept (`step_plan_same`), never left for a change that makes one part of it.
 PLAN_SEND_BACKS = 2
 _PLAN_SENT = "_plan_kept_sent_back"
+CHANGE_IT_WAITS = ("The person chose to change “{name}”, the workflow already here named like the build, with the plan: "
+                   "finish with submit_plan as you had it, and code reads “{name}” for you to plan its update.")
 PLAN_UNDER_REVIEW = ("This run's plan is under review, and the person's reply is to it: finish with submit_plan, the "
                      "whole plan again with their reply in it. A tool they describe for it is a part of the plan (its "
                      "API, made at the build's yes), never a change on its own: a change here would make that part "

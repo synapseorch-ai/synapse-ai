@@ -172,7 +172,10 @@ from core.native_builder import prompt_lint, seed
 #: and the change ops' cron_expression says the same, 3fef90d0… (on v2.0 5d99d49d).
 #: F1384's cycle (BLD1): its kept_plan → step_plan_same edge put the lookup's three steps in a cycle through a person
 #: at max_iterations 3; each allows five, as every such cycle does, no prompt change, 691bc4cb… (on FF20's c67f2807).
-BUNDLE_SHA256 = "691bc4cb7c1c2a792056c76bdcb7af2ac00cc491017eb50fa726164bf94a35a2"
+#: F1395 (BLD1): step_plan_route's `refetch` (the person chose to change the workflow named like the build) goes back
+#: to step_fetch_existing, which allows five now that it is in a cycle through a person, no prompt change, 90fe66cf…
+#: (on 92b7aa88).
+BUNDLE_SHA256 = "90fe66cf2a35511fe2a11d93871fd50befeccfe481d231e5a5200b2f3f1cab22"
 
 
 def _sha(definitions) -> str:
