@@ -136,8 +136,11 @@ An npm install is upgraded with `npm install -g synapse-orch-ai@latest`; Docker 
 the same command.
 
 **Coming from 1.x?** Run the install command above, or `synapse upgrade`. Your agents, workflows, chats, schedules,
-settings, API keys and vault files move into 2.0's store, after a backup in `~/.synapse/backups`; the old files are kept
-beside it (`data.migrated/`). Docker imports a 1.x `/data` volume on its first start. See
+settings, API keys and vault files move into 2.0's store. Before anything changes, the upgrade backs up your 1.x data
+folder, logs and `.env` to `~/.synapse/backups/synapse-1.x-<date>.tar.gz`, with a `manifest.json` that lists where each
+part came from; the old install's folder is removed once 2.0 is running. To go back, reinstall 1.9.3 and put each part
+of the backup back where `manifest.json` says. Don't run 2.0's `synapse uninstall` first: it removes `~/.synapse`,
+backups included, unless you add `--keep-data`. Docker imports a 1.x `/data` volume on its first start. See
 [Upgrading to 2.0](https://docs.synapseorch.com/getting-started/upgrading-to-2).
 
 ---
