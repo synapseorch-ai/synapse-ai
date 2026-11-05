@@ -19,8 +19,8 @@ from core.native_builder import build_plan
 
 MARK = "which would be written as its JSON"
 FETCH = {"id": "fetch_launch_notes", "type": "tool", "name": "Fetch launch notes", "tool": "scrape_url",
-         "does": "Reads this week's launch notes", "config": {"tool_arguments": {"url": "https://notes.example/launch"}},
-         "next": "summarize_notes"}
+         "does": "Reads this week's launch notes",
+         "config": {"tool_arguments": {"url": "https://notes.example/launch"}}, "next": "summarize_notes"}
 SUMMARIZE = {"id": "summarize_notes", "type": "llm", "name": "Summarise", "does": "Writes a three-line summary",
              "agent": "Writer", "prompt": "Summarise these notes in three lines: {{ state.fetch_launch_notes }}",
              "next": "save_summary"}
@@ -37,8 +37,8 @@ PROD14 = _save("summaries/launch_notes_{{ state.fetch_launch_notes }}")
 
 
 def _plan(*steps: dict) -> dict:
-    return {"kind": "create", "title": "Launch notes", "summary": "Every Monday, this week's launch notes in three lines.",
-            "steps": list(steps), "agents": [{"name": "Writer", "purpose": "Writes short summaries."}]}
+    return {"kind": "create", "title": "Launch notes",
+            "summary": "Every Monday, this week's launch notes in three lines.", "steps": list(steps), "agents": [{"name": "Writer", "purpose": "Writes short summaries."}]}
 
 
 VAULT_TAKES = {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}},

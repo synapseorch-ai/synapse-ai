@@ -53,6 +53,12 @@ ANSWERS: dict[str, tuple[str, ...]] = {
     "search_page": ("success", "url", "scrolls_executed", "data", "markdown"),
     "extract_links": ("success", "url", "count", "links"),
 }
+#: The fields of a page read's answer that are a list, written as their JSON where text is meant (F1402).
+ANSWER_LISTS: dict[str, tuple[str, ...]] = {
+    "scrape_url": ("links", "images"),
+    "scrape_structured": ("data",),
+    "extract_links": ("links",),
+}
 
 
 def answer_fields(tool: str | None, tools: list[dict]) -> tuple[str, ...] | None:
@@ -68,6 +74,18 @@ def answer_fields(tool: str | None, tools: list[dict]) -> tuple[str, ...] | None
             not isinstance(schema.get("properties"), dict) or not schema["properties"]:
         return None
     return tuple(schema["properties"])
+
+
+def answer_objects(tool: str | None, tools: list[dict]) -> tuple[str, ...]:
+    """The fields of a known answer (`answer_fields`) that are a list or an object (F1402): a page read's lists, or the
+    properties a tool's `outputSchema` declares as an array or an object."""
+    if answer_fields(tool, tools) is None:
+        return ()
+    if tool in ANSWERS:
+        return ANSWER_LISTS.get(tool, ())
+    schema = next(t.get("outputSchema") for t in tools if t.get("name") == tool)
+    return tuple(k for k, v in schema["properties"].items() if isinstance(v, dict) and v.get("type") in
+                 ("array", "object"))
 
 
 def _reads(name: str, custom: dict[str, dict]) -> bool:
