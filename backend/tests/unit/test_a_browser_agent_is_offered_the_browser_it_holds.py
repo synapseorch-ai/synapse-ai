@@ -105,3 +105,70 @@ class TestLeftAsItWas:
     async def test_another_types_own_list_is_its_own(self):
         declared, _api, _json = await _offered(_agent(["read_file", "browser_snapshot"], "conversational"))
         assert {"read_file", "browser_snapshot"} <= declared and "browser_click" not in declared
+
+
+#: An API model, shown its tools as declarations, and a cli.* model, shown them in its prompt.
+MODELS = [None, "cli.claude.claude-haiku-4-5"]
+
+
+class TestOnAVisitorsTurn:
+    """The browser a Browser agent now holds by its type is still held to a visitor's list (F280): a widget's or a
+    channel's visitor is offered, may run and is served only what the owner ticked (`react_engine`'s `_admits`, and
+    `mcp_needs.bounded` on the fleet). Before F1405 such an agent's browser was never offered, so no reader held this."""
+
+    @staticmethod
+    async def _turn(fake_llm, script, ticked, executed, model):
+        from _fakes import seed as S
+        from core import visitor
+        from core.react_engine import run_agent_step
+        from core.visitor import VisitorScope
+
+        async def executor(name, args):
+            executed.append(name)
+            return f"ran-{name}"
+
+        agent = S.make_agent(type="browser", tools=[], model=model,
+                             browser={"mode": "co_drive", "sites": ["portal.example.com"]})
+        fake_llm.script(script)
+        with visitor.scope(VisitorScope("widget", frozenset(ticked))):
+            return [ev async for ev in run_agent_step(
+                message="go", agent_id=agent["id"], session_id="s_visitor", server_module=_module(),
+                agent_override=agent, tool_executor=executor, max_turns=4)]
+
+    @staticmethod
+    def _seen(fake_llm, model) -> set[str]:
+        """The browser tools the model was shown: an API model's declared tools, or a cli.* model's `tools_json`,
+        which is written into its prompt."""
+        call = fake_llm.calls[0]
+        if model is None:
+            return set(BROWSER) & {t["function"]["name"] for t in (call.get("tools") or [])}
+        prompt = str(call.get("sys_prompt") or "")
+        return {name for name in BROWSER if f"'tool': '{name}'" in prompt}
+
+    @pytest.mark.parametrize("model", MODELS)
+    async def test_nothing_ticked_offers_no_browser_and_a_call_to_it_does_not_run(self, fake_llm, model):
+        from _fakes.fake_llm import tool_call
+
+        executed: list[str] = []
+        await self._turn(fake_llm, [tool_call("browser_navigate", url="https://portal.example.com"), "done"], (),
+                         executed, model)
+        assert self._seen(fake_llm, model) == set()
+        assert executed == []
+
+    @pytest.mark.parametrize("model", MODELS)
+    async def test_one_ticked_offers_that_one_alone(self, fake_llm, model):
+        executed: list[str] = []
+        await self._turn(fake_llm, ["done"], ("browser_snapshot",), executed, model)
+        assert self._seen(fake_llm, model) == {"browser_snapshot"}
+
+    async def test_the_fleet_brings_no_browser_session_when_nothing_is_ticked(self):
+        from core.scale import mcp_needs
+        from core.visitor import VisitorScope
+
+        agent = _agent([])
+        member = await mcp_needs.for_agent(agent, None)
+        assert member is mcp_needs.EVERY or set(BROWSER) <= set(member)
+        nothing = await mcp_needs.for_agent(agent, VisitorScope("widget", frozenset()))
+        assert nothing is not mcp_needs.EVERY and not set(BROWSER) & set(nothing), nothing
+        one = await mcp_needs.for_agent(agent, VisitorScope("widget", frozenset({"browser_snapshot"})))
+        assert one is not mcp_needs.EVERY and set(BROWSER) & set(one) == {"browser_snapshot"}, one
