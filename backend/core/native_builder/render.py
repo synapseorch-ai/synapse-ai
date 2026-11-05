@@ -330,7 +330,12 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
         parts.append("## Eval\n" + "\n".join(f"- {line}" for line in lines))
 
     if plan.schedule and (plan.schedule.says or "").strip():
-        when = plan.schedule.says.strip()
+        # The cron's own time on its clock, in code's words (F1393), never the planner's: the clock is said beside it.
+        from core.native_builder.schedule_clock import cron_words
+
+        cron = plan.schedule.cron.strip() if plan.schedule.schedule_type == "cron" else ""
+        words = cron_words(cron, clock=False) if cron else ""
+        when = words if words and words != cron else plan.schedule.says.strip()
         every = (f"every {plan.schedule.interval_value} {plan.schedule.interval_unit}"
                  if plan.schedule.schedule_type == "interval" and plan.schedule.interval_value else "")
         detail = ", ".join(x for x in (f"`{plan.schedule.cron.strip()}`" if plan.schedule.cron.strip() else every,

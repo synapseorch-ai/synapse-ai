@@ -1836,7 +1836,9 @@ BUILDER_TOOL_SCHEMAS = [
                     "schedule_type": {"type": "string", "enum": ["interval", "cron"]},
                     "interval_value": {"type": "integer"},
                     "interval_unit": {"type": "string", "enum": ["minutes", "hours", "days"]},
-                    "cron_expression": {"type": "string", "description": "Standard 5-field cron, e.g. '0 8 * * 1-5'"},
+                    "cron_expression": {"type": "string", "description": (
+                        "Standard 5-field cron on the schedule's own clock (its timezone), the time as they said it, "
+                        "never converted to UTC, e.g. '0 8 * * 1-5'")},
                     "timezone": {"type": "string", "description": (
                         "The timezone its cron is read in, as a name like America/New_York or Europe/Amsterdam: the "
                         "one the person named, else their own. Leave it out for UTC")},
@@ -1885,7 +1887,8 @@ BUILDER_TOOL_SCHEMAS = [
                     "schedule_type": {"type": "string", "enum": ["interval", "cron"]},
                     "interval_value": {"type": "integer"},
                     "interval_unit": {"type": "string", "enum": ["minutes", "hours", "days"]},
-                    "cron_expression": {"type": "string", "description": "Standard 5-field cron, read in its timezone"},
+                    "cron_expression": {"type": "string", "description": (
+                        "Standard 5-field cron on the schedule's own clock (its timezone), never converted to UTC")},
                     "timezone": {"type": "string", "description": (
                         "The timezone its cron is read in, as a name like America/New_York or Europe/Amsterdam: the "
                         "one the person named, else their own. Leave it out for UTC")},

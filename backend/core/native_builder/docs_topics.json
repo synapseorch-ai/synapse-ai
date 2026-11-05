@@ -4135,7 +4135,7 @@
     },
     {
      "anchor": "say-when",
-     "excerpt": "Under How often, choose a Kind: - Every… a number and a unit — every 6 hours, every 2 days. At most once every 5 minutes. - Cron expression, for set times, in UTC. 0 7 1 is 07:00 every Monday; 0 9 1 is 09:00 on the first of each month.",
+     "excerpt": "Under How often, choose a Kind: - Every… a number and a unit — every 6 hours, every 2 days. At most once every 5 minutes. - Cron expression, for set times, on the schedule's own clock: the time zone it names (a schedule made in the form takes your browser's), else UTC. 0 7 1 is 07:00 every Monday; 0 9 1 is 09:00 on the first of each month.",
      "heading": "Say when"
     },
     {
@@ -5350,7 +5350,7 @@
     },
     {
      "anchor": "cron-schedules",
-     "excerpt": "Use standard 5-field cron syntax for precise timing. In the form, pick a Quick preset — every day, every weekday, every Monday, Saturday or Sunday, or the 1st of the month — and an At hour (UTC), or choose Custom expression and type your own. | Field | Description | |---|---| | cronexpression | Standard cron (e.g. 0 8 1-5) | Examples: | Expression | Meaning | |---|---| | 0 8 | Every day at 08:00…",
+     "excerpt": "Use standard 5-field cron syntax for precise timing. In the form, pick a Quick preset — every day, every weekday, every Monday, Saturday or Sunday, or the 1st of the month — and an At hour, on your own clock (At hour (Kolkata time)), or choose Custom expression and type your own. | Field | Description | |---|---| | cronexpression | Standard cron (e.g. 0 8 1-5) | Examples: | Expression | Meaning | |---|---| | 0 8 | Every day at 08:00…",
      "heading": "Cron schedules"
     },
     {

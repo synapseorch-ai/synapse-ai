@@ -597,7 +597,8 @@ class TestWhatWasAskedForIsBuilt:
 
     def test_the_summary_names_a_schedule_it_made(self):
         # F490: the summary is the run's own record; F155's words come from the schedule the run saved — that it was
-        # made, when it runs (UTC), and that it waits, paused, for a person to turn it on.
+        # made, when it runs (on its own clock, F1393: UTC with no timezone), and that it waits, paused, for a person to
+        # turn it on.
         from core.orchestration import run_writes
 
         assert self._step("step_summarize")["print_content"] == "{{ state.run_changes }}"
@@ -606,7 +607,7 @@ class TestWhatWasAskedForIsBuilt:
                                   "name": "Friday report", "resource": {"enabled": False,
                                                                         "cron_expression": "0 16 * * 5"}})
         said = state["run_changes"]
-        assert '"Friday report"' in said and '"0 16 * * 5" (UTC)' in said
+        assert '"Friday report"' in said and 'Fridays 16:00 UTC (cron "0 16 * * 5")' in said
         assert "paused: turn it on under Schedules" in said
         # The build's own ending says the same record, with what reading it back found after it.
         # F1228: then what each part does and what is missing or off, from the plan's parts in code.

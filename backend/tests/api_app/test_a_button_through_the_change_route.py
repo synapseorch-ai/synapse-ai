@@ -75,7 +75,9 @@ async def test_a_change_with_a_real_write_still_waits_for_its_review(client, bui
 
     [asked] = [e for e in events if e["type"] == "human_input_required"]
     assert asked["orch_step_id"] == "step_manage_review"
-    assert 'Change the schedule "Monday invoices" — cron_expression: 0 10 * * 1' in asked["prompt"]
+    # When it runs, from its cron on its own clock (F1393; no timezone is UTC), then every value the call sets.
+    assert ('Change the schedule "Monday invoices" — runs: Mondays 10:00 UTC, cron_expression: 0 10 * * 1'
+            in asked["prompt"])
     assert "action_needed" not in _types(events)
     assert (await store.get("sched_mon"))["cron_expression"] == "0 9 * * 1"
 

@@ -17,7 +17,7 @@
  */
 import type { HumanField } from '@/components/orchestration/humanFields';
 import { roleOf, type StepRole } from '@/components/run/model';
-import { scheduleWords, zoneWords } from '@/components/run/workflowList';
+import { cronWords, scheduleWords, zoneWords } from '@/components/run/workflowList';
 import type { ChangeRow } from '@/lib/builderEvents';
 import { STEP_TYPE_META, type StepType } from '@/types/orchestration';
 
@@ -732,8 +732,12 @@ export function planFromPlanObject(view: PlanObjectView, prompt: string): Plan |
     // An update is read as what it changes, not the whole workflow again (SAI2's review, 13).
     const changes = (view.changes ?? []).filter((c) => c.trim());
     const known = (t: string): StepType | null => (t in STEP_TYPE_META ? (t as StepType) : null);
-    const when = view.plan.schedule?.says?.trim() || view.plan.schedule?.cron?.trim();
-    const cron = view.plan.schedule?.says?.trim() ? view.plan.schedule?.cron?.trim() : '';
+    // When it runs is its cron's own time, in code's words (F1393), never the planner's `says`: the clock is said
+    // beside the cron. A cron these words can't say, or none, keeps the planner's words.
+    const cronOf = view.plan.schedule?.cron?.trim() ?? '';
+    const fromCron = cronOf ? cronWords(cronOf).replace(/ UTC\b/g, '') : '';
+    const when = (fromCron !== cronOf && fromCron) || view.plan.schedule?.says?.trim() || cronOf;
+    const cron = when !== cronOf ? cronOf : '';
     return {
         kind: 'build',
         body: splitQuestion(prompt).body,

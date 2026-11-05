@@ -250,7 +250,11 @@ def _named(items: list[dict], name: str | None, key: str = "name") -> list[dict]
 
 def _when(schedule: dict) -> str:
     if schedule.get("schedule_type") == "cron" and schedule.get("cron_expression"):
-        return f'cron "{schedule["cron_expression"]}" (UTC)'
+        from core.native_builder.schedule_clock import cron_words
+
+        # On its own clock (F1393): the timezone it names, none is UTC.
+        expr = schedule["cron_expression"]
+        return f'{cron_words(expr, schedule.get("timezone"))} (cron "{expr}")'
     if schedule.get("interval_value"):
         return f'every {schedule["interval_value"]} {schedule.get("interval_unit") or "minutes"}'
     return "not set"
@@ -291,7 +295,9 @@ async def _schedules(args: dict) -> dict:
                          if last else None),
         })
     return {"items": _named(out, args.get("name")),
-            "note": "Times are UTC. last_run is the last workflow run the schedule started (a manual 'Run now' counts)."}
+            "note": "Each schedule runs on its own clock, as `runs` says (its timezone; none is UTC); last_run_at and "
+                    "next_run_at are UTC. last_run is the last workflow run the schedule started (a manual 'Run now' "
+                    "counts)."}
 
 
 async def _runs(args: dict) -> dict:

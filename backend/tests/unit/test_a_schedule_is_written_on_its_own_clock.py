@@ -182,9 +182,10 @@ class TestThePlan:
 
     def test_the_apps_plan_card_says_the_time_from_the_cron(self):
         plan_ts = (ROOT / "frontend/src/components/assistant/plan.ts").read_text()
-        at = plan_ts.index("const when = ")
+        assert "const fromCron = cronOf ? cronWords(cronOf)" in plan_ts
+        at = plan_ts.index("const when = ", plan_ts.index("const fromCron = "))
         line = plan_ts[at:plan_ts.index(";", at)]
-        assert "cronWords(" in line and "says" in plan_ts[at:at + 400], line
+        assert line.index("fromCron") < line.index("says"), line
 
 
 # ── the change route: a moved schedule's words and its cron ──────────────────────────────────────────────────────

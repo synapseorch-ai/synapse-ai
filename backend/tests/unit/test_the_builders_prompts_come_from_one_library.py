@@ -168,7 +168,9 @@ from core.native_builder import prompt_lint, seed
 #: and classify_kinds types `live_fact`, c7e330e4… (7c155764 offered an agent; on fix-forward 19).
 #: F1384 (BLD1): step_plan_finish sends a change kept while the build's plan is under review (`kept_plan`) to
 #: step_plan_same, no prompt change, 90a4faec… (on fix-forward 19).
-BUNDLE_SHA256 = "90a4faecbee08221b17edf02f8f8bfd2589a7f0eb51df13537ca0afaafc0d3f9"
+#: F1393 (TRI1): rule 5 writes a schedule's cron on its own clock, the time as they said it, never converted to UTC,
+#: and the change ops' cron_expression says the same, 3fef90d0… (on v2.0 5d99d49d).
+BUNDLE_SHA256 = "3fef90d051ec961f82279a3435c602352cd3cbd637d9c69af962ec4398b82296"
 
 
 def _sha(definitions) -> str:
