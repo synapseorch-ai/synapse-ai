@@ -696,6 +696,55 @@ async def check_codetestpress(browser) -> str:
 
 
 @check
+async def check_howimbuilt(browser) -> str:
+    """"See how I'm built" opens big (F1390, Naveen 11-05): Enlarge's full window, wider than `lg`'s 672 px on a wide
+    screen; the builder's own workflow on the canvas taller than the 320 px it was given; the explanation below it,
+    reached by scrolling; Close and Duplicate on screen, at 1440 and on a phone."""
+    seen = []
+    for width, height in ((1440, 900), (390, 844)):
+        ctx = await browser.new_context(viewport={"width": width, "height": height})
+        await ctx.add_init_script(TOURS_SEEN)
+        page = await ctx.new_page()
+        try:
+            await page.goto(APP, wait_until="domcontentloaded")
+            await asyncio.sleep(SETTLE + 1.0)
+            await _build_with_ai(page)
+            panel = page.locator('[data-testid="assistant-panel"]')
+            await panel.get_by_role("button", name=re.compile("See how I.m built")).click()
+            dialog = page.get_by_role("dialog", name=re.compile("How I.m built"))
+            canvas = dialog.get_by_role("group", name=re.compile("on the canvas"))
+            await canvas.wait_for(timeout=15_000)
+            await asyncio.sleep(0.8)
+            box, drawn = await dialog.bounding_box(), await canvas.bounding_box()
+            footer = dialog.locator("footer")
+            buttons = [await footer.get_by_role("button", name=name).bounding_box()
+                       for name in ("Close", "Duplicate to my workspace")]
+            starts = await dialog.get_by_role("heading", name="Where it starts").bounding_box()
+            last = dialog.get_by_role("heading", name="Step types it uses")
+            await last.scroll_into_view_if_needed()
+            reached = await last.bounding_box()
+            footer_top = (await footer.bounding_box())["y"]
+        finally:
+            await ctx.close()
+        where = f"at {width}"
+        if width >= 1440 and box["width"] <= 672:
+            raise AssertionError(f"{where} the window is {box['width']:.0f} px wide, no wider than lg's 672")
+        if drawn["height"] <= 320:
+            raise AssertionError(f"{where} the canvas is {drawn['height']:.0f} px tall, no taller than its old 320")
+        if box["x"] < 0 or box["x"] + box["width"] > width or box["y"] < 0 or box["y"] + box["height"] > height:
+            raise AssertionError(f"{where} the window runs off the screen: {box}")
+        for b in buttons:
+            if b is None or b["x"] < 0 or b["x"] + b["width"] > width or b["y"] + b["height"] > height:
+                raise AssertionError(f"{where} Close or Duplicate is off the screen: {buttons}")
+        if starts["y"] < drawn["y"] + drawn["height"]:
+            raise AssertionError(f"{where} the explanation is not below the canvas")
+        if reached is None or reached["y"] + reached["height"] > footer_top:
+            raise AssertionError(f"{where} the explanation's end is not reached by scrolling above the footer")
+        seen.append(f"{width}: window {box['width']:.0f}x{box['height']:.0f}, canvas {drawn['height']:.0f} px")
+    return "How I'm built opens big — " + "; ".join(seen)
+
+
+@check
 async def check_money(browser) -> str:
     """Money that was spent is never rendered as nothing.
 
