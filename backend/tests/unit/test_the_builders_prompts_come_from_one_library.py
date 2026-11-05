@@ -170,7 +170,9 @@ from core.native_builder import prompt_lint, seed
 #: step_plan_same, no prompt change, 90a4faec… (on fix-forward 19).
 #: F1393 (TRI1): rule 5 writes a schedule's cron on its own clock, the time as they said it, never converted to UTC,
 #: and the change ops' cron_expression says the same, 3fef90d0… (on v2.0 5d99d49d).
-BUNDLE_SHA256 = "3fef90d051ec961f82279a3435c602352cd3cbd637d9c69af962ec4398b82296"
+#: F1384's cycle (BLD1): its kept_plan → step_plan_same edge put the lookup's three steps in a cycle through a person
+#: at max_iterations 3; each allows five, as every such cycle does, no prompt change, 691bc4cb… (on FF20's c67f2807).
+BUNDLE_SHA256 = "691bc4cb7c1c2a792056c76bdcb7af2ac00cc491017eb50fa726164bf94a35a2"
 
 
 def _sha(definitions) -> str:
