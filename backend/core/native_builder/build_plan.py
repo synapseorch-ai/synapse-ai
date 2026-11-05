@@ -31,6 +31,7 @@ from core.builder_registry import register_builder_tool
 from core.log import get_logger
 from core import feature_census
 from core.native_builder import boards_rule, charts, imitation, objects as O, one_writer, own_api, periods
+from core.native_builder import schedule_clock
 from core.native_builder.change_tools import _caller, _run
 from core.product_tools.approved import PLACEHOLDER
 
@@ -41,6 +42,8 @@ DRAFT_KEY, CHECKED_KEY, FINDINGS_KEY, EXISTING_KEY, ANSWER_KEY, PROMPTS_KEY = (
     "plan_draft", "plan_checked", "plan_findings", "existing_orch", "plan_answer", "agent_prompts")
 #: The card a revision is held against: the plan last shown, its draft's digest and its run (F1241, F1245).
 PLAN_BEFORE_KEY = "plan_before"
+#: Whether this run sent a plan back for a schedule whose words and cron disagree (F1393): once, never a loop.
+SCHEDULE_SENT_KEY = "_schedule_clock_sent_back"
 
 #: The prefix of an id a build mints when it saves (Naveen, 10-23, Q1). It never occurs in a real id, so the
 #: approval can cover each save call with the placeholders it will be made with (F940).
@@ -596,6 +599,12 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
                           "America/New_York, or leave it out for the person's own")
         elif not named and state.get("person_timezone"):
             plan.schedule = plan.schedule.model_copy(update={"timezone": state["person_timezone"]})
+        # Its words and its cron say one time, on its own clock (F1393): once a run, then the cron is what the card
+        # says, in code's words.
+        if (not errors and plan.schedule.schedule_type == "cron" and not state.get(SCHEDULE_SENT_KEY)
+                and (said := schedule_clock.clash(plan.schedule.says, plan.schedule.cron, plan.schedule.timezone))):
+            state[SCHEDULE_SENT_KEY] = True
+            errors.append(f"schedule: {said}")
     if errors:
         return Examined(plan, errors)
     # Only the person lets a tool act without asking, by a press on the card (SAI2's review, 11); never the planner.

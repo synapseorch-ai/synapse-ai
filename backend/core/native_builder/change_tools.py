@@ -112,9 +112,11 @@ SUBMIT = {"type": "function", "function": {
         "Finish with the change to make: one op per thing to do. Nothing happens yet: code checks each op, puts up "
         "a card for each button act, and shows the person the rest to approve. Fields per op: rename_* {name}; "
         "update_workflow {description, max_total_turns, timeout_minutes, max_run_credits, max_run_usd}; "
-        "set_schedule {cron_expression | interval_value + interval_unit, prompt, description, missed_run_policy: "
-        "run_immediately | skip}; create_schedule {runs: {kind: workflow | agent, id}, prompt, cron_expression | "
-        "interval_value + interval_unit, missed_run_policy}; retarget_schedule {runs: {kind: workflow | agent, id}}; "
+        "set_schedule {cron_expression (on the schedule's own clock, the time as they said it, never converted to "
+        "UTC) | interval_value + interval_unit, prompt, description, missed_run_policy: run_immediately | skip}; "
+        "create_schedule {runs: {kind: workflow | agent, id}, prompt, cron_expression (on its own clock, never "
+        "converted to UTC) | interval_value + interval_unit, missed_run_policy}; retarget_schedule {runs: {kind: "
+        "workflow | agent, id}}; "
         "set_agent_model {model}; set_agent_tools / set_agent_skills {add: [...], remove: [...]}; "
         "set_agent_instructions {system_prompt}; set_agent_settings {description, memory, knowledge: [base names], "
         "boards_own, planning, skip_default_tools, helpers, max_turns, turn_limit_mode: ask | continue | stop, "
@@ -320,6 +322,8 @@ async def submit_change(args: dict, server_module: Any, events: list[dict]) -> d
         found.append(nudge)
     if not found and run is not None and (nudge := _curl_literal(ops, run.shared_state)):
         found.append(nudge)
+    if not found and (clashes := _schedule_clashes(ops, run)):
+        found += clashes
     asked = args.get("asked") if isinstance(args.get("asked"), list) else []
     if not found and ops and asked and (gaps := _unaccounted(ops, asked)) and _send_back(run):
         found += gaps
@@ -328,6 +332,31 @@ async def submit_change(args: dict, server_module: Any, events: list[dict]) -> d
     parts = [p for p in asked if isinstance(p, dict) and _text(p.get("part"))]
     change = Change.model_validate({"ops": ops, "asked": (parts or None) if ops else None, "undo_of": undo_of or None})
     return {"finish": "submit_change", **change.model_dump(exclude_none=True)}
+
+
+#: Whether this run sent a change back for a schedule whose words and cron disagree (F1393): once, never a loop.
+_SCHEDULE_SENT = "_schedule_clock_sent_back"
+
+
+def _schedule_clashes(ops: list, run: Any) -> list[str]:
+    """A moved or new schedule whose `says` names a time its cron doesn't run at on its own clock (F1393): the
+    timezone the op names, else the person's (as the check fills it). Once a run; then the line says the cron's time."""
+    from core.native_builder import schedule_clock
+
+    state = run.shared_state if run is not None else {}
+    if state.get(_SCHEDULE_SENT):
+        return []
+    out = []
+    for n, op in enumerate(ops, 1):
+        fields = op.get("fields") if isinstance(op, dict) and isinstance(op.get("fields"), dict) else {}
+        if op.get("op") not in ("set_schedule", "create_schedule") or not _text(fields.get("cron_expression")):
+            continue
+        zone = _text(fields.get("timezone")) or state.get("person_timezone")
+        if said := schedule_clock.clash(_text(op.get("says")), _text(fields["cron_expression"]), zone):
+            out.append(f"op {n}: {said}")
+    if out and run is not None:
+        state[_SCHEDULE_SENT] = True
+    return out
 
 
 #: How often a change whose parts don't account for the ask is sent back in a run (F1364): twice, never a loop; after
@@ -1542,6 +1571,12 @@ def _words(op: C.Op, target: dict, fields: dict, says: str, want: dict | None = 
             runs = fields["runs"]
             shown = {"starts": _quoted(runs.get("name") or runs["id"]),
                      **{k: v for k, v in shown.items() if k not in ("target_type", "target_id")}}
+        if shown.get("cron_expression"):
+            # When it runs, from its cron on its own clock, in code's words (F1393).
+            from core.native_builder.schedule_clock import cron_words
+
+            zone = shown.get("timezone") or (live or {}).get("timezone")
+            shown = {"runs": cron_words(str(shown["cron_expression"]), zone), **shown}
         detail = ", ".join(f"{k}: {json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v}"
                            for k, v in shown.items())
     detail = "; ".join(p for p in (detail, says) if p)

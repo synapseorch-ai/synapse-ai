@@ -156,7 +156,8 @@ class Schedule(_Written):
     #: How it is timed, by the same names and values as the Schedules screen and the change ops (F1267; D340 F).
     schedule_type: Literal["cron", "interval"] = Field("cron", description="cron: at set times; interval: every so "
                                                                            "often, counted from when it was made")
-    cron: str = Field("", description="cron: five-field cron, e.g. 0 7 * * *")
+    cron: str = Field("", description="cron: five-field cron on the schedule's own clock, the time as they said "
+                                      "it (7 in the morning is 0 7 * * *), never converted to UTC")
     interval_value: int | None = Field(None, description="interval: how many units between runs, e.g. 15")
     interval_unit: Literal["minutes", "hours", "days"] | None = Field(None, description="interval: minutes, hours or "
                                                                                          "days")

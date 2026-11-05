@@ -329,7 +329,8 @@ class TestTheCardsText:
             assert heading in text
         assert "## Acts without asking" not in text and "## Not carried over" not in text
         assert "1. **Draft** (agent): Writes the report — agent: Writer" in text
-        assert "**When:** every Monday at 9:00 (`0 9 * * 1`)" in text
+        # When it runs is said from its cron, in code's words (F1393), not the planner's "every Monday at 9:00".
+        assert "**When:** Mondays 09:00 (`0 9 * * 1`)" in text
         assert "- `send_mail`" in text and "Google Sheets: connect it first" in text
 
     def test_an_empty_plan_says_nothing_empty(self):

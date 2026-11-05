@@ -54,7 +54,8 @@ async def test_schedules_say_on_or_paused_and_when():
     got = await _read(topic="schedules")
     by_name = {i["name"]: i for i in got["items"]}
     assert by_name["Every night at 2"]["on"] is True and by_name["Monday invoices"]["on"] is False
-    assert by_name["Every night at 2"]["runs"] == 'cron "0 2 * * *" (UTC)'
+    # On its own clock, in code's words (F1393): no timezone is UTC.
+    assert by_name["Every night at 2"]["runs"] == 'Daily 02:00 UTC (cron "0 2 * * *")'
     assert [i["name"] for i in (await _read(topic="schedules", name="monday"))["items"]] == ["Monday invoices"]
 
 

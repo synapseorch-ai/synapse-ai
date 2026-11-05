@@ -46,7 +46,11 @@ def record(state: dict, event: dict) -> None:
     if entry["kind"] == "schedule" and resource:
         entry["enabled"] = bool(resource.get("enabled"))
         if resource.get("cron_expression"):
-            entry["when"] = f'on the cron "{resource["cron_expression"]}" (UTC)'
+            from core.native_builder.schedule_clock import cron_words
+
+            # On its own clock (F1393), as the card said it.
+            expr = resource["cron_expression"]
+            entry["when"] = f'{cron_words(expr, resource.get("timezone"))} (cron "{expr}")'
         elif resource.get("interval_value"):
             entry["when"] = f'every {resource["interval_value"]} {resource.get("interval_unit") or "minutes"}'
 
