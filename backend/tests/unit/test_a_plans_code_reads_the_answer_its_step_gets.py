@@ -72,6 +72,9 @@ class TestSentBack:
         "result = state.fetch_forecast['daily']['temperature_2m_max'][1]",
         "result = state['fetch_forecast'].get('daily')",
         "result = state.fetch_forecast.daily",
+        # Parsed first: `json.loads` of the stored answer is the answer itself, so `daily` is still not in it. This
+        # was left alone as "read as text", the hero build's own failure (F1404; Naveen 11-06, "move the pin").
+        "import json\nresult = json.loads(state.fetch_forecast)['daily']",
     ])
     async def test_every_way_code_looks_a_field_up(self, code):
         said = await _said(_plan(FETCH, _code(code, "end")))
@@ -104,9 +107,8 @@ class TestLeftAlone:
         "result = json.loads(raw)['daily']['temperature_2m_max'][1]",
         "result = state.fetch_forecast.get('links') or []",
         "result = state.fetch_forecast.success",
-        # The whole answer handed on, or read as text.
+        # The whole answer handed on.
         "result = state.fetch_forecast",
-        "import json\nresult = json.loads(state.fetch_forecast)['daily']",
         # A step's own `.get` on another key; the run's own message.
         "result = state.user_input.strip()",
     ])
