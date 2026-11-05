@@ -72,18 +72,19 @@ export function HowImBuilt({
     };
 
     return (
+        // Enlarge's full window (F1390): the picture is what this is for, so it gets most of the height.
         <Modal
             open={open}
             onClose={onClose}
-            size="lg"
+            size="full"
             title="How I'm built"
             description="I am an ordinary SynapseOrch workflow. Every step type you see here is available on your canvas."
             footer={
-                <div className="flex w-full items-center justify-between gap-3">
+                <div className="flex w-full flex-wrap items-center justify-between gap-3">
                     <p className="text-xs text-text-faint">
                         {legend ? `${legend.step_count} steps · ${legend.agents.length} sub-agents` : ''}
                     </p>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center justify-end gap-2">
                         {error && <span className="text-xs text-danger">{error}</span>}
                         <Button variant="secondary" onClick={onClose}>Close</Button>
                         <Button onClick={duplicate} disabled={duplicating}>
@@ -99,7 +100,7 @@ export function HowImBuilt({
                     <div
                         role="group"
                         aria-label={`The ${legend.name} workflow on the canvas`}
-                        className="h-80 overflow-hidden rounded-md border border-border bg-bg"
+                        className="h-[60vh] min-h-80 overflow-hidden rounded-md border border-border bg-bg"
                     >
                         <ReactFlowProvider>
                             <WorkflowCanvas
