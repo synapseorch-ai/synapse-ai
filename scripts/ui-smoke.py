@@ -17048,7 +17048,9 @@ async def check_wftabsclose(browser) -> str:
 
 @check
 async def check_wftabscap(browser) -> str:
-    """At ten tabs a new one is refused with a sentence, and none is closed for the person (TABS1 v2, F930)."""
+    """At ten tabs, opening another asks which tab to close, and nothing closes or comes forward until they pick (TABS1
+    v2, F930; F1354): the ask is up and no other workflow is shown behind it; Cancel brings the tab that was in front
+    back, and its address; a pick closes that tab and opens the one asked for, ten still open."""
     stamp = int(time.time())
     ids = [f"orch_uismoke_wfcap{i}_{stamp}" for i in range(11)]
     for i, oid in enumerate(ids):
@@ -17059,22 +17061,52 @@ async def check_wftabscap(browser) -> str:
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     await ctx.add_init_script(f"try {{ localStorage.setItem('synapseTabs:workflows', {json.dumps(json.dumps(seeded))}); }} catch (e) {{}}")
     page = await ctx.new_page()
+    ask = page.get_by_role("dialog", name="10 workflows are open")
+    front = lambda: _wf_strip(page).get_by_role("tab", selected=True)  # noqa: E731
+    bad: list[str] = []
     try:
-        await page.goto(f"{APP}/workflows", wait_until="domcontentloaded")
-        await asyncio.sleep(SETTLE + 2)
+        await page.goto(f"{APP}/workflows?id={ids[0]}", wait_until="domcontentloaded")
+        await _wf_canvas(page)
         await _wf_open_from_picker(page, "ui-smoke cap 10")
-        said = await page.get_by_text("Close a tab to open another: 10 are open.").count()
+        try:
+            await ask.wait_for(timeout=10_000)
+        except Exception:
+            raise AssertionError("opening an eleventh workflow did not ask which tab to close")
+        # Behind the ask the strip is out of reach (the dialog is modal): the address and the kept tabs say it.
+        if f"id={ids[10]}" in page.url:
+            bad.append("the asked-for workflow came forward before a tab was picked")
         kept = await page.evaluate("""() => (JSON.parse(localStorage.getItem('synapseTabs:workflows') || '{}').tabs || [])
             .map(t => t.ref)""")
+        if sorted(kept) != sorted(ids[:10]):
+            bad.append(f"the ask changed the open tabs: {kept}")
+        await ask.get_by_role("button", name="Cancel").click()
+        await ask.wait_for(state="hidden", timeout=5_000)
+        await asyncio.sleep(1.0)
+        came_back = await front().first.get_attribute("aria-label") if await front().count() else ""
+        if "cap 00" not in (came_back or ""):
+            bad.append(f"Cancel left {came_back!r} in front, not cap 00")
+        if f"id={ids[0]}" not in page.url:
+            bad.append(f"Cancel left the address at {page.url.replace(APP, '')!r}")
+        await _wf_open_from_picker(page, "ui-smoke cap 10")
+        await ask.wait_for(timeout=10_000)
+        await ask.get_by_role("button", name=re.compile("ui-smoke cap 05")).click()
+        await ask.wait_for(state="hidden", timeout=5_000)
+        await _wf_canvas(page)
+        titles = await _wf_titles(page)
+        now = await front().first.get_attribute("aria-label") if await front().count() else ""
+        if len(titles) != 10 or any("cap 05" in t for t in titles) or not any("cap 10" in t for t in titles):
+            bad.append(f"a pick of cap 05 left the tabs {titles}")
+        if "cap 10" not in (now or ""):
+            bad.append(f"a pick left {now!r} in front, not cap 10")
+        if f"id={ids[10]}" not in page.url:
+            bad.append(f"a pick left the address at {page.url.replace(APP, '')!r}")
     finally:
         await ctx.close()
         for oid in ids:
             drop_fixture(oid)
-    if not said:
-        raise AssertionError("an eleventh tab was not refused with its sentence")
-    if sorted(kept) != sorted(ids[:10]):
-        raise AssertionError(f"the open tabs changed at the cap: {kept}")
-    return "at ten tabs a new one is refused in a sentence and nothing is closed"
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "at ten tabs another asks which to close; Cancel brings the front tab back, a pick closes it and opens the asked one"
 
 
 @check
