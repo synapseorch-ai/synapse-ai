@@ -115,6 +115,9 @@ PRIVATE_STATE_PREFIXES = (
     "_curl_nudged", "_code_tries", "_prompts_address_said",
     # That a change was sent back while this run's build plan was under review (`change_tools._PLAN_SENT`, F1384).
     "_plan_kept_sent_back",
+    # That a plan or a change went back once for a schedule whose words and cron disagree
+    # (`build_plan.SCHEDULE_SENT_KEY`, `change_tools._SCHEDULE_SENT`, F1393).
+    "_schedule_clock_sent_back",
 )
 
 
