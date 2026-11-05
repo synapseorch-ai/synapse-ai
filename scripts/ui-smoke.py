@@ -17202,6 +17202,85 @@ async def check_wftabsaddress(browser) -> str:
     return "Jump to › the workflow the page opened on brings its tab back, and opens no other"
 
 
+async def _wf_opened_from(page, oid: str, name: str, how: str) -> list[str]:
+    """After a link from another page to `/workflows?id=`: the workflow's tab in front, its canvas, and the address
+    still naming it (F1403)."""
+    bad: list[str] = []
+    try:
+        await _wf_canvas(page, timeout=15_000)
+    except Exception:
+        bad.append(f"{how}: no canvas in 15 s ({page.url.replace(APP, '')})")
+        return bad
+    front = await _wf_strip(page).get_by_role("tab", selected=True).get_attribute("aria-label") or ""
+    if name not in front:
+        bad.append(f"{how}: {front!r} in front, not {name!r}")
+    if f"id={oid}" not in page.url:
+        bad.append(f"{how}: the address is {page.url.replace(APP, '')!r}")
+    return bad
+
+
+@check
+async def check_wftabsfromhome(browser) -> str:
+    """A link from another page opens its workflow, with no tab kept (F1403): Home's Getting started `Open “…”`
+    is a client-side route change to `/workflows?id=`, and the list's editor wrote the bare `/workflows` over it before
+    the tabs read the address, so the list showed and no tab opened. A load of the address always worked. While Home
+    is open its runs read as none and a model as ready, so Getting started's current step is Run it once, whose
+    action is `Open “<the newest workflow>”`: this one."""
+    stamp = int(time.time())
+    oid, name = f"orch_uismoke_wfhome_{stamp}", f"ui-smoke from home {stamp}"
+    api("/api/orchestrations", "POST", {**laid_out_orchestration(oid, 1), "name": name})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    bad: list[str] = []
+    try:
+        none = lambda route: route.fulfill(status=200, content_type="application/json", body="[]")  # noqa: E731
+        ready = lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps(  # noqa: E731
+            {"model": "ollama.mistral", "ready": True, "problem": None, "closed": True}))
+        await page.route(re.compile(r".*/api/orchestrations/runs(\?.*)?$"), none)
+        await page.route("**/api/onboarding/models", ready)
+        await page.goto(f"{APP}/dashboard", wait_until="domcontentloaded")
+        link = page.get_by_role("link", name=f"Open “{name}”")
+        try:
+            await link.first.wait_for(timeout=30_000)
+        except Exception:
+            raise AssertionError("Home's Getting started has no Open link for the newest workflow")
+        await page.unroute(re.compile(r".*/api/orchestrations/runs(\?.*)?$"))
+        await page.unroute("**/api/onboarding/models")
+        await link.first.click()
+        bad += await _wf_opened_from(page, oid, name, "Home's Open link")
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "Home's Open “…” opens the workflow's tab, its canvas and its address, with no tab kept"
+
+
+@check
+async def check_wftabsjumpfromhome(browser) -> str:
+    """Jump to › a workflow from another page opens it, with no tab kept (F1403): the same route change as Home's
+    link (AppCommands' `/workflows?id=`), the same overwrite."""
+    stamp = int(time.time())
+    oid, name = f"orch_uismoke_wfjump_{stamp}", f"ui-smoke jump from home {stamp}"
+    api("/api/orchestrations", "POST", {**laid_out_orchestration(oid, 1), "name": name})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/dashboard", wait_until="domcontentloaded")
+        await page.get_by_role("button", name=re.compile(r"^Jump to")).click()
+        await page.locator("[cmdk-input]").wait_for(timeout=5_000)
+        await page.keyboard.type(f"jump from home {stamp}")
+        await asyncio.sleep(0.6)
+        await page.keyboard.press("Enter")
+        bad = await _wf_opened_from(page, oid, name, "Jump to")
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "Jump to › a workflow from Home opens its tab, its canvas and its address, with no tab kept"
+
+
 #: The canvas's pan and zoom, as React Flow draws them.
 VIEWPORT = "() => (document.querySelector('.react-flow__viewport') || {}).style?.transform || ''"
 
