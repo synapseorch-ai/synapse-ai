@@ -46,8 +46,15 @@ export function Modal({
   /** `full`: as large as the screen allows, for a picture looked at large (F1356's Enlarge). */
   size?: "sm" | "md" | "lg" | "full";
 }) {
-  // What held focus when the dialog opened, given it back on close.
+  // What held focus when the dialog opened, given it back on close. Read as it opens, before its content is in the
+  // page (Radix's portal mounts it a commit later): a field inside with autoFocus takes focus first, and Radix's
+  // onOpenAutoFocus is then never called, so focus fell to <body> on close (F1439's "Keep me signed in" dialog).
   const openerRef = React.useRef<HTMLElement | null>(null);
+  React.useLayoutEffect(() => {
+    if (!open) return;
+    const held = document.activeElement;
+    openerRef.current = held instanceof HTMLElement && held !== document.body ? held : null;
+  }, [open]);
   return (
     <RDialog.Root open={open} onOpenChange={(next) => !next && onClose()}>
       <RDialog.Portal>
@@ -56,11 +63,6 @@ export function Modal({
           // A dialog's own form submits only itself. Portalled, it is outside its opener's form in the page, but
           // React carries a submit up its tree: the profile's change-email form also saved the profile (F890).
           onSubmit={(event) => event.stopPropagation()}
-          onOpenAutoFocus={() => {
-            // Called before focus moves in, so the element holding it opened us.
-            const held = document.activeElement;
-            openerRef.current = held instanceof HTMLElement && held !== document.body ? held : null;
-          }}
           onCloseAutoFocus={(event) => {
             const opener = openerRef.current;
             openerRef.current = null;

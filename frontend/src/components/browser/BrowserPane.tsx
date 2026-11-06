@@ -1,12 +1,13 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, ChevronRight, Globe, Info, KeyRound, Maximize2, Square, X } from 'lucide-react';
 
 import { Button, IconButton, Input, Modal, Spinner, usePersisted } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
 import { BrowserActionLine } from './BrowserActionLine';
+import { InBrowserPanel } from './BrowserPanel';
 import { actionCount, actionWords, hostOf, loadErrorWords, mergeActions, shortUrl, type BrowserAction, type BrowserFrame, type BrowserHost, type BrowserInput,
          type BrowserSessionEvent, type FrameRecording, type HandedBack, type LoadError, type Wheel } from './model';
 import { DialogAsk, FileAsk, MomentStrip, SelectAsk } from './PageMoments';
@@ -130,7 +131,10 @@ export function BrowserPane({
 
   // One input at a time, in the order made: typing must arrive as typed.
   const queue = useRef<Promise<unknown>>(Promise.resolve());
+  // Whether the person has done anything to the page (a click, a key, typing): signing in needs it (F1439).
+  const [touched, setTouched] = useState(false);
   const send = (input: BrowserInput) => {
+    if ((input.type === 'mouse' && input.event === 'click') || input.type === 'key' || input.type === 'text') setTouched(true);
     queue.current = queue.current.then(() => host.input?.(sessionId, input)).catch(() => undefined);
   };
 
@@ -214,6 +218,32 @@ export function BrowserPane({
   const alone = !!signIn || !!record;
   const disclaimer = !alone && !closed && disclaimerSeen === '0';
 
+  // The panel's ✕ (F1439): at once when nothing would be lost, else it asks, the safe choice first. A sign-in nobody
+  // typed into has nothing to keep (Don't keep); a recording with no steps, or a replay waiting on the person, is its
+  // own Discard or Cancel. A re-record's new steps are asked about as a recording's are.
+  const [closing, setClosing] = useState<'sign-in' | 'record' | null>(null);
+  const steps = frame?.recording?.steps ?? 0;
+  const closeNow = () => {
+    if (closed) onClosed?.();
+    else if (signIn) { if (touched) setClosing('sign-in'); else signIn.onFinish(false); }
+    else if (record) { if (steps > 0 && !record.handover) setClosing('record'); else record.onStop(false); }
+  };
+  const inPanel = useContext(InBrowserPanel);
+  // Back to the browser: focus goes to what asked (the ✕), once the ask has let it go.
+  const askedFrom = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (closing) {
+      const held = document.activeElement;
+      askedFrom.current = held instanceof HTMLElement ? held : null;
+    }
+  }, [closing]);
+  const answerClose = (then?: () => void) => {
+    const back = askedFrom.current;
+    setClosing(null);
+    setTimeout(() => { if (back?.isConnected) back.focus(); }, 0);
+    then?.();
+  };
+
   // Whether the log was left open, kept for each kind of pane: a run's, a browser of the person's alone, a chat's.
   const [logOpen, setLogOpen] = usePersisted<'0' | '1'>(
     `browser-log-open:${hero ? 'run' : alone ? 'alone' : 'chat'}`, raw => (raw === '1' ? '1' : '0'), '0');
@@ -272,6 +302,7 @@ export function BrowserPane({
           </Button>
         )}
         {onHide && <IconButton icon={X} label="Close the browser pane" size="sm" onClick={onHide} />}
+        {inPanel && alone && <IconButton icon={X} label="Close" size="sm" onClick={closeNow} />}
       </header>
 
       {picks && picking && !alone && <PicksPanel picks={picks} />}
@@ -463,6 +494,28 @@ export function BrowserPane({
             </div>
           )}
         </Modal>
+      )}
+      {alone && (
+        <Modal
+          open={closing !== null}
+          onClose={() => answerClose()}
+          title={closing === 'sign-in' ? 'Close without keeping this sign-in?' : 'Discard this recording?'}
+          description={closing === 'sign-in'
+            ? <>Nothing you signed in to on <span translate="no">{signIn?.site}</span> is kept.</>
+            : <>Nothing you recorded is kept ({stepCount(steps)}).</>}
+          size="sm"
+          footer={closing === 'sign-in' ? (
+            <>
+              <Button variant="secondary" autoFocus disabled={signIn?.busy} onClick={() => answerClose(() => signIn?.onFinish(true))}>Keep it</Button>
+              <Button variant="danger" disabled={signIn?.busy} onClick={() => answerClose(() => signIn?.onFinish(false))}>Don’t keep</Button>
+            </>
+          ) : (
+            <>
+              <Button variant="secondary" autoFocus onClick={() => answerClose()}>Keep recording</Button>
+              <Button variant="danger" disabled={record?.busy} onClick={() => answerClose(() => record?.onStop(false))}>Discard</Button>
+            </>
+          )}
+        />
       )}
     </section>
   );
