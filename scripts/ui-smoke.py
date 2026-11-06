@@ -8113,6 +8113,8 @@ async def check_dialogfocus(browser) -> str:
     place after each confirm. Opened from the keyboard here, as that user would,
     and closed each way a dialog closes: Escape, a footer button, the X. The
     drawer was missed by F310 (F382) and is what the help panel is built on.
+    A dialog whose field takes focus as it opens (autoFocus) gives it back too: Radix never told it its opener, so
+    focus fell to <body> (F1439: Sessions' "Keep me signed in to a site").
     """
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     page = await ctx.new_page()
@@ -8156,10 +8158,31 @@ async def check_dialogfocus(browser) -> str:
             back_on = await page.evaluate(focused)
             if back_on != opener:
                 bad.append(f"closing {opener!r}'s dialog with {how} left focus on {back_on!r}")
+        await ctx.route(re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(status=200, json={"sessions": []}))
+        await page.goto(f"{APP}/browser/sessions", wait_until="domcontentloaded")
+        await page.locator("main h1").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        opener = "Keep me signed in to a site"
+        for key, button in (("Escape", None), (None, "Cancel")):
+            await page.get_by_role("button", name=opener, exact=True).first.focus()
+            await page.keyboard.press("Enter")
+            dialog = page.get_by_role("dialog", name=opener)
+            await dialog.wait_for(timeout=5_000)
+            await asyncio.sleep(0.3)
+            if not await dialog.get_by_label("Site").evaluate("el => el === document.activeElement"):
+                bad.append(f"{opener!r}'s dialog no longer puts focus in its field, so it tests nothing")
+            if key:
+                await page.keyboard.press(key)
+            else:
+                await dialog.get_by_role("button", name=button, exact=True).click()
+            await asyncio.sleep(0.5)
+            back_on = await page.evaluate(focused)
+            if back_on != opener:
+                bad.append(f"closing {opener!r}'s dialog (its field focused) with {key or button} left focus on {back_on!r}")
         if bad:
             raise AssertionError("; ".join(bad))
         return ("a Modal, a ConfirmDialog and a Drawer hand focus back to their opener on Escape, a footer "
-                "button and the X")
+                "button and the X; and a dialog whose field takes focus as it opens")
     finally:
         await ctx.close()
 
