@@ -434,7 +434,12 @@ def resolve_wish(wish: str, needs: str, *, has_tools: bool, menu: list[ModelEntr
     names = sorted(e.id for e in menu)
     asked_kind = "cli" if "cli" in words else ("local" if words & {"local", "ollama"} else None)
     ordinary = [e for e in menu if e.source not in ("cli", "local")]
+    if not ordinary:
+        # No own-key or platform model at all (F1410): a wish is read among the CLI models, else the local ones.
+        ordinary = [e for e in menu if e.source == "cli"] or [e for e in menu if e.source == "local"]
     kind_pool = [e for e in menu if e.source == asked_kind] if asked_kind else ordinary
+    # A CLI model ranks by the list price of the model it runs (F1410, `rank_out`), never said as its cost.
+    kind_pool = [replace(e, price_out=e.rank_out) if e.source == "cli" else e for e in kind_pool]
 
     named, named_as = _named(kind_pool, wish, words)
     if not named and not asked_kind:
