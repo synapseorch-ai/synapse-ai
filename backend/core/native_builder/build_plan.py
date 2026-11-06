@@ -481,13 +481,53 @@ class Examined:
     structure: list[str] = field(default_factory=list)
 
 
-def _dropped(steps: list[O.Step], gone: set[str]) -> list[O.Step]:
+#: Steps that only make data for later ones (F1426): taken out with the emptied step only they fed. A tool's, a
+#: person's, an agent's or a workflow's step does something of its own, and is never taken out as a feeder.
+_FEEDERS = ("transform", "extract_json", "llm")
+_STATE_READ = re.compile(r"""\bstate(?:\.|\[\s*['"])(\w+)""")
+
+
+def _reads(s: O.Step) -> set[str]:
+    """The step ids whose output `s` reads: `state.x`, `state['x']`, `{{state.x}}`, or the list its loop goes over."""
+    said = " ".join([s.prompt or "", s.condition or "", s.loop_over or "", json.dumps(s.config or {}, default=str)])
+    return set(_STATE_READ.findall(said)) | ({s.loop_over.strip()} if s.loop_over else set())
+
+
+def _quoted(names: list[str]) -> str:
+    named = [f"“{n}”" for n in names]
+    return named[0] if len(named) == 1 else ", ".join(named[:-1]) + " and " + named[-1]
+
+
+def _dropped(steps: list[O.Step], gone: list[str]) -> tuple[list[O.Step], list[str]]:
     """`steps` without the Tool steps that call one of `gone`: settled first, so a step that led to a dropped one by
-    list order leads where the dropped one led, and the rest of its branch still runs (SAI2's review, 5)."""
+    list order leads where the dropped one led, and the rest of its branch still runs (SAI2's review, 5). A loop or a
+    parallel left with nothing in it goes too, with the steps that only fed it (F1426), and the card says each in the
+    person's words."""
     steps = O.settled(steps)
     dropped = {s.id: s for s in steps if s.type == "tool" and s.tool in gone}
     if not dropped:
-        return steps
+        return steps, []
+    emptied: list[O.Step] = []
+    while more := [s for s in steps if s.id not in dropped and s.type in ("loop", "parallel") and s.body
+                   and all(b in dropped for b in s.body)]:
+        dropped.update({s.id: s for s in more})
+        emptied += more
+    fed: dict[str, set[str]] = {}
+    for c in emptied:
+        fed[c.id], frontier = set(), [c]
+        while frontier:
+            kept = [s for s in steps if s.id not in dropped]
+            read = set().union(*(_reads(s) for s in kept))
+            wanted = set().union(*(_reads(s) for s in frontier))
+            frontier = [s for s in kept if s.type in _FEEDERS and s.id in wanted and s.id not in read]
+            dropped.update({s.id: s for s in frontier})
+            fed[c.id] |= {s.id for s in frontier}
+    inner = {b for c in emptied for b in c.body or []}
+    tools = " and ".join(f"`{t}`" for t in gone)
+    notes = [f"Without {tools}, “{c.name}” has nothing left to do, so I took it out"
+             + (f", with {_quoted([s.name for s in steps if s.id in fed[c.id]])}, which only fed it" if fed[c.id]
+                else "") + "."
+             for c in emptied if c.id not in inner]  # a container inside another is said with it
 
     def onward(target: str | None) -> str | None:
         seen = set()
@@ -508,20 +548,23 @@ def _dropped(steps: list[O.Step], gone: set[str]) -> list[O.Step]:
         if s.body and any(b in dropped for b in s.body):
             update["body"] = [b for b in s.body if b not in dropped]
         out.append(s.model_copy(update=update) if update else s)
-    return out
+    return out, notes
 
 
-def _without(plan: O.Plan, tools: list[str]) -> O.Plan:
+def _without(plan: O.Plan, tools: list[str], took_out: list[str] | None = None) -> O.Plan:
     """The Plan with the steps that call `tools` dropped, in it and its inner workflows, and those tools taken from
-    its agents ("Build without X")."""
-    gone = set(tools)
+    its agents ("Build without X"). What it took out beyond them, as the card says it, goes in `took_out` (F1426)."""
+    gone = list(dict.fromkeys(tools))
     if not gone:
         return plan
+    notes = took_out if took_out is not None else []
     out = plan.model_copy(deep=True)
-    out.steps = _dropped(out.steps, gone)
+    out.steps, said = _dropped(out.steps, gone)
+    notes += said
     out.agents = [a.model_copy(update={"tools": [t for t in a.tools if t not in gone]}) for a in out.agents]
     for w in out.inner_workflows:
-        w.steps = _dropped(w.steps, gone)
+        w.steps, said = _dropped(w.steps, gone)
+        notes += said
     return out
 
 
@@ -556,7 +599,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
                 **{k: getattr(plan, k) for k in ("agents", "schedule", "inner_workflows", "caps", "boards", "knowledge",
                                                  "apis", "mcp_servers", "eval", "questions", "not_carried_over")}})
             plan.reuse_agents = list(dict.fromkeys([*edited.reuse_agents, *plan.reuse_agents]))
-    plan = _without(plan, without or [])
+    took_out: list[str] = []
+    plan = _without(plan, without or [], took_out)
     from core.native_builder.change_tools import _holds_a_key
     from core.secret_scrub import holds_credential
 
@@ -615,7 +659,7 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
             state[SCHEDULE_SENT_KEY] = True
             errors.append(f"schedule: {said}")
     if errors:
-        return Examined(plan, errors)
+        return Examined(plan, errors, notes=took_out)
     # Only the person lets a tool act without asking, by a press on the card (SAI2's review, 11); never the planner.
     plan.approvals = O.Approvals(acts_without_asking=list(alone or []))
     plan, renamed, room_notes = await _make_room(plan, state)
@@ -640,7 +684,7 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         _log.warning("run cost not estimated: %s", exc)
     return Examined(filled, [_hinted(i) for i in issues], missing=list(filled.missing), issues=issues,
                     blocks={**blocked(filled, state), **{f: _feature_block(f) for f in needed}},
-                    notes=[*room_notes, *eval_notes, *structure.as_notes(shaped)],
+                    notes=[*took_out, *room_notes, *eval_notes, *structure.as_notes(shaped)],
                     features=needed, structure=shaped)
 
 
@@ -1787,8 +1831,9 @@ def _found(plan: O.Plan, state: dict, renamed: dict[str, str] | None = None) -> 
         for option in options:
             provider, how = str(option.get("provider") or ""), option.get("how")
             spec = option.get("api") if isinstance(option.get("api"), dict) else None
-            if spec is not None and how == "api" and _signs_in_only(option):
-                spec = None  # F1121: no tool from a spec whose key is a sign-in; the card says so plainly
+            signs_in = spec is not None and how == "api" and _signs_in_only(option)
+            if signs_in:
+                spec = None  # F1121: no tool from a spec whose key is a sign-in; the card says so plainly (F1427)
             # A7: a read API's call is named exactly, by its endpoint's tool; the status carries that one endpoint.
             endpoint = next((e for e in (spec or {}).get("endpoints") or []
                              if e.get("tool") == (renamed or {}).get(name, name)), None)
@@ -1805,7 +1850,8 @@ def _found(plan: O.Plan, state: dict, renamed: dict[str, str] | None = None) -> 
                 # would read as a way in, so the card says the gate instead.
                 words = ", ".join(str(w) for w in option.get("partner_words") or [] if str(w).strip())
                 detail = f"{provider}'s API is for approved partners only" + (f" ({words})" if words else "")
-            found[name] = O.ToolStatus(name=name, status=status, provider=provider, via=via, detail=detail, api=api)
+            found[name] = O.ToolStatus(name=name, status=status, provider=provider, via=via, detail=detail, api=api,
+                                       signs_in=signs_in)
             break
     return found
 
@@ -2153,11 +2199,72 @@ def _app_for(provider: str, catalog: list[dict]) -> dict | None:
 SAME = "The plan above is the same."
 
 
-def no_tool_line(provider: str, names: list[str]) -> str:
-    """The one plain line for an API the build can't make a tool for here yet (F1121, SAI2's words)."""
+def no_tool_line(provider: str, names: list[str], *, signs_in: bool = False, browser: bool = False) -> str:
+    """The one plain line for an API the build can't make a tool for here yet (F1121, SAI2's words). One that needs
+    the person's own sign-in says so, and, where there are browser agents, that one can use their signed-in session
+    (F1427)."""
     tools = " and ".join(f"`{n}`" for n in names)
-    return (f"I can't build {tools} here yet: {provider} has an API, but I can't make a tool for it yet. Add an MCP "
-            "server for it on the MCP servers screen and ask again, or say \"build without it\".")
+    if not signs_in:
+        return (f"I can't build {tools} here yet: {provider} has an API, but I can't make a tool for it yet. Add an "
+                "MCP server for it on the MCP servers screen and ask again, or say \"build without it\".")
+    # An MCP server first: it is the way that works (REACH1, 11-06: x.com answers 403 to any automated browser, and the
+    # browser never hides that it is one), so the browser is offered only as what may work.
+    return (f"I can't build {tools} here yet: {provider} has an API, but it needs you signed in to your own account, "
+            "which a tool can't hold. Add an MCP server for it on the MCP servers screen and ask again, or say \"build "
+            "without it\"."
+            + (f" If {provider} allows automated browsers, a browser agent can do it with your signed-in session "
+               "instead (sign in under Agents › Browser › Sessions); some sites turn automated browsers away."
+               if browser else ""))
+
+
+def browser_agents_on() -> bool:
+    """Whether this workspace has browser agents: the switch the server registers the browser on (server.py)."""
+    from core.config import load_settings
+
+    return bool(load_settings().get("browser_automation_enabled", True))
+
+
+#: What a person is told to do about a plan a check fails (F1426).
+AGAIN = "Tell me what to change, or ask me to plan it again."
+_STEP_NAMED = re.compile(r"\bstep '?([A-Za-z0-9_\-]+)'?", re.IGNORECASE)
+
+
+_FIELD_PATH = re.compile(r"^\w+(?:\.\w+)+:")
+
+
+def as_said(errors: list[str], plan: O.Plan | None) -> list[str]:
+    """What a check's errors tell the person (F1426), one line each. Told apart by the message, not by which check
+    wrote it: one that names a step by its id (`step post_loop: …`) or a field by its path (`steps.0.type: …`) is the
+    check's own wording, said as the steps it is about, by their names, with what to do; its raw text stays in the
+    result's `issues` for the planner. Any other is already in the person's words (a save rule's "Step 'Send it'
+    runs …. Put a Human step before it") and is said as it is. By the ids, not a marker: the checks are written in
+    many modules, and an id is what a person can't read."""
+    names = {s.id: s.name for s in [*(plan.steps if plan else []),
+                                    *(x for w in (plan.inner_workflows if plan else []) for x in w.steps)]}
+    named, internal, plain = [], False, []
+    for e in errors:
+        ids = [i for i in _STEP_NAMED.findall(e) if i in names]
+        if ids:
+            named += [names[i] for i in ids]
+        elif _FIELD_PATH.match(e):
+            internal = True
+        else:
+            plain.append(e)
+    named = list(dict.fromkeys(named))
+    if len(named) == 1:
+        lead = [f"{_quoted(named)} doesn't fit together as it is. {AGAIN}"]
+    elif named:
+        lead = [f"{_quoted(named)} don't fit together as they are. {AGAIN}"]
+    else:
+        lead = [f"Part of this plan doesn't fit together as it is. {AGAIN}"] if internal else []
+    return lead + plain
+
+
+def unanswered_line(provider: str, names: list[str], where: str) -> str:
+    """The line for an API the research found that did not answer where it said (F1423): its address is asked."""
+    tools = " and ".join(f"`{n}`" for n in names)
+    return (f"I can't build {tools} yet: {provider}'s API didn't answer at {where}. Give me its address or its "
+            "OpenAPI spec's address, or say \"build without it\".")
 
 
 def not_fixed_line() -> str:
@@ -2262,8 +2369,9 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     found = await examine(draft, server_module, ws=ws, state=state, without=without, alone=alone)
     plan = found.plan
     if plan is None:
-        return {**base, "outcome": "said", "say": "I could not make a plan that holds together: "
-                                                  + "; ".join(found.errors[:3])}
+        # The check's own words stay in `issues`, for the planner; the person is told what to do (F1426).
+        return {**base, "outcome": "said", "say": f"I could not make a plan that holds together. {AGAIN}",
+                "issues": found.errors}
     base["without"] = without
     if plan.kind == "create" and (copied := imitation.findings(plan, ws)):
         # A screen rebuilt by hand, said from its census row (F1257 step 3): first, Evals (F1255).
@@ -2311,12 +2419,18 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     if model_question:
         # A wish that could mean more than one model is asked, with the menu's names; never guessed (F966).
         return {**base, "outcome": "ask", "question": model_question}
+    # The check's errors are its own words, said to the person through `as_said`; a model's are the person's already.
+    checks = list(found.errors)
     found.errors += model_issues
 
     catalog = (await _read_options()).get("catalog") or []
     offered = list(prior.get("offered") or [])
     no_way, connect, said, makes, later, after_yes = [], [], [], [], [], []
+    from core.builder_research import UNANSWERED
+
     no_tool: dict[str, list[str]] = {}
+    unanswered: dict[str, str] = {}
+    signs_in: set[str] = set()
     for t in plan.tools:
         if t.status == "missing" and t.provider:
             # The research's verdict, with why (A6): no way in that it could find.
@@ -2333,6 +2447,10 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
             # in the URL's path (F1121, Gmail, Calendar, Telegram's Bot API). Said once, by provider, below.
             no_way.append(t.name)
             no_tool.setdefault(t.provider or t.name, []).append(t.name)
+            if (t.detail or "").startswith(UNANSWERED):  # it did not answer where it said (F1423)
+                unanswered[t.provider or t.name] = t.detail[len(UNANSWERED):].split(". ", 1)[0]
+            if t.signs_in:
+                signs_in.add(t.provider or t.name)
         elif t.status == "found" and t.via == "http_tool" and not MAKES_HTTP_TOOLS:
             no_way.append(t.name)
             said.append(f"`{t.name}`: {t.provider} has a public API, but I can't make a tool for it here yet: build "
@@ -2352,9 +2470,16 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
             else:
                 after_yes.append(f"`{t.name}`: after your yes, I'll ask you to connect {t.provider}'s own MCP "
                                  "server, under Apps and MCP servers.")
-    said += [no_tool_line(provider, names) for provider, names in no_tool.items()]
-    if found.errors:
-        said.append("It can't be saved as it is: " + " ".join(found.errors[:3]))
+    browser = bool(signs_in) and browser_agents_on()
+    # An API that did not answer (F1423) never also signs in: an unanswered option keeps no spec (builder_research),
+    # and `signs_in` is set only where there is one (`_found`).
+    said += [unanswered_line(provider, names, unanswered[provider]) if provider in unanswered
+             else no_tool_line(provider, names, signs_in=provider in signs_in, browser=browser)
+             for provider, names in no_tool.items()]
+    if checks:
+        said.append("It can't be saved as it is: " + " ".join(as_said(checks, plan)[:3]))
+    if model_issues:
+        said.append("It can't be saved as it is: " + " ".join(model_issues[:3]))
     said += [f"{why}." for why in found.blocks.values()]
     said += found.notes
     said += unsaid_said + names_said
@@ -2416,7 +2541,8 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
         review += "\n## New agents' instructions\n" + "\n\n".join(
             f"### {name}\n{text.strip()}" for name, text in prompts.items()) + "\n"
     if found.errors:
-        review += "\n## Can't be saved yet\n" + "\n".join(f"- {e}" for e in found.errors) + "\n"
+        review += "\n## Can't be saved yet\n" + "\n".join(
+            f"- {e}" for e in [*as_said(checks, plan), *model_issues]) + "\n"
     if board_notes:
         review += "\n## Boards\n" + "\n".join(f"- {n}" for n in board_notes) + "\n"
     if periods_said:
@@ -2431,6 +2557,7 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
             f"- `{t.name}`: {t.api['endpoint']['method']} {t.api['endpoint']['path']} on "
             f"{urlsplit(t.api['base_url']).hostname} ({t.provider}). "
             + ("It takes no key." if t.api.get("keyless") else "You give it your key on a card after your yes.")
+            + (" It only reads, so it runs without asking you first." if O.only_reads(t) else "")
             for t in makes if t.api) + "\n"
     out = {**base, "outcome": "review", "plan": plan.model_dump(), "prompts": prompts or {}, "review": review,
            "offers": offers, "say": " ".join([*said, *board_notes]), "issues": found.errors, "offered": offered,

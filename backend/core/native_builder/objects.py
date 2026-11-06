@@ -325,6 +325,17 @@ class ToolStatus(BaseModel):
     detail: str | None = None
     #: `http_tool`: the API spec the research read, to make the tool from (F943, F944).
     api: dict | None = None
+    #: Its API takes only the person's own sign-in (F1121's OAuth), so no tool is made: the card says why (F1427).
+    signs_in: bool = False
+
+
+def only_reads(status: ToolStatus) -> bool:
+    """A tool this build makes that only reads, which runs without asking first (F1424, Naveen): an `http_tool` it
+    makes after the yes (the research's spec or the person's own), a GET (no body), taking no key (no header), with no
+    host part a card fills; `build_save._tool_call` locks its base. Never a tool already here: its ask is its own."""
+    api = status.api or {}
+    return (status.status == "found" and status.via == "http_tool" and api.get("keyless") is True
+            and not api.get("host_params") and str((api.get("endpoint") or {}).get("method") or "").upper() == "GET")
 
 
 class Approvals(BaseModel):
@@ -877,7 +888,8 @@ async def fill(plan: Plan, server_module: Any, *, found: dict[str, ToolStatus] |
 
     acting = [t.name for t in statuses if t.status == "present"
               and await builder_guard.acting_tool(t.name, server_module, custom) is not None]
-    acting += [t.name for t in statuses if t.status == "found"]  # an outside service: it acts until shown otherwise
+    # An outside service acts until shown otherwise; a tool this build makes that only reads is shown (F1424).
+    acting += [t.name for t in statuses if t.status == "found" and not only_reads(t)]
     # A Browser agent holds the browser's tools however it was made (F1305, `gate.held_by`): co_drive, each press it
     # holds asks first too, listed or not; read_only sends nothing at the component's network gate.
     from core.browser.gate import held_by
