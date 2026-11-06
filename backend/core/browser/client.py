@@ -582,8 +582,10 @@ class BrowserTools:
         row = await store.get(kept) if hasattr(store, "get") else None
         return {"id": kept, "site": (row or {}).get("site") or site, "expires_at": (row or {}).get("expires_at")}
 
-    async def open_login_session(self, sites: list[str]) -> str:
-        """"Log in to a site": the person's alone, no agent, the wheel theirs from the start."""
+    async def open_login_session(self, sites: list[str], *, start_url: str = "") -> str:
+        """"Log in to a site": the person's alone, no agent, the wheel theirs from the start, on `start_url` (the
+        site's own address when none is given), never a blank page (F1425). What the site answers is what the person
+        sees there: its page, its challenge, or the browser's own page saying it could not be reached."""
         key = f"login:{secrets.token_hex(8)}"
         host = await self.hosts.host_for(key, opening=True)
         status, body = await host.call("POST", "/session", json={
@@ -593,6 +595,8 @@ class BrowserTools:
         sid = body["session_id"]
         await self.store.set_owner(key, {"sid": sid, "parked": None, "expired": None, "sessions": list(sites)})
         self._events.setdefault(key, []).append({"type": "browser_session", "session_id": sid, "owner": key})
+        await host.viewer("/input", params={"session_id": sid},
+                          json={"type": "nav", "url": start_url or f"https://{sites[0]}"})
         return sid
 
     async def open_record_session(self, recording_id: str, *, sessions: list[str], start_url: str = "",

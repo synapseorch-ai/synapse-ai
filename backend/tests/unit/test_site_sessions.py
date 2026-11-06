@@ -263,11 +263,12 @@ def test_the_library_lists_keeps_and_removes_sessions(monkeypatch):
     async def agents():
         return [{"id": "a1", "browser": {"sessions": []}}]
 
-    opened = []
+    opened, starts = [], []
 
     class _Tools:
-        async def open_login_session(self, sites):
+        async def open_login_session(self, sites, *, start_url=""):
             opened.append(sites)
+            starts.append(start_url)
             return "bs1"
 
     async def orchs():
@@ -285,6 +286,7 @@ def test_the_library_lists_keeps_and_removes_sessions(monkeypatch):
     assert row["uses"] == {"agents": 0, "chats": 0, "workflows": 0} and SECRET not in json.dumps(row)
     assert client.post("/api/site-sessions/new", json={"site": "https://portal.saltmarsh.example/login"}).json() \
         == {"browser_session_id": "bs1"} and opened == [["saltmarsh.example"]]
+    assert starts == ["https://portal.saltmarsh.example"], "it opens on the host typed (F1425)"
     assert client.post("/api/site-sessions/new", json={"site": "nope"}).status_code == 422
     assert client.patch(f"/api/site-sessions/{ref}", json={"shared_with": "workspace"}).status_code == 404
     assert client.delete(f"/api/site-sessions/{ref}").status_code == 200

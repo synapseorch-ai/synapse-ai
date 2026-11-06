@@ -958,6 +958,36 @@ async def test_keeping_a_session_opens_a_browser_that_is_the_persons_alone(clien
     assert old.status_code == 200 and old.json()["session_id"], "the old route answers for one release"
 
 
+async def test_a_sign_in_browser_opens_on_the_site_the_person_named(client, monkeypatch):
+    """F1425: "Keep me signed in to x.com" opened its browser on about:blank and never went there. It opens on the host
+    the person typed, over https and nothing else of what they typed, once the browser is the person's; the site kept
+    is still the registrable one. BRW2's old route the same."""
+    fake = browser_client.BrowserTools(_FakeHost())
+    monkeypatch.setattr(browser_client, "tools", fake)
+
+    def went():
+        return [c[2]["url"] for c in fake.host.calls if c[:2] == ("VIEW", "/input") and c[2].get("type") == "nav"]
+
+    sid = (await client.post("/api/site-sessions/new", json={"site": "x.com"})).json()["browser_session_id"]
+    assert went() == ["https://x.com"], "the browser goes to the site, not about:blank"
+    paths = [c[1] for c in fake.host.calls]
+    assert paths.index("/session") < paths.index("/input"), "it goes there once the browser is open"
+    assert (await fake.store.get_owner(await fake.owner_of(sid)))["sessions"] == ["x.com"]
+    for typed, url in (("https://Portal.Example.com/login?next=/a", "https://portal.example.com"),
+                       ("http://portal.example.com:8080/", "https://portal.example.com"),
+                       ("www.x.com", "https://www.x.com")):
+        await client.post("/api/site-sessions/new", json={"site": typed})
+        assert went()[-1] == url, typed
+    await client.post("/api/browser/login-sessions", json={"sites": ["*.example.com"]})
+    assert went()[-1] == "https://example.com"
+    assert (await client.post("/api/site-sessions/new", json={"site": "javascript:alert(1)"})).status_code == 422
+    assert went()[-1] == "https://example.com", "nothing that isn't a site is opened"
+
+    tools = browser_client.BrowserTools(_FakeHost())
+    await tools.open_login_session(["example.co.uk"])
+    assert ("VIEW", "/input", {"type": "nav", "url": "https://example.co.uk"}) in tools.host.calls
+
+
 async def test_finishing_keeps_the_session_or_says_nothing_was_signed_in(client, monkeypatch, logins_store):
     fake = browser_client.BrowserTools(_FakeHost())
     monkeypatch.setattr(browser_client, "tools", fake)
