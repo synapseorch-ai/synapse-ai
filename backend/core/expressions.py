@@ -71,6 +71,9 @@ class ExprResult:
     value: Any
     error: str | None = None
     refused: bool = False
+    #: The error came of a value this run has not written (a key read that was not there, then used): data, so the
+    #: step keeps its documented answer (Naveen 10-23, widened 11-06, F1433). Any other error fails a routing step.
+    unwritten: bool = False
 
 
 def _value(val):
@@ -377,6 +380,30 @@ def _check(node: ast.AST, depth: int, count: list[int], *, func_pos: bool = Fals
         _check(child, depth + 1, count)
 
 
+def _unbraced(expr: str) -> str:
+    """A field whose whole text is one `{{ … }}`, as a prompt shows a value, is the expression inside it (F1433:
+    cap-05's `{{ state.request_approval.approved }}`, which Python reads as a set of a set). Braces anywhere else
+    are left for `_braces_inside` to name."""
+    text = expr.strip()
+    if text.startswith('{{') and text.endswith('}}'):
+        inside = text[2:-2]
+        if '{{' not in inside and '}}' not in inside and inside.strip():
+            return inside.strip()
+    return expr
+
+
+def _braces_inside(tree: ast.Expression) -> str | None:
+    """A set holding a set or a dict can never be built (it is unhashable): it is `{{ … }}` written inside a longer
+    expression. Said at parse time, with the expression to write instead (F1433)."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Set):
+            for inner in node.elts:
+                if isinstance(inner, (ast.Set, ast.Dict)):
+                    bare = ast.unparse(inner.elts[0]) if isinstance(inner, ast.Set) and inner.elts else ast.unparse(inner)
+                    return (f"`{{{{ {bare} }}}}` is how a prompt shows a value; in an expression write it bare: {bare}")
+    return None
+
+
 @functools.lru_cache(maxsize=256)
 def _compiled(expr: str) -> tuple[ast.Expression | None, str | None, bool]:
     """`(tree, error, refused)` — the tree is None whenever an error is set.
@@ -386,7 +413,7 @@ def _compiled(expr: str) -> tuple[ast.Expression | None, str | None, bool]:
     be a dict lookup rather than a parse.
     """
     try:
-        tree = ast.parse(expr, mode='eval')
+        tree = ast.parse(_unbraced(expr), mode='eval')
     except SyntaxError as exc:
         # A typo is not a refusal. It reaches the caller as the same runtime
         # error string `eval()` used to produce.
@@ -395,6 +422,8 @@ def _compiled(expr: str) -> tuple[ast.Expression | None, str | None, bool]:
         _check(tree, 0, [0])
     except ExpressionRefused as exc:
         return None, str(exc), True
+    if (said := _braces_inside(tree)) is not None:
+        return None, said, False
     return tree, None, False
 
 
@@ -507,11 +536,19 @@ _CMPOPS = {
 
 
 class _Walk:
-    __slots__ = ('state', 'work')
+    __slots__ = ('state', 'work', 'unwritten')
 
     def __init__(self, state: DotNavigableState):
         self.state = state
         self.work = 0
+        self.unwritten = False  # a key read that the run has not written (F1433's data rule)
+
+    def _note_read(self, receiver: DotNavigableState, key: Any) -> None:
+        try:
+            if key not in object.__getattribute__(receiver, '_data'):
+                self.unwritten = True
+        except TypeError:  # an unhashable key: not a read of a written one either
+            self.unwritten = True
 
     def _spend(self, units: int) -> None:
         """Count characters and items made or scanned; refuse past one budget (F965)."""
@@ -555,12 +592,16 @@ class _Walk:
         if isinstance(receiver, DotNavigableState):
             # Delegated on purpose: missing-key-is-None and the nested rewrap are
             # the wrapper's, not a second copy of them that can drift.
+            self._note_read(receiver, node.attr)
             return getattr(receiver, node.attr)
         raise AttributeError(
             f"'{type(receiver).__name__}' object has no attribute '{node.attr}'")
 
     def _subscript(self, node):
-        value = self._eval(node.value)[self._eval(node.slice)]
+        container, key = self._eval(node.value), self._eval(node.slice)
+        if isinstance(container, DotNavigableState):
+            self._note_read(container, key)
+        value = container[key]
         self._spend(_size(value))
         return value
 
@@ -774,10 +815,15 @@ def evaluate_expression(expr: str | None, state: dict, default: Any = None) -> E
     tree, error, refused = _compiled(expr)
     if tree is None:
         return ExprResult(default, error, refused)
+    walk = _Walk(DotNavigableState(state))
     try:
-        value = _Walk(DotNavigableState(state)).run(tree)
+        value = walk.run(tree)
     except ExpressionRefused as exc:
         return ExprResult(default, str(exc), True)
     except Exception as exc:
-        return ExprResult(default, str(exc), False)
+        # A None that came of a key the run has not written, read through, compared or combined, is data (F1433).
+        # A None the run wrote, and every other error, is the expression's.
+        unwritten = (walk.unwritten and isinstance(exc, (AttributeError, TypeError, KeyError, IndexError))
+                     and 'NoneType' in str(exc))
+        return ExprResult(default, str(exc), False, unwritten)
     return ExprResult(_raw(value), None, False)
