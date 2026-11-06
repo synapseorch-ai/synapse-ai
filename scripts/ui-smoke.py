@@ -2388,17 +2388,21 @@ async def check_fieldnames(browser) -> str:
 
 @check
 async def check_humanprompt(browser) -> str:
-    """A human step's prompt is edited like the engine fills it: `{state.key}` only.
+    """A human step's prompt is edited like the engine fills it: `{{ state.key }}` only, never a global.
 
     It was a plain textarea while every other prompt was the markdown editor,
-    so it offered no keys at all. The engine fills a human prompt with its own
-    single-brace pass and never renders `{{ }}` — deliberately: the prompt can
-    be posted to a messaging channel, where a workspace variable would leak.
-    So `{s` must offer the run's state and `{{` must offer nothing (F5, D104).
+    so it offered no keys at all. The engine fills a human prompt with the
+    run's state and never with a workspace variable — deliberately: the prompt
+    can be posted to a messaging channel, where one would leak (F5, D104).
+    Since F1252 stage B (32a8bd5d) every renderer reads one form, `{{ state.x }}`,
+    so `{{` must offer the run's state keys and no `global.`, and the older
+    single brace offers nothing (F1422).
     """
     oid = f"orch_uismoke_human_{int(time.time())}"
     api("/api/orchestrations", "POST", human_gate_orchestration(oid))
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    # A workspace variable to leak, so "no global" is asked of one that exists: a prompt's editor would offer it.
+    await ctx.route("**/api/settings/variables", _answer({"values": {"glossary_url": "https://example.invalid"}}))
     page = await ctx.new_page()
     try:
         await open_step(page, oid, "Approve")
@@ -2411,19 +2415,25 @@ async def check_humanprompt(browser) -> str:
         await page.keyboard.press("End")
         await page.keyboard.type(" {s")
         await asyncio.sleep(0.5)
-        offered = await page.get_by_role("listbox", name="Suggestions").get_by_role("option").all_inner_texts()
-        if not any("line_" in o for o in offered):
-            raise AssertionError(f"typing {{s offered {offered!r}, not the run's state keys")
-        await page.keyboard.press("Escape")
-        await page.keyboard.type(" {{ ")
+        if await page.get_by_role("listbox", name="Suggestions").count():
+            raise AssertionError("typing {s opened suggestions — the one form is {{ state.key }}")
+        await page.keyboard.type(" {{ st")
         await asyncio.sleep(0.5)
-        doubled = await page.get_by_role("listbox", name="Suggestions").count()
-        if doubled:
-            raise AssertionError("typing {{ opened suggestions — a human prompt never renders {{ }}")
+        offered = await page.get_by_role("listbox", name="Suggestions").get_by_role("option").all_inner_texts()
+        if not any("state.line_" in o for o in offered):
+            raise AssertionError(f"typing {{{{ offered {offered!r}, not the run's state keys")
+        await page.keyboard.press("Backspace")
+        await page.keyboard.press("Backspace")
+        await page.keyboard.type("gl")
+        await asyncio.sleep(0.5)
+        leaked = [o for o in await page.get_by_role("listbox", name="Suggestions").get_by_role("option")
+                  .all_inner_texts() if "global." in o]
+        if leaked:
+            raise AssertionError(f"typing {{{{ gl offered {leaked!r} — a human prompt never fills a global")
     finally:
         await ctx.close()
         drop_fixture(oid)
-    return f"{{s offers {len(offered)} state key(s); {{{{ offers nothing"
+    return f"{{{{ offers {len(offered)} state key(s) and no global; {{s offers nothing"
 
 
 # ── the palette and the graph ────────────────────────────────────────────────
@@ -6308,7 +6318,8 @@ async def check_keyrows(browser) -> str:
             raise AssertionError("Enter on an agent did not open it")
 
         await page.goto(f"{APP}/vault", wait_until="domcontentloaded")
-        item = page.get_by_role("button", name=vault_file, exact=True)
+        # Named by the file, then its size since the Vault rework (959d5fdc): "uismoke-keys-….md 8 B" (F1422).
+        item = page.get_by_role("button", name=re.compile(rf"^{re.escape(vault_file)}(\s|$)"))
         try:
             await item.wait_for(timeout=30_000)
         except Exception:
@@ -9078,15 +9089,26 @@ async def check_settings_plain(browser) -> str:
 @check
 async def check_general_switches(browser) -> str:
     """General's settings that are on or off are the kit's switch, each named as before (M2g), and a switch moves
-    when pressed; Settings' collapse button sits on its first group's line (Naveen at review)."""
+    when pressed; Settings' collapse button sits on its first group's line (Naveen at review).
+
+    Running Transform steps on the host is the server operator's choice alone since F968 (92ffccdd): never a switch
+    here, only said, with the variable that sets it. So it is asked as that: no switch for it, and General's
+    "Transform step Python runtime" names SYNAPSE_TRANSFORM_RUNTIME (F1422)."""
     names = ("Knowledge", "Large response handling", "Auto context compaction", "Database write access",
-             "Code repository indexing", "Run Transform steps on the host", "Require login")
+             "Code repository indexing", "Require login")
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     page = await ctx.new_page()
     try:
         await page.goto(f"{APP}/settings/general", wait_until="domcontentloaded")
         for name in names:
             await page.get_by_role("switch", name=name, exact=True).wait_for(timeout=30_000)
+        if await page.get_by_role("switch", name=re.compile("Transform", re.I)).count():
+            raise AssertionError("General offers a switch for where Transform steps run — it is the operator's (F968)")
+        runtime = page.get_by_role("heading", name="Transform step Python runtime", exact=True)
+        if not await runtime.count():
+            raise AssertionError("General does not say where Transform steps run")
+        if "SYNAPSE_TRANSFORM_RUNTIME=host" not in await page.locator("main").inner_text():
+            raise AssertionError("General does not name the variable that runs Transform steps on the host")
         sw = page.get_by_role("switch", name="Database write access", exact=True)
         was = await sw.get_attribute("aria-checked")
         await sw.click()
@@ -9100,7 +9122,8 @@ async def check_general_switches(browser) -> str:
             raise AssertionError(f"the collapse button is not on Workspace's line ({b['y']:.0f} vs {h['y']:.0f})")
     finally:
         await ctx.close()
-    return f"{len(names)} switches by name, one moves; the collapse button on Workspace's line"
+    return (f"{len(names)} switches by name, one moves, none for the host runtime, which is named as the operator's; "
+            "the collapse button on Workspace's line")
 
 
 @check
@@ -9294,7 +9317,8 @@ async def _python_test(page):
 
 
 async def _openapi_preview(page):
-    await page.get_by_role("button", name=re.compile("Import OpenAPI")).first.click()
+    # "Import OpenAPI" says what it is for since F921/F922 (89265e97), F1422.
+    await page.get_by_role("button", name=re.compile("Import from an API description")).first.click()
     await page.get_by_placeholder(re.compile(r'^\{"openapi"')).fill('{"openapi": "3.0.0", "paths": {}}')
     await page.get_by_role("button", name=re.compile("Preview tools")).click()
 
@@ -9309,14 +9333,18 @@ async def _vault_error(page):
     # The tree's row (M2h-2: the open file's head names it too, and the first file opens by itself).
     async with page.expect_response(lambda r: "/api/vault/file?" in r.url):
         await page.get_by_role("button", name="note.txt", exact=True).first.click()
-    editor = page.get_by_placeholder("Start typing...")
+    # A text file opens in the product's code editor since the Vault rework (959d5fdc): CodeMirror's textbox,
+    # named by the editor's label, not a textarea with a placeholder (F1422).
+    editor = page.get_by_role("textbox", name="File contents").first
     # The file's text lands after the editor does; typing first is overwritten
     # by it, and Save stays disabled (a clean file has nothing to save).
     for _ in range(40):
-        if await editor.count() and await editor.input_value() == "hello":
+        if await editor.count() and (await editor.inner_text()).strip() == "hello":
             break
         await asyncio.sleep(0.25)
-    await editor.fill("hello, edited")
+    await editor.click()
+    await page.keyboard.press("Control+a")
+    await page.keyboard.type("hello, edited")
     await page.get_by_role("button", name=re.compile("^save$", re.I)).first.click()
 
 
@@ -9639,9 +9667,6 @@ LIGHT_STATES = (
     ("knowledge eval results", "/knowledge", [], _SMOKE_KB_EVAL_ROUTES, _kb_eval, "Grounded in cited sources"),
     ("knowledge eval suggestions", "/knowledge", [], _SMOKE_KB_EVAL_ROUTES, _kb_eval_drafts,
      "Suggestions only — nothing is saved until you add them."),
-    ("chat tip 5", "/", [CHAT_STUB], [],
-     lambda p: p.get_by_role("button", name="Show tip 5: Automate with schedules").click(),
-     "Automate with schedules"),
     ("chat failed turn", "/", [CHAT_STUB], [], _send_and_fail, "The model couldn't answer."),
     ("chat Thinking turns", "/", [CHAT_STUB, "window.__fakeHistory = " + json.dumps({
         "turns": [{"user": "q", "assistant": "a", "tools": [], "timestamp": "", "reasoning": ["one", "two"]}],
@@ -9753,6 +9778,9 @@ async def check_lightstates(browser) -> str:
 
     Not measured (named limits): hover colours, SVG icons, gradients, and the
     Vault's "saved" button (disabled, which WCAG exempts).
+
+    Retired (F1422): "chat tip 5", the tips Chat showed under its greeting — gone
+    with them in M2c (b3c8a9fc), so there is no such state left to measure.
     """
     bad: list[str] = []
     missing: list[str] = []
@@ -10243,7 +10271,8 @@ async def check_help_pages(browser) -> str:
 HUB_TABS = {
     "Runs": [("/runs", "Runs"), ("/logs", "Logs"), ("/evals", "Evals"), ("/usage", "Usage")],
     "Workflows": [("/workflows", "Workflows"), ("/schedules", "Schedules"), ("/templates", "Templates")],
-    "Agents": [("/agents", "Agents"), ("/skills", "Skills")],
+    # Browser under Agents (BRW2, F1139, b40b8adb; Naveen 10-29), F1422.
+    "Agents": [("/agents", "Agents"), ("/skills", "Skills"), ("/browser", "Browser")],
     "Apps": [("/apps", "Apps"), ("/tools", "Tools")],
     "Channels": [("/channels", "Channels"), ("/channels/phone", "Phone"), ("/widgets", "Widgets")],
 }
@@ -11237,11 +11266,12 @@ async def check_plancard(browser) -> str:
         await _build_with_ai(page)
         card = page.locator('[data-testid="assistant-panel"] section[aria-label="The plan"]')
         await card.wait_for(timeout=10_000)
-        rows = card.get_by_role("list", name="Steps").locator("li")
+        # The steps are "What it will do" since a1b6e3fb ("Steps" before), F1422.
+        rows = card.get_by_role("list", name="What it will do").locator("li")
         names = [(await rows.nth(i).inner_text()).replace("\n", " ") for i in range(await rows.count())]
         if len(names) != 5 or "Human Review" not in names[2] or "a person" not in names[2]:
             bad.append(f"the steps read {names}")
-        if "calls a model" not in names[0] or "Agent" not in names[0]:
+        if not names or "calls a model" not in names[0] or "Agent" not in names[0]:
             bad.append(f"the first step reads {names[:1]}")
         text = await card.inner_text()
         for words in ("Needs your answer", "Every Friday at 9 AM UTC", "Competitor Research Agent, Email Drafter"):
@@ -12785,12 +12815,17 @@ _FIRSTRUN_MODELS = {"providers": {
 
 
 async def _firstrun_page(browser, path: str, state: dict, theme: str | None = None, width=WIDE,
-                         fresh: bool = False, late: float = 0):
+                         fresh: bool = False, late: float = 0, new_workspace: bool = False):
     """A page over a stubbed install whose model cannot answer (ONB2): `state["closed"]` is the setting,
     `state["posts"]` every settings write. `fresh` is a browser that has seen no tour (`firsttour`); `late` holds the
-    readiness answer back that many seconds while the step is still to open, as a slow backend would."""
+    readiness answer back that many seconds while the step is still to open, as a slow backend would.
+    `new_workspace` answers Home's workflow and run reads as empty, whatever the store holds: once a workflow has run,
+    Home folds its start path to one line by design (aef50120), so the step's own button is not drawn (F1422)."""
     opener = browser.fresh_context if fresh else browser.new_context
     ctx = await opener(viewport={"width": width[0], "height": width[1]})
+    if new_workspace:
+        await ctx.route(re.compile(r".*/api/orchestrations(\?.*)?$"), _answer([]))
+        await ctx.route(re.compile(r".*/api/orchestrations/runs(\?.*)?$"), _answer([]))
     if theme:
         await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{theme}')}}catch(e){{}}")
     await ctx.add_init_script("try{localStorage.removeItem('synapseHomeStartHidden')}catch(e){}")
@@ -12830,7 +12865,7 @@ async def check_firstrun(browser) -> str:
     model" and Chat's line open it again."""
     state = {"closed": False, "posts": []}
     bad: list[str] = []
-    ctx, page = await _firstrun_page(browser, "/dashboard", state)
+    ctx, page = await _firstrun_page(browser, "/dashboard", state, new_workspace=True)
     dialog = page.get_by_test_id("model-setup")
     try:
         await dialog.wait_for(timeout=30_000)
