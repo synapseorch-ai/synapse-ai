@@ -8,6 +8,7 @@ spelling is read, never rewritten (F50, F75).
 **What is checked (Naveen, 2026-10-12): the new types only.** An answer to an email,
 date, phone or dropdown field must be one; text, long text, a number and yes/no are
 taken as they come, as they always were, so nothing answered before this is refused.
+A yes/no said in words is stored as the flag it says (F1434); other words stay as they came.
 A field left blank is still an answer (F232's rule: it is what a form sends for a
 question nobody filled in). A text answer to a fielded question is not checked
 either; there is no field to check it against.
@@ -40,7 +41,16 @@ ALIASES = {
     "options": "choice",
     "enum": "choice",
     "tel": "phone",
+    # The planner's own spelling of a yes/no (F1434), which the clarify form already read as one.
+    "yes_no": "boolean",
+    "yesno": "boolean",
+    "yes/no": "boolean",
 }
+
+#: A yes/no answered in words (F1434): stored as the flag it says, so a condition that reads true/false meets it. The
+#: yes words are ones a tool approval already takes as yes (`engine._approved`), so no answer newly allows a call.
+_YES = frozenset({"yes", "y", "true", "1"})
+_NO = frozenset({"no", "n", "false", "0"})
 
 #: The types an answer is checked against.
 CHECKED = frozenset({"email", "date", "phone", "choice"})
@@ -76,9 +86,23 @@ def field_options(field: dict[str, Any]) -> list[str]:
     return [str(o).strip() for o in options if str(o).strip()]
 
 
+def as_flag(value: Any) -> Any:
+    """A yes/no answer as True or False when it says one in words; anything else as it came (never refused)."""
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return value
+    word = str(value).strip().rstrip(".!").strip().lower()
+    if word in _YES:
+        return True
+    if word in _NO:
+        return False
+    return value
+
+
 def check_value(field: dict[str, Any], value: Any) -> Any:
     """One field's answer in its stored form, or `BadAnswer`."""
     kind = field_type(field.get("type"))
+    if kind == "boolean":
+        return as_flag(value)
     if kind not in CHECKED or value is None or (isinstance(value, str) and not value.strip()):
         return value
     name = str(field.get("name") or "")
@@ -109,7 +133,15 @@ def check_value(field: dict[str, Any], value: Any) -> Any:
 
 
 def check_answer(fields: Any, response: Any) -> Any:
-    """`response` with each checked field's value in its stored form; `BadAnswer` if one is not."""
+    """`response` with each checked field's value in its stored form; `BadAnswer` if one is not.
+
+    Plain text to a step whose one field is a yes/no (a channel's reply, F1434) answers that field when it says yes
+    or no; any other text is the answer as it came.
+    """
+    if isinstance(response, str) and isinstance(fields, list) and len(fields) == 1 and isinstance(fields[0], dict) \
+            and field_type(fields[0].get("type")) == "boolean" and fields[0].get("name"):
+        flag = as_flag(response)
+        return {fields[0]["name"]: flag} if isinstance(flag, bool) else response
     if not isinstance(response, dict) or not isinstance(fields, list):
         return response
     checked = dict(response)

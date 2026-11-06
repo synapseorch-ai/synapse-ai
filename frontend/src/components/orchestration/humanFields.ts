@@ -47,6 +47,10 @@ const ALIASES: Record<string, HumanFieldType> = {
     options: 'choice',
     enum: 'choice',
     tel: 'phone',
+    // The planner's own spelling of a yes/no (F1434), which the clarify form already read as one.
+    yes_no: 'boolean',
+    yesno: 'boolean',
+    'yes/no': 'boolean',
 };
 
 /** The type a field is, or `null` for one this table does not know. No type is text. */

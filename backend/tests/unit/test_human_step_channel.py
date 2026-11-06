@@ -370,3 +370,33 @@ class TestATeamsReplyAnswers:
         run = await _settled("run_teams")
         assert run.status == "completed"
         assert run.shared_state["approval"] == "yes, ship"
+
+
+
+# F1434: a reply to a step that asks one yes/no is the flag, so a later true/false condition reads it.
+
+def _asking_yes_no(orch_id, channel_id):
+    orch = _asking(orch_id, channel_id)
+    orch["steps"][0]["human_fields"] = [{"name": "ok", "type": "yes_no", "label": "Ship it?"}]
+    return orch
+
+
+class TestAYesNoReply:
+    async def test_yes_is_stored_as_true(self, wired, fake_llm):
+        await _run_to_pause(_asking_yes_no("orch_yes_no", wired.channel["id"]), wired.server, "run_yes_no")
+        await wired.adapter._dispatch("c1", "Yes", "u1")
+        run = await _settled("run_yes_no")
+        assert run.status == "completed"
+        assert run.shared_state["approval"] == {"ok": True} and run.shared_state["approval"]["ok"] is True
+
+    async def test_no_is_stored_as_false(self, wired, fake_llm):
+        await _run_to_pause(_asking_yes_no("orch_yes_no_n", wired.channel["id"]), wired.server, "run_yes_no_n")
+        await wired.adapter._dispatch("c1", "no", "u1")
+        run = await _settled("run_yes_no_n")
+        assert run.shared_state["approval"] == {"ok": False} and run.shared_state["approval"]["ok"] is False
+
+    async def test_any_other_reply_is_kept_as_its_text(self, wired, fake_llm):
+        await _run_to_pause(_asking_yes_no("orch_yes_no_t", wired.channel["id"]), wired.server, "run_yes_no_t")
+        await wired.adapter._dispatch("c1", "next tuesday", "u1")
+        run = await _settled("run_yes_no_t")
+        assert run.shared_state["approval"] == "next tuesday"

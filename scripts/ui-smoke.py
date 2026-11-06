@@ -3720,6 +3720,56 @@ async def check_humanfields(browser) -> str:
 
 
 @check
+async def check_humanyesno(browser) -> str:
+    """A field the planner wrote as `yes_no` is the yes/no field, and its answer is true (F1434).
+
+    Neither field table knew `yes_no` — only the clarify form did — so the step's card drew a text box, a person
+    typed "yes", and a later condition that reads true/false never met it (cap-05's shape). The editor names it
+    Yes / No, and the card's lone yes/no is its label's button (D218), which answers `true`.
+    """
+    oid = f"orch_uismoke_yesno_{int(time.time())}"
+    orch = human_gate_orchestration(oid)
+    orch["steps"][-1]["human_fields"] = [{"name": "ok", "type": "yes_no", "label": "Go ahead?"}]
+    api("/api/orchestrations", "POST", orch)
+    problems: list[str] = []
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    sent: list[dict] = []
+    page.on("request", lambda r: sent.append(json.loads(r.post_data or "{}"))
+            if r.method == "POST" and "/human-input" in r.url else None)
+    try:
+        await open_step(page, oid, "Approve")
+        shown = (await page.get_by_role("combobox", name="Field 1 type").inner_text()).strip()
+        if shown != "Yes / No":
+            problems.append(f"the editor shows a yes_no field as {shown!r}, not 'Yes / No'")
+        await page.keyboard.press("Escape")
+        await page.get_by_role("button", name="Run now", exact=True).click()
+        for _ in range(25):
+            await asyncio.sleep(1.0)
+            if await page.get_by_text("Waiting for your input").count():
+                break
+        await page.get_by_text("Waiting for your input").first.click()
+        await asyncio.sleep(0.6)
+        card = page.locator(CARD_QUESTION)
+        if await card.get_by_role("textbox").count():
+            problems.append("the card draws the yes_no field as a text box")
+        try:
+            await card.get_by_role("button", name="Go ahead", exact=True).click()
+            await asyncio.sleep(1.5)
+            got = sent[-1].get("response") if sent else None
+            if got != {"ok": True} or got.get("ok") is not True:
+                problems.append(f"the card answered {got!r}, not {{'ok': True}}")
+        except Exception as e:
+            problems.append(f"the card has no 'Go ahead' button for the yes_no field ({type(e).__name__})")
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "a yes_no field is Yes / No in the editor and its card's button answers true"
+
+
+@check
 async def check_loopmode(browser) -> str:
     """A loop can be switched to "While a condition holds" and stays there.
 
