@@ -18,6 +18,7 @@ const frame: EditorFrame = ({ title, description, actions, back, children }) => 
         title={title}
         description={description}
         actions={actions}
+        width="wide"
     >
         {children}
     </PageFrame>

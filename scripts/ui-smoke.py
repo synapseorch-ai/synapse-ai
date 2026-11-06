@@ -911,6 +911,112 @@ async def check_layout(browser) -> str:
     return f"no page scrolls, and a Hint's tooltip opens {round(gap)}px from its button"
 
 
+# ── sheet edge ───────────────────────────────────────────────────────────────
+
+#: Every list, library and detail page (F1438; F897's rule B, Naveen 10-24): it fills the sheet, its gutters growing on
+#: a wide screen. Browser's two tabs and a recording's page sat in the `form` column, a 600 px empty band on the right
+#: at 1920 (Naveen 11-06: "i see so much gap on the right.. i remember asking to fix this").
+SHEET_PAGES = (
+    "/agents", "/skills", "/tools", "/apps", "/browser/sessions", "/browser/recordings",
+    "/browser/recordings/rec_" + "s" * 24, "/runs", "/runs/run_smoke_m2b_done", "/templates", "/schedules",
+    "/channels", "/widgets", "/logs", "/evals", "/usage", "/vault", "/knowledge", "/dashboard", "/workflows",
+)
+#: A form keeps its reading width on the wide frame: Settings' one column (M2g).
+SHEET_FORM = "/settings/general"
+SHEET_SIZES = ((1920, 1080), (2560, 1440))
+#: PAGE_GUTTER at its widest, `clamp(2.5rem, 4vw - 1.75rem, 8rem)`.
+GUTTER_MAX = 128
+
+#: The page's frame as drawn: its header (the sheet's width), the header row's content box, and on a page that scrolls
+#: its body column and how far its widest part reaches. The frame pads header and body with one PAGE_GUTTER, so on a
+#: page that fills the sheet the two gaps of each are the same.
+SHEET_MEASURE = r"""() => {
+  const h1 = document.querySelector('main h1');
+  const header = h1 && h1.closest('header');
+  if (!header || !header.firstElementChild) return null;
+  const box = (el) => {
+    const r = el.getBoundingClientRect(), s = getComputedStyle(el);
+    return {left: r.left + parseFloat(s.paddingLeft), right: r.right - parseFloat(s.paddingRight)};
+  };
+  const sheet = header.getBoundingClientRect();
+  const out = {left: sheet.left, right: sheet.right, head: box(header.firstElementChild)};
+  const body = header.nextElementSibling;
+  if (body && body.lastElementChild && getComputedStyle(header.parentElement).overflowY === 'auto') {
+    const col = body.lastElementChild;
+    const c = col.getBoundingClientRect();
+    const reach = Math.max(c.left, ...[...col.children].map(k => k.getBoundingClientRect().right));
+    const form = col.querySelector(':scope > .max-w-\\[48rem\\]');
+    out.body = {right: box(body).right, col: c.right, reach, form: form ? form.getBoundingClientRect().width : null};
+  }
+  return out;
+}"""
+
+
+async def _sheet_context(browser, size):
+    """A context at `size` over a recording and the stubbed runs, so the detail pages have something to show."""
+    rid = "rec_" + "s" * 24
+    ctx = await browser.new_context(viewport={"width": size[0], "height": size[1]})
+    await ctx.route(re.compile(rf".*/api/recordings/{rid}$"), _answer(_recording(rid)))
+    await ctx.route(re.compile(rf".*/api/recordings/{rid}/versions$"), _answer({"versions": []}))
+    await ctx.route(re.compile(rf".*/api/recordings/{rid}/shots/[^/?]+$"), _answer({"detail": "none"}, 404))
+    for orch in (_M2B_REVIEW, _M2B_TRIAGE):
+        await ctx.route(f"**/api/orchestrations/{orch['id']}", _answer(orch))
+    for run_id, run in _M2B_RUNS.items():
+        await ctx.route(re.compile(rf".*/api/orchestrations/runs/{run_id}(\?.*)?$"), _answer(run))
+        await ctx.route(f"**/api/orchestrations/runs/{run_id}/children", _answer([]))
+        await ctx.route(f"**/api/orchestrations/runs/{run_id}/events/stream*",
+                        _answer(_M2B_STREAM, content_type="text/event-stream"))
+    return ctx
+
+
+def _sheet_gaps(m: dict) -> tuple[float, float]:
+    return m["head"]["left"] - m["left"], m["right"] - m["head"]["right"]
+
+
+@check
+async def check_sheetedge(browser) -> str:
+    """A list, library or detail page fills the sheet at 1920 and 2560 (F1438; F897's rule B): its header's right gap
+    is its left one, PAGE_GUTTER, and its body's widest part reaches the same line. A settings form keeps its reading
+    width (48rem) on that frame."""
+    bad: list[str] = []
+    for size in SHEET_SIZES:
+        ctx = await _sheet_context(browser, size)
+        page = await ctx.new_page()
+        try:
+            for path in SHEET_PAGES + (SHEET_FORM,):
+                await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+                try:
+                    await page.locator("main h1").first.wait_for(timeout=30_000)
+                except Exception:
+                    bad.append(f"{path} at {size[0]}: no page title")
+                    continue
+                await asyncio.sleep(SETTLE)
+                m = await page.evaluate(SHEET_MEASURE)
+                if not m:
+                    bad.append(f"{path} at {size[0]}: no page frame")
+                    continue
+                left, right = _sheet_gaps(m)
+                if abs(right - left) > 2 or right > GUTTER_MAX + 2:
+                    bad.append(f"{path} at {size[0]}: the header stops {round(right)}px from the sheet's edge, "
+                               f"its left gutter {round(left)}px")
+                body = m.get("body")
+                if path == SHEET_FORM:
+                    if not body or body["form"] is None:
+                        bad.append(f"{path} at {size[0]}: no settings column")
+                    elif body["form"] > 768 + 1:
+                        bad.append(f"{path} at {size[0]}: the settings form runs {round(body['form'])}px, past 48rem")
+                    continue
+                if body and (abs(body["right"] - body["col"]) > 2 or body["reach"] < body["col"] - 2):
+                    bad.append(f"{path} at {size[0]}: the content stops {round(m['right'] - body['reach'])}px from "
+                               f"the sheet's edge, its left gutter {round(left)}px")
+        finally:
+            await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return (f"{len(SHEET_PAGES)} list, library and detail pages fill the sheet at 1920 and 2560, gutters even, and a "
+            "settings form keeps 48rem")
+
+
 # ── contrast ─────────────────────────────────────────────────────────────────
 
 #: Both themes, because the defect this exists for was reported as a light-mode

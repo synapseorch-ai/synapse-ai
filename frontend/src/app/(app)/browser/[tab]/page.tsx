@@ -12,7 +12,7 @@ export default async function BrowserTabPage(props: { params: Promise<{ tab: str
     const { tab } = await props.params;
     if (!(TABS as readonly string[]).includes(tab)) redirect('/browser/sessions');
     return (
-        <AppScreen id="browser">
+        <AppScreen id="browser" width="wide">
             <BrowserLibrary tab={tab as (typeof TABS)[number]} />
         </AppScreen>
     );
