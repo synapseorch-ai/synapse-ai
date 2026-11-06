@@ -85,17 +85,19 @@ Free and open source under AGPL-3.0, with no account and no licence check.
 
 **macOS / Linux**
 ```bash
-curl -LsSf https://github.com/synapseorch-ai/synapse-ai/releases/latest/download/setup.sh | bash
+curl -LsSf https://synapseorch.com/install.sh | bash
 ```
 
 **Windows (PowerShell)**
 ```powershell
-irm https://github.com/synapseorch-ai/synapse-ai/releases/latest/download/setup.ps1 | iex
+irm https://synapseorch.com/install.ps1 | iex
 ```
 
 Nothing needs to be installed first: the installer brings its own Python and, if yours is missing or too old,
 Node.js — no sudo. It asks which AI to use (and whether to start on login) while it installs, and ends with the link.
 Your data and settings live in `~/.synapse`. Add `--yes` (`curl … | bash -s -- --yes`) to take every default.
+The short addresses redirect to the scripts on the latest GitHub release: [setup.sh](https://github.com/synapseorch-ai/synapse-ai/releases/latest/download/setup.sh)
+and [setup.ps1](https://github.com/synapseorch-ai/synapse-ai/releases/latest/download/setup.ps1).
 
 <details>
 <summary><strong>npm, pip or Docker</strong></summary>
