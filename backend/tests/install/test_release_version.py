@@ -113,3 +113,37 @@ def test_a_hung_image_build_fails_within_ninety_minutes(jobs):
     """F828: v1.9.2's combined image sat in "Build and push" for 4 h under GitHub's
     default 6-hour limit (1.9.1's took 26 min, the re-run 28)."""
     assert jobs["publish-docker"].get("timeout-minutes") == 90
+
+
+def _stamped(jobs, tmp_path, prerelease: str, tag: str) -> dict[str, str]:
+    """The publish step's own stamp, run on copies of both setup scripts as the runner's checkout holds them."""
+    import re
+    import subprocess
+
+    run = _step(jobs["github-release"], run="gh release create")["run"]
+    block = re.search(r'^\s*if \[ "\$PRERELEASE" = "true" \]; then\n(\s*sed -i .*setup\.sh setup\.ps1\n)\s*fi$', run, re.M)
+    assert block, "no pre-release stamp of setup.sh and setup.ps1 in the publish step"
+    for name in ("setup.sh", "setup.ps1"):
+        (tmp_path / name).write_text((ROOT / name).read_text(encoding="utf-8"), encoding="utf-8")
+    script = f'if [ "$PRERELEASE" = "true" ]; then\n{block.group(1)}fi\n'
+    subprocess.run(["bash", "-c", script], cwd=tmp_path, check=True,
+                   env={"PATH": "/usr/bin:/bin", "PRERELEASE": prerelease, "GITHUB_REF_NAME": tag})
+    return {name: (tmp_path / name).read_text(encoding="utf-8") for name in ("setup.sh", "setup.ps1")}
+
+
+def test_a_prereleases_setup_scripts_fetch_its_own_installer(jobs, tmp_path):
+    """Both scripts fetch synapse-install.pyz (and its .sha256) from releases/latest, which a pre-release never
+    becomes: v2.0.0-rc1's `curl …/releases/download/v2.0.0-rc1/setup.sh | bash` reached v1.9.3's release, which has
+    no installer, and stopped at "Could not download the installer". The copies the release carries are stamped with
+    their own release; the repo's files stay as they are."""
+    stamped = _stamped(jobs, tmp_path, "true", "v2.0.0-rc1")
+    for name, text in stamped.items():
+        assert "releases/latest" not in text, name
+        assert "https://github.com/synapseorch-ai/synapse-ai/releases/download/v2.0.0-rc1" in text, name
+    assert "releases/latest/download" in (ROOT / "setup.sh").read_text(encoding="utf-8")
+
+
+def test_a_final_releases_setup_scripts_are_carried_as_they_are(jobs, tmp_path):
+    stamped = _stamped(jobs, tmp_path, "false", "v2.0.0")
+    for name, text in stamped.items():
+        assert text == (ROOT / name).read_text(encoding="utf-8"), name

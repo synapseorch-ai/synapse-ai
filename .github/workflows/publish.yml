@@ -219,6 +219,11 @@ jobs:
           # A pre-release never becomes releases/latest, which 1.x's `synapse upgrade`
           # and both setup scripts follow; it is installed by its own release's links.
           if [ "$PRERELEASE" = "true" ]; then kind=--prerelease; else kind=--latest; fi
+          # Both scripts fetch the installer from releases/latest, which a pre-release never becomes: the copies a
+          # pre-release carries are stamped with its own release (the repo's files stay as they are).
+          if [ "$PRERELEASE" = "true" ]; then
+            sed -i "s#releases/latest/download#releases/download/$GITHUB_REF_NAME#g" setup.sh setup.ps1
+          fi
           # The release's text is its notes file when there is one — generated notes
           # list every commit since the last tag (about 1,260 for 2.0.0).
           notes=".github/release-notes/$GITHUB_REF_NAME.md"
