@@ -44,6 +44,10 @@ class ModelEntry:
     can_pay: bool
     #: Its input window in tokens (`core.providers.window_tokens`, a host's facts over it); None when not known.
     window: int | None = None
+    #: A CLI model's place among the CLI models (F1410): the list price, USD per 1M output tokens, of the model it runs
+    #: (`cli.claude.claude-sonnet-4-6` ranks as `claude-sonnet-4-6`), for ordering only and never said as its cost;
+    #: None for any other model, and for a CLI alias the rate card has no row for.
+    rank_out: float | None = None
 
 
 @dataclass(frozen=True)
@@ -96,12 +100,14 @@ async def _own(model_id: str, pricing: dict) -> ModelEntry:
     spec = provider_for(model_id)
     source = _source(model_id, spec.mode)
     priced = _resolve_pricing_entry(model_id, pricing) if source not in ("cli", "local") else None
+    ranked = (_resolve_pricing_entry(model_id.split(".", 2)[2], pricing)
+              if source == "cli" and model_id.count(".") >= 2 else None)
     return ModelEntry(
         id=model_id, name=model_id, provider=spec.id, source=source, tools=spec.caps.tools,
         vision=model_can_see_images(model_id), reasoning=supports_native(model_id),
         price_in=0 if source == "local" else (priced or {}).get("input_per_1m"),
         price_out=0 if source == "local" else (priced or {}).get("output_per_1m"),
-        can_pay=True, window=window_tokens(model_id))
+        can_pay=True, window=window_tokens(model_id), rank_out=(ranked or {}).get("output_per_1m"))
 
 
 async def _pricing() -> dict:
@@ -150,6 +156,9 @@ _REASONS = {"narrow": "the lowest-cost model that fits a narrow job", "reasoning
             "default": "your workspace's default model, which fits",
             "best": "the strongest that fits, within the automatic price ceiling"}
 _ONLY = "the only model here that fits"
+#: Where a pick came from on a workspace with no own-key or platform model at all (F1410).
+_NO_POOL = {"cli": "from your CLI models (this workspace has no own key or platform model)",
+            "local": "from your local models (this workspace has no own key or platform model)"}
 
 
 def _fits(e: ModelEntry, needs: str, has_tools: bool, long_inputs: bool = False) -> bool:
@@ -175,9 +184,11 @@ def _strongest_first(e: ModelEntry, has_tools: bool = False) -> tuple:
     return (not e.reasoning, has_tools and e.tools != "native", e.price_out is None, -(e.price_out or 0), e.id)
 
 
-def _no_model(candidates: list[ModelEntry], needs: str, has_tools: bool, *, of: str = "") -> NoModel:
+def _no_model(candidates: list[ModelEntry], needs: str, has_tools: bool, *, of: str = "",
+              long_inputs: bool = False) -> NoModel:
     """Why nothing here does the job, said by what the candidates lack (SAI2's probe): the wallet first, then tools,
-    then images. `of` names the family a wish asked for."""
+    then images, then the window when long inputs were asked for (F1410: never said when they were not). `of` names the
+    family a wish asked for."""
     if candidates and not any(e.can_pay for e in candidates):
         if of:
             return NoModel(f"{', '.join(sorted(e.id for e in candidates))} can't be paid for now (the wallet).")
@@ -189,8 +200,11 @@ def _no_model(candidates: list[ModelEntry], needs: str, has_tools: bool, *, of: 
             "calls tools"
     elif needs == "vision" and not any(e.vision for e in payable):
         lacks = "reads images"
-    else:
+    elif long_inputs:
         lacks = f"reads long inputs (a window of {LONG_WINDOW // 1000}k tokens or more)"
+    else:
+        return NoModel("No model here can be picked for this agent automatically: name the one it should use."
+                       if not of else f"No {of} model here fits this agent: name the one it should use.")
     return NoModel(f"{kind} {lacks}." if not of else f"{kind} {lacks}, which this agent needs.")
 
 
@@ -256,13 +270,25 @@ def pick(needs: str, *, has_tools: bool, menu: list[ModelEntry], narrow: bool = 
         if fitting:
             chosen, why = _best(fitting, needs, has_tools=has_tools, narrow=narrow, default=default)
             return Picked(chosen.id, f"{_REASONS[why]}, {where}{said}")
+    if not usable:
+        # No own-key or platform model at all (F1410, mirroring the local rule below): the workspace's default where it
+        # is a CLI or local model that fits; else a CLI model, ranked as own keys are, by the list price of the model
+        # it runs (`rank_out`, never said as its cost); a local one only when no CLI model fits.
+        mine = next((e for e in menu if default and e.id == default and _fits(e, needs, has_tools, long_inputs)), None)
+        if mine is not None and mine.source in _NO_POOL:
+            return Picked(mine.id, f"{_REASONS['default']}, {_NO_POOL[mine.source]}{said}")
+        cli = [replace(e, price_out=e.rank_out) for e in menu
+               if e.source == "cli" and _fits(e, needs, has_tools, long_inputs)]
+        if cli:
+            chosen, why = _best(cli, needs, has_tools=has_tools, narrow=narrow, default=None)
+            return Picked(chosen.id, f"{_REASONS[why]}, {_NO_POOL['cli']}{said}")
     # A local model is offered when it is the only kind there is (Naveen: only when asked, or the only option).
     local = [e for e in menu if e.source == "local" and _fits(e, needs, has_tools, long_inputs)]
     if local and not usable:
         chosen = local[0] if len(local) == 1 else _by_need(local, needs, ceiling=True, has_tools=has_tools)
         return Picked(chosen.id, (_ONLY if len(local) == 1 else _REASONS["narrow" if needs != "reasoning"
                                                                           else "reasoning"]) + said)
-    return _no_model(usable or menu, needs, has_tools)
+    return _no_model(usable or menu, needs, has_tools, long_inputs=long_inputs)
 
 
 def workspace_model() -> str:
@@ -408,7 +434,12 @@ def resolve_wish(wish: str, needs: str, *, has_tools: bool, menu: list[ModelEntr
     names = sorted(e.id for e in menu)
     asked_kind = "cli" if "cli" in words else ("local" if words & {"local", "ollama"} else None)
     ordinary = [e for e in menu if e.source not in ("cli", "local")]
+    if not ordinary:
+        # No own-key or platform model at all (F1410): a wish is read among the CLI models, else the local ones.
+        ordinary = [e for e in menu if e.source == "cli"] or [e for e in menu if e.source == "local"]
     kind_pool = [e for e in menu if e.source == asked_kind] if asked_kind else ordinary
+    # A CLI model ranks by the list price of the model it runs (F1410, `rank_out`), never said as its cost.
+    kind_pool = [replace(e, price_out=e.rank_out) if e.source == "cli" else e for e in kind_pool]
 
     named, named_as = _named(kind_pool, wish, words)
     if not named and not asked_kind:
