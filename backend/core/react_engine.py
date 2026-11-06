@@ -4077,7 +4077,10 @@ async def run_agent_step(
                     except (json.JSONDecodeError, KeyError, TypeError):
                         pass
 
-                    if _is_browser_tool(tool_name):
+                    # A browser call that came back as an error (a refusal, Playwright's `### Error`, the person still
+                    # driving) is read as what it said, and the page before it stays the page (F1407: take4 read
+                    # "This browser session has used its 30 actions." as the page for three turns).
+                    if _is_browser_tool(tool_name) and not getattr(result, "isError", False):
                         # Browser snapshots go stale on every navigation/click.
                         # A page snapshot is only useful this turn. It goes in the
                         # volatile tail of the user message (see
