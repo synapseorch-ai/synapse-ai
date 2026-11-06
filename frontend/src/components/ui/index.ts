@@ -31,7 +31,7 @@ export { EmptyState, ErrorNote, SuccessNote } from "./feedback";
 export { controlStyles, type ControlSize } from "./control-styles";
 export { Field, FieldRow, Input, SearchInput, Textarea } from "./input";
 export { TextLink, type TextLinkVariant } from "./link";
-export { Markdown } from "./markdown";
+export { Markdown, TaskBox } from "./markdown";
 export {
   CellStack,
   TBody,

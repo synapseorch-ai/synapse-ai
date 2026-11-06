@@ -2298,6 +2298,47 @@ async def check_labels(browser) -> str:
         await ctx.close()
 
 
+#: A skill whose body is a checklist: one item done, one to do.
+_TASKLIST_SKILL = {"name": "uismoke-tasks", "description": "A release checklist", "source": "library"}
+_TASKLIST_BODY = "# Release\n\n- [x] Write the notes\n- [ ] Tag the release\n"
+
+
+@check
+async def check_tasklist(browser) -> str:
+    """A Markdown checklist's boxes say what they are: "Done" when ticked, "To do" when not (F1420; Naveen 11-06).
+
+    remark-gfm draws `- [ ]` as a disabled checkbox with no name, so a screen reader heard "check box, not checked,
+    unavailable" and nothing of what it was, wherever Markdown is shown: a skill's preview, a chat answer, an
+    approval, the run log (`labels` found 62 on one skill's preview). Asked of a skill's preview, which opens by
+    itself, from stubbed answers: every box in the checklist is named by its state, keeps that state, and stays
+    disabled (a preview ticks nothing).
+    """
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route("**/api/skills", _answer([_TASKLIST_SKILL]))
+    await ctx.route(f"**/api/skills/{_TASKLIST_SKILL['name']}", _answer({**_TASKLIST_SKILL, "body": _TASKLIST_BODY}))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/skills", wait_until="domcontentloaded")
+        await page.get_by_text("Tag the release", exact=True).first.wait_for(timeout=30_000)
+        await asyncio.sleep(0.5)
+        boxes = page.locator('li input[type="checkbox"]')
+        if await boxes.count() != 2:
+            raise AssertionError(f"the checklist drew {await boxes.count()} box(es), not its two")
+        done = page.get_by_role("checkbox", name="Done", exact=True)
+        todo = page.get_by_role("checkbox", name="To do", exact=True)
+        if (await done.count(), await todo.count()) != (1, 1):
+            names = [await b.get_attribute("aria-label") for b in await boxes.all()]
+            raise AssertionError(f"the boxes are not named Done and To do: {await done.count()} Done, "
+                                 f"{await todo.count()} To do (aria-label {names})")
+        if not await done.is_checked() or await todo.is_checked():
+            raise AssertionError("a box's name and its tick disagree")
+        if not (await done.is_disabled() and await todo.is_disabled()):
+            raise AssertionError("a preview's box can be ticked")
+    finally:
+        await ctx.close()
+    return "a checklist's boxes read Done and To do, ticked as written, and disabled"
+
+
 # ── a field's name is its label ──────────────────────────────────────────────
 
 @check
