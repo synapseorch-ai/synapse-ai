@@ -3916,11 +3916,13 @@ export default function Home() {
           />
           {phone && frontBrowser && (
             <Button variant="secondary" size="sm"
+                    // Its name says it, as one phrase: words beside the dot were read "Browser : needs you".
+                    aria-label={phoneView !== 'browser' && frontBrowser.wanted ? 'Browser: needs you' : undefined}
                     onClick={() => { if (phoneView !== 'browser') changeBrowser({ wanted: false }); setPhoneView(phoneView === 'browser' ? 'chat' : 'browser'); }}>
               {phoneView === 'browser'
                 ? <><MessageSquare className="size-3.5" aria-hidden />Chat</>
                 : <><Globe className="size-3.5" aria-hidden />Browser{frontBrowser.wanted && (
-                    <><span aria-hidden className="size-2 rounded-full bg-person" /><span className="sr-only">: needs you</span></>
+                    <span aria-hidden className="size-2 rounded-full bg-person" />
                   )}</>}
             </Button>
           )}
