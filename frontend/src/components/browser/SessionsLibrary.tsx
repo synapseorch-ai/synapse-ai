@@ -13,6 +13,7 @@ import { Globe } from 'lucide-react';
 import { Button, ConfirmDialog, EmptyState, ErrorNote, Field, Input, Modal } from '@/components/ui';
 
 import { BrowserPane } from './BrowserPane';
+import { BrowserPanel } from './BrowserPanel';
 import { parseSites } from './BrowserSetup';
 import type { BrowserHost } from './model';
 import {
@@ -203,7 +204,7 @@ export function SessionsLibrary({ host, browserHost, onShare }: {
       </Modal>
 
       {signing && (
-        <div role="dialog" aria-modal="true" aria-label="Keep me signed in to a site" className="fixed inset-0 z-50 bg-scrim/60 p-3 md:p-8">
+        <BrowserPanel label="Keep me signed in to a site">
           <BrowserPane
             host={browserHost}
             sessionId={signing.id}
@@ -211,9 +212,9 @@ export function SessionsLibrary({ host, browserHost, onShare }: {
             actions={[]}
             signIn={{ site: signing.site, onFinish: finish, busy: finishing, refused }}
             onClosed={() => setSigning(null)}
-            className="h-full overflow-hidden rounded-xl border border-border shadow-elevated"
+            className="h-full"
           />
-        </div>
+        </BrowserPanel>
       )}
 
       <ConfirmDialog

@@ -3,6 +3,7 @@ export {
   ACTION_BUDGET, BROWSER_DEFAULTS, BrowserSetup, browserConfig, parseSites, type BrowserConfig,
 } from './BrowserSetup';
 export { BrowserPane } from './BrowserPane';
+export { BrowserPanel } from './BrowserPanel';
 export { BrowserTurnCard } from './BrowserTurnCard';
 export { RecordingEditor, type EditorFrame } from './RecordingEditor';
 export { RecordTask, RecordingsLibrary } from './RecordingsLibrary';

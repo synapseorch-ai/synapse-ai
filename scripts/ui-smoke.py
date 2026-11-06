@@ -13812,6 +13812,10 @@ async def check_brwpress(browser) -> str:
                    "actor": "guard", "action": "held", "target": "POST pay.example.com"}]
         await _brw_push(page, "post", _frame({"type": "browser_action", **pressed}, "p-2"))
         await _brw_push(page, "frames:bsP", "".join(_frame({"log": e}) for e in theirs))
+        # F1428: the list is folded under the page until asked for; opened, it reads as it did.
+        fold = pane.locator("details").first
+        if not await fold.evaluate("d => d.open"):
+            await fold.locator("summary").click()
         listed = pane.get_by_role("list", name="What the agent did")
         for words in ("Pressed ‘Submit feedback’, as you asked: “send the feedback form when it's filled in”",
                       "You pressed ‘Pay now’", "You sent POST to shop.example.com", "You took over",
@@ -14231,6 +14235,7 @@ async def _brw_hero(page, region) -> list[str]:
               boxTop: b && b.top, iw: img && img.clientWidth, ih: img && img.clientHeight,
               vw: window.innerWidth, vh: window.innerHeight, folded: !!details && !details.open,
               summary: details ? details.querySelector('summary').innerText : null,
+              label: details && details.querySelector('ol') ? details.querySelector('ol').getAttribute('aria-label') : null,
               wide: document.documentElement.scrollWidth <= window.innerWidth + 1};
     }""")
     # (1) As large as fits: the column's width, or the screen's height at 16:10 less what is around the picture when
@@ -14244,7 +14249,10 @@ async def _brw_hero(page, region) -> list[str]:
         bad.append(f"the live picture is letterboxed inside its box: {got}")
     if got["bottom"] and got["bottom"] > got["vh"] + 1:
         bad.append(f"the page's foot is below the screen: {got}")
-    if not got["folded"] or not re.search(r"What the agent did · \d", got["summary"] or ""):
+    # F1428: the folded line is the newest action and how many ("Clicked Search button · 1 action"); whose list it
+    # is ("What the agent did") is the list's own name inside it. Folded, closed, counted, and the agent's, as before.
+    if (not got["folded"] or not re.search(r"· \d+ actions?$", (got["summary"] or "").strip())
+            or got["label"] != "What the agent did"):
         bad.append(f"what the agent did is not folded and closed under the picture: {got}")
     if not got["wide"]:
         bad.append("the run page scrolls sideways")
@@ -14505,8 +14513,11 @@ async def check_brwreplayrun(browser) -> str:
                 bad.append("a replay's live pane says the agent is driving")
             fold = (await region.locator("details summary").first.inner_text()) if await region.locator(
                 "details summary").count() else ""
-            if not re.search(r"What was done · \d", fold):
-                bad.append(f"a replay's fold says {fold!r}, not what was done (F1376)")
+            # F1428: the line is the newest step and how many; that it is what was done, not the agent's, is the
+            # list's own name inside the fold (F1376's pin, where it now lives).
+            named = await region.locator('details ol[aria-label="What was done"]').count()
+            if not re.search(r"· \d+ actions?$", fold.strip()) or not named:
+                bad.append(f"a replay's fold says {fold!r} (its list named 'What was done': {bool(named)}), not what was done (F1376)")
             # F1367: a press on the page offers Take over, saying the recording stops after this step; Take over
             # takes the wheel (the replay stops before its next step: test_a_take_over_stops_the_replay).
             taken: list[str] = []

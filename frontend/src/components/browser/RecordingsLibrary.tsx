@@ -13,6 +13,7 @@ import { useHelpTopic } from '@/components/help';
 import { Button, EmptyState, ErrorNote, Field, Input, Modal } from '@/components/ui';
 
 import { BrowserPane } from './BrowserPane';
+import { BrowserPanel } from './BrowserPanel';
 import type { BrowserHost } from './model';
 import { listRecordings, openRecordBrowser, stepCount, stopRecording, type RecordBrowser, type RecordingSummary,
          type RecordingsHost } from './recordings';
@@ -187,7 +188,7 @@ export function RecordTask({ host, sessionsHost, browserHost, onKept, label = 'R
         </div>
       </Modal>
       {open && (
-        <div role="dialog" aria-modal="true" aria-label="Record a task" className="fixed inset-0 z-50 bg-scrim/60 p-3 md:p-8">
+        <BrowserPanel label="Record a task">
           <BrowserPane
             host={browserHost}
             sessionId={open.browserSessionId}
@@ -195,9 +196,9 @@ export function RecordTask({ host, sessionsHost, browserHost, onKept, label = 'R
             actions={[]}
             record={{ onStop: stop, busy: stopping, failed: stopFailed }}
             onClosed={() => setOpen(null)}
-            className="h-full overflow-hidden rounded-xl border border-border shadow-elevated"
+            className="h-full"
           />
-        </div>
+        </BrowserPanel>
       )}
     </>
   );

@@ -947,7 +947,7 @@ function tabTitle(text: string): string {
  * turn, an approval, a helper or a team: each is drawn from what the server
  * holds.
  */
-function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBrowser, onShowBrowser, onResumeHook }: {
+function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBrowser, onShowBrowser, onBrowserTurn, onResumeHook }: {
   tab: ChatTab;
   /** Its title, its draft, or — before its first message — its agent changed. */
   onChange: (change: Partial<ChatTab>) => void;
@@ -961,6 +961,8 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
   onBrowser: (event: BrowserEvent, agentName: string) => void;
   /** A browser turn's "Open the browser": the shell shows that session's pane. */
   onShowBrowser: (sessionId: string, agentName: string) => void;
+  /** A browser turn arrived live on this turn's stream (F1428): the browser needs the person. Never a kept one. */
+  onBrowserTurn: (sessionId: string, agentName: string) => void;
   /** Gives the shell what to call when the person hands the browser back in the pane: the waiting turn goes on. */
   onResumeHook: (resume: () => void) => void;
 }) {
@@ -2705,6 +2707,7 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
         // question (F209), offering to re-run a turn that was only waiting.
         turnAnsweredRef.current = true;
         setStreamingActivity(null);
+        if (data.kind === 'browser_turn' && typeof data.session_id === 'string') onBrowserTurn(data.session_id, agentNameRef.current);
         // A member's question (TEAM1b): drawn in its lane, which the team's note keeps on screen.
         if (data.member_id) putTeam(foldTeam(liveTeamRef.current, data));
         const kept = teamNote(takeLiveTeam(), takeLiveHelpers());
@@ -3639,6 +3642,8 @@ type TabBrowser = {
   actions: BrowserAction[];
   /** The pane is open beside the chat. Closing it leaves the browser running. */
   shown: boolean;
+  /** A live browser turn waits on the person (F1428): a phone marks its Browser button rather than leave the chat. */
+  wanted?: boolean;
   /** The browser is closed: its last page stays, dimmed. */
   closed: boolean;
   /** What it started signed in with, and what it could not be (F1140). */
@@ -3811,9 +3816,17 @@ export default function Home() {
   const showBrowser = useCallback((tabId: string, sessionId: string, agentName: string) => {
     setBrowsers(all => {
       const had = foldBrowser(all[tabId], { type: 'browser_session', session_id: sessionId, owner: '' }, agentName)!;
-      return { ...all, [tabId]: { ...had, shown: true } };
+      return { ...all, [tabId]: { ...had, shown: true, wanted: false } };
     });
     setPhoneShows({ tab: tabId, view: 'browser' });
+  }, []);
+  // A live browser turn (F1428): the person asked for this browser's task, so its pane comes back if they had hidden
+  // it; a phone stays on the chat and marks its Browser button.
+  const browserTurn = useCallback((tabId: string, sessionId: string, agentName: string) => {
+    setBrowsers(all => {
+      const had = foldBrowser(all[tabId], { type: 'browser_session', session_id: sessionId, owner: '' }, agentName)!;
+      return { ...all, [tabId]: { ...had, shown: true, wanted: true } };
+    });
   }, []);
   const changeBrowser = useCallback((edit: Partial<TabBrowser>) => {
     if (!frontId) return;
@@ -3833,7 +3846,7 @@ export default function Home() {
         memory={frames}
         closedBefore={frontBrowser.closed}
         onClosed={() => changeBrowser({ closed: true })}
-        onHandedBack={() => resumers.current[frontId]?.()}
+        onHandedBack={() => { changeBrowser({ wanted: false }); resumers.current[frontId]?.(); }}
         owner={front ? `chat:${front.sessionId}` : undefined}
         signedIn={frontBrowser.signedIn}
         picks={front ? chatPicks : undefined}
@@ -3902,10 +3915,13 @@ export default function Home() {
             className="size-11"
           />
           {phone && frontBrowser && (
-            <Button variant="secondary" size="sm" onClick={() => setPhoneView(phoneView === 'browser' ? 'chat' : 'browser')}>
+            <Button variant="secondary" size="sm"
+                    onClick={() => { if (phoneView !== 'browser') changeBrowser({ wanted: false }); setPhoneView(phoneView === 'browser' ? 'chat' : 'browser'); }}>
               {phoneView === 'browser'
                 ? <><MessageSquare className="size-3.5" aria-hidden />Chat</>
-                : <><Globe className="size-3.5" aria-hidden />Browser</>}
+                : <><Globe className="size-3.5" aria-hidden />Browser{frontBrowser.wanted && (
+                    <><span aria-hidden className="size-2 rounded-full bg-person" /><span className="sr-only">: needs you</span></>
+                  )}</>}
             </Button>
           )}
           <IconButton icon={History} label="History" onClick={() => setPanel('history')} />
@@ -3935,6 +3951,7 @@ export default function Home() {
               onOpenChat={(sessionId, agentId, title) => tabs.openConversation(sessionId, agentId, tabTitle(title))}
               onBrowser={(event, agentName) => onBrowser(front.id, event, agentName)}
               onShowBrowser={(sessionId, agentName) => showBrowser(front.id, sessionId, agentName)}
+              onBrowserTurn={(sessionId, agentName) => browserTurn(front.id, sessionId, agentName)}
               onResumeHook={(resume) => { resumers.current[front.id] = resume; }}
             />
           </div>

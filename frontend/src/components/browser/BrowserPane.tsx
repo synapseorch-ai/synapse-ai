@@ -1,13 +1,13 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Globe, Info, KeyRound, Maximize2, Square, X } from 'lucide-react';
+import { AlertCircle, ChevronRight, Globe, Info, KeyRound, Maximize2, Square, X } from 'lucide-react';
 
 import { Button, IconButton, Input, Modal, Spinner, usePersisted } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
 import { BrowserActionLine } from './BrowserActionLine';
-import { actionCount, hostOf, loadErrorWords, mergeActions, shortUrl, type BrowserAction, type BrowserFrame, type BrowserHost, type BrowserInput,
+import { actionCount, actionWords, hostOf, loadErrorWords, mergeActions, shortUrl, type BrowserAction, type BrowserFrame, type BrowserHost, type BrowserInput,
          type BrowserSessionEvent, type FrameRecording, type HandedBack, type LoadError, type Wheel } from './model';
 import { DialogAsk, FileAsk, MomentStrip, SelectAsk } from './PageMoments';
 import { PageScreen } from './PageScreen';
@@ -214,6 +214,10 @@ export function BrowserPane({
   const alone = !!signIn || !!record;
   const disclaimer = !alone && !closed && disclaimerSeen === '0';
 
+  // Whether the log was left open, kept for each kind of pane: a run's, a browser of the person's alone, a chat's.
+  const [logOpen, setLogOpen] = usePersisted<'0' | '1'>(
+    `browser-log-open:${hero ? 'run' : alone ? 'alone' : 'chat'}`, raw => (raw === '1' ? '1' : '0'), '0');
+
   // The newest action stays in view as the list grows.
   const list = useRef<HTMLOListElement>(null);
   useEffect(() => {
@@ -403,20 +407,22 @@ export function BrowserPane({
         </div>
       )}
 
-      {lines.length > 0 && !hero && (
-        <ol ref={list} aria-label={doneBy} className="max-h-36 shrink-0 space-y-1.5 overflow-y-auto border-t border-border px-3 py-2 text-xs text-text-muted">
-          {lines.map(a => (
-            <li key={`${a.session_id}:${a.n}`}>
-              <BrowserActionLine action={a} dense shot={shotFor(a)} />
-            </li>
-          ))}
-        </ol>
-      )}
-      {lines.length > 0 && hero && (
-        // Folded under the picture, closed until asked for (F1356).
-        <details className="group shrink-0 border-t border-border text-xs text-text-muted">
-          <summary className="cursor-pointer select-none px-3 py-2 font-medium text-text hover:bg-surface-2">
-            {doneBy} · {lines.length}
+      {lines.length > 0 && (
+        // Folded under the picture, closed until asked for (F1356; everywhere since F1428): one line says the newest
+        // action and how many. What needs the person is never in here: it is the strip above the page, and while
+        // one is up the line says so.
+        <details open={logOpen === '1'} onToggle={e => setLogOpen(e.currentTarget.open ? '1' : '0')}
+                 className="group shrink-0 border-t border-border text-xs text-text-muted">
+          <summary className="flex cursor-pointer select-none items-center gap-2 px-3 py-2 text-text hover:bg-surface-2">
+            <ChevronRight className="size-3.5 shrink-0 text-text-faint transition-transform group-open:rotate-90 motion-reduce:transition-none" aria-hidden />
+            {banner && (
+              <span className="flex shrink-0 items-center gap-1.5 font-medium text-person-ink">
+                <span aria-hidden className="size-2 rounded-full bg-person" />
+                Needs you ·
+              </span>
+            )}
+            <span className="min-w-0 truncate">{actionWords(lines[lines.length - 1])}</span>
+            <span className="shrink-0 text-text-muted">· {actionCount(lines.length)}</span>
           </summary>
           <ol ref={list} aria-label={doneBy} className="max-h-64 space-y-1.5 overflow-y-auto px-3 pb-2">
             {lines.map(a => (
