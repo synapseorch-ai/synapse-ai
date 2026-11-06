@@ -437,21 +437,32 @@ async def _read_page(page, url: str, config: RunConfig) -> CrawlResult:
     screenshot. A wait that never comes true is a failure that says "Wait condition failed" (`_arun_once`)."""
     await _send_headers(page, url=url)
     downloads: list = []
+    # The navigation's own content-type: a response Chromium downloads is never handed back by `goto` (F1406).
+    sent_as: list[str] = []
 
     def on_download(download) -> None:  # a function: Playwright tags its listeners, which a bound builtin can't take
         downloads.append(download)
 
+    def on_response(r) -> None:
+        try:
+            if r.request.is_navigation_request() and r.frame == page.main_frame:
+                sent_as.append(r.headers.get("content-type") or "")
+        except PlaywrightError:
+            pass  # a worker's response has no frame
+
     page.on("download", on_download)
+    page.on("response", on_response)
     try:
         response = await page.goto(url, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT_MS)
     except PlaywrightError:
         if not downloads:
             await asyncio.sleep(0.5)  # the download event can follow the aborted navigation
         if downloads:
-            return await _read_download(downloads[0], url)
+            return await _read_download(downloads[0], url, sent_as[-1] if sent_as else None)
         raise
     finally:
         page.remove_listener("download", on_download)
+        page.remove_listener("response", on_response)
     try:
         await page.wait_for_load_state("networkidle", timeout=SETTLE_MS)
     except PlaywrightError:
@@ -474,7 +485,15 @@ async def _read_page(page, url: str, config: RunConfig) -> CrawlResult:
     if (blocked := _refusal(response, html)) is not None:
         return CrawlResult(success=False, error_message=blocked)
     found = await page.evaluate(_LINKS_AND_IMAGES, ", ".join(config.excluded_tags))
-    result = CrawlResult(success=True, markdown=_markdown(html, page.url, config.excluded_tags),
+    markdown = None
+    if response is not None and _read_as_sent(response.headers.get("content-type")):
+        try:
+            markdown = await response.text()
+        except PlaywrightError:
+            pass  # a body Chromium no longer holds is read as the page it showed
+    if markdown is None:
+        markdown = _markdown(html, page.url, config.excluded_tags)
+    result = CrawlResult(success=True, markdown=markdown,
                          links=_links(found["links"], page.url), media={"images": found["images"]})
     if config.extraction_strategy is not None:
         result.extracted_content = json.dumps(config.extraction_strategy.extract(html), ensure_ascii=False)
@@ -629,6 +648,26 @@ def _links(found: list[dict], page_url: str) -> dict:
 _EMPTY_ANCHOR = re.compile(r"""<a\b[^>]*?\bhref\s*=\s*["'](#[^"'<>\s]+)["'][^>]*>\s*</a>""", re.IGNORECASE)
 
 
+def _read_as_sent(content_type: str | None) -> bool:
+    """Whether a response of this content-type is read as the server sent it, not as a page (F1406): JSON, XML, and
+    text that is not HTML. Chromium shows them in a `<pre>` or its XML viewer, and a page's Markdown of that is a fence
+    round the body (an API's JSON no longer parses) or the viewer's own words. HTML, XHTML and no type are pages."""
+    mime = (content_type or "").split(";", 1)[0].strip().lower()
+    if mime in ("text/html", "application/xhtml+xml"):
+        return False
+    return mime.startswith("text/") or mime in ("application/json", "application/xml") \
+        or mime.endswith(("+json", "+xml"))
+
+
+def _decoded(data: bytes, content_type: str | None) -> str:
+    """A downloaded body as text, in the charset its content-type names, else UTF-8 (JSON's own)."""
+    charset = re.search(r"charset=[\"']?([\w.:-]+)", content_type or "", re.I)
+    try:
+        return data.decode(charset[1] if charset else "utf-8", errors="replace")
+    except LookupError:
+        return data.decode("utf-8", errors="replace")
+
+
 def _markdown(html: str, url: str, excluded_tags: tuple[str, ...]) -> str:
     base = url.split("#", 1)[0]
     html = _EMPTY_ANCHOR.sub(lambda m: f"[]({base}{m.group(1)})", html)
@@ -642,8 +681,9 @@ def _markdown(html: str, url: str, excluded_tags: tuple[str, ...]) -> str:
     return (result.content or "").strip()
 
 
-async def _read_download(download, url: str) -> CrawlResult:
-    """The file an address downloads: a PDF is read as Knowledge reads one; anything else is not a page."""
+async def _read_download(download, url: str, content_type: str | None = None) -> CrawlResult:
+    """The file an address downloads: a PDF is read as Knowledge reads one; one whose content-type is read as sent
+    (`_read_as_sent`: a CSV, an attachment of JSON or text) is its body (F1406); anything else is not a page."""
     try:
         path = await asyncio.wait_for(download.path(), timeout=PAGE_TIMEOUT_MS / 1000)
     except (asyncio.TimeoutError, PlaywrightError) as exc:
@@ -654,6 +694,9 @@ async def _read_download(download, url: str) -> CrawlResult:
         return CrawlResult(success=False, error_message=(
             f"The file is {size // 1_000_000} MB; a PDF is read up to {MAX_PDF_BYTES // 1_000_000} MB."))
     data = Path(path).read_bytes()
+    if not data.startswith(b"%PDF") and _read_as_sent(content_type):
+        return CrawlResult(success=True, markdown=_decoded(data, content_type), links={"internal": [], "external": []},
+                           media={"images": []})
     if not data.startswith(b"%PDF"):
         return CrawlResult(success=False, error_message=(
             f"The address is a file to download ({download.suggested_filename}), not a page; "
