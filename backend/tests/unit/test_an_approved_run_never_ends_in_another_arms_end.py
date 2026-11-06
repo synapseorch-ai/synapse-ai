@@ -137,3 +137,24 @@ def test_a_saved_workflow_read_back_keeps_which_end_each_arm_goes_to():
     steps = _compiled(plan_from_workflow(orch))
     assert steps["post"]["next_step_id"] == "done"
     assert steps["check_approved"]["if_false_step_id"] == "declined"
+
+
+def test_a_plans_own_end_read_back_is_still_the_plain_end():
+    """bld-07's shape (P0, synapse.nova-pro): no End steps, the false arm and the last step say "end". Compiled, the
+    End it gets has the id `end`; read back, the arm's `end` is still the plain end, not an arm's own End, so
+    compiling it again changes nothing (CI2's FF25 suite)."""
+    check = {"id": "check_website", "type": "llm", "name": "Check Website", "does": "checks", "prompt": "check",
+             "next": "evaluate_status"}
+    split = {"id": "evaluate_status", "type": "if_else", "name": "Evaluate Status", "does": "splits",
+             "condition": "state.check_website == 'down'", "branches": {"true": "send_alert", "false": "end"}}
+    alert = {"id": "send_alert", "type": "llm", "name": "Send Alert", "does": "alerts", "prompt": "alert",
+             "next": "end"}
+    once = compile_plan(_plan(check, split, alert)).orchestration
+    again = compile_plan(plan_from_workflow(once), orch_id=once["id"]).orchestration
+
+    def routes(orch):
+        return {s["id"]: (s["type"], s.get("next_step_id"), s.get("if_true_step_id"), s.get("if_false_step_id"))
+                for s in orch["steps"]}
+
+    assert routes(again) == routes(once)
+    assert routes(once)["send_alert"][1] == routes(once)["evaluate_status"][3] == "end"
