@@ -226,11 +226,16 @@ class TestWhile:
         assert lc["stopped_reason"] == "max_iterations"
         assert lc["iterations_completed"] == 4
 
-    async def test_a_broken_condition_stops_the_loop_with_a_warning(self):
+    async def test_a_broken_condition_fails_the_loop_step(self):
+        """A while condition that cannot be parsed fails the Loop step with its reason (F1433, Naveen 11-06): it is
+        refused at save, so only one stored before that reaches a run, and it used to stop with a warning."""
         events = await _run(_orch({"loop_while_condition": "state.a.b.c ==="}))
+        done = next(e for e in reversed(events) if e.get("type") == "orchestration_complete")
+        assert done["status"] == "failed"
+        assert any("Loop's while condition could not be evaluated" in e.get("reason", "")
+                   for e in events if e.get("type") == "step_error")
         assert _iterations(events) == []
-        assert any("loop_while_condition" in e.get("message", "")
-                   for e in events if e.get("type") == "step_warning")
+        assert not any(e.get("type") == "step_start" and e.get("orch_step_id") == "after" for e in events)
 
 
 class TestBreak:
