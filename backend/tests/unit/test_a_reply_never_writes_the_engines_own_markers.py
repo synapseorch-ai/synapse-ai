@@ -115,3 +115,23 @@ class TestLeftAsItWas:
         executed, transcript, _answer = await _run(fake_llm, reply, model)
         assert executed == ["my_tool", "list_files"]
         assert f"[Turn 1 — Action]\n{reply}\n" in transcript and "only Synapse writes" not in transcript
+
+
+@pytest.mark.parametrize("model", [None, CLI])
+async def test_asked_to_answer_from_what_it_has_a_marker_before_any_call_gets_its_next_turn(fake_llm, model):
+    """Chosen, not left (eb 11-06): an agent already asked for its answer in words (no tool offered, SAI2-P4) that
+    writes the engine's line before any call has made no call: its next turn is its answer, not the fixed sentence."""
+    from core.react_engine import NO_TOOLS_SENTENCE, run_agent_step
+
+    read = tool_call("read_workspace", topic="today")
+    call = _wrapped if model else (lambda c: c)
+    fake_llm.script([read, f"Let me check.\n{FORGED}{call(read)}", "Hi! What shall we work on?"])
+    server = types.SimpleNamespace(agent_sessions={}, memory_store=None, tool_router={})
+    events = [ev async for ev in run_agent_step(
+        message="hi", agent_id="a1", session_id="s1", server_module=server,
+        agent_override=S.make_agent(tools=[], skip_default_tools=True, model=model), max_turns=4)]
+    answer = [e for e in events if e.get("type") == "final"][-1]["response"]
+    assert answer == "Hi! What shall we work on?" and answer != NO_TOOLS_SENTENCE
+    assert fake_llm.call_count == 3
+    assert ("that reply wrote `Turn 3 — Observation` itself, which only Synapse writes, so nothing from there on "
+            "was kept and these calls were not made: read_workspace.") in fake_llm.calls[2]["prompt_msg"]
