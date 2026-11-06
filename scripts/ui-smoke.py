@@ -10387,12 +10387,16 @@ async def check_cmdk(browser) -> str:
 
 #: Every page whose title the page frame places (M1a): one x and one y each, at both widths.
 TITLE_PAGES = HELP_PAGES + ("/", "/kitchen-sink")
+#: Pages whose title is for a screen reader alone, by the words it must say: Chat's tab strip is its head (TABS1,
+#: 6109db7f), so its `<h1>` is there to be found, not seen, and sits at no x or y (F1421).
+UNSEEN_TITLES = {"/": "Chat"}
 
 
 @check
 async def check_titlepos(browser) -> str:
     """The title sits at one x and one y on every page and settings tab, at the wide and the phone width (UX1
-    measured six x positions in OSS; M1a's page frame never centres its column)."""
+    measured six x positions in OSS; M1a's page frame never centres its column). A page whose title is not drawn
+    (Chat) still has one, saying what it is, for a screen reader's jump to the page's heading (F1421)."""
     seen: dict[tuple, set] = {}
     bad: list[str] = []
     for width, height in (WIDE, PHONE):
@@ -10402,6 +10406,16 @@ async def check_titlepos(browser) -> str:
             boxes = {}
             for path in TITLE_PAGES:
                 await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+                if path in UNSEEN_TITLES:
+                    try:
+                        await page.locator("main h1").first.wait_for(state="attached", timeout=30_000)
+                    except Exception:
+                        bad.append(f"{path} at {width}: no title")
+                        continue
+                    said = [t.strip() for t in await page.locator("main h1").all_text_contents()]
+                    if said != [UNSEEN_TITLES[path]]:
+                        bad.append(f"{path} at {width}: its titles say {said}, not [{UNSEEN_TITLES[path]!r}]")
+                    continue
                 try:
                     await page.locator("main h1").first.wait_for(timeout=30_000)
                 except Exception:
