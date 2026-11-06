@@ -176,6 +176,8 @@ def _with_confirm(tool) -> dict:
 
 class Session:
     _nav_watch: "_NavWatch | None" = None
+    #: The person took over unasked: the page they hand back is read before anything changes it (F1417).
+    took_unasked = False
 
     def __init__(self, sid: str, owner: str, mode: str, limits: dict, root: Path, sites: list[str] | None = None,
                  wheel: str = "agent"):
@@ -188,7 +190,6 @@ class Session:
         self.banner: dict | None = None
         self.handover: dict | None = None              # what the agent's current call must hand over
         self.handback: str | None = None               # what the agent hears on its next call
-        self.handed_back = False    # the person drove and handed back: their page is read before it changes (F1417)
         self.took_at: float | None = None
         self.last_frame: dict | None = None
         self.dialog = None          # a page's alert/confirm/prompt, while the person drives
@@ -464,9 +465,9 @@ class Session:
                     "is_error": False, "log": None, "handover": {**turn, "session_id": self.id}}
         async with self._lock:
             held = None
-            if self.handed_back and name in gate.CHANGES_PAGE:
-                # Written before the agent saw the page the person handed back: that page is read instead, and the
-                # call is not made (F1417).
+            if self.handback and self.took_unasked and name in gate.CHANGES_PAGE:
+                # Written before the agent saw the page the person took over unasked and handed back: that page is
+                # read instead, and the call is not made (F1417).
                 held, name, args = name, "browser_snapshot", {}
             if name in gate.TYPES_TEXT:
                 stop = await self._before_typing(name, args or {})
@@ -503,7 +504,7 @@ class Session:
                 said = (f"### Synapse\nYour {held} was not made: it was written before the person handed the browser "
                         "back. This is the page as they left it; act on it next.\n" if held else "")
                 text = f"### The person\n{self.handback}\n{said}" + text
-                self.handback, self.handed_back = None, False
+                self.handback, self.took_unasked = None, False
         out ={"text": text, "is_error": bool(result.isError), "log": entry,
                "notes": [e for e in self.log[seen:] if e["actor"] != "agent"]}
         if self.handover:
@@ -649,6 +650,8 @@ class Session:
         if self.held:
             self.held["decision"] = "take"
             self.held["event"].set()
+        # Unasked: from the agent, or from an idle browser between its turns, never a turn it or Synapse gave (F1417).
+        self.took_unasked = self.took_unasked or self.wheel == "agent" or (self.wheel == "nobody" and self.idle)
         self.wheel, self.idle = "person", False
         self.banner = None
         self.took_at = time.monotonic()
@@ -664,7 +667,6 @@ class Session:
         said = f' and said: "{note.strip()}"' if note and note.strip() else ""
         self.handback = (f"The person drove for {drove} s and handed the browser back{said}. "
                          f"The page is now {self._page_url()}. Read it before you act.")
-        self.handed_back = True
         self._note("person", "handed back", f"after {drove} s")
         self._push_state()
         return {"wheel": self.wheel}
