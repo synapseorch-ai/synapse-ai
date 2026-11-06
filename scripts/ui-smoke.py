@@ -15008,8 +15008,9 @@ async def check_brwloaderror(browser) -> str:
 async def check_brwpanel(browser) -> str:
     """A browser of the person's alone opens as a full-height panel on the right, the way the workflow page shows a
     step (F1428, Naveen 11-06), not a popup in the middle: min(1280px, 80vw) wide by default, its left edge resizing it
-    and the width kept, full screen on a phone. It closes only by its own buttons, as the popup did: Escape and a click
-    beside it leave a sign-in open. Keep me signed in and Record a task, at 1440 and 390."""
+    and the width kept, full screen on a phone. It closes by its ✕ (F1439; what it does is brwpanelclose's) or its own
+    buttons, as the popup did: Escape and a click beside it leave a sign-in open. Keep me signed in and Record a task,
+    at 1440 and 390."""
     bad: list[str] = []
 
     async def geometry(page) -> dict:
@@ -15065,6 +15066,8 @@ async def check_brwpanel(browser) -> str:
                         bad.append(f"{at}: dragging its edge 100px made it {wider['w']:.0f}px, not {g['w'] + 100:.0f}")
             elif await handle.is_visible():
                 bad.append(f"{at}: a full-screen browser offers an edge to resize")
+            if not await _panel_close(page).is_visible():
+                bad.append(f"{at}: the panel has no ✕ to close it by (F1439)")
             await page.keyboard.press("Escape")
             if size[0] >= 768:  # beside the panel; on a phone there is no beside
                 await page.mouse.click(8, size[1] / 2)
@@ -15101,7 +15104,195 @@ async def check_brwpanel(browser) -> str:
     if bad:
         raise AssertionError("; ".join(bad))
     return ("Keep me signed in and Record a task open a full-height panel on the right, min(1280px, 80vw), resized by "
-            "its edge and kept; full screen at 390; Escape and a click beside it close nothing")
+            "its edge and kept, with a ✕; full screen at 390; Escape and a click beside it close nothing")
+
+
+def _panel_close(page):
+    """The browser panel's ✕ (F1439): the Close in the header of the dialog the browser is in."""
+    return page.locator('[role="dialog"][aria-modal="true"]').filter(
+        has=page.get_by_role("region", name="Browser")).get_by_role("button", name="Close", exact=True)
+
+
+@check
+async def check_brwpanelclose(browser) -> str:
+    """The browser panel's ✕ (F1439, Naveen 11-06: "i don't see close button on the new browser popup"): a button
+    named Close at the top right of the panel's header, at 1440 and 390. Where nothing would be lost it closes at once:
+    a sign-in nobody typed into is Don't keep, a recording with no steps is Discard. Otherwise it asks, with the safe
+    choice focused: "Close without keeping this sign-in?" (Keep it keeps it; Close doesn't), "Discard this recording?"
+    (Keep recording goes back to it; Discard), and a re-record's new steps the same. Back to the browser, focus is on
+    the ✕; once it closes, on what opened it."""
+    bad: list[str] = []
+    posted: list[tuple[str, dict]] = []
+    rec = {"steps": 0}
+    rid = "rec_" + "c" * 24
+
+    def taker(kind: str, payload: dict):
+        async def handler(route):
+            posted.append((kind, json.loads(route.request.post_data or "{}")))
+            await route.fulfill(status=200, json=payload)
+        return handler
+
+    async def focused(page) -> str:
+        return await page.evaluate("""() => { const a = document.activeElement;
+            return a ? (a.getAttribute('aria-label') || a.textContent || a.tagName).trim() : ''; }""")
+
+    async def gone(page, what: str) -> bool:
+        try:
+            await page.get_by_role("region", name="Browser").wait_for(state="detached", timeout=8_000)
+            return True
+        except Exception:
+            bad.append(f"{what} did not close the browser")
+            return False
+
+    async def ask(page, title: str):
+        dialog = page.get_by_role("dialog", name=title)
+        try:
+            await dialog.wait_for(timeout=5_000)
+        except Exception:
+            bad.append(f"the ✕ did not ask {title!r}")
+            return None
+        await asyncio.sleep(0.3)
+        return dialog
+
+    for size in ((1440, 900), (390, 844)):
+        at = f"{size[0]}"
+        posted.clear()
+        ctx = await browser.new_context(viewport={"width": size[0], "height": size[1]})
+        await ctx.route(re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(status=200, json={"sessions": []}))
+        await ctx.route(re.compile(r".*/api/site-sessions/new$"), lambda r: r.fulfill(status=200, json={"browser_session_id": "bsShut"}))
+        await ctx.route(re.compile(r".*/api/browser/bsShut/finish-session$"), taker("finish", {}))
+        await ctx.route(re.compile(r".*/api/browser/bs\w+/input$"), lambda r: r.fulfill(status=200, json={}))
+        await ctx.route(re.compile(r".*/api/browser/bsShut/frames$"), lambda r: r.fulfill(
+            status=200, headers={"Content-Type": "text/event-stream"}, body=_brw_frame("https://portal.saltmarsh.example/", "person")))
+        await ctx.route(re.compile(r".*/api/recordings$"), lambda r: r.fulfill(status=200, json={"recordings": []}))
+        await ctx.route(re.compile(r".*/api/recordings/new$"), lambda r: r.fulfill(
+            status=200, json={"recording_id": rid, "browser_session_id": "bsShutRec"}))
+        await ctx.route(re.compile(r".*/api/browser/bsShutRec/frames$"), lambda r: r.fulfill(
+            status=200, headers={"Content-Type": "text/event-stream"}, body=_rec_frame(dict(rec))))
+        await ctx.route(re.compile(r".*/api/browser/bsShutRec/record/stop$"), taker("stop", {}))
+        await ctx.route(re.compile(rf".*/api/recordings/{rid}$"), lambda r: r.fulfill(status=200, json=_recording(rid, version=2)))
+        page = await ctx.new_page()
+        try:
+            await page.goto(f"{APP}/browser/sessions", wait_until="domcontentloaded")
+            await page.locator("main h1").first.wait_for(timeout=30_000)
+            await asyncio.sleep(SETTLE)
+
+            async def open_sign_in():
+                await page.get_by_role("button", name="Keep me signed in to a site").first.click()
+                site = page.get_by_role("dialog", name="Keep me signed in to a site")
+                await site.get_by_label("Site").fill("portal.saltmarsh.example")
+                await site.get_by_role("button", name="Open the browser").click()
+                await page.get_by_role("region", name="Browser").wait_for(timeout=8_000)
+                await asyncio.sleep(0.6)
+
+            # Where it is: top right of the panel, in view.
+            await open_sign_in()
+            close = _panel_close(page)
+            box = await close.bounding_box() if await close.count() else None
+            if not box or not await close.is_visible():
+                raise AssertionError(f"{at}: the browser panel has no ✕ named Close")
+            if box["x"] + box["width"] > size[0] + 1 or box["x"] < size[0] - 80 or box["y"] > 60:
+                bad.append(f"{at}: the ✕ is not at the panel's top right ({box})")
+
+            # Nothing typed: Don't keep, at once; focus back on what opened it.
+            await close.click()
+            if await gone(page, f"{at}: the ✕ on an untouched sign-in"):
+                if posted[-1:] != [("finish", {"keep": False})]:
+                    bad.append(f"{at}: the ✕ on an untouched sign-in sent {posted[-1:]}, not Don't keep")
+                await asyncio.sleep(0.3)
+                if await focused(page) != "Keep me signed in to a site":
+                    bad.append(f"{at}: after the ✕, focus is on {await focused(page)!r}, not what opened it")
+
+            # Typed into: it asks, Keep it first and focused; Keep it keeps.
+            await open_sign_in()
+            await page.get_by_role("region", name="Browser").get_by_role("img").first.click()
+            await asyncio.sleep(0.3)
+            await _panel_close(page).click()
+            dialog = await ask(page, "Close without keeping this sign-in?")
+            if dialog:
+                if await focused(page) != "Keep it":
+                    bad.append(f"{at}: the sign-in ask focuses {await focused(page)!r}, not Keep it")
+                await dialog.get_by_role("button", name="Keep it").click()
+                if await gone(page, f"{at}: Keep it") and posted[-1:] != [("finish", {"keep": True})]:
+                    bad.append(f"{at}: Keep it sent {posted[-1:]}")
+
+            # Its Close: not kept.
+            await open_sign_in()
+            await page.get_by_role("region", name="Browser").get_by_role("img").first.click()
+            await asyncio.sleep(0.3)
+            await _panel_close(page).click()
+            dialog = await ask(page, "Close without keeping this sign-in?")
+            if dialog:
+                await dialog.get_by_role("button", name="Close", exact=True).click()
+                if await gone(page, f"{at}: the ask's Close") and posted[-1:] != [("finish", {"keep": False})]:
+                    bad.append(f"{at}: the ask's Close sent {posted[-1:]}")
+
+            # A recording with no steps: Discard, at once.
+            await page.goto(f"{APP}/browser/recordings", wait_until="domcontentloaded")
+            await page.locator("main h1").first.wait_for(timeout=30_000)
+            await asyncio.sleep(SETTLE)
+
+            async def open_record(steps: int):
+                rec["steps"] = steps
+                await page.get_by_role("button", name="Record a task").first.click()
+                await page.get_by_role("dialog", name="Record a task").get_by_role("button", name="Open the browser").click()
+                await page.get_by_role("region", name="Browser").wait_for(timeout=8_000)
+                await asyncio.sleep(0.6)
+
+            await open_record(0)
+            await _panel_close(page).click()
+            if await gone(page, f"{at}: the ✕ on a recording with no steps"):
+                if posted[-1:] != [("stop", {"keep": False})]:
+                    bad.append(f"{at}: the ✕ on a recording with no steps sent {posted[-1:]}, not Discard")
+                await asyncio.sleep(0.3)
+                if await focused(page) != "Record a task":
+                    bad.append(f"{at}: after the ✕, focus is on {await focused(page)!r}, not Record a task")
+
+            # Steps recorded: it asks, Keep recording first; back to the browser, focus on the ✕; then Discard.
+            await open_record(2)
+            await _panel_close(page).click()
+            dialog = await ask(page, "Discard this recording?")
+            if dialog:
+                if await focused(page) != "Keep recording":
+                    bad.append(f"{at}: the recording ask focuses {await focused(page)!r}, not Keep recording")
+                await dialog.get_by_role("button", name="Keep recording").click()
+                await asyncio.sleep(0.5)
+                if not await page.get_by_role("region", name="Browser").count():
+                    bad.append(f"{at}: Keep recording closed the browser")
+                elif await focused(page) != "Close":
+                    bad.append(f"{at}: back from the ask, focus is on {await focused(page)!r}, not the ✕")
+                await _panel_close(page).click()
+                dialog = await ask(page, "Discard this recording?")
+                if dialog:
+                    await dialog.get_by_role("button", name="Discard").click()
+                    if await gone(page, f"{at}: Discard") and posted[-1:] != [("stop", {"keep": False})]:
+                        bad.append(f"{at}: Discard sent {posted[-1:]}")
+
+            # A re-record's new steps are asked about as a recording's are; Discard is its own cancel.
+            if size[0] >= 768:
+                await page.goto(f"{APP}/browser/recordings/{rid}", wait_until="domcontentloaded")
+                steps = page.get_by_role("list", name="Steps")
+                await steps.wait_for(timeout=30_000)
+                await asyncio.sleep(SETTLE)
+                rec["steps"] = 1
+                await steps.get_by_role("listitem").nth(3).get_by_role("button", name="More for step 4").click()
+                await page.get_by_role("menuitem", name="Re-record from here").click()
+                await page.get_by_role("dialog", name="Re-record from here").get_by_role("button", name="Open the browser").click()
+                await page.get_by_role("region", name="Browser").wait_for(timeout=8_000)
+                await asyncio.sleep(0.6)
+                await _panel_close(page).click()
+                dialog = await ask(page, "Discard this recording?")
+                if dialog:
+                    await dialog.get_by_role("button", name="Discard").click()
+                    if await gone(page, f"{at}: a re-record's Discard") and posted[-1:] != [("stop", {"keep": False, "from_step": "s4"})]:
+                        bad.append(f"{at}: a re-record's Discard sent {posted[-1:]}")
+        finally:
+            await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("the panel's ✕ is at its top right at 1440 and 390; an untouched sign-in and a recording with no steps close "
+            "at once; otherwise it asks with the safe choice focused (Keep it keeps; Keep recording goes back, focus on "
+            "the ✕); a re-record's new steps the same; closed, focus is on what opened it")
 
 
 @check
