@@ -188,6 +188,7 @@ class Session:
         self.banner: dict | None = None
         self.handover: dict | None = None              # what the agent's current call must hand over
         self.handback: str | None = None               # what the agent hears on its next call
+        self.handed_back = False    # the person drove and handed back: their page is read before it changes (F1417)
         self.took_at: float | None = None
         self.last_frame: dict | None = None
         self.dialog = None          # a page's alert/confirm/prompt, while the person drives
@@ -462,6 +463,11 @@ class Session:
             return {"text": "The person has the browser now. Stop here; you will continue when they hand it back.",
                     "is_error": False, "log": None, "handover": {**turn, "session_id": self.id}}
         async with self._lock:
+            held = None
+            if self.handed_back and name in gate.CHANGES_PAGE:
+                # Written before the agent saw the page the person handed back: that page is read instead, and the
+                # call is not made (F1417).
+                held, name, args = name, "browser_snapshot", {}
             if name in gate.TYPES_TEXT:
                 stop = await self._before_typing(name, args or {})
                 if stop:
@@ -470,7 +476,8 @@ class Session:
                 stop = await self._before_press(name, args, press)
                 if stop:
                     return stop
-            self.actions += 1
+            if held is None:
+                self.actions += 1
             seen = len(self.log)
             self.handover = None
             fix_targets = await self._fix_targets(name, args) if self.fixing is not None else None
@@ -493,9 +500,11 @@ class Session:
                 if self.handover is None and self._captcha_showing():
                     self._turn("captcha", "A CAPTCHA or a bot check is showing: it is yours to solve.")
             if self.handback:
-                text = f"### The person\n{self.handback}\n" + text
-                self.handback = None
-        out = {"text": text, "is_error": bool(result.isError), "log": entry,
+                said = (f"### Synapse\nYour {held} was not made: it was written before the person handed the browser "
+                        "back. This is the page as they left it; act on it next.\n" if held else "")
+                text = f"### The person\n{self.handback}\n{said}" + text
+                self.handback, self.handed_back = None, False
+        out ={"text": text, "is_error": bool(result.isError), "log": entry,
                "notes": [e for e in self.log[seen:] if e["actor"] != "agent"]}
         if self.handover:
             out["handover"] = {**self.handover, "session_id": self.id}
@@ -655,6 +664,7 @@ class Session:
         said = f' and said: "{note.strip()}"' if note and note.strip() else ""
         self.handback = (f"The person drove for {drove} s and handed the browser back{said}. "
                          f"The page is now {self._page_url()}. Read it before you act.")
+        self.handed_back = True
         self._note("person", "handed back", f"after {drove} s")
         self._push_state()
         return {"wheel": self.wheel}
