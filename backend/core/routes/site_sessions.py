@@ -25,14 +25,26 @@ def person() -> str:
     return site_sessions.install_person()
 
 
-def _site_of(text: str) -> str:
-    """A site from what the person typed: a host or an address, reduced to its registrable domain."""
-    from core.sites import registrable_domain
+def _host_of(text: str) -> str:
+    """The host in what the person typed: a host or an address."""
     raw = (text or "").strip().lower()
     host = urlparse(raw if "://" in raw else f"//{raw}").hostname or ""
     if not host or "." not in host or "@" in raw:
         raise HTTPException(status_code=422, detail=f"'{text}' is not a site: give one such as portal.example.com.")
-    return registrable_domain(host)
+    return host
+
+
+def _site_of(text: str) -> str:
+    """A site from what the person typed: a host or an address, reduced to its registrable domain."""
+    from core.sites import registrable_domain
+    return registrable_domain(_host_of(text))
+
+
+async def open_sign_in(text: str) -> str:
+    """The person's own browser for keeping the site in `text`, open on the host they typed (F1425): over https, and
+    nothing else of what they typed reaches its address."""
+    host = _host_of(text)
+    return await browser_client.tools.open_login_session([_site_of(host)], start_url=f"https://{host}")
 
 
 @router.get("/api/site-sessions")
@@ -53,8 +65,7 @@ class NewSession(BaseModel):
 @router.post("/api/site-sessions/new")
 async def new_site_session(body: NewSession):
     """"Keep me signed in to a site": a browser that is the person's alone, on that site."""
-    site = _site_of(body.site)
-    return {"browser_session_id": await browser_client.tools.open_login_session([site])}
+    return {"browser_session_id": await open_sign_in(body.site)}
 
 
 @router.patch("/api/site-sessions/{session_id}")

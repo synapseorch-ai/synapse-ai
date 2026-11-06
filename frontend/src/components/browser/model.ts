@@ -71,7 +71,45 @@ export type BrowserFrame = {
   file?: PageFile;
   /** A browser recording a task (F1141): how many steps, the last, and a field whose typing isn't being kept. */
   recording?: FrameRecording;
+  /** The page that did not open, and why (F1425): said above the page, never a blank pane. Not the banner. */
+  load_error?: LoadError | null;
 };
+
+/**
+ * What the component says of a page that did not open (F1425): a navigation that failed (`code`, Chromium's, with
+ * the guard's own reason `why` when it refused it), or a document that answered `status` >= 400 with nothing drawn.
+ */
+export type LoadError = {
+  url: string;
+  host: string;
+  kind: 'blocked' | 'not_found' | 'unreachable' | 'certificate' | 'failed' | 'http';
+  code?: string;
+  status?: number;
+  why?: string;
+};
+
+/** A page that did not open, in words: what happened, then what the person can do about it. */
+export function loadErrorWords(e: LoadError): string {
+  const site = e.host || hostOf(e.url);
+  switch (e.kind) {
+    case 'http':
+      if (e.status === 404 || e.status === 410) return `${site} has no page at this address (HTTP ${e.status}).`;
+      if (e.status && [401, 403, 407, 429, 451].includes(e.status)) {
+        return `${site} turned this browser away (HTTP ${e.status}). Some sites don’t allow automated browsers.`;
+      }
+      return `${site} answered with an error and nothing to show (HTTP ${e.status ?? '?'}).`;
+    case 'blocked':
+      return `${site} was not opened: this browser blocked it${e.why ? ` (${e.why})` : ''}.`;
+    case 'not_found':
+      return `${site} could not be found. Check the address.`;
+    case 'unreachable':
+      return `${site} could not be reached${e.code ? ` (${e.code})` : ''}.`;
+    case 'certificate':
+      return `${site} was not opened: its certificate could not be trusted${e.code ? ` (${e.code})` : ''}.`;
+    default:
+      return `${site} could not be opened${e.code ? ` (${e.code})` : ''}.`;
+  }
+}
 
 export type FrameRecording = { steps: number; last?: { id: string; title: string }; holding?: 'password' | 'card' | 'code' };
 

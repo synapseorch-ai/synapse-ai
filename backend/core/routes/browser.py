@@ -255,10 +255,10 @@ class LoginSession(BaseModel):
 
 @router.post("/api/browser/login-sessions")
 async def open_login_session(body: LoginSession):
-    from core.routes.site_sessions import _site_of
+    from core.routes.site_sessions import open_sign_in
     if not body.sites:
         raise HTTPException(status_code=422, detail="Name the site to log in to.")
-    return {"session_id": await browser_client.tools.open_login_session([_site_of(body.sites[0].removeprefix("*."))])}
+    return {"session_id": await open_sign_in(body.sites[0].removeprefix("*."))}
 
 
 @router.post("/api/browser/{session_id}/finish-login")

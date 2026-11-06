@@ -50,6 +50,7 @@ def _session():
     s.dialog, s.select, s.chooser, s.took_at, s.handback = None, None, None, None, None
     s.replaying, s.replay_sends, s.replay_blocked, s.replay_at, s.fixing = None, None, None, None, None
     s.replay_running = False
+    s.load_error = None  # as Session.__init__ sets it (F1425)
     s.ctx, s._cdp = None, None
     s.replay_task, s.replay_id, s.replay_answer = None, None, None
     s.page = _Page()
