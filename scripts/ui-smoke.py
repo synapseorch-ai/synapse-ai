@@ -15116,9 +15116,9 @@ def _panel_close(page):
 @check
 async def check_brwpanelclose(browser) -> str:
     """The browser panel's ✕ (F1439, Naveen 11-06: "i don't see close button on the new browser popup"): a button
-    named Close at the top right of the panel's header, at 1440 and 390. Where nothing would be lost it closes at once:
+    named Close at the right of the browser's own top bar (the browser keeps the panel's full height), at 1440 and 390. Where nothing would be lost it closes at once:
     a sign-in nobody typed into is Don't keep, a recording with no steps is Discard. Otherwise it asks, with the safe
-    choice focused: "Close without keeping this sign-in?" (Keep it keeps it; Close doesn't), "Discard this recording?"
+    choice focused: "Close without keeping this sign-in?" (Keep it keeps it; Don't keep), "Discard this recording?"
     (Keep recording goes back to it; Discard), and a re-record's new steps the same. Back to the browser, focus is on
     the ✕; once it closes, on what opened it."""
     bad: list[str] = []
@@ -15216,16 +15216,16 @@ async def check_brwpanelclose(browser) -> str:
                 if await gone(page, f"{at}: Keep it") and posted[-1:] != [("finish", {"keep": True})]:
                     bad.append(f"{at}: Keep it sent {posted[-1:]}")
 
-            # Its Close: not kept.
+            # Its Don't keep: not kept.
             await open_sign_in()
             await page.get_by_role("region", name="Browser").get_by_role("img").first.click()
             await asyncio.sleep(0.3)
             await _panel_close(page).click()
             dialog = await ask(page, "Close without keeping this sign-in?")
             if dialog:
-                await dialog.get_by_role("button", name="Close", exact=True).click()
-                if await gone(page, f"{at}: the ask's Close") and posted[-1:] != [("finish", {"keep": False})]:
-                    bad.append(f"{at}: the ask's Close sent {posted[-1:]}")
+                await dialog.get_by_role("button", name=re.compile("Don.t keep")).click()
+                if await gone(page, f"{at}: the ask's Don't keep") and posted[-1:] != [("finish", {"keep": False})]:
+                    bad.append(f"{at}: the ask's Don't keep sent {posted[-1:]}")
 
             # A recording with no steps: Discard, at once.
             await page.goto(f"{APP}/browser/recordings", wait_until="domcontentloaded")
