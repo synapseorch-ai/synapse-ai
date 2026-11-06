@@ -176,6 +176,8 @@ def _with_confirm(tool) -> dict:
 
 class Session:
     _nav_watch: "_NavWatch | None" = None
+    #: The person took over unasked: the page they hand back is read before anything changes it (F1417).
+    took_unasked = False
 
     def __init__(self, sid: str, owner: str, mode: str, limits: dict, root: Path, sites: list[str] | None = None,
                  wheel: str = "agent"):
@@ -462,6 +464,11 @@ class Session:
             return {"text": "The person has the browser now. Stop here; you will continue when they hand it back.",
                     "is_error": False, "log": None, "handover": {**turn, "session_id": self.id}}
         async with self._lock:
+            held = None
+            if self.handback and self.took_unasked and name in gate.CHANGES_PAGE:
+                # Written before the agent saw the page the person took over unasked and handed back: that page is
+                # read instead, and the call is not made (F1417).
+                held, name, args = name, "browser_snapshot", {}
             if name in gate.TYPES_TEXT:
                 stop = await self._before_typing(name, args or {})
                 if stop:
@@ -470,7 +477,8 @@ class Session:
                 stop = await self._before_press(name, args, press)
                 if stop:
                     return stop
-            self.actions += 1
+            if held is None:
+                self.actions += 1
             seen = len(self.log)
             self.handover = None
             fix_targets = await self._fix_targets(name, args) if self.fixing is not None else None
@@ -493,9 +501,11 @@ class Session:
                 if self.handover is None and self._captcha_showing():
                     self._turn("captcha", "A CAPTCHA or a bot check is showing: it is yours to solve.")
             if self.handback:
-                text = f"### The person\n{self.handback}\n" + text
-                self.handback = None
-        out = {"text": text, "is_error": bool(result.isError), "log": entry,
+                said = (f"### Synapse\nYour {held} was not made: it was written before the person handed the browser "
+                        "back. This is the page as they left it; act on it next.\n" if held else "")
+                text = f"### The person\n{self.handback}\n{said}" + text
+                self.handback, self.took_unasked = None, False
+        out ={"text": text, "is_error": bool(result.isError), "log": entry,
                "notes": [e for e in self.log[seen:] if e["actor"] != "agent"]}
         if self.handover:
             out["handover"] = {**self.handover, "session_id": self.id}
@@ -640,6 +650,8 @@ class Session:
         if self.held:
             self.held["decision"] = "take"
             self.held["event"].set()
+        # Unasked: from the agent, or from an idle browser between its turns, never a turn it or Synapse gave (F1417).
+        self.took_unasked = self.took_unasked or self.wheel == "agent" or (self.wheel == "nobody" and self.idle)
         self.wheel, self.idle = "person", False
         self.banner = None
         self.took_at = time.monotonic()
