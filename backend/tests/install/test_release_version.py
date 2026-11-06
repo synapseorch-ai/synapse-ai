@@ -78,9 +78,42 @@ def test_the_gate_checks_the_version_with_the_script_and_passes_on_its_answers(j
     }
 
 
-def test_npm_publishes_under_the_scripts_tag(jobs):
-    step = _step(jobs["publish-npm"], run="npm publish")
-    assert step["run"].strip() == "npm publish --access public --tag ${{ needs.gate.outputs.npm_tag }}"
+def _npm_step(jobs, tmp_path, has: str) -> list[str]:
+    """The npm step's own script, run with a stand-in `node` (package.json says 2.0.0-rc1) and `npm` (the registry has
+    `has`, or nothing); the gate's npm_tag is `next`. Returns each `npm publish` it made."""
+    import subprocess
+
+    run = _step(jobs["publish-npm"], run="npm publish")["run"]
+    assert run.count("${{ needs.gate.outputs.npm_tag }}") == 1
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    (bin_ / "node").write_text("#!/bin/sh\necho 2.0.0-rc1\n")
+    (bin_ / "npm").write_text('#!/bin/sh\ncase "$1" in\n  view) [ -n "$HAS" ] && echo "$HAS"; exit 0;;\n'
+                              '  publish) echo "$*" >> "$LOG";;\nesac\n')
+    for f in bin_.iterdir():
+        f.chmod(0o755)
+    log = tmp_path / "published"
+    log.touch()
+    subprocess.run(["bash", "-e", "-c", run.replace("${{ needs.gate.outputs.npm_tag }}", "next")], check=True,
+                   env={"PATH": f"{bin_}:/usr/bin:/bin", "HAS": has, "LOG": str(log)})
+    return log.read_text().splitlines()
+
+
+def test_npm_publishes_under_the_scripts_tag(jobs, tmp_path):
+    assert _npm_step(jobs, tmp_path, has="") == ["publish --access public --tag next"]
+
+
+def test_npm_leaves_a_version_it_already_has(jobs, tmp_path):
+    """npm refuses to publish over a version (E403). v2.0.0-rc1's tag was pushed again after its PyPI check failed,
+    with npm's 2.0.0-rc1 already out: publishing again failed the job, and with it the GitHub release."""
+    assert _npm_step(jobs, tmp_path, has="2.0.0-rc1") == []
+
+
+def test_the_wheel_is_checked_with_its_dependencies(jobs):
+    """2.0's CLI imports rich before it prints --help; a --no-deps install stopped v2.0.0-rc1's PyPI publish."""
+    run = _step(jobs["publish-python"], run="synapse --help")["run"]
+    installs = [line for line in run.splitlines() if "pip install" in line and ".whl" in line]
+    assert installs and not [line for line in installs if "--no-deps" in line]
 
 
 def test_docker_tags_latest_only_for_a_final_release(jobs):
