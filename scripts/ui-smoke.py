@@ -14770,6 +14770,83 @@ async def check_brwsessionsite(browser) -> str:
             "keep is said and the browser stays; Keep lists it; Sign in again opens the browser for its site")
 
 @check
+async def check_brwloaderror(browser) -> str:
+    """A page that did not open says why above the page, never a blank pane (F1425; Naveen's scratch, eb 11-06). Signing
+    in to x.com opened a white pane: x.com answers this browser 403 with nothing in it. The frame's `load_error` is
+    said in a line above the page, not over it (a site's challenge is the person's to see), with the address bar to
+    try another; the consent card stays. A page that opened says nothing of the kind. At 1440 and 390."""
+    x_frame = {"jpeg_b64": BRW_JPEG, "w": 1280, "h": 800, "url": "https://x.com/", "wheel": "person",
+               "load_error": {"url": "https://x.com/", "host": "x.com", "kind": "http", "status": 403}}
+    said = "x.com turned this browser away (HTTP 403). Some sites don't allow automated browsers."
+    bad: list[str] = []
+    for size in ((1440, 900), (390, 844)):
+        opened = iter(("bsErr", "bsOk"))
+
+        async def start(route):
+            await route.fulfill(status=200, json={"browser_session_id": next(opened)})
+
+        ctx = await browser.new_context(viewport={"width": size[0], "height": size[1]})
+        await ctx.route(re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(status=200, json={"sessions": []}))
+        await ctx.route(re.compile(r".*/api/site-sessions/new$"), start)
+        await ctx.route(re.compile(r".*/api/browser/bsErr/finish-session$"), lambda r: r.fulfill(status=200, json={}))
+        await ctx.route(re.compile(r".*/api/browser/bsErr/frames$"), lambda r: r.fulfill(
+            status=200, headers={"Content-Type": "text/event-stream"}, body=_frame(x_frame)))
+        await ctx.route(re.compile(r".*/api/browser/bsOk/frames$"), lambda r: r.fulfill(
+            status=200, headers={"Content-Type": "text/event-stream"}, body=_brw_frame("https://example.com/", "person")))
+        page = await ctx.new_page()
+        at = f"{size[0]}"
+        try:
+            await page.goto(f"{APP}/browser/sessions", wait_until="domcontentloaded")
+            await page.locator("main h1").first.wait_for(timeout=30_000)
+            await asyncio.sleep(SETTLE)
+            for site in ("x.com", "example.com"):
+                await page.get_by_role("button", name="Keep me signed in to a site").first.click()
+                ask = page.get_by_role("dialog", name="Keep me signed in to a site")
+                await ask.get_by_label("Site").fill(site)
+                await ask.get_by_role("button", name="Open the browser").click()
+                pane = page.get_by_role("region", name="Browser")
+                try:
+                    await pane.wait_for(timeout=8_000)
+                    await pane.get_by_role("application").wait_for(timeout=8_000)
+                except Exception:
+                    raise AssertionError(f"{at}: no browser opened for {site}")
+                await asyncio.sleep(0.5)
+                text = re.sub(r"\s+", " ", (await pane.inner_text()).replace("\u2019", "'"))
+                if f"Keep me signed in to {site} for your agents." not in text:
+                    bad.append(f"{at}: the consent card for {site} is gone")
+                if site == "example.com":
+                    if any(w in text for w in ("turned this browser away", "could not be", "was not opened")):
+                        bad.append(f"{at}: a page that opened says it did not")
+                    break
+                line = pane.get_by_role("status").filter(has_text="turned this browser away")
+                if not await line.count():
+                    bad.append(f"{at}: the pane does not say why x.com is blank (it should say {said!r})")
+                    break
+                words = re.sub(r"\s+", " ", (await line.first.inner_text()).replace("\u2019", "'")).strip()
+                if not words.startswith(said):
+                    bad.append(f"{at}: it says {words!r}")
+                if await pane.get_by_role("textbox", name="Address").count() and "Type another address above." not in words:
+                    bad.append(f"{at}: it does not say the address bar can try another")
+                box = await line.first.bounding_box()
+                shot = await pane.get_by_role("application").bounding_box()
+                if not box or not shot or box["y"] + box["height"] > shot["y"] + 1:
+                    bad.append(f"{at}: the line is not above the page ({box} over {shot})")
+                if box and box["x"] + box["width"] > size[0] + 1:
+                    bad.append(f"{at}: the line runs off the screen ({box})")
+                await pane.get_by_role("button", name=re.compile("Don.t keep")).click()
+                try:
+                    await pane.wait_for(state="detached", timeout=8_000)
+                except Exception:
+                    bad.append(f"{at}: Don't keep left the browser open")
+                    break
+        finally:
+            await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("a page that did not open says why above the page (x.com's 403: turned this browser away), with the "
+            "address bar to try another and the consent card kept; a page that opened says nothing; 1440 and 390")
+
+@check
 async def check_brwchatpicks(browser) -> str:
     """The chat's browser says which sessions it is signed in with, and why one wasn't loaded, and the person picks
     the chat's own sessions from the pane, one per site (BRW2, F1140; DESIGN v5-3, v5.1). The picks are the chat's
