@@ -45,6 +45,15 @@ export function inAppHref(href: string | undefined): href is string {
   return !!href && IN_APP.test(href);
 }
 
+/**
+ * A task list's box (`- [ ]`, remark-gfm), named by its state (F1420; Naveen: "Done" / "To do"). remark draws a
+ * disabled checkbox with no name, which a screen reader announced as "check box" and nothing of what it was. Read
+ * only, as remark draws it; the run log's own renderer draws it too.
+ */
+export function TaskBox({ checked }: { checked?: boolean }) {
+  return <input type="checkbox" checked={Boolean(checked)} disabled readOnly aria-label={checked ? "Done" : "To do"} />;
+}
+
 const COMPONENTS: Components = {
   // Body copy carries the rhythm; `space-y` on the wrapper cannot, because
   // markdown's blocks are siblings of wildly different heights.
@@ -68,6 +77,8 @@ const COMPONENTS: Components = {
   ul: ({ children }) => <ul className="mb-2.5 list-disc space-y-1 pl-5 last:mb-0">{children}</ul>,
   ol: ({ children }) => <ol className="mb-2.5 list-decimal space-y-1 pl-5 last:mb-0">{children}</ol>,
   li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+  // Markdown draws an input only for a task list's item.
+  input: ({ type, checked }) => (type === "checkbox" ? <TaskBox checked={checked} /> : null),
 
   // A link within the page — an answer's [K#] to its Sources row — scrolls to
   // its target and focuses it, without a new tab or a change to the address.

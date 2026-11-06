@@ -47,7 +47,7 @@ import remarkGfm from "remark-gfm";
 import { BrowserActionLine } from "@/components/browser/BrowserActionLine";
 import { actionOf, type BrowserAction, type BrowserSessionEvent } from "@/components/browser/model";
 import { RetrievalTrace } from "@/components/RetrievalTrace";
-import { Spinner } from "@/components/ui";
+import { Spinner, TaskBox } from "@/components/ui";
 import { DEGRADED, getQueryTrace, type SearchTrace } from "@/lib/knowledge";
 
 import type { Task } from "./model";
@@ -673,6 +673,7 @@ export function LogLine({ entry, onOpen }: { entry: LogEntry; onOpen: (e: StepRe
           code: ({ children }) => <code className="rounded-md bg-surface-2 px-1 font-code text-[10px]">{children}</code>,
           pre: ({ children }) => <pre className="mt-0.5 overflow-x-auto rounded-md bg-surface-2 p-1 font-code">{children}</pre>,
           a: ({ href, children }) => <a href={href} className="underline opacity-70" target="_blank" rel="noreferrer">{children}</a>,
+          input: ({ type, checked }) => (type === "checkbox" ? <TaskBox checked={checked} /> : null),
         }}
       >{entry}</ReactMarkdown>
     </div>
