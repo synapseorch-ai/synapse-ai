@@ -664,10 +664,13 @@ function ToolApprovalCard({
  * shape (`Combobox`: a Popover and `cmdk`) with the chat header's own trigger.
  * Picking closes it.
  */
+/** Synapse AI, the product's assistant: the agent of type `builder`. */
+const isAssistantInfo = (info: { type?: string } | string) => typeof info === 'object' && info.type === 'builder';
+
 function AgentPicker({
   agents, activeId, activeName, onPick,
 }: {
-  agents: [string, { name: string; status: string } | string][];
+  agents: [string, { name: string; status: string; type?: string } | string][];
   activeId: string | null | undefined;
   /** The agent this conversation talks to, shown on the pill. */
   activeName: string;
@@ -716,11 +719,13 @@ function AgentPicker({
               <Command.Empty className="px-2 py-6 text-center text-sm text-text-faint">
                 {agents.length === 0 ? 'No agents detected.' : 'No agent matches.'}
               </Command.Empty>
-              {agents.map(([id, info]) => {
+              {/* Synapse AI first, with the sidebar's mark and what it is, as cloud's picker has it (F1413). */}
+              {[...agents].sort(([, a], [, b]) => Number(isAssistantInfo(b)) - Number(isAssistantInfo(a))).map(([id, info]) => {
                 // A legacy string entry is the status alone.
                 const name = typeof info === 'string' ? id : info.name;
                 const status = typeof info === 'string' ? info : info.status;
                 const isActive = activeId === id;
+                const assistant = isAssistantInfo(info);
                 return (
                   <Command.Item
                     key={id}
@@ -728,8 +733,20 @@ function AgentPicker({
                     onSelect={() => { setOpen(false); onPick(id); }}
                     className="relative flex cursor-pointer select-none items-center gap-2.5 rounded-md px-2 py-1.5 text-sm text-text outline-none data-[selected=true]:bg-surface-2"
                   >
-                    <div className={cn('h-1.5 w-1.5 shrink-0 rounded-full', status === 'online' ? 'bg-success' : 'bg-danger')} aria-hidden />
-                    <span className="min-w-0 flex-1 truncate" title={name}>{name}</span>
+                    {assistant ? (
+                      <>
+                        <Mark size={20} compact={false} className="shrink-0 text-accent" />
+                        <span className="flex min-w-0 flex-1 flex-col">
+                          <span className="truncate" title={name}>{name}</span>
+                          <span className="truncate text-xs text-text-faint">The assistant</span>
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <div className={cn('h-1.5 w-1.5 shrink-0 rounded-full', status === 'online' ? 'bg-success' : 'bg-danger')} aria-hidden />
+                        <span className="min-w-0 flex-1 truncate" title={name}>{name}</span>
+                      </>
+                    )}
                     {isActive && (
                       <>
                         <Check className="size-4 shrink-0 text-accent-ink" aria-hidden />
@@ -3606,7 +3623,8 @@ function pickableAgents(status: SystemStatus | null): PickableAgent[] {
         id,
         name: named ? info.name : id,
         assistant: named && info.type === 'builder',
-        note: named && info.type === 'orchestrator' ? 'A workflow' : null,
+        // What each is, as cloud's picker says it (F1413).
+        note: named && info.type === 'builder' ? 'The assistant' : named && info.type === 'orchestrator' ? 'A workflow' : null,
       };
     })
     .sort((a, b) => Number(b.assistant) - Number(a.assistant));
@@ -3682,7 +3700,7 @@ export default function Home() {
   }, [systemStatus]);
 
   // Read the tabs this browser kept. The page before tabs kept one conversation in two keys: it
-  // becomes the first tab, once. With nothing at all, one new tab with the workspace's agent.
+  // becomes the first tab, once. With nothing at all, one new tab with Synapse AI (F1413).
   useEffect(() => {
     let live = true;
     (async () => {
@@ -3691,14 +3709,16 @@ export default function Home() {
       setSystemStatus(status);
       let oldSession: string | null = null;
       let oldAgent: string | null = null;
+      let keptAgent: string | null = null;
       try {
         oldSession = localStorage.getItem('synapseSessionId');
-        // The workspace's last agent seeds a new page only when it is a plain one: a Synapse AI tab coming forward
-        // makes it the active agent too, and the next browser opened Chat as Synapse AI (F1108).
+        keptAgent = localStorage.getItem('synapseAgentId');
+        // The conversation the page before tabs kept is the workspace's last agent's when it named none, and only a
+        // plain one: a Synapse AI tab coming forward makes it the active agent too (F1108).
         const active = status?.active_agent_id;
         const info = active ? status?.agents?.[active] : null;
         const assistant = typeof info === 'object' && info !== null && info.type === 'builder';
-        oldAgent = localStorage.getItem('synapseAgentId') || (assistant ? null : active) || null;
+        oldAgent = keptAgent || (assistant ? null : active) || null;
         localStorage.removeItem('synapseSessionId');
         localStorage.removeItem('synapseAgentId');
       } catch { /* storage blocked: nothing was kept */ }
@@ -3707,14 +3727,17 @@ export default function Home() {
       const agent = asked.get('agent');
       if (session && agent) link.current = { sessionId: session, agentId: agent };
       suggestion.current = readAssistantDraft(window.location.search);
-      // Chat always has a tab: with no active agent the first one there is, and with none at all a tab with no
-      // agent yet — its composer, and a kept conversation reopened, as the page before tabs did (stack 1's
-      // baseline found the empty strip).
-      const firstAgent = oldAgent || pickableAgents(status).find(a => !a.assistant)?.id || '';
+      // Chat always has a tab. The conversation the page before tabs kept opens with its agent, as it did; a browser
+      // that kept nothing opens Synapse AI, as cloud's Chat does (F1413, Naveen 11-06), else the first agent there
+      // is, and with none at all a tab with no agent yet — its composer, as the page before tabs did (stack 1's
+      // baseline found the empty strip). The workspace's active agent is no kept tab, and seeds none.
+      const pickable = pickableAgents(status);
+      const oldTabAgent = oldAgent || pickable.find(a => !a.assistant)?.id || '';
+      const newTabAgent = keptAgent || pickable[0]?.id || '';
       await start(kept => {
         let next = kept;
-        if (next.tabs.length === 0 && oldSession) next = openTab(next, make(oldSession, firstAgent)).state;
-        if (next.tabs.length === 0) next = openTab(next, make(generateSessionId(), firstAgent, '', true)).state;
+        if (next.tabs.length === 0 && oldSession) next = openTab(next, make(oldSession, oldTabAgent)).state;
+        if (next.tabs.length === 0) next = openTab(next, make(generateSessionId(), newTabAgent, '', true)).state;
         return next;
       });
     })();

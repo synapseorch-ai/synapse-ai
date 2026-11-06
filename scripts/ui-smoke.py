@@ -1488,6 +1488,7 @@ async def check_delegate(browser) -> str:
     """
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     await ctx.add_init_script(DELEGATE_STUB)
+    await ctx.add_init_script(_kept_plain_agent())
     page = await ctx.new_page()
     try:
         await page.goto(APP, wait_until="domcontentloaded")
@@ -3638,6 +3639,7 @@ async def check_humanfields(browser) -> str:
     # Chat, fed the same question by a stubbed stream.
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     await ctx.add_init_script(HUMAN_CHAT_STUB.replace("FIELDS", json.dumps(HUMAN_FIELDS)))
+    await ctx.add_init_script(_kept_plain_agent())
     page = await ctx.new_page()
     try:
         await page.goto(APP, wait_until="domcontentloaded")
@@ -3750,6 +3752,18 @@ window.fetch = function (input, init) {
 
 def _frame(event: dict, cursor: str | None = None) -> str:
     return (f"id: {cursor}\n" if cursor else "") + f"data: {json.dumps(event)}\n\n"
+
+
+def _kept_plain_agent() -> str:
+    """An init script keeping the install's first plain agent as this browser's (synapseAgentId), for a check of an
+    agent's chat that opens a fresh Chat: a new browser's first tab is Synapse AI's since F1413, and the active agent
+    seeds none. Nothing is kept on an install with no plain agent."""
+    agents = api("/api/status").get("agents") or {}
+    plain = next((aid for aid, info in agents.items() if not aid.startswith("agent_native_builder")
+                  and not (isinstance(info, dict) and info.get("type") in ("builder", "orchestrator"))), None)
+    if not plain:
+        return ";"
+    return f"try {{ localStorage.setItem('synapseAgentId', {json.dumps(plain)}); }} catch (e) {{}}"
 
 
 async def _chat_page(browser, session_id: str, history: dict | None = None,
@@ -3990,32 +4004,124 @@ async def check_chatleave(browser) -> str:
 
 
 @check
-async def check_firsttabplain(browser) -> str:
-    """A browser that has kept no tabs opens Chat on a plain agent, even after Synapse AI was the last one used.
+async def check_firsttabassistant(browser) -> str:
+    """A browser that has kept no tabs opens Chat on Synapse AI, as cloud's Chat does, even after a plain agent was the
+    last one used, wide and on a phone (F1413, Naveen 11-06: "OSS Chat works like cloud").
 
-    A tab coming forward makes its agent the workspace's active one, Synapse AI's too, and a new page's first tab
-    took that before the rule that it is a plain agent; so after a starter prompt (homestart) the next browser, a
-    phone, or the next check opened Chat as Synapse AI and its message went to the builder (F1108, Naveen's call
-    2026-10-28: the product, not the harness). Synapse AI comes forward by its own "new chat".
+    This check was `firsttabplain`, F1108's (Naveen 2026-10-28), which asked the opposite: a new browser's first tab
+    a plain agent, Synapse AI coming forward only by its own "new chat". The requirement changed, so the check did; it
+    asks no less. What F1108 kept that still holds, a plain tab answering with its own agent whichever tab was active,
+    is `firsttabkept`'s.
     """
     _tab_agents()
     _assistant_agent()
+    api("/api/agents/active", "POST", {"agent_id": TAB_ALPHA})
+    seen = []
+    try:
+        for width in (WIDE, PHONE):
+            ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]})
+            await ctx.add_init_script(CHAT_STUB)
+            page = await ctx.new_page()
+            try:
+                await page.goto(APP, wait_until="domcontentloaded")
+                await asyncio.sleep(SETTLE)
+                named = await _composer_named(page)
+            finally:
+                await ctx.close()
+            if named != f"Message {ASSISTANT_NAME}":
+                raise AssertionError(f"at {width[0]} px, with a plain agent last active, a new browser's first "
+                                     f"Chat tab is {named!r}, not Synapse AI's")
+            seen.append(width[0])
+    finally:
+        api("/api/agents/active", "POST", {"agent_id": TAB_ALPHA})
+    return f"a new browser's first Chat tab is Synapse AI's at {seen}, a plain agent having been the last used"
+
+
+async def _composer_named(page) -> str:
+    """The front tab's composer's name, "Message <its agent>"."""
+    box = page.get_by_role("textbox", name=re.compile(r"^Message "))
+    await box.first.wait_for(timeout=15_000)
+    return await box.first.get_attribute("aria-label") or ""
+
+
+@check
+async def check_firsttabkept(browser) -> str:
+    """What a browser kept opens as it was, Synapse AI first only where nothing was (F1413): the conversation the page
+    before tabs kept, the tabs kept since (a reload), and a ?session=&agent= link each open their own plain agent, with
+    Synapse AI the workspace's active agent. And a plain tab sends with its own agent, so a Synapse AI tab having come
+    forward changes nothing it answers with: what F1108 (2026-10-28) protected that still holds."""
+    _tab_agents()
+    _assistant_agent()
+    beta = "Message UI smoke Tab Beta"
     api("/api/agents/active", "POST", {"agent_id": "agent_synapse_ai"})
+    try:
+        ctx, page = await _tabs_page(browser, "uismoke-kept-beta", TAB_BETA)
+        try:
+            if (named := await _composer_named(page)) != beta:
+                raise AssertionError(f"the conversation the page kept opened as {named!r}, not Tab Beta's")
+            await _send(page, "kept tab question")
+            await _wait(page, "() => window.__bodies.length >= 1")
+            bodies = await page.evaluate("() => window.__bodies")
+            if not bodies or bodies[-1].get("agent_id") != TAB_BETA:
+                raise AssertionError(f"with Synapse AI active, the plain tab sent to "
+                                     f"{bodies[-1].get('agent_id') if bodies else None!r}, not its own agent")
+            await page.reload(wait_until="domcontentloaded")
+            await asyncio.sleep(SETTLE)
+            if (named := await _composer_named(page)) != beta:
+                raise AssertionError(f"the kept tabs reopened on {named!r}, not Tab Beta's")
+        finally:
+            await ctx.close()
+        ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+        await ctx.add_init_script(CHAT_STUB)
+        await ctx.add_init_script(TABS_STUB)
+        page = await ctx.new_page()
+        try:
+            await page.goto(f"{APP}/?session=uismoke-kept-link&agent={TAB_BETA}", wait_until="domcontentloaded")
+            await asyncio.sleep(SETTLE)
+            if (named := await _composer_named(page)) != beta:
+                raise AssertionError(f"a link to Tab Beta's conversation opened {named!r}")
+        finally:
+            await ctx.close()
+    finally:
+        api("/api/agents/active", "POST", {"agent_id": TAB_ALPHA})
+    return "a kept conversation, the kept tabs and a link open their own agent; a plain tab sends with its own"
+
+
+@check
+async def check_agentpickerfirst(browser) -> str:
+    """Synapse AI comes first among Chat's agents, as in cloud's picker (F1413): the composer's list starts with it,
+    with the mark the sidebar's "Synapse AI" has and the hint "The assistant", which no other row says; the new tab's
+    menu says it too."""
+    _tab_agents()
+    _assistant_agent()
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     await ctx.add_init_script(CHAT_STUB)
     page = await ctx.new_page()
     try:
         await page.goto(APP, wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE)
-        box = page.get_by_role("textbox", name=re.compile(r"^Message "))
-        await box.first.wait_for(timeout=15_000)
-        named = await box.first.get_attribute("aria-label") or ""
+        await _composer_named(page)
+        rail = await page.locator('[data-testid="assistant-open"] svg').first.inner_html()
+        await page.get_by_role("button", name=re.compile(r"^Agents: ")).first.click()
+        rows = page.get_by_role("dialog", name="Agents").get_by_role("option")
+        await rows.first.wait_for(timeout=10_000)
+        said = [await rows.nth(i).inner_text() for i in range(await rows.count())]
+        if not said or not said[0].startswith(ASSISTANT_NAME) or "The assistant" not in said[0]:
+            raise AssertionError(f"the composer's agents start {said[:2]!r}, not Synapse AI, \"The assistant\"")
+        if any("The assistant" in row for row in said[1:]):
+            raise AssertionError(f"another agent is called the assistant: {said!r}")
+        if await rows.first.locator("svg").first.inner_html() != rail:
+            raise AssertionError("Synapse AI's row in the composer's list has not the sidebar's mark")
+        await page.keyboard.press("Escape")
+        await page.get_by_role("button", name="New tab").first.click()
+        menu = page.get_by_role("dialog", name="Start a conversation with").get_by_role("option")
+        await menu.first.wait_for(timeout=10_000)
+        first = await menu.first.inner_text()
+        if not first.startswith(ASSISTANT_NAME) or "The assistant" not in first:
+            raise AssertionError(f"the new tab's menu starts {first!r}, not Synapse AI, \"The assistant\"")
     finally:
         await ctx.close()
-        api("/api/agents/active", "POST", {"agent_id": TAB_ALPHA})
-    if named == f"Message {ASSISTANT_NAME}":
-        raise AssertionError("with Synapse AI last active, a new browser's first Chat tab is Synapse AI's")
-    return f"a new browser's first Chat tab is a plain agent's ({named!r}), Synapse AI having been the last used"
+    return f"Synapse AI first, with the sidebar's mark and \"The assistant\", of {len(said)} agents and in New tab"
 
 
 # ── chat tabs (TABS1, D319) ──────────────────────────────────────────────────
@@ -7482,6 +7588,9 @@ async def check_agentname(browser) -> str:
     name = f"Named {aid[-6:]}"
     api("/api/agents", "POST", _agent(aid, name))
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    # The agent this browser kept: a new browser's first tab is Synapse AI's since F1413, and the active agent seeds
+    # none. The status still names it active, so the tab coming forward leaves the install's own active agent alone.
+    await ctx.add_init_script(f"try {{ localStorage.setItem('synapseAgentId', {json.dumps(aid)}); }} catch (e) {{}}")
     page = await ctx.new_page()
 
     async def active(route):
@@ -15278,7 +15387,8 @@ async def check_answertaken(browser) -> str:
     try:
         await _build_with_ai(page)
         panel = page.locator('[data-testid="assistant-panel"]')
-        composer = page.get_by_role("textbox", name="Message Synapse AI")
+        # The panel's own: Chat's first tab is a Synapse AI chat of its own since F1413, with a composer of that name.
+        composer = panel.get_by_role("textbox", name="Message Synapse AI")
         await composer.wait_for(timeout=10_000)
         await composer.fill("4111 1111 1111 1111")
         await composer.press("Enter")
