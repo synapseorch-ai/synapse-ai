@@ -6094,6 +6094,9 @@ STEP_REASON = """() => ({
   run: (document.body.innerText.match(/Started run (\\S+)/) || [])[1] || null,
 })"""
 
+#: The failed Transform's card: its line and what it raised, never the source that pushed the error past the clip.
+STEP_REASON_CARD = "Line 1 raised Exception: smoke boom"
+
 
 @check
 async def check_stepreason(browser) -> str:
@@ -6104,6 +6107,10 @@ async def check_stepreason(browser) -> str:
     record, which no screen read: a Transform's own exception, a model's 422
     and an HTTP tool's 404 all looked the same. Checked live and on a run
     reopened from its link, which reads the journal and the record.
+
+    The card's one line is what was raised and where (F1419; Naveen 11-06, "Line 1 raised X"): since the engine
+    names a Transform's line and source in one line (2b190e35), the card's two-line clip cut off the very error
+    after the source.
     """
     oid = f"orch_uismoke_reason_{int(time.time())}"
     api("/api/orchestrations", "POST", failing_orchestration(oid, "smoke boom"))
@@ -6118,7 +6125,7 @@ async def check_stepreason(browser) -> str:
         live = await page.evaluate(STEP_REASON)
         if not any("smoke boom" in line for line in live["log"]):
             raise AssertionError(f"the run log does not say why: {live['log']}")
-        if live["card"] != ["Exception: smoke boom"]:
+        if live["card"] != [STEP_REASON_CARD]:
             raise AssertionError(f"the failed step's card says {live['card']}")
         if not live["run"]:
             raise AssertionError("the run log never named its run")
@@ -6127,7 +6134,7 @@ async def check_stepreason(browser) -> str:
         await page.get_by_text("Done — status: failed").first.wait_for(timeout=60_000)
         await asyncio.sleep(0.5)
         again = await page.evaluate(STEP_REASON)
-        if not any("smoke boom" in line for line in again["log"]) or again["card"] != ["Exception: smoke boom"]:
+        if not any("smoke boom" in line for line in again["log"]) or again["card"] != [STEP_REASON_CARD]:
             raise AssertionError(f"reopened, the run says {again['log']} and its card {again['card']}")
         return "a failed step's own exception is on its card and in the run log, live and reopened"
     finally:
