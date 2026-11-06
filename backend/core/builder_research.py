@@ -545,13 +545,18 @@ def check_api_spec(raw: Any, provider: str, own_domains: list[str], own_pages: l
     if holds_credential(_json.dumps(raw, ensure_ascii=False)):
         return None, "it held a key, so I kept none of it"
     auth = raw.get("auth") if isinstance(raw.get("auth"), dict) else {}
-    if auth.get("in") == "query":
-        return None, "query"
-    if auth.get("scheme") == "Basic":
-        return None, "basic"
-    if auth.get("in") != "header" or not _TOKEN.match(str(auth.get("name") or "")) or \
-            auth.get("scheme") not in _SCHEMES:
-        return None, "its auth is not a header with Bearer, Token or the key alone"
+    # No auth is an API that takes no key (F1411): missing, {}, or the blanks the schema's required fields leave
+    # (`{"in": "header", "name": "", "scheme": ""}`). An auth that is not a dict, or a scheme with no header, names one.
+    keyless = raw.get("auth") is None or (isinstance(raw.get("auth"), dict) and auth.get("in") in (None, "header")
+                                          and not auth.get("name") and not auth.get("scheme"))
+    if not keyless:
+        if auth.get("in") == "query":
+            return None, "query"
+        if auth.get("scheme") == "Basic":
+            return None, "basic"
+        if auth.get("in") != "header" or not _TOKEN.match(str(auth.get("name") or "")) or \
+                auth.get("scheme") not in _SCHEMES:
+            return None, "its auth is not a header with Bearer, Token or the key alone"
     base = str(raw.get("base_url") or "").strip()
     m = re.match(r"^https://([^/?#]+)(/[^?#]*)?$", base)
     if not base.startswith("https://"):
@@ -610,7 +615,9 @@ def check_api_spec(raw: Any, provider: str, own_domains: list[str], own_pages: l
         "base_url": base,
         **({"host_params": [{"name": str(p["name"]), "says": str(p.get("says") or "")[:160]} for p in params]}
            if params else {}),
-        "auth": {"in": "header", "name": str(auth["name"]), "scheme": str(auth["scheme"])},
+        # One that takes no key has the shape a person's own keyless API has (own_api's F1225): no card, no wait.
+        **({"auth": None, "keyless": True} if keyless else
+           {"auth": {"in": "header", "name": str(auth["name"]), "scheme": str(auth["scheme"])}}),
         "endpoints": [{"method": str(e["method"]).upper(), "path": str(e["path"]), "does": str(e.get("does") or "")[:120],
                        "tool": name} for e, name in zip(endpoints, names)],
         "docs_url": docs,
