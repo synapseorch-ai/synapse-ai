@@ -2080,6 +2080,9 @@ SUBMIT = {"type": "function", "function": {
 #: The structure findings already sent back to the planner in this build (D340 D3): each once per plan, never again
 #: after a question round's re-plan (TRI1); after that only the card says it.
 _STRUCTURE_SAID_KEY = "_plan_structure_said"
+#: The planner's last plan as it went to the check (F1431), engine-private: a change while that plan is checked and
+#: not yet shown sends it to its check again (`change_tools._plan_unshown`), never a part of it built alone.
+SUBMITTED_KEY = "_plan_submitted"
 
 
 async def submit_plan(args: dict, server_module: Any, events: list[dict]) -> dict:
@@ -2104,8 +2107,11 @@ async def submit_plan(args: dict, server_module: Any, events: list[dict]) -> dic
     draft = O.PlanDraft.model_validate(_obj(args) or {})
     # A plan carries no question (F1253): one written anyway goes on to the check, which asks it before any plan.
     questions = [q.strip() for q in (_obj(args) or {}).get("questions") or [] if isinstance(q, str) and q.strip()]
-    return {"finish": "submit_plan", **draft.model_dump(exclude_none=True), **({"questions": questions}
-                                                                               if questions else {})}
+    out = {"finish": "submit_plan", **draft.model_dump(exclude_none=True), **({"questions": questions}
+                                                                              if questions else {})}
+    if run is not None:
+        run.shared_state[SUBMITTED_KEY] = out
+    return out
 
 
 register_builder_tool(SUBMIT, submit_plan)
