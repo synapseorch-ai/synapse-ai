@@ -595,12 +595,14 @@ def settled(steps: list[Step]) -> list[Step]:
     out (P0's plans, often), and a list is an order.
 
     * A step with no `next` that does not branch and is not inside a Loop or a Parallel goes to the next step in
-      the list that is not inside one either — or ends the run when it is the last (`"end"`).
+      the list that is not inside one either — or ends the run when it is the last (`"end"`), or when that step is
+      an End another arm names (`arm_ends`): the approved arm never ends on "End — Not Approved" (F1429).
     * A Parallel with no join joins at the merge all its branches lead to, or else as any step would.
     * A container's body steps go nowhere of their own (F124), and an End step goes nowhere at all.
     """
     by_id = {s.id: s for s in steps}
     bodies = {b for s in steps if s.type in ("loop", "parallel") for b in s.body or []}
+    owned = arm_ends(steps)
     out: list[Step] = []
     for i, s in enumerate(steps):
         if s.next is None and s.type != "end" and s.id not in bodies and not (
@@ -612,9 +614,19 @@ def settled(steps: list[Step]) -> list[Step]:
                     join = only
             if join is None:
                 join = next((x.id for x in steps[i + 1:] if x.id not in bodies), "end")
+                join = "end" if join in owned else join
             s = s.model_copy(update={"next": join})
         out.append(s)
     return out
+
+
+def arm_ends(steps: list[Step]) -> set[str]:
+    """The End steps an arm of a branching step names: that arm's own, which no other step reaches by list order and
+    no plain "end" compiles to (F1429). An arm's `"end"` is the plain end, even where an End step's id is `end`
+    (a compiled plan's own, read back: bld-07)."""
+    ends = {s.id for s in steps if s.type == "end"}
+    return {t for s in steps if s.type in ("if_else", "switch", "evaluator") for t in (s.branches or {}).values()
+            if t in ends and t != "end"}
 
 
 def _unreached(steps: list[Step], where: str) -> list[str]:
