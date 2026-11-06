@@ -101,3 +101,51 @@ class TestTheBuilderKnowsDropdowns:
     def test_a_dropdown_with_no_options_says_how_to_mend_it(self):
         [issue] = self._issues([{"name": "pick", "type": "select", "label": "Decision"}])
         assert "'pick'" in issue and '"options"' in issue
+
+
+# F1434: the planner writes a yes/no field as `yes_no`, which neither table knew, so it was a text box and "yes"
+# never met a condition that reads true/false (cap-05's shape). A yes/no answer arrives as true/false wherever it comes
+# from — a form, the API, MCP, a channel's reply — and any other text is kept as it came: nothing is refused (F455).
+
+OK = {"name": "ok", "type": "yes_no", "label": "Go ahead?"}
+
+
+class TestYesNo:
+    @pytest.mark.parametrize("raw", ["yes_no", "YES_NO", "yesno", "yes/no", " Yes_No "])
+    def test_the_planners_spellings_are_the_yes_no_field(self, raw):
+        assert field_type(raw) == "boolean"
+
+    def test_the_browsers_table_reads_them_too(self):
+        """`humanFields.ts` is this table's twin (the editor, the run's form, chat's answer form, cloud's run page)."""
+        import re
+        from pathlib import Path
+
+        ts = (Path(__file__).resolve().parents[3] / "frontend/src/components/orchestration/humanFields.ts").read_text()
+        block = re.search(r"const ALIASES: Record<string, HumanFieldType> = \{(.*?)\};", ts, re.S).group(1)
+        aliases = dict(re.findall(r"""['"]?([\w/]+)['"]?\s*:\s*'(\w+)'""", block))
+        for raw in ("yes_no", "yesno", "yes/no"):
+            assert aliases.get(raw) == "boolean", raw
+
+    @pytest.mark.parametrize("said,flag", [
+        ("Yes", True), ("yes.", True), (" y ", True), ("TRUE", True), ("1", True), (1, True),
+        ("no", False), ("No!", False), ("n", False), ("false", False), ("0", False), (0, False),
+    ])
+    def test_a_yes_or_no_in_words_is_stored_as_the_flag(self, said, flag):
+        assert check_answer([OK], {"ok": said})["ok"] is flag  # `is`: 1 == True would pass as is
+        assert check_answer([{"name": "ok", "type": "boolean"}], {"ok": said})["ok"] is flag
+
+    @pytest.mark.parametrize("said", [True, False, "maybe", "yes, but only on Friday", "", None, "on", "off"])
+    def test_anything_else_is_kept_as_it_came(self, said):
+        assert check_answer([OK], {"ok": said}) == {"ok": said}
+
+    def test_a_text_reply_to_a_lone_yes_no_answers_it(self):
+        """A channel's reply, or any door's plain text, to a step that asks one yes/no."""
+        assert check_answer([OK], "Yes") == {"ok": True} and check_answer([OK], "Yes")["ok"] is True
+        assert check_answer([OK], "no.") == {"ok": False} and check_answer([OK], "no.")["ok"] is False
+        assert check_answer([{"name": "approved", "type": "boolean"}], "y") == {"approved": True}
+
+    def test_other_text_and_other_steps_keep_the_text(self):
+        assert check_answer([OK], "next tuesday") == "next tuesday"
+        assert check_answer([OK, EMAIL], "yes") == "yes"
+        assert check_answer([EMAIL], "yes") == "yes"
+        assert check_answer([], "yes") == "yes"
