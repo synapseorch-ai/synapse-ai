@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, Awaitable, Callable
 from urllib.parse import quote, urlsplit
 
 from core.builder_registry import register_builder_tool
@@ -624,6 +624,77 @@ def check_api_spec(raw: Any, provider: str, own_domains: list[str], own_pages: l
     }, ""
 
 
+#: How long a found API has to answer, in seconds, and the most of its answer read (F1423).
+PROBE_SECONDS, PROBE_BYTES = 8.0, 256 * 1024
+#: An option's detail starts so when its API did not answer (F1423): the plan asks for its address or its spec.
+UNANSWERED = "Its API did not answer at "
+#: What each URL answered, in the build's state: one call a URL a build (F1423).
+PROBES_KEY = "_apis_probed_by_research"
+
+#: `fn(url, *, keyed, own) -> what it did | None`: a host's or a test's probe in place of `answers`.
+Probe = Callable[..., Awaitable[str | None]]
+_api_probe: Probe | None = None
+
+
+def set_api_probe(fn: Probe | None) -> None:
+    global _api_probe
+    _api_probe = fn
+
+
+def _a_page(kind: str, body: bytes) -> bool:
+    return "html" in kind.lower() or body.lstrip()[:15].lower().startswith((b"<!doctype html", b"<html"))
+
+
+async def answers(url: str, *, keyed: bool, own: list[str]) -> str | None:
+    """Whether a found API answers at `url` (F1423), asked with one plain GET and no key, through the egress guard at
+    every hop: None when it does, with data (a 2xx that is not a web page) or, for one that takes a key, a 401 or 403
+    that is not a web page (Naveen); else what it did, in a few words. An answer from off the provider's own domains
+    (`own`) is not its own."""
+    import asyncio
+
+    import httpx
+
+    from core import safe_fetch
+
+    try:
+        async with asyncio.timeout(PROBE_SECONDS):  # the one deadline: the client's own are a second past it
+            async with httpx.AsyncClient(timeout=httpx.Timeout(PROBE_SECONDS + 1)) as client:
+                got = await safe_fetch.fetch(url, client=client, max_bytes=PROBE_BYTES, timeout_s=PROBE_SECONDS + 1)
+    except TimeoutError:
+        return f"no answer within {PROBE_SECONDS:g} s"
+    except safe_fetch.FetchBlocked as exc:
+        return f"Synapse may not reach it: {exc}"
+    except safe_fetch.FetchTooLarge:
+        return f"an answer of more than {PROBE_BYTES // 1024} KB"
+    except safe_fetch.FetchRefused:
+        return "no answer"
+    host = _host(got.url)
+    if _registrable_domain(host) not in own:
+        return f"it answered from {host}, not its own site"
+    page, done = _a_page(got.headers.get("content-type", ""), got.body), 200 <= got.status < 300
+    if not page and (done or (keyed and got.status in (401, 403))):
+        return None
+    return ", ".join(x for x in ("" if done else str(got.status), "a web page, not data" if page else "") if x)
+
+
+async def _unanswered(spec: dict, own: list[str]) -> str | None:
+    """`<url> (what it did)` when a spec the research found does not answer at its first GET that takes no
+    arguments (F1423); None when it answers, or has no such endpoint or a placeholder in its host to ask (as before).
+    Asked once a URL a build."""
+    from core.native_builder.build_plan import _state
+
+    endpoint = next((e for e in spec["endpoints"] if e["method"] == "GET" and "{" not in e["path"]), None)
+    if endpoint is None or spec.get("host_params"):
+        return None
+    url = spec["base_url"].rstrip("/") + endpoint["path"]
+    state = _state()
+    asked = state.get(PROBES_KEY) if isinstance(state.get(PROBES_KEY), dict) else {}
+    if url not in asked:
+        asked[url] = await (_api_probe or answers)(url, keyed=not spec.get("keyless"), own=own)
+        state[PROBES_KEY] = asked
+    return f"{url} ({asked[url]})" if asked[url] else None
+
+
 #: A provider, by name, that grants or approves the developer's access (SAI2's (a), the gate measure's res-03: "Uber
 #: must grant FULL ACCESS"), never the person granting the app access on a consent screen ("the user grants your app
 #: access", "Patients must grant the app access").
@@ -715,7 +786,11 @@ async def report_findings(args: dict, server_module: Any, events: list[dict]) ->
             # A spec code can make the tool from, on the provider's own host only (F943); a failing one is dropped,
             # and the option stays a lead, never half-used. Two auths are no way in here yet: a verdict.
             spec, why = check_api_spec(raw.get("api"), provider, own_domains, own_pages)
-            if spec is not None:
+            # And one that does not answer is no API to make tools on (F1423): the plan asks for its address or spec.
+            unanswered = await _unanswered(spec, own_domains) if spec is not None else None
+            if unanswered:
+                option["detail"] = f"{UNANSWERED}{unanswered}. {detail}"[:300]
+            elif spec is not None:
                 option["api"] = spec
             elif why in _NO_WAY:
                 option.update(how="unclear", detail=f"{_NO_WAY[why]}. {detail}"[:300])

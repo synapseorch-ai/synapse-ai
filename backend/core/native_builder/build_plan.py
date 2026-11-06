@@ -2160,6 +2160,13 @@ def no_tool_line(provider: str, names: list[str]) -> str:
             "server for it on the MCP servers screen and ask again, or say \"build without it\".")
 
 
+def unanswered_line(provider: str, names: list[str], where: str) -> str:
+    """The line for an API the research found that did not answer where it said (F1423): its address is asked."""
+    tools = " and ".join(f"`{n}`" for n in names)
+    return (f"I can't build {tools} yet: {provider}'s API didn't answer at {where}. Give me its address or its "
+            "OpenAPI spec's address, or say \"build without it\".")
+
+
 def not_fixed_line() -> str:
     """What a step's change leaves as it is (F1310): the tool the step calls, and where it is changed."""
     from core import feature_census
@@ -2316,7 +2323,10 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     catalog = (await _read_options()).get("catalog") or []
     offered = list(prior.get("offered") or [])
     no_way, connect, said, makes, later, after_yes = [], [], [], [], [], []
+    from core.builder_research import UNANSWERED
+
     no_tool: dict[str, list[str]] = {}
+    unanswered: dict[str, str] = {}
     for t in plan.tools:
         if t.status == "missing" and t.provider:
             # The research's verdict, with why (A6): no way in that it could find.
@@ -2333,6 +2343,8 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
             # in the URL's path (F1121, Gmail, Calendar, Telegram's Bot API). Said once, by provider, below.
             no_way.append(t.name)
             no_tool.setdefault(t.provider or t.name, []).append(t.name)
+            if (t.detail or "").startswith(UNANSWERED):  # it did not answer where it said (F1423)
+                unanswered[t.provider or t.name] = t.detail[len(UNANSWERED):].split(". ", 1)[0]
         elif t.status == "found" and t.via == "http_tool" and not MAKES_HTTP_TOOLS:
             no_way.append(t.name)
             said.append(f"`{t.name}`: {t.provider} has a public API, but I can't make a tool for it here yet: build "
@@ -2352,7 +2364,8 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
             else:
                 after_yes.append(f"`{t.name}`: after your yes, I'll ask you to connect {t.provider}'s own MCP "
                                  "server, under Apps and MCP servers.")
-    said += [no_tool_line(provider, names) for provider, names in no_tool.items()]
+    said += [unanswered_line(provider, names, unanswered[provider]) if provider in unanswered
+             else no_tool_line(provider, names) for provider, names in no_tool.items()]
     if found.errors:
         said.append("It can't be saved as it is: " + " ".join(found.errors[:3]))
     said += [f"{why}." for why in found.blocks.values()]

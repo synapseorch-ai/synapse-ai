@@ -214,6 +214,20 @@ def _no_model_list():
 
 
 @pytest.fixture(autouse=True)
+def _api_probe_answers():
+    """A found API answers here (F1423): no test reaches the network to ask whether it does, and one about the probe
+    sets its own."""
+    from core import builder_research
+
+    async def answers(url, *, keyed, own):
+        return None
+
+    builder_research.set_api_probe(answers)
+    yield
+    builder_research.set_api_probe(None)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_cli_status():
     """Forget what the model CLIs said (CLIM1): their status is cached for ten
     minutes per binary, and a test's faked `which` must not answer for the next."""
