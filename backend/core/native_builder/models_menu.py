@@ -48,6 +48,9 @@ class ModelEntry:
     #: (`cli.claude.claude-sonnet-4-6` ranks as `claude-sonnet-4-6`), for ordering only and never said as its cost;
     #: None for any other model, and for a CLI alias the rate card has no row for.
     rank_out: float | None = None
+    #: A CLI model whose CLI is known to be signed out (F1418): how to sign it in, said where it is passed over; such a
+    #: model is never picked. None when it is signed in, or that is not known.
+    sign_in: str | None = None
 
 
 @dataclass(frozen=True)
@@ -91,6 +94,10 @@ def _source(model_id: str, mode: str) -> str:
 
 
 async def _own(model_id: str, pricing: dict) -> ModelEntry:
+    return _entry(model_id, pricing)
+
+
+def _entry(model_id: str, pricing: dict) -> ModelEntry:
     from core.images import model_can_see_images
     from core.providers import window_tokens
     from core.providers.registry import provider_for
@@ -123,6 +130,14 @@ async def _pricing() -> dict:
     return {**DEFAULT_MODEL_PRICING, **pricing}
 
 
+def _sign_in(provider: str) -> str | None:
+    """How to sign in a CLI known to be signed out (F1418), from Settings → Models' last probe; None otherwise."""
+    from core.providers import cli_status
+
+    st = cli_status.known(provider)
+    return f"{st.label} isn't signed in here: {st.sign_in_hint}" if st and st.signed_in is False else None
+
+
 async def menu() -> list[ModelEntry]:
     """Every model this workspace can call, with what is known of each; [] when the list cannot be read."""
     from core import model_choices
@@ -138,7 +153,7 @@ async def menu() -> list[ModelEntry]:
             said = await _facts(ids) or {}
             entries = [replace(e, **{k: v for k, v in (said.get(e.id) or {}).items()
                                      if k in ModelEntry.__dataclass_fields__ and k != "id"}) for e in entries]
-        return entries
+        return [replace(e, sign_in=_sign_in(e.provider)) if e.source == "cli" else e for e in entries]
     except Exception:  # noqa: BLE001 — a menu that cannot be read picks nothing: the workspace default, as before
         _log.warning("model menu not read", exc_info=True)
         return []
@@ -162,8 +177,16 @@ _NO_POOL = {"cli": "from your CLI models (this workspace has no own key or platf
 
 
 def _fits(e: ModelEntry, needs: str, has_tools: bool, long_inputs: bool = False) -> bool:
-    return (e.can_pay and (not has_tools or e.tools in ("native", "prompt")) and (needs != "vision" or e.vision)
-            and (not long_inputs or e.window is None or e.window >= LONG_WINDOW))
+    return (e.can_pay and not e.sign_in and (not has_tools or e.tools in ("native", "prompt"))
+            and (needs != "vision" or e.vision) and (not long_inputs or e.window is None or e.window >= LONG_WINDOW))
+
+
+def _signed_out(candidates: list[ModelEntry], needs: str, has_tools: bool,
+                long_inputs: bool = False) -> NoModel | None:
+    """How to sign in the CLIs that would fit but are signed out (F1418), when that is why nothing here fits."""
+    said = sorted({e.sign_in for e in candidates
+                   if e.sign_in and _fits(replace(e, sign_in=None), needs, has_tools, long_inputs)})
+    return NoModel(" ".join(said)) if said else None
 
 
 def fit_words(needs: str, *, has_tools: bool, long_inputs: bool = False) -> str:
@@ -188,7 +211,9 @@ def _no_model(candidates: list[ModelEntry], needs: str, has_tools: bool, *, of: 
               long_inputs: bool = False) -> NoModel:
     """Why nothing here does the job, said by what the candidates lack (SAI2's probe): the wallet first, then tools,
     then images, then the window when long inputs were asked for (F1410: never said when they were not). `of` names the
-    family a wish asked for."""
+    family a wish asked for. A CLI that would fit but is signed out is said first, with how to sign it in (F1418)."""
+    if out := _signed_out(candidates, needs, has_tools, long_inputs):
+        return out
     if candidates and not any(e.can_pay for e in candidates):
         if of:
             return NoModel(f"{', '.join(sorted(e.id for e in candidates))} can't be paid for now (the wallet).")
@@ -273,8 +298,10 @@ def pick(needs: str, *, has_tools: bool, menu: list[ModelEntry], narrow: bool = 
     if not usable:
         # No own-key or platform model at all (F1410, mirroring the local rule below): the workspace's default where it
         # is a CLI or local model that fits; else a CLI model, ranked as own keys are, by the list price of the model
-        # it runs (`rank_out`, never said as its cost); a local one only when no CLI model fits.
-        mine = next((e for e in menu if default and e.id == default and _fits(e, needs, has_tools, long_inputs)), None)
+        # it runs (`rank_out`, never said as its cost); a local one only when no CLI model fits. A CLI known to be
+        # signed out never fits (F1418).
+        mine = next((e for e in [*menu, *_off_list(default, menu)]
+                     if default and e.id == default and _fits(e, needs, has_tools, long_inputs)), None)
         if mine is not None and mine.source in _NO_POOL:
             return Picked(mine.id, f"{_REASONS['default']}, {_NO_POOL[mine.source]}{said}")
         cli = [replace(e, price_out=e.rank_out) for e in menu
@@ -289,6 +316,16 @@ def pick(needs: str, *, has_tools: bool, menu: list[ModelEntry], narrow: bool = 
         return Picked(chosen.id, (_ONLY if len(local) == 1 else _REASONS["narrow" if needs != "reasoning"
                                                                           else "reasoning"]) + said)
     return _no_model(usable or menu, needs, has_tools, long_inputs=long_inputs)
+
+
+def _off_list(default: str | None, menu: list[ModelEntry]) -> list[ModelEntry]:
+    """The workspace's default where it is a CLI model its CLI's list leaves out (F1418: Claude Code 2.1 names no
+    `claude-sonnet-4-6`, and runs it): an entry of its own, where that CLI is on the menu, signed in or out as it is."""
+    if not default or any(e.id == default for e in menu):
+        return []
+    own = _entry(default, {})
+    kin = next((e for e in menu if e.source == "cli" and e.provider == own.provider), None)
+    return [replace(own, can_pay=kin.can_pay, sign_in=kin.sign_in)] if own.source == "cli" and kin else []
 
 
 def workspace_model() -> str:
@@ -447,6 +484,8 @@ def resolve_wish(wish: str, needs: str, *, has_tools: bool, menu: list[ModelEntr
     if len(named) == 1:
         e = named[0]
         if not _fits(e, needs, has_tools):
+            if out := _signed_out([e], needs, has_tools):
+                return out
             return _no_model([e], needs, has_tools, of=e.id) if not e.can_pay else NoModel(
                 f"{e.id} can't {'call tools' if has_tools and e.tools == 'none' else 'read images'}, which this agent "
                 "needs.")
@@ -475,15 +514,19 @@ def resolve_wish(wish: str, needs: str, *, has_tools: bool, menu: list[ModelEntr
     fitting = [e for e in kind_pool if _fits(e, needs, has_tools)]
     if asked_kind:
         if not fitting:
-            return Ask(f"No {'CLI' if asked_kind == 'cli' else 'local'} model here can do this. This workspace can "
-                       "use: " + ", ".join(names) + ".", names)
+            return _signed_out(kind_pool, needs, has_tools) or Ask(
+                f"No {'CLI' if asked_kind == 'cli' else 'local'} model here can do this. This workspace can use: "
+                + ", ".join(names) + ".", names)
         return Picked(_by_need(fitting, needs, ceiling=False, has_tools=has_tools).id,
                       f"you asked for {'a CLI' if asked_kind == 'cli' else 'a local'} model")
     if words & _CHEAPEST and fitting:
         return Picked(sorted(fitting, key=lambda e: _cheapest_first(e, has_tools))[0].id,
                       "you asked for the lowest-cost model")
-    if (words & _STRONGEST or "most capable" in " ".join(re.findall(r"[a-z0-9]+", wish.casefold()))) and fitting:
+    strongest = words & _STRONGEST or "most capable" in " ".join(re.findall(r"[a-z0-9]+", wish.casefold()))
+    if strongest and fitting:
         return Picked(sorted(fitting, key=lambda e: _strongest_first(e, has_tools))[0].id,
                       "you asked for the strongest model")
+    if (words & _CHEAPEST or strongest) and (out := _signed_out(kind_pool, needs, has_tools)):
+        return out  # a rule, and every model it could pick is a signed-out CLI (F1418)
     return Ask(f"I don't know which model \"{wish.strip()}\" is. This workspace can use: " + ", ".join(names) + ".",
                names)

@@ -362,6 +362,13 @@ async def cli_status(provider: str, refresh: bool = False) -> CliStatus:
     return st
 
 
+def known(provider: str) -> CliStatus | None:
+    """One CLI's status as last asked, while it is fresh; None when it has not been. Runs nothing: the builder's model
+    pick reads it just after `/api/models` asked (F1418)."""
+    hit = _cache.get(provider)
+    return hit[2] if hit and hit[0] > time.monotonic() else None
+
+
 async def cli_statuses(refresh: bool = False) -> dict[str, CliStatus]:
     """Every model CLI's status, keyed by Settings → Models' provider id."""
     got = await asyncio.gather(*(cli_status(p, refresh) for p in PROVIDERS))
