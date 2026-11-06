@@ -16,7 +16,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { AppScreen } from '@/components/app/AppScreen';
 import { parseStamp } from '@/components/LocalTime';
-import { LogHead, LogKinds, LogList, Transcript, type LogListRow, type LogRun } from '@/components/run';
+import {
+    ASSISTANT_LOG_NAME, isAssistantLog, LogHead, LogKinds, LogList, logLine, Transcript, type LogFacts, type LogListRow,
+    type LogRun,
+} from '@/components/run';
 import type { RunSummary } from '@/components/runs/summary';
 import { buttonStyles, Combobox, EmptyState, IconButton } from '@/components/ui';
 import { cn } from '@/lib/cn';
@@ -54,13 +57,21 @@ const KINDS: { id: LogType; label: string; icon: React.ReactNode }[] = [
 const LIMIT = 100;
 const RUNS_READ = 200;
 
-const nameOf = (log: LogSummary, type: LogType) =>
-    type === 'agents' ? (log.agent_name || log.run_id)
-        : type === 'orchestrations' ? (log.orchestration_name || log.run_id)
-            : (log.schedule_name || log.run_id);
+const factsOf = (log: LogSummary): LogFacts =>
+    ({ runId: log.run_id, agentId: log.agent_id, source: log.source, targetType: log.target_type });
 
-const subOf = (log: LogSummary, type: LogType) =>
-    type === 'agents' ? log.source : type === 'orchestrations' ? log.orchestration_id : log.target_type;
+// Synapse AI's own logs go by its name, and every line 2 by words a person knows (F1416): never a step agent's own
+// name, a run's key or a workflow's id.
+const nameOf = (log: LogSummary, type: LogType) =>
+    isAssistantLog(factsOf(log)) ? ASSISTANT_LOG_NAME
+        : type === 'agents' ? (log.agent_name || log.run_id)
+            : type === 'orchestrations' ? (log.orchestration_name || log.run_id)
+                : (log.schedule_name || log.run_id);
+
+const subOf = (log: LogSummary, type: LogType) => logLine(type, factsOf(log));
+
+/** What the person asked, which a row may quote. Synapse AI's step logs hold its own prompts, never the person's. */
+const askedOf = (log: LogSummary) => (isAssistantLog(factsOf(log)) ? undefined : log.user_input || log.prompt);
 
 /** Written in UTC with no zone (F205): an ISO instant for `When`. */
 const isoOf = (stamp?: string) => {
@@ -205,13 +216,14 @@ export const LogsTab = () => {
                     .forEach(child => { ordered.push(child); placed.add(child.run_id); });
             }
             const all = [...ordered, ...group.filter(l => !placed.has(l.run_id))];
-            const quote = all.find(l => l.user_input)?.user_input || all.find(l => l.prompt)?.prompt || null;
+            const theirs = all.filter(l => !isAssistantLog(factsOf(l)));
+            const quote = theirs.find(l => l.user_input)?.user_input || theirs.find(l => l.prompt)?.prompt || null;
             // A session's logs sit under its heading; a run on its own needs none, and
             // what it was asked takes its second line.
             const alone = sid.startsWith('nosession_');
             const head = alone ? undefined : { key: sid, label: `Session: ${sid.slice(-8)}`, quote };
             for (const log of all) {
-                const own = log.user_input || log.prompt;
+                const own = askedOf(log);
                 out.push({
                     id: log.run_id,
                     name: nameOf(log, logType),
