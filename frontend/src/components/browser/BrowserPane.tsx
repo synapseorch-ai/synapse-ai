@@ -1,14 +1,14 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Globe, Info, KeyRound, Maximize2, Square, X } from 'lucide-react';
+import { AlertCircle, Globe, Info, KeyRound, Maximize2, Square, X } from 'lucide-react';
 
 import { Button, IconButton, Input, Modal, Spinner, usePersisted } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
 import { BrowserActionLine } from './BrowserActionLine';
-import { actionCount, hostOf, mergeActions, shortUrl, type BrowserAction, type BrowserFrame, type BrowserHost, type BrowserInput,
-         type BrowserSessionEvent, type FrameRecording, type HandedBack, type Wheel } from './model';
+import { actionCount, hostOf, loadErrorWords, mergeActions, shortUrl, type BrowserAction, type BrowserFrame, type BrowserHost, type BrowserInput,
+         type BrowserSessionEvent, type FrameRecording, type HandedBack, type LoadError, type Wheel } from './model';
 import { DialogAsk, FileAsk, MomentStrip, SelectAsk } from './PageMoments';
 import { PageScreen } from './PageScreen';
 import { SessionPicker } from './SessionPicker';
@@ -330,6 +330,7 @@ export function BrowserPane({
           )}
         </div>
       )}
+      {!closed && frame?.load_error && <LoadErrorLine error={frame.load_error} driving={driving} />}
 
       <div
         className={cn('relative flex items-center justify-center overflow-hidden bg-surface-2',
@@ -478,6 +479,22 @@ function PicksPanel({ picks }: { picks: NonNullable<React.ComponentProps<typeof 
  * someone else's that isn't shared. After the person signs in again on an expired session's turn, until when the fresh
  * one is kept.
  */
+/**
+ * A page that did not open (F1425): said above the page, never over it (a site's challenge is the person's to see),
+ * so the pane is never a blank page with nothing said. Apart from the strip above, which says who drives.
+ */
+function LoadErrorLine({ error, driving }: { error: LoadError; driving: boolean }) {
+  return (
+    <p role="status" className="flex shrink-0 items-start gap-2 border-b border-danger bg-danger-subtle px-3 py-2 text-xs leading-relaxed text-text">
+      <AlertCircle className="mt-0.5 size-3.5 shrink-0 text-danger" aria-hidden />
+      <span className="min-w-0">
+        {loadErrorWords(error)}
+        {driving && ' Type another address above.'}
+      </span>
+    </p>
+  );
+}
+
 function SignedInLine({ signedIn, kept, host }: {
   signedIn?: Pick<BrowserSessionEvent, 'sessions' | 'skipped'>;
   kept: KeptSession | null;

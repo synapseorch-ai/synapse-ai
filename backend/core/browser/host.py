@@ -188,6 +188,11 @@ class Session:
         self.typing_hosts: set[str] = set()            # allowed once by the person this session
         self.held: dict | None = None                  # an agent's send paused at the network
         self.banner: dict | None = None
+        # The page that did not open, and why (F1425): the pane says it above the page, never a blank pane. Apart
+        # from the banner, which says who drives.
+        self.load_error: dict | None = None
+        self._doc: tuple[str, int] | None = None       # the main frame's last document: its URL and status
+        self._refused_top: str | None = None           # the guard's reason for the main frame's last refused page
         self.handover: dict | None = None              # what the agent's current call must hand over
         self.handback: str | None = None               # what the agent hears on its next call
         self.took_at: float | None = None
@@ -334,6 +339,7 @@ class Session:
         req = route.request
         # As the request starts, before any wait: the replay's send list, and whether a replay is running.
         agent, only, replaying = self.gates_as_agent(), self.replay_sends, self.replaying is not None
+        top = False
         try:
             nav = req.is_navigation_request()
             top = nav and _is_main_frame(req)
@@ -367,6 +373,8 @@ class Session:
             else:
                 await route.abort("blockedbyclient")
                 self._note("guard", "blocked", reason)
+                if top:
+                    self._refused_top = reason
         except Exception:
             pass  # the page or the request is already gone
 
@@ -1111,6 +1119,7 @@ class Session:
 
     def state(self) -> dict:
         return {"wheel": self.wheel, "replaying": self.replay_running, "url": self._page_url(), "banner": self.banner,
+                "load_error": self.load_error,
                 **self.popups(),
                 "recording": self.recorder.frame() if self.recorder is not None else None,
                 "held": ({"method": self.held["method"], "url": self.held["url"], "money": bool(self.held.get("money"))}
@@ -1121,7 +1130,7 @@ class Session:
         if self.last_frame and self.viewers:
             meta = {k: v for k, v in self.last_frame.items() if k not in ("dialog", "select", "file")}
             meta = {**meta, "wheel": self.wheel, "replaying": self.replay_running, "banner": self.banner,
-                    "url": self._page_url(), **self.popups(),
+                    "load_error": self.load_error, "url": self._page_url(), **self.popups(),
                     "recording": self.recorder.frame() if self.recorder is not None else None}
             for q in list(self.viewers):
                 _offer(q, meta)
@@ -1162,9 +1171,69 @@ class Session:
 
     # ── the person's view ────────────────────────────────────────────────────
     def _watch(self, page) -> None:
-        """The screencast draws no native popup: while the person drives, the pane draws them."""
+        """The screencast draws no native popup: while the person drives, the pane draws them. A page that did not
+        open is said the same way (F1425)."""
         page.on("dialog", self._on_dialog)
         page.on("filechooser", self._on_chooser)
+        page.on("requestfailed", self._on_request_failed)
+        page.on("response", self._on_response)
+        page.on("framenavigated", self._on_frame_navigated)
+        page.on("load", lambda _page: asyncio.ensure_future(self._on_load()))
+
+    def _set_load_error(self, error: dict | None) -> None:
+        if error != self.load_error:
+            self.load_error = error
+            self._push_state()
+
+    def _on_request_failed(self, request) -> None:
+        """The main frame's page did not open: the headless shell draws its error page white, so it is said."""
+        try:
+            if not request.is_navigation_request() or not _is_main_frame(request):
+                return
+            code = str(request.failure or "").split()[0].removeprefix("net::") if request.failure else ""
+        except Exception:
+            return
+        if code in ("", "ERR_ABORTED"):  # another navigation took its place, or a download: nothing failed
+            return
+        error = {"url": request.url, "host": urlparse(request.url).hostname or "", "kind": _failure_kind(code),
+                 "code": code}
+        if code == "ERR_HTTP_RESPONSE_CODE_FAILURE" and self._doc:  # full Chromium's word for an empty refusal
+            error = {**error, "kind": "http", "status": self._doc[1]}
+            error.pop("code")
+        elif code == "ERR_BLOCKED_BY_CLIENT" and self._refused_top:
+            error["why"] = self._refused_top
+        self._set_load_error(error)
+
+    def _on_response(self, response) -> None:
+        try:
+            if response.request.is_navigation_request() and _is_main_frame(response.request):
+                self._doc = (response.url, int(response.status))
+        except Exception:
+            pass
+
+    def _on_frame_navigated(self, frame) -> None:
+        """A page that opened clears it; Chromium's own error page is where it failed."""
+        try:
+            if frame.parent_frame is not None or str(frame.url).startswith("chrome-error://"):
+                return
+        except Exception:
+            return
+        self._refused_top = None
+        self._set_load_error(None)
+
+    async def _on_load(self) -> None:
+        """A document that answered >= 400 and draws nothing (x.com's 403 to this browser): said. One that draws
+        something (a site's challenge) is the person's to see, as it is."""
+        doc, page = self._doc, self.page
+        if not doc or doc[1] < 400 or page is None or page.url != doc[0]:
+            return
+        try:
+            empty = await page.evaluate(_DRAWS_NOTHING_JS)
+        except Exception:
+            return
+        if empty and page.url == doc[0]:
+            self._set_load_error({"url": doc[0], "host": urlparse(doc[0]).hostname or "", "kind": "http",
+                                  "status": doc[1]})
 
     def _on_dialog(self, dialog) -> None:
         if self.wheel == "person":  # the agent's are Playwright MCP's (browser_handle_dialog)
@@ -1248,6 +1317,8 @@ class Session:
 
     def _on_page(self, page) -> None:
         self.page = page
+        self._doc = self._refused_top = None
+        self._set_load_error(None)  # it was the page before's
         self._watch(page)
         page.on("close", lambda _p: self._page_closed())
         if self.viewers:
@@ -1272,7 +1343,8 @@ class Session:
         def on_frame(ev):
             meta = {"jpeg_b64": ev["data"], "w": ev.get("metadata", {}).get("deviceWidth"),
                     "h": ev.get("metadata", {}).get("deviceHeight"), "url": self.page.url if self.page else "",
-                    "wheel": self.wheel, "replaying": self.replay_running, "banner": self.banner, **self.popups()}
+                    "wheel": self.wheel, "replaying": self.replay_running, "banner": self.banner,
+                    "load_error": self.load_error, **self.popups()}
             self.last_frame = meta
             for q in list(self.viewers):
                 _offer(q, meta)
@@ -1300,7 +1372,7 @@ class Session:
             return None
         self.last_frame = {"jpeg_b64": base64.b64encode(shot).decode(), "w": _VIEWPORT["width"],
                            "h": _VIEWPORT["height"], "url": self.page.url, "wheel": self.wheel,
-                           "replaying": self.replay_running, "banner": self.banner}
+                           "replaying": self.replay_running, "banner": self.banner, "load_error": self.load_error}
         return self.last_frame
 
 
@@ -1362,6 +1434,27 @@ def _thumbnail(jpeg: bytes) -> bytes:
         out = io.BytesIO()
         image.save(out, format="JPEG", quality=_THUMB_QUALITY)
         return out.getvalue()
+
+
+#: A page that draws nothing a person could read or press: no text, no picture, no control.
+_DRAWS_NOTHING_JS = """() => { const b = document.body; if (!b) return true; if ((b.innerText || '').trim()) return false;
+  return !document.querySelector('img, svg, canvas, video, iframe, object, embed, input, button, select, textarea'); }"""
+
+
+def _failure_kind(code: str) -> str:
+    """A failed navigation's Chromium code, as the pane words it."""
+    if code == "ERR_BLOCKED_BY_CLIENT":
+        return "blocked"
+    if code == "ERR_NAME_NOT_RESOLVED":
+        return "not_found"
+    if code.startswith(("ERR_CERT_", "ERR_SSL_")) or code == "ERR_BAD_SSL_CLIENT_AUTH_CERT":
+        return "certificate"
+    if code in ("ERR_CONNECTION_REFUSED", "ERR_CONNECTION_RESET", "ERR_CONNECTION_CLOSED", "ERR_CONNECTION_TIMED_OUT",
+                "ERR_CONNECTION_FAILED", "ERR_TIMED_OUT", "ERR_ADDRESS_UNREACHABLE", "ERR_INTERNET_DISCONNECTED",
+                "ERR_TUNNEL_CONNECTION_FAILED", "ERR_PROXY_CONNECTION_FAILED", "ERR_EMPTY_RESPONSE",
+                "ERR_NETWORK_CHANGED"):
+        return "unreachable"
+    return "failed"
 
 
 def _is_main_frame(req) -> bool:
