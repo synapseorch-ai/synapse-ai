@@ -49,7 +49,10 @@ export {
     type ScheduleLike, type TriggerChip, type WorkflowLastRun, type WorkflowListRow, type WorkflowSort,
 } from './workflowList';
 export { LogHead, LogKinds, LogList, RunWord } from './LogList';
-export { groupLogs, logBucket, logSize, matchLog, type LogGroup, type LogKind, type LogListRow, type LogRun } from './logList';
+export {
+    ASSISTANT_LOG_NAME, groupLogs, isAssistantLog, logBucket, logLine, logSize, matchLog,
+    type LogFacts, type LogGroup, type LogKind, type LogListRow, type LogRun,
+} from './logList';
 export { compactedLines, Transcript } from './Transcript';
 export { EvalTrend, ScoreTrend } from './EvalTrend';
 export {
