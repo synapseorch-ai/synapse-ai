@@ -5,8 +5,9 @@ Naveen: "let our builder be the default agent". It is a builder-typed agent, so 
 assistant's own conversation (`run_builder_stream_compat` for an API caller): what it reads, its cards, its plan
 reviews. It replaced an all-tools chat agent of the same name and id (`LEGACY_DEFAULT_AGENT`).
 
-Created once by the installer (`synapse setup --apply`), never overwritten after: a user who edits or deletes it
-keeps their choice. An install whose old default is exactly as the installer made it has it turned into the assistant
+Created by the installer (`synapse setup --apply`), never overwritten after: a user who edits or deletes it keeps
+their choice. An install the installer never ran (Docker, whose entrypoint runs no setup; pip, whose first-start
+questions write settings only) has it made by the server's first start instead (`create_the_assistant_once`, F1412). An install whose old default is exactly as the installer made it has it turned into the assistant
 once, at start-up (`adopt_the_assistant`), under the same id, so its conversations stay; an edited one is the
 person's own and is left alone. Its id is also how the legacy importer tells it apart from the user's own agents — a
 store holding only this agent and the seeded builder is still an empty one.
@@ -14,6 +15,10 @@ store holding only this agent and the seeded builder is still an empty one.
 from __future__ import annotations
 
 DEFAULT_AGENT_ID = "agent_synapse_ai"
+
+#: The settings row that says the server's first start has seen to the assistant, made or found (F1412). Machinery:
+#: Settings never shows it.
+SEEDED_MARKER = "default_agent_seeded"
 
 #: The default agent before ASSIST1, exactly as the installer made it: an install still holding it unchanged has it
 #: turned into the assistant (`adopt_the_assistant`).
@@ -91,3 +96,19 @@ async def ensure_default_agent() -> bool:
         return False
     await save_agent(dict(DEFAULT_AGENT))
     return True
+
+
+async def create_the_assistant_once() -> bool:
+    """At a server start: create the default agent if no start has before. True when it was created.
+
+    Once, by a marker in the store rather than "missing, so make it": an agent the person deleted stays deleted. On an
+    install the installer made it for, the first start finds it and only marks. The marker travels with the store, so
+    a Docker volume keeps it when the container is recreated.
+    """
+    from core.store.settings import load_settings_for_tenant, save_setting
+
+    if (await load_settings_for_tenant()).get(SEEDED_MARKER):
+        return False
+    created = await ensure_default_agent()
+    await save_setting(SEEDED_MARKER, True)
+    return created
