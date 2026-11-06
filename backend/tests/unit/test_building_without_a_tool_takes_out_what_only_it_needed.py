@@ -140,3 +140,21 @@ async def test_a_plan_that_cannot_be_read_is_said_without_the_checks_words(clien
     assert out["say"].startswith("I could not make a plan that holds together")
     assert "teleport" not in out["say"] and "steps." not in out["say"] and "Input should be" not in out["say"]
     assert "Tell me what to change, or ask me to plan it again." in out["say"]
+
+
+async def test_a_check_already_in_the_persons_words_reaches_the_card_word_for_word(client):
+    """A save rule writes for the person ("Step 'Post the update' runs `post_update`, which changes something outside
+    this workspace, with nobody approving it first. Put a Human step before it…"): it names no id and says what to
+    do, so it is said as it is, never turned into "doesn't fit together" (CI2's reader run at 383ec076)."""
+    from core.store.resources import save_tool
+
+    await save_tool({"name": "post_update", "description": "Posts an update outside.", "tool_type": "http",
+                     "method": "POST", "url": "https://api.example.com/post", "headers": {},
+                     "inputSchema": {"type": "object", "properties": {}}})
+    run = await _run()
+    post = {"id": "post", "type": "tool", "name": "Post the update", "does": "Posts it", "tool": "post_update"}
+    out, _ = await _check(run, {"finish": "submit_plan", **_plan(CHECK, post)})
+    [rule] = [i for i in out["issues"] if "Human step" in i]
+    assert "Step 'Post the update'" in rule, rule
+    assert rule in out["say"] and rule in out["review"], "word for word, on the card"
+    assert "doesn't fit together" not in _said(out)

@@ -551,19 +551,21 @@ def _dropped(steps: list[O.Step], gone: list[str]) -> tuple[list[O.Step], list[s
     return out, notes
 
 
-def _without(plan: O.Plan, tools: list[str]) -> tuple[O.Plan, list[str]]:
+def _without(plan: O.Plan, tools: list[str], took_out: list[str] | None = None) -> O.Plan:
     """The Plan with the steps that call `tools` dropped, in it and its inner workflows, and those tools taken from
-    its agents ("Build without X"); with what the card says it took out beyond them (F1426)."""
+    its agents ("Build without X"). What it took out beyond them, as the card says it, goes in `took_out` (F1426)."""
     gone = list(dict.fromkeys(tools))
     if not gone:
-        return plan, []
+        return plan
+    notes = took_out if took_out is not None else []
     out = plan.model_copy(deep=True)
-    out.steps, notes = _dropped(out.steps, gone)
+    out.steps, said = _dropped(out.steps, gone)
+    notes += said
     out.agents = [a.model_copy(update={"tools": [t for t in a.tools if t not in gone]}) for a in out.agents]
     for w in out.inner_workflows:
-        w.steps, more = _dropped(w.steps, gone)
-        notes += more
-    return out, notes
+        w.steps, said = _dropped(w.steps, gone)
+        notes += said
+    return out
 
 
 async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, state: dict | None = None,
@@ -597,7 +599,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
                 **{k: getattr(plan, k) for k in ("agents", "schedule", "inner_workflows", "caps", "boards", "knowledge",
                                                  "apis", "mcp_servers", "eval", "questions", "not_carried_over")}})
             plan.reuse_agents = list(dict.fromkeys([*edited.reuse_agents, *plan.reuse_agents]))
-    plan, took_out = _without(plan, without or [])
+    took_out: list[str] = []
+    plan = _without(plan, without or [], took_out)
     from core.native_builder.change_tools import _holds_a_key
     from core.secret_scrub import holds_credential
 
@@ -2223,20 +2226,38 @@ def browser_agents_on() -> bool:
 
 #: What a person is told to do about a plan a check fails (F1426).
 AGAIN = "Tell me what to change, or ask me to plan it again."
-_STEP_NAMED = re.compile(r"\bstep '?([A-Za-z0-9_\-]+)'?")
+_STEP_NAMED = re.compile(r"\bstep '?([A-Za-z0-9_\-]+)'?", re.IGNORECASE)
 
 
-def as_said(errors: list[str], plan: O.Plan | None) -> str:
-    """What a check's errors tell the person (F1426): the steps they are about, by their names, and what to do; never
-    a step's id or the check's own words, which stay in the result's `issues` for the planner."""
+_FIELD_PATH = re.compile(r"^\w+(?:\.\w+)+:")
+
+
+def as_said(errors: list[str], plan: O.Plan | None) -> list[str]:
+    """What a check's errors tell the person (F1426), one line each. Told apart by the message, not by which check
+    wrote it: one that names a step by its id (`step post_loop: …`) or a field by its path (`steps.0.type: …`) is the
+    check's own wording, said as the steps it is about, by their names, with what to do; its raw text stays in the
+    result's `issues` for the planner. Any other is already in the person's words (a save rule's "Step 'Send it'
+    runs …. Put a Human step before it") and is said as it is. By the ids, not a marker: the checks are written in
+    many modules, and an id is what a person can't read."""
     names = {s.id: s.name for s in [*(plan.steps if plan else []),
                                     *(x for w in (plan.inner_workflows if plan else []) for x in w.steps)]}
-    named = list(dict.fromkeys(names[i] for e in errors for i in _STEP_NAMED.findall(e) if i in names))
-    if not named:
-        return f"Part of this plan doesn't fit together as it is. {AGAIN}"
+    named, internal, plain = [], False, []
+    for e in errors:
+        ids = [i for i in _STEP_NAMED.findall(e) if i in names]
+        if ids:
+            named += [names[i] for i in ids]
+        elif _FIELD_PATH.match(e):
+            internal = True
+        else:
+            plain.append(e)
+    named = list(dict.fromkeys(named))
     if len(named) == 1:
-        return f"{_quoted(named)} doesn't fit together as it is. {AGAIN}"
-    return f"{_quoted(named)} don't fit together as they are. {AGAIN}"
+        lead = [f"{_quoted(named)} doesn't fit together as it is. {AGAIN}"]
+    elif named:
+        lead = [f"{_quoted(named)} don't fit together as they are. {AGAIN}"]
+    else:
+        lead = [f"Part of this plan doesn't fit together as it is. {AGAIN}"] if internal else []
+    return lead + plain
 
 
 def unanswered_line(provider: str, names: list[str], where: str) -> str:
@@ -2456,7 +2477,7 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
              else no_tool_line(provider, names, signs_in=provider in signs_in, browser=browser)
              for provider, names in no_tool.items()]
     if checks:
-        said.append("It can't be saved as it is: " + as_said(checks, plan))
+        said.append("It can't be saved as it is: " + " ".join(as_said(checks, plan)[:3]))
     if model_issues:
         said.append("It can't be saved as it is: " + " ".join(model_issues[:3]))
     said += [f"{why}." for why in found.blocks.values()]
@@ -2521,7 +2542,7 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
             f"### {name}\n{text.strip()}" for name, text in prompts.items()) + "\n"
     if found.errors:
         review += "\n## Can't be saved yet\n" + "\n".join(
-            f"- {e}" for e in [*([as_said(checks, plan)] if checks else []), *model_issues]) + "\n"
+            f"- {e}" for e in [*as_said(checks, plan), *model_issues]) + "\n"
     if board_notes:
         review += "\n## Boards\n" + "\n".join(f"- {n}" for n in board_notes) + "\n"
     if periods_said:
