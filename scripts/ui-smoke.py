@@ -1486,9 +1486,10 @@ async def check_delegate(browser) -> str:
     Stubbed at the browser, so it needs no second agent, no delegation and no
     model call — what is under test is whether the name survives the journey.
     """
+    aid = "agent_uismoke_delegate"
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     await ctx.add_init_script(DELEGATE_STUB)
-    await ctx.add_init_script(_kept_plain_agent())
+    await ctx.add_init_script(_own_agent(aid, "UI smoke Delegator"))
     page = await ctx.new_page()
     try:
         await page.goto(APP, wait_until="domcontentloaded")
@@ -1514,6 +1515,7 @@ async def check_delegate(browser) -> str:
         return "a delegate's tool call is shown under the delegate's name"
     finally:
         await ctx.close()
+        _drop_agent(aid)
 
 
 # ── tool globals ─────────────────────────────────────────────────────────────
@@ -3639,7 +3641,7 @@ async def check_humanfields(browser) -> str:
     # Chat, fed the same question by a stubbed stream.
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     await ctx.add_init_script(HUMAN_CHAT_STUB.replace("FIELDS", json.dumps(HUMAN_FIELDS)))
-    await ctx.add_init_script(_kept_plain_agent())
+    await ctx.add_init_script(_own_agent("agent_uismoke_humanfields", "UI smoke Reviewer"))
     page = await ctx.new_page()
     try:
         await page.goto(APP, wait_until="domcontentloaded")
@@ -3660,6 +3662,7 @@ async def check_humanfields(browser) -> str:
             problems.append(f"chat's answer form has no field per declared field ({type(e).__name__})")
     finally:
         await ctx.close()
+        _drop_agent("agent_uismoke_humanfields")
     if problems:
         raise AssertionError("; ".join(problems))
     return "the editor, the orchestration screen and chat agree on every field, keyed by name"
@@ -3754,16 +3757,19 @@ def _frame(event: dict, cursor: str | None = None) -> str:
     return (f"id: {cursor}\n" if cursor else "") + f"data: {json.dumps(event)}\n\n"
 
 
-def _kept_plain_agent() -> str:
-    """An init script keeping the install's first plain agent as this browser's (synapseAgentId), for a check of an
-    agent's chat that opens a fresh Chat: a new browser's first tab is Synapse AI's since F1413, and the active agent
-    seeds none. Nothing is kept on an install with no plain agent."""
-    agents = api("/api/status").get("agents") or {}
-    plain = next((aid for aid, info in agents.items() if not aid.startswith("agent_native_builder")
-                  and not (isinstance(info, dict) and info.get("type") in ("builder", "orchestrator"))), None)
-    if not plain:
-        return ";"
-    return f"try {{ localStorage.setItem('synapseAgentId', {json.dumps(plain)}); }} catch (e) {{}}"
+def _own_agent(aid: str, name: str) -> str:
+    """Makes the check's own plain agent and returns an init script keeping it as this browser's (synapseAgentId), for
+    a check of an agent's chat that opens a fresh Chat: a new browser's first tab is Synapse AI's since F1413, and the
+    active agent seeds none. Its own, so it holds in any order, on a store with no other agent. The check deletes it."""
+    api("/api/agents", "POST", _agent(aid, name))
+    return f"try {{ localStorage.setItem('synapseAgentId', {json.dumps(aid)}); }} catch (e) {{}}"
+
+
+def _drop_agent(aid: str) -> None:
+    try:
+        api(f"/api/agents/{aid}", "DELETE")
+    except Exception:
+        pass
 
 
 async def _chat_page(browser, session_id: str, history: dict | None = None,
