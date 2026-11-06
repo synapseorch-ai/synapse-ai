@@ -357,9 +357,11 @@ async def read(turn: ChatTurn, after: int = 0, *,
             seq = entry.seq
         if not turn.live and seq >= turn.last_seq:
             return
+        # Not wait_for: on 3.11 it loses a cancel that lands as an entry arrives, and a closed tab reads on (F1435).
         try:
-            await asyncio.wait_for(changed.wait(), heartbeat)
-        except asyncio.TimeoutError:
+            async with asyncio.timeout(heartbeat):
+                await changed.wait()
+        except TimeoutError:
             yield HEARTBEAT
 
 

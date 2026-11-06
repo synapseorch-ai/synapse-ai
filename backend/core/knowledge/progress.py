@@ -286,8 +286,10 @@ async def _flush(row_key: str, tracker: Tracker) -> None:
     clock = tracker._clock
     last = clock()
     while True:
-        with suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(tracker.urgent.wait(), timeout=FLUSH_EVERY_S)
+        # Not wait_for: on 3.11 it loses a cancel that lands as `urgent` is set, and this loop then never ends (F1435).
+        with suppress(TimeoutError):
+            async with asyncio.timeout(FLUSH_EVERY_S):
+                await tracker.urgent.wait()
         urgent = tracker.urgent.is_set()
         now = clock()
         if urgent or (tracker.dirty and now - last >= FLUSH_EVERY_S) or now - last >= KEEPALIVE_S:
