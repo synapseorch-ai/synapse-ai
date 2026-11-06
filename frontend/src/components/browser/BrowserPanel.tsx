@@ -1,9 +1,8 @@
 'use client';
 
-import { createContext, useCallback, useEffect, useId, useRef, useState } from 'react';
-import { X } from 'lucide-react';
+import { createContext, useEffect, useRef, useState } from 'react';
 
-import { IconButton, usePersisted } from '@/components/ui';
+import { usePersisted } from '@/components/ui';
 
 /** The panel's width, before the person sets one: a browser needs the room (Naveen 11-06, on the mocks: wider). */
 const DEFAULT_WIDTH = 'min(1280px, 80vw)';
@@ -12,10 +11,10 @@ const MIN_WIDTH = 560;
 const GUTTER = 64;
 
 /**
- * How the pane inside says what its ✕ does (F1439): the pane knows whether anything would be lost (a sign-in typed
- * into, steps recorded) and asks first; the panel only draws the button. A pane registers its close, null to unset.
+ * A pane inside the panel draws its ✕ (F1439) at the right of its own top bar, so the browser keeps the panel's full
+ * height: the pane knows whether anything would be lost (a sign-in typed into, steps recorded) and asks first.
  */
-export const BrowserPanelClose = createContext<((close: (() => void) | null) => void) | null>(null);
+export const InBrowserPanel = createContext(false);
 
 /**
  * A browser of the person's alone (signing in, recording a task, re-recording one), full height on the right, the way
@@ -38,10 +37,7 @@ export function BrowserPanel({ label, children }: {
   const panel = useRef<HTMLDivElement>(null);
   const clamp = (px: number) => Math.round(Math.min(window.innerWidth - GUTTER, Math.max(MIN_WIDTH, px)));
   const width = dragged ?? (kept ? Number(kept) : null);
-  const titleId = useId();
   const root = useRef<HTMLDivElement>(null);
-  const closer = useRef<(() => void) | null>(null);
-  const register = useCallback((close: (() => void) | null) => { closer.current = close; }, []);
 
   // Focus in, and back to what opened it once it closes. What opened it can be a dialog that hands focus back to its
   // own opener as the panel opens ("Keep me signed in to a site"): focus landing on the page behind is that opener,
@@ -82,7 +78,7 @@ export function BrowserPanel({ label, children }: {
   };
 
   return (
-    <div ref={root} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}
+    <div ref={root} role="dialog" aria-modal="true" aria-label={label} tabIndex={-1}
          className="fixed inset-0 z-50 focus:outline-none">
       <div aria-hidden className="absolute inset-0 bg-scrim/40" />
       <div
@@ -97,13 +93,7 @@ export function BrowserPanel({ label, children }: {
           onPointerDown={startResize}
           className="absolute inset-y-0 -left-0.5 z-10 hidden w-1.5 cursor-col-resize transition-colors hover:bg-accent/40 active:bg-accent/60 md:block"
         />
-        <div className="flex shrink-0 items-center gap-2 border-b border-border py-1.5 pl-3 pr-1.5">
-          <h2 id={titleId} className="min-w-0 flex-1 truncate text-sm font-semibold text-text">{label}</h2>
-          <IconButton icon={X} label="Close" size="sm" onClick={() => closer.current?.()} />
-        </div>
-        <BrowserPanelClose.Provider value={register}>
-          <div className="min-h-0 flex-1">{children}</div>
-        </BrowserPanelClose.Provider>
+        <InBrowserPanel.Provider value={true}>{children}</InBrowserPanel.Provider>
       </div>
     </div>
   );

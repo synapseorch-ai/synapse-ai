@@ -7,7 +7,7 @@ import { Button, IconButton, Input, Modal, Spinner, usePersisted } from '@/compo
 import { cn } from '@/lib/cn';
 
 import { BrowserActionLine } from './BrowserActionLine';
-import { BrowserPanelClose } from './BrowserPanel';
+import { InBrowserPanel } from './BrowserPanel';
 import { actionCount, actionWords, hostOf, loadErrorWords, mergeActions, shortUrl, type BrowserAction, type BrowserFrame, type BrowserHost, type BrowserInput,
          type BrowserSessionEvent, type FrameRecording, type HandedBack, type LoadError, type Wheel } from './model';
 import { DialogAsk, FileAsk, MomentStrip, SelectAsk } from './PageMoments';
@@ -228,14 +228,7 @@ export function BrowserPane({
     else if (signIn) { if (touched) setClosing('sign-in'); else signIn.onFinish(false); }
     else if (record) { if (steps > 0 && !record.handover) setClosing('record'); else record.onStop(false); }
   };
-  const closeRef = useRef(closeNow);
-  useEffect(() => { closeRef.current = closeNow; });
-  const registerClose = useContext(BrowserPanelClose);
-  useEffect(() => {
-    if (!registerClose || !alone) return;
-    registerClose(() => closeRef.current());
-    return () => registerClose(null);
-  }, [registerClose, alone]);
+  const inPanel = useContext(InBrowserPanel);
   // Back to the browser: focus goes to what asked (the ✕), once the ask has let it go.
   const askedFrom = useRef<HTMLElement | null>(null);
   useEffect(() => {
@@ -309,6 +302,7 @@ export function BrowserPane({
           </Button>
         )}
         {onHide && <IconButton icon={X} label="Close the browser pane" size="sm" onClick={onHide} />}
+        {inPanel && alone && <IconButton icon={X} label="Close" size="sm" onClick={closeNow} />}
       </header>
 
       {picks && picking && !alone && <PicksPanel picks={picks} />}
@@ -513,7 +507,7 @@ export function BrowserPane({
           footer={closing === 'sign-in' ? (
             <>
               <Button variant="secondary" autoFocus disabled={signIn?.busy} onClick={() => answerClose(() => signIn?.onFinish(true))}>Keep it</Button>
-              <Button variant="danger" disabled={signIn?.busy} onClick={() => answerClose(() => signIn?.onFinish(false))}>Close</Button>
+              <Button variant="danger" disabled={signIn?.busy} onClick={() => answerClose(() => signIn?.onFinish(false))}>Don’t keep</Button>
             </>
           ) : (
             <>
