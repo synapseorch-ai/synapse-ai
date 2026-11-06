@@ -472,9 +472,10 @@ def _refuse_unsafe_expression(steps: list) -> dict | None:
     parameter this model writes directly — so refusing now is what turns a
     prompt-injected expression into a corrected one rather than a stored one.
 
-    Only *unsafe* expressions are refused. A typo is left to the validator to
-    report: the engine survives one with a warning, and failing a tool call on
-    a mistyped condition would be the worse trade.
+    Only *unsafe* expressions are refused here, on every write. A typo, or
+    `{{ … }}` inside a longer expression, is refused where the workflow is saved
+    and when a plan is checked (`save_rules.refusal`, F1433): at run time it
+    fails its step, so it is never saved. The validator reports it too.
     """
     problems = _expression_problems(steps, unsafe_only=True)
     if not problems:

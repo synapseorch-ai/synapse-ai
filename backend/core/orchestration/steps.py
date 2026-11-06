@@ -3438,20 +3438,28 @@ def _eval_state_expr(expr: str, state: dict, default=None):
 
 
 def _route_expr(expr: str, state: dict, what: str, default=None):
-    """`_eval_state_expr` for a step that decides on the answer: a *refused*
-    expression fails the step, naming `what` and why (F850).
+    """`_eval_state_expr` for a step that decides on the answer: an expression
+    that is refused, or that errors, fails the step, naming `what` and why
+    (F850, F1433).
 
     A refused expression used to route like one that raised — an If/Else took
     its false branch, a Switch its default — and the run read Completed (QA1b,
     on prod). Refused is the author's mistake, not this run's data, so the step
-    stops rather than guess (Naveen, 2026-10-23). An allowed expression that
-    cannot read this run's state still returns its error for the caller's
-    documented answer: a key a run does not have yet is data.
+    stops rather than guess (Naveen, 2026-10-23). So does any other error
+    (F1433: cap-05's `{{ … }}` gate turned an approval into "no", Naveen
+    2026-11-06). A value this run has not written yet is data, read through,
+    compared or combined (`ExprResult.unwritten`): its error is returned for the
+    caller's documented answer, as before. An empty expression is the caller's
+    to word, as before.
     """
     result = _expressions.evaluate_expression(expr, state, default)
     if result.refused:
         raise RuntimeError(
             f"{what} uses something this engine will not run: {result.error}. "
+            f"The step stops here rather than guess; change it, then Replay.")
+    if result.error and not result.unwritten and expr and expr.strip():
+        raise RuntimeError(
+            f"{what} could not be evaluated: {result.error}. "
             f"The step stops here rather than guess; change it, then Replay.")
     return result.value, result.error
 
@@ -3475,7 +3483,7 @@ class IfElseStepExecutor:
 
         raw, err = _route_expr(condition, run.shared_state, "The If/Else condition", default=False)
         result = bool(raw)
-        if err:
+        if err:  # a value the run has not written yet: data (F1433), the documented False
             _log.debug(f"IF_ELSE: ⚠ Condition eval failed: {err}")
             yield {"type": "step_warning", "orch_step_id": step.id,
                    "message": f"Condition eval error (treating as False): {err}"}

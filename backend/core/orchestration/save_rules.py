@@ -134,14 +134,20 @@ def reserved_problems(steps: list) -> list[str]:
 def refusal(orch: dict, agents: dict) -> str | None:
     """Why `orch` may not be saved, in one paragraph; `None` when it may."""
     unsafe = expression_problems(orch.get("steps") or [], unsafe_only=True)
+    # One that cannot be read as written (a typo, `{{ … }}` inside a longer expression) is refused as well (F1433,
+    # Naveen 11-06): at run time it would fail its step, so it is never saved, and check_build says so first.
+    unread = [p for p in expression_problems(orch.get("steps") or [], unsafe_only=False) if p not in unsafe]
     parts = []
     if unsafe:
+        parts.append(
+            "An expression uses something this engine will not run. " + " ".join(p.rstrip(".") + "." for p in unsafe))
+    if unread:
+        parts.append(
+            "An expression cannot be read as written. " + " ".join(p.rstrip(".") + "." for p in unread))
+    if unsafe or unread:
         from core.expressions import vocabulary_sentence
 
-        parts.append(
-            "An expression uses something this engine will not run. " + " ".join(p.rstrip(".") + "." for p in unsafe)
-            + " " + vocabulary_sentence()  # what it may use, from the tables that decide it (F957)
-        )
+        parts.append(vocabulary_sentence())  # what it may use, from the tables that decide it (F957)
     if not orch.get("system"):  # Synapse AI's own workflow is its own run's (F1315)
         parts += reserved_problems(orch.get("steps") or [])
         parts += engine_key_defaults(orch.get("state_schema"))

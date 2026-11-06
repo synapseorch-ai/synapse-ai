@@ -169,9 +169,10 @@ class TestTheSaveRules:
         assert len(shipped) > 5
         assert {name: said for name, orch in shipped.items() if (said := refusal(orch, {}))} == {}
 
-    def test_an_expression_that_is_only_a_typo_saves(self):
-        """A typo is the validator's to report, as the builder's tools have always done."""
+    def test_an_expression_that_is_only_a_typo_is_refused_naming_step_and_field(self):
+        """A typo is refused like a refused expression (F1433, Naveen 11-06): at run time it now fails its step, so
+        it is never saved; it was the validator's to report while the engine routed it as False."""
         from core.orchestration.save_rules import refusal
 
-        assert refusal({"id": "o1", "steps": [{"id": "s", "type": "if_else", "if_condition": "state.x =="}]},
-                       {}) is None
+        said = refusal({"id": "o1", "steps": [{"id": "s", "type": "if_else", "if_condition": "state.x =="}]}, {})
+        assert said and said.startswith("Refusing to save:") and "step 's' if_condition: invalid syntax" in said, said
