@@ -104,6 +104,8 @@ PRIVATE_STATE_PREFIXES = (
     "_change_words_sent",
     # The person's own API specs a conversation read, by where they are (`own_api.SPECS_KEY`, F1298).
     "_specs_read",
+    # The APIs a build's research probed, by where, and what each answered (`builder_research.PROBES_KEY`, F1423).
+    "_apis_probed_by_research",
     # Whether a person watches the run, which decides what a step does at its turn limit (`turn_limit.ATTENDED_KEY`,
     # F1219): the engine's, set by its starter, never a run's input or a client's to read.
     "_attended",
