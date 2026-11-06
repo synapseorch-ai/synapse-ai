@@ -361,21 +361,31 @@ body {
  * a second after it moves. The bar keeps its 10px, so nothing shifts when it
  * shows. Top level for the reason `.scroll-x` is, and so it beats the layered
  * rules below whatever their specificity.
+ *
+ * The three states set `--sb-quiet` on the pane, and the thumb reads it. They
+ * cannot select the thumb themselves: Chromium does not repaint a scrollbar when
+ * only `.pane:hover::-webkit-scrollbar-thumb` starts to match, so a thumb
+ * written that way stayed clear under the pointer. A change to the pane's own
+ * style repaints it.
  */
+.scroll-quiet {
+  --sb-quiet: transparent;
+}
+
+.scroll-quiet:hover,
+.scroll-quiet:focus-visible,
+.scroll-quiet[data-scrolling] {
+  --sb-quiet: var(--sb-thumb);
+}
+
 .scroll-quiet::-webkit-scrollbar-track {
   background: transparent;
 }
 
 .scroll-quiet::-webkit-scrollbar-thumb {
-  background: transparent;
+  background: var(--sb-quiet);
   background-clip: padding-box;
   border: 2px solid transparent;
-}
-
-.scroll-quiet:hover::-webkit-scrollbar-thumb,
-.scroll-quiet:focus-visible::-webkit-scrollbar-thumb,
-.scroll-quiet[data-scrolling]::-webkit-scrollbar-thumb {
-  background-color: var(--sb-thumb);
 }
 
 .scroll-quiet::-webkit-scrollbar-thumb:hover {
@@ -386,13 +396,7 @@ body {
    `scrollbar-color` on the pane would take it off the rules above. */
 @supports not selector(::-webkit-scrollbar) {
   .scroll-quiet {
-    scrollbar-color: transparent transparent;
-  }
-
-  .scroll-quiet:hover,
-  .scroll-quiet:focus-visible,
-  .scroll-quiet[data-scrolling] {
-    scrollbar-color: var(--sb-thumb) transparent;
+    scrollbar-color: var(--sb-quiet) transparent;
   }
 }
 
