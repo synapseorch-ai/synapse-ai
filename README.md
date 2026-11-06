@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://synapseorch.com">
-    <img src="https://raw.githubusercontent.com/synapseorch-ai/synapse-ai/master/.github/assets/readme/banner.png" alt="SynapseOrch — AI automation you can read, approve and rely on" width="100%" />
+    <img src="https://raw.githubusercontent.com/synapseorch-ai/synapse-ai/v2.0/.github/assets/readme/banner.png" alt="SynapseOrch — AI automation you can read, approve and rely on" width="100%" />
   </a>
 </p>
 
@@ -32,7 +32,7 @@ Free and open source under AGPL-3.0, with no account and no licence check.
 <!-- DEMO VIDEO: paste the user-attachments link GitHub gives for demo.mp4 on its own line here, so it plays inline. -->
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/synapseorch-ai/synapse-ai/master/.github/assets/readme/demo.gif" alt="One sentence to Synapse AI: it asks where the notes live, shows a plan with its cost, and builds the workflow; then the workflow runs, waits for you to approve the summary and the save, and finishes with what each step cost" width="100%" />
+  <img src="https://raw.githubusercontent.com/synapseorch-ai/synapse-ai/v2.0/.github/assets/readme/demo.gif" alt="One sentence to Synapse AI: it asks where the notes live, shows a plan with its cost, and builds the workflow; then the workflow runs, waits for you to approve the summary and the save, and finishes with what each step cost" width="100%" />
 </p>
 
 ---
@@ -48,17 +48,17 @@ Free and open source under AGPL-3.0, with no account and no licence check.
 
 <table>
 <tr>
-<td width="38%" valign="top"><img src="https://raw.githubusercontent.com/synapseorch-ai/synapse-ai/master/.github/assets/readme/plan-card.png" alt="Synapse AI's plan: the steps, the schedule, what a run costs, and what it asks you first" width="100%" /><br /><sub><b>Describe it.</b> Synapse AI shows the plan, what a run costs and what it will ask you — before it builds anything.</sub></td>
+<td width="38%" valign="top"><img src="https://raw.githubusercontent.com/synapseorch-ai/synapse-ai/v2.0/.github/assets/readme/plan-card.png" alt="Synapse AI's plan: the steps, the schedule, what a run costs, and what it asks you first" width="100%" /><br /><sub><b>Describe it.</b> Synapse AI shows the plan, what a run costs and what it will ask you — before it builds anything.</sub></td>
 <td width="62%" valign="top"><picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/synapseorch-ai/synapse-ai/master/.github/assets/readme/home-dark.png" />
-  <img src="https://raw.githubusercontent.com/synapseorch-ai/synapse-ai/master/.github/assets/readme/home-light.png" alt="Home: one run waiting on you, with this week's feedback summary to approve" width="100%" />
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/synapseorch-ai/synapse-ai/v2.0/.github/assets/readme/home-dark.png" />
+  <img src="https://raw.githubusercontent.com/synapseorch-ai/synapse-ai/v2.0/.github/assets/readme/home-light.png" alt="Home: one run waiting on you, with this week's feedback summary to approve" width="100%" />
 </picture><br /><sub><b>Approve it.</b> When a run reaches your step, it waits on Home for your yes.</sub></td>
 </tr>
 </table>
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/synapseorch-ai/synapse-ai/master/.github/assets/readme/result-dark.png" />
-  <img src="https://raw.githubusercontent.com/synapseorch-ai/synapse-ai/master/.github/assets/readme/result-light.png" alt="A finished run: completed in 37 s, 12 steps, the time it waited on you, and what each step cost" width="100%" />
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/synapseorch-ai/synapse-ai/v2.0/.github/assets/readme/result-dark.png" />
+  <img src="https://raw.githubusercontent.com/synapseorch-ai/synapse-ai/v2.0/.github/assets/readme/result-light.png" alt="A finished run: completed in 37 s, 12 steps, the time it waited on you, and what each step cost" width="100%" />
 </picture>
 <p align="center"><sub><b>Rely on it.</b> Every run shows the path it took, how long it waited on you, and what each step cost.</sub></p>
 
