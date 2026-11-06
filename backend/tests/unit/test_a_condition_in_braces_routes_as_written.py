@@ -150,6 +150,29 @@ class TestAValueTheRunHasNotWritten:
 
         assert _status(events) == "completed" and _routed(events) == ["false"] and _reached(events, "no")
 
+    @pytest.mark.parametrize(("expr", "key"), [
+        ('state.plan_answer.outcome or "revise"', "plan_answer"),
+        ('state.plan_checked.outcome or "error"', "plan_checked"),
+        ("state.plan_answer.outcome", "plan_answer"),
+        ("state.build_saved.outcome", "build_saved"),
+        ("state.tools_made.outcome", "tools_made"),
+        ("state.rows[3]", "rows"),
+        ("state.reply['outcome']", "reply"),
+    ])
+    def test_a_field_the_written_value_does_not_have_is_data(self, expr, key):
+        """CI2's FF25 run (6b7c3178): Synapse AI's own switches read `.outcome` off a step that wrote a str; the read
+        finds nothing, whatever the value it read from, and the switch keeps its documented answer (eb 11-06)."""
+        from core.orchestration.steps import _route_expr
+
+        state = {key: ["a"] if key == "rows" else "the step wrote words, not a dict"}
+        value, err = _route_expr(expr, state, "A shipped switch", default="the default")
+        assert value == "the default" and err, (value, err)
+
+    async def test_a_switch_on_a_str_where_a_dict_was_read_takes_its_default(self):
+        events = await _run(_switch("state.classification.label"), initial_state={"classification": "urgent"})
+
+        assert _status(events) == "completed" and _reached(events, "routine")
+
     def test_synapse_ais_own_conditions_on_an_empty_state_route_as_they_do(self):
         """Every expression in the shipped Synapse AI workflow, on an empty state: no step fails, and each gives
         the same answer it gave before the rule (its value; an unwritten read's error kept as data)."""

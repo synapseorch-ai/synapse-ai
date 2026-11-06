@@ -71,8 +71,10 @@ class ExprResult:
     value: Any
     error: str | None = None
     refused: bool = False
-    #: The error came of a value this run has not written (a key read that was not there, then used): data, so the
-    #: step keeps its documented answer (Naveen 10-23, widened 11-06, F1433). Any other error fails a routing step.
+    #: The error came of a value the run does not have: a key, field or index read that found nothing, whatever the
+    #: value it was read from (a str where a dict was read too), or a None such a read gave, then used. Data, so the
+    #: step keeps its documented answer (Naveen 10-23, widened 11-06 twice, F1433). Any other error fails a routing
+    #: step: text that cannot be parsed, an unhashable set, values of incompatible types, a call that raises.
     unwritten: bool = False
 
 
@@ -536,12 +538,13 @@ _CMPOPS = {
 
 
 class _Walk:
-    __slots__ = ('state', 'work', 'unwritten')
+    __slots__ = ('state', 'work', 'unwritten', 'missed')
 
     def __init__(self, state: DotNavigableState):
         self.state = state
         self.work = 0
         self.unwritten = False  # a key read that the run has not written (F1433's data rule)
+        self.missed = False     # a lookup that found nothing raised: the error is that, whatever the base (F1433)
 
     def _note_read(self, receiver: DotNavigableState, key: Any) -> None:
         try:
@@ -594,6 +597,7 @@ class _Walk:
             # the wrapper's, not a second copy of them that can drift.
             self._note_read(receiver, node.attr)
             return getattr(receiver, node.attr)
+        self.missed = True  # e.g. `state.plan_answer.outcome` where the step wrote a str: data (F1433)
         raise AttributeError(
             f"'{type(receiver).__name__}' object has no attribute '{node.attr}'")
 
@@ -601,7 +605,11 @@ class _Walk:
         container, key = self._eval(node.value), self._eval(node.slice)
         if isinstance(container, DotNavigableState):
             self._note_read(container, key)
-        value = container[key]
+        try:
+            value = container[key]
+        except (KeyError, IndexError, TypeError):
+            self.missed = True  # a key or index the value does not have, or a value that has none: data (F1433)
+            raise
         self._spend(_size(value))
         return value
 
@@ -821,9 +829,10 @@ def evaluate_expression(expr: str | None, state: dict, default: Any = None) -> E
     except ExpressionRefused as exc:
         return ExprResult(default, str(exc), True)
     except Exception as exc:
-        # A None that came of a key the run has not written, read through, compared or combined, is data (F1433).
-        # A None the run wrote, and every other error, is the expression's.
-        unwritten = (walk.unwritten and isinstance(exc, (AttributeError, TypeError, KeyError, IndexError))
-                     and 'NoneType' in str(exc))
+        # A lookup that found nothing, whatever it read from, or a None that came of a key the run has not written,
+        # read through, compared or combined, is data (F1433). A None the run wrote, used, and every other error, is
+        # the expression's.
+        lookup = isinstance(exc, (AttributeError, TypeError, KeyError, IndexError))
+        unwritten = lookup and (walk.missed or (walk.unwritten and 'NoneType' in str(exc)))
         return ExprResult(default, str(exc), False, unwritten)
     return ExprResult(_raw(value), None, False)
