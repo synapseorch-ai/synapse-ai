@@ -8607,10 +8607,12 @@ async def check_humancontext(browser) -> str:
         await page.locator("main textarea").last.fill("start the review")
         await page.keyboard.press("Enter")
         await _stream_open(page, "post")
-        await page.evaluate(f"() => window.__streams.post.push({json.dumps(_frame({
+        # Built outside the f-string: an expression across lines inside one parses only on 3.12+ (F1440).
+        asked_frame = json.dumps(_frame({
             'type': 'human_input_required', 'orch_step_id': asked['id'], 'run_id': 'run_uismoke_ask',
             'prompt': asked['human_prompt'], 'fields': asked['human_fields'],
-            'agent_context': 'pass', 'context_key': 'category'}))})")
+            'agent_context': 'pass', 'context_key': 'category'}))
+        await page.evaluate(f"() => window.__streams.post.push({asked_frame})")
         await page.get_by_text("Human Input Required").first.wait_for(timeout=10_000)
         await asyncio.sleep(0.5)
         chat_fields = await ax_fields(page)
