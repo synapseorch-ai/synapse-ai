@@ -476,25 +476,41 @@ def _unwrap_parallel(calls: list[dict], offered) -> list[dict]:
     return unwrapped
 
 
-def _reply_kept(action_text: str, offered, is_browser) -> tuple[str | None, list[dict], list[dict]]:
+#: The lines only the engine writes into a transcript and its tail (F1409): a turn's action, observation and cut-off
+#: reply, and the browser's blocks; at a line's start, as the engine writes them, so never inside a call's JSON.
+_ENGINE_MARKER = _re.compile(
+    r"^[ \t]*(\[Turn \d+ — (?:Action|Observation|Partial)\]|<</?BROWSER_(?:HISTORY|STATE)>>)", _re.MULTILINE)
+
+
+def _reply_kept(action_text: str, offered, is_browser) -> tuple[str | None, list[dict], list[dict], str | None]:
     """What the loop acts on of a reply: the text it keeps (None when the reply is kept as it was), the calls it makes,
-    and the calls it does not make (F1408).
+    the calls it does not make, and the engine's line it wrote, without its brackets, when that is where it ends.
 
     A model that writes its calls as text gets nothing back inside a reply, and each browser call changes the page:
-    what a reply wrote after its first browser call was written before that call's result (take4: 54 calls in one
-    reply, on results it never had). The reply ends there: the words after it are not kept, and no call after it is
-    made, a browser one or not. A reply with nothing after its first browser call, or with none, is as it was. The cut
-    is made in the text the calls were read from (`_scan_text`).
+    what a reply wrote after its first browser call was written before that call's result (F1408; take4: 54 calls in
+    one reply, on results it never had). And a reply that writes a line only the engine writes has begun to write the
+    engine's side (F1409; take4's third turn wrote its own observation and page, and the next answered from them). The
+    reply ends at whichever comes first: the words after it are not kept, and no call after it is made, a browser one
+    or not. A reply with neither, and one that makes no call (the answer), is as it was. The cut is made in the text
+    the calls were read from (`_scan_text`).
     """
     ends: list[int] = []
     found = _scan_tool_calls(action_text, stop_on_non_tool_json=False, ends=ends)
     calls = [(c, end) for call, end in zip(found, ends) for c in _unwrap_parallel([call], offered)]
-    first = next((i for i, (c, _end) in enumerate(calls)
-                  if isinstance(name := _offered_name(c.get("tool", ""), offered), str) and is_browser(name)), None)
+    if not calls:
+        return None, [], [], None
     text = _scan_text(action_text)
-    if first is None or (first == len(calls) - 1 and not text[calls[first][1]:].strip()):
-        return None, [c for c, _end in calls], []
-    return text[:calls[first][1]], [c for c, _end in calls[:first + 1]], [c for c, _end in calls[first + 1:]]
+    forged = _ENGINE_MARKER.search(text)
+    cut = forged.start() if forged else len(text)
+    kept = sum(1 for _c, end in calls if end <= cut)
+    first = next((i for i, (c, _end) in enumerate(calls[:kept])
+                  if isinstance(name := _offered_name(c.get("tool", ""), offered), str) and is_browser(name)), None)
+    if first is not None and (first < len(calls) - 1 or text[calls[first][1]:].strip()):
+        cut, kept, forged = calls[first][1], first + 1, None
+    elif forged is None:
+        return None, [c for c, _end in calls], [], None
+    return (text[:cut].rstrip(), [c for c, _end in calls[:kept]], [c for c, _end in calls[kept:]],
+            forged.group(1).strip("[]<>/") if forged else None)
 
 
 #: The namespaces providers put on a function's name: OpenAI's `functions.` (F550, gpt-4.1-mini) and the Gemini SDK's
@@ -2929,17 +2945,20 @@ async def run_agent_step(
             # Parse every tool call the LLM emitted in this response and execute
             # them sequentially before the next LLM turn.  This prevents partial
             # saves when a provider batches multiple calls into one response.
-            # Only as far as its first browser call (F1408): what came after it is not kept, and its calls not made.
-            _kept_text, tool_calls, _not_made = _reply_kept(action_text, tool_schema_map, _is_browser_tool)
+            # Only as far as its first browser call (F1408), or the first line it wrote that is the engine's (F1409):
+            # what came after it is not kept, and its calls not made.
+            _kept_text, tool_calls, _not_made, _forged = _reply_kept(action_text, tool_schema_map, _is_browser_tool)
             _cut_line = ""
             if _kept_text is not None:
                 action_text = _kept_text
                 _names = ", ".join(dict.fromkeys(str(_offered_name(c.get("tool", ""), tool_schema_map))
                                                  for c in _not_made))
-                _cut_line = ("\nSystem: that reply went on after its first browser call, before that call's result "
-                             "was back, so nothing after it was kept"
-                             + (f" and these calls were not made: {_names}." if _names else ".")
-                             + " Read what it returned, then go on.\n")
+                _cut_line = ((f"\nSystem: that reply wrote `{_forged}` itself, which only Synapse writes, so nothing "
+                              "from there on was kept") if _forged else
+                             ("\nSystem: that reply went on after its first browser call, before that call's result "
+                              "was back, so nothing after it was kept")) \
+                    + (f" and these calls were not made: {_names}." if _names else ".") \
+                    + ("\n" if _forged else " Read what it returned, then go on.\n")
             if _answering_from is not None and _answering_from.get("no_tools") and tool_calls:
                 # Offered nothing and told so, it called again: its answer is a sentence in words (SAI2-P4).
                 for _e in _unstream("tool_call"):
@@ -2968,6 +2987,14 @@ async def run_agent_step(
                 # it as reasoning, so a stream takes it back.
                 for _e in _unstream("tool_call"):
                     yield _e
+            elif _kept_text is not None:
+                # It wrote the engine's line before any call (F1409): nothing ran, and the reply is no answer.
+                for _e in _unstream("tool_call"):
+                    yield _e
+                if action_text.strip():
+                    current_context_text += f"\n[Turn {turn + 1} — Action]\n{action_text}\n"
+                current_context_text += _cut_line
+                continue
 
             if not tool_calls:
                 # A reply that opens with argument objects names no tool (F551), and the
