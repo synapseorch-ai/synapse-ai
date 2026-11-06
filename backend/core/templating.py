@@ -46,7 +46,8 @@ NAMESPACES = ("global", "state", "args")
 
 #: How deep JSON text a step reads a field of may nest (F1164). Counted, not left to `json.loads`: where it runs out
 #: of the C stack depends on the stack's size (an 8 MB stack refuses 100,000 levels, a 16 MB one parses them).
-MAX_JSON_DEPTH = 1000
+#: 3.11's scanner counts against the recursion limit with the caller's frames, ~992 less the stack (F1436).
+MAX_JSON_DEPTH = 512
 
 #: A JSON string (so the braces in it are not depth) or one bracket.
 _JSON_DEPTH_TOKEN = re.compile(r'"(?:[^"\\]|\\.)*"|[\[\]{}]')
