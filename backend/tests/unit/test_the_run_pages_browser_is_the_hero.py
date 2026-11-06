@@ -36,7 +36,12 @@ def test_the_pane_asks_for_both_and_draws_as_before_without_them():
     pane = _read("browser/BrowserPane.tsx")
     assert re.search(r"hero\?: boolean", pane) and re.search(r"enlarge\?: boolean", pane)
     assert "What the agent did" in pane and "<details" in pane, "the actions fold away on the run page"
-    assert not re.search(r"<details[^>]*\bopen\b", pane), "closed by default"
+    # Closed by default (F1356). Since F1428 every pane folds and remembers the fold left open, per kind of pane: one
+    # fold, open only when the kept value is '1', which starts '0' and reads anything else as '0'.
+    assert len(re.findall(r"<details\b", pane)) == 1, "one fold"
+    assert re.search(r"<details open=\{logOpen === '1'\}", pane), "open only when left open"
+    assert re.search(r"usePersisted<'0' \| '1'>\(\s*`browser-log-open:[^`]+`,\s*raw => \(raw === '1' \? '1' : '0'\),\s*'0'\)",
+                     pane), "closed by default"
     assert "Enlarge" in pane and "Take over" in pane
     for mount in ("browser/SessionsLibrary.tsx", "browser/RecordingsLibrary.tsx", "browser/RecordingEditor.tsx"):
         opened = _read(mount)[_read(mount).index("<BrowserPane"):].split("/>", 1)[0]

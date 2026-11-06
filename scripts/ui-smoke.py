@@ -13812,6 +13812,10 @@ async def check_brwpress(browser) -> str:
                    "actor": "guard", "action": "held", "target": "POST pay.example.com"}]
         await _brw_push(page, "post", _frame({"type": "browser_action", **pressed}, "p-2"))
         await _brw_push(page, "frames:bsP", "".join(_frame({"log": e}) for e in theirs))
+        # F1428: the list is folded under the page until asked for; opened, it reads as it did.
+        fold = pane.locator("details").first
+        if not await fold.evaluate("d => d.open"):
+            await fold.locator("summary").click()
         listed = pane.get_by_role("list", name="What the agent did")
         for words in ("Pressed ‘Submit feedback’, as you asked: “send the feedback form when it's filled in”",
                       "You pressed ‘Pay now’", "You sent POST to shop.example.com", "You took over",
@@ -14231,6 +14235,7 @@ async def _brw_hero(page, region) -> list[str]:
               boxTop: b && b.top, iw: img && img.clientWidth, ih: img && img.clientHeight,
               vw: window.innerWidth, vh: window.innerHeight, folded: !!details && !details.open,
               summary: details ? details.querySelector('summary').innerText : null,
+              label: details && details.querySelector('ol') ? details.querySelector('ol').getAttribute('aria-label') : null,
               wide: document.documentElement.scrollWidth <= window.innerWidth + 1};
     }""")
     # (1) As large as fits: the column's width, or the screen's height at 16:10 less what is around the picture when
@@ -14244,7 +14249,10 @@ async def _brw_hero(page, region) -> list[str]:
         bad.append(f"the live picture is letterboxed inside its box: {got}")
     if got["bottom"] and got["bottom"] > got["vh"] + 1:
         bad.append(f"the page's foot is below the screen: {got}")
-    if not got["folded"] or not re.search(r"What the agent did · \d", got["summary"] or ""):
+    # F1428: the folded line is the newest action and how many ("Clicked Search button · 1 action"); whose list it
+    # is ("What the agent did") is the list's own name inside it. Folded, closed, counted, and the agent's, as before.
+    if (not got["folded"] or not re.search(r"· \d+ actions?$", (got["summary"] or "").strip())
+            or got["label"] != "What the agent did"):
         bad.append(f"what the agent did is not folded and closed under the picture: {got}")
     if not got["wide"]:
         bad.append("the run page scrolls sideways")
@@ -14505,8 +14513,11 @@ async def check_brwreplayrun(browser) -> str:
                 bad.append("a replay's live pane says the agent is driving")
             fold = (await region.locator("details summary").first.inner_text()) if await region.locator(
                 "details summary").count() else ""
-            if not re.search(r"What was done · \d", fold):
-                bad.append(f"a replay's fold says {fold!r}, not what was done (F1376)")
+            # F1428: the line is the newest step and how many; that it is what was done, not the agent's, is the
+            # list's own name inside the fold (F1376's pin, where it now lives).
+            named = await region.locator('details ol[aria-label="What was done"]').count()
+            if not re.search(r"· \d+ actions?$", fold.strip()) or not named:
+                bad.append(f"a replay's fold says {fold!r} (its list named 'What was done': {bool(named)}), not what was done (F1376)")
             # F1367: a press on the page offers Take over, saying the recording stops after this step; Take over
             # takes the wheel (the replay stops before its next step: test_a_take_over_stops_the_replay).
             taken: list[str] = []
@@ -14942,6 +14953,240 @@ async def check_brwloaderror(browser) -> str:
         raise AssertionError("; ".join(bad))
     return ("a page that did not open says why above the page (x.com's 403: turned this browser away), with the "
             "address bar to try another and the consent card kept; a page that opened says nothing; 1440 and 390")
+
+@check
+async def check_brwpanel(browser) -> str:
+    """A browser of the person's alone opens as a full-height panel on the right, the way the workflow page shows a
+    step (F1428, Naveen 11-06), not a popup in the middle: min(1280px, 80vw) wide by default, its left edge resizing it
+    and the width kept, full screen on a phone. It closes only by its own buttons, as the popup did: Escape and a click
+    beside it leave a sign-in open. Keep me signed in and Record a task, at 1440 and 390."""
+    bad: list[str] = []
+
+    async def geometry(page) -> dict:
+        return await page.get_by_role("region", name="Browser").evaluate("""(r) => { const b = r.getBoundingClientRect();
+            return {x: b.left, y: b.top, w: b.width, h: b.height, vw: window.innerWidth, vh: window.innerHeight}; }""")
+
+    for size in ((1440, 900), (390, 844)):
+        at = f"{size[0]}"
+        ctx = await browser.new_context(viewport={"width": size[0], "height": size[1]})
+        await ctx.route(re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(status=200, json={"sessions": []}))
+        await ctx.route(re.compile(r".*/api/site-sessions/new$"), lambda r: r.fulfill(status=200, json={"browser_session_id": "bsPan"}))
+        await ctx.route(re.compile(r".*/api/browser/bsPan/finish-session$"), lambda r: r.fulfill(status=200, json={}))
+        await ctx.route(re.compile(r".*/api/browser/bsPan/frames$"), lambda r: r.fulfill(
+            status=200, headers={"Content-Type": "text/event-stream"}, body=_brw_frame("https://portal.saltmarsh.example/", "person")))
+        await ctx.route(re.compile(r".*/api/recordings$"), lambda r: r.fulfill(status=200, json={"recordings": []}))
+        await ctx.route(re.compile(r".*/api/recordings/new$"), lambda r: r.fulfill(
+            status=200, json={"recording_id": "rec_" + "p" * 24, "browser_session_id": "bsPanRec"}))
+        await ctx.route(re.compile(r".*/api/browser/bsPanRec/frames$"), lambda r: r.fulfill(
+            status=200, headers={"Content-Type": "text/event-stream"}, body=_rec_frame({"steps": 0})))
+        page = await ctx.new_page()
+        try:
+            await page.goto(f"{APP}/browser/sessions", wait_until="domcontentloaded")
+            await page.locator("main h1").first.wait_for(timeout=30_000)
+            await asyncio.sleep(SETTLE)
+
+            async def open_sign_in():
+                await page.get_by_role("button", name="Keep me signed in to a site").first.click()
+                ask = page.get_by_role("dialog", name="Keep me signed in to a site")
+                await ask.get_by_label("Site").fill("portal.saltmarsh.example")
+                await ask.get_by_role("button", name="Open the browser").click()
+                await page.get_by_role("region", name="Browser").wait_for(timeout=8_000)
+                await asyncio.sleep(0.5)
+
+            await open_sign_in()
+            g = await geometry(page)
+            want = g["vw"] if size[0] < 768 else max(560, min(1280, 0.8 * g["vw"]))
+            if abs(g["y"]) > 1 or abs(g["y"] + g["h"] - g["vh"]) > 1:
+                bad.append(f"{at}: the sign-in browser is not the screen's full height ({g})")
+            if abs(g["x"] + g["w"] - g["vw"]) > 1 or abs(g["w"] - want) > 2:
+                bad.append(f"{at}: the sign-in browser is not {want:.0f}px on the right ({g})")
+            handle = page.get_by_role("separator", name="Resize the browser")
+            if size[0] >= 768:
+                box = await handle.bounding_box() if await handle.count() else None
+                if not box:
+                    bad.append(f"{at}: the panel has no edge to resize it by")
+                else:
+                    await page.mouse.move(box["x"] + box["width"] / 2, size[1] / 2)
+                    await page.mouse.down()
+                    await page.mouse.move(box["x"] + box["width"] / 2 - 100, size[1] / 2, steps=5)
+                    await page.mouse.up()
+                    wider = await geometry(page)
+                    if abs(wider["w"] - (g["w"] + 100)) > 3:
+                        bad.append(f"{at}: dragging its edge 100px made it {wider['w']:.0f}px, not {g['w'] + 100:.0f}")
+            elif await handle.is_visible():
+                bad.append(f"{at}: a full-screen browser offers an edge to resize")
+            await page.keyboard.press("Escape")
+            if size[0] >= 768:  # beside the panel; on a phone there is no beside
+                await page.mouse.click(8, size[1] / 2)
+            await asyncio.sleep(0.4)
+            if not await page.get_by_role("region", name="Browser").count():
+                bad.append(f"{at}: Escape or a click beside it closed a sign-in")
+            await page.get_by_role("region", name="Browser").get_by_role("button", name=re.compile("Don.t keep")).click()
+            try:
+                await page.get_by_role("region", name="Browser").wait_for(state="detached", timeout=8_000)
+            except Exception:
+                bad.append(f"{at}: Don't keep did not close it")
+            if size[0] >= 768:
+                await open_sign_in()
+                kept = await geometry(page)
+                if abs(kept["w"] - (g["w"] + 100)) > 3:
+                    bad.append(f"{at}: the width it was given is not kept ({kept['w']:.0f}px)")
+                await page.get_by_role("region", name="Browser").get_by_role("button", name=re.compile("Don.t keep")).click()
+                await page.get_by_role("region", name="Browser").wait_for(state="detached", timeout=8_000)
+
+            await page.goto(f"{APP}/browser/recordings", wait_until="domcontentloaded")
+            await page.locator("main h1").first.wait_for(timeout=30_000)
+            await asyncio.sleep(SETTLE)
+            await page.get_by_role("button", name="Record a task").first.click()
+            await page.get_by_role("dialog", name="Record a task").get_by_role("button", name="Open the browser").click()
+            await page.get_by_role("region", name="Browser").wait_for(timeout=8_000)
+            await asyncio.sleep(0.5)
+            r = await geometry(page)
+            if abs(r["y"]) > 1 or abs(r["y"] + r["h"] - r["vh"]) > 1 or abs(r["x"] + r["w"] - r["vw"]) > 1:
+                bad.append(f"{at}: the record browser is not a full-height panel on the right ({r})")
+            if size[0] < 768 and abs(r["w"] - r["vw"]) > 1:
+                bad.append(f"{at}: the record browser is not full screen ({r})")
+        finally:
+            await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("Keep me signed in and Record a task open a full-height panel on the right, min(1280px, 80vw), resized by "
+            "its edge and kept; full screen at 390; Escape and a click beside it close nothing")
+
+
+@check
+async def check_brwlogfold(browser) -> str:
+    """What was done in a browser is one line under the page, closed until asked for (F1428, Naveen 11-06; the run
+    page's since F1356): the newest action and how many; a click opens the list, and the pane remembers it open. While
+    a moment waits on the person the line says "Needs you", and the moment itself is the strip above the page, never
+    in the fold. The safety note stays until Got it. Chat's pane, and a sign-in browser's."""
+    bad: list[str] = []
+    ctx, page = await _brw_page(browser, "uismoke-brw-fold")
+    try:
+        await _brw_push(page, "post", "".join(_frame(e, f"f-{i}") for i, e in enumerate([
+            {"type": "browser_session", "session_id": "bsF", "owner": "chat:uismoke-brw-fold"},
+            {**_BRW_ACTION, "session_id": "bsF", "n": 1, "action": "browser_navigate", "target": "https://books.example/"},
+            {**_BRW_ACTION, "session_id": "bsF", "n": 2, "target": "Poetry"},
+            {**_BRW_ACTION, "session_id": "bsF", "n": 3, "target": "Poems That Make Grown Women Cry"}])))
+        pane = _pane(page)
+        await pane.wait_for(timeout=8_000)
+        await _stream_open(page, "frames:bsF")
+        await _brw_push(page, "frames:bsF", _brw_frame())
+        await asyncio.sleep(0.6)
+        fold = pane.locator("details")
+        if not await fold.count():
+            raise AssertionError("Chat's pane lists what the agent did open, not folded under the page")
+        summary = re.sub(r"\s+", " ", (await fold.first.locator("summary").inner_text()).replace("’", "'")).strip()
+        if summary != "Clicked Poems That Make Grown Women Cry · 3 actions":
+            bad.append(f"the folded line says {summary!r}")
+        if await fold.first.evaluate("d => d.open") or await pane.get_by_role("list", name="What the agent did").count():
+            bad.append("the list shows before it is asked for")
+        if not await pane.get_by_text("Agents can make mistakes. You always press payments yourself.").count():
+            bad.append("the safety note is gone before Got it")
+        await fold.first.locator("summary").click()
+        await asyncio.sleep(0.3)
+        if await pane.get_by_role("list", name="What the agent did").get_by_role("listitem").count() != 3:
+            bad.append("opening the line does not list the three actions")
+        if await page.evaluate("() => localStorage.getItem('browser-log-open:chat')") != "1":
+            bad.append("the pane does not remember the list open")
+        await fold.first.locator("summary").click()
+        await _brw_push(page, "frames:bsF", _brw_moment("person", banner={
+            "kind": "send", "reason": "Place order", "held": {"method": "POST", "url": "https://books.example/order"}}))
+        await asyncio.sleep(0.6)
+        summary = re.sub(r"\s+", " ", await fold.first.locator("summary").inner_text()).strip()
+        if not summary.startswith("Needs you"):
+            bad.append(f"with a send held the folded line says {summary!r}, not that it needs the person")
+        if not await pane.get_by_text("Nothing has gone").first.is_visible():
+            bad.append("the held send is not on screen with the list folded")
+        await pane.get_by_role("button", name="Got it").click()
+        if await pane.get_by_text("Agents can make mistakes.").count():
+            bad.append("Got it does not put the safety note away")
+    finally:
+        await ctx.close()
+
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route(re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(status=200, json={"sessions": []}))
+    await ctx.route(re.compile(r".*/api/site-sessions/new$"), lambda r: r.fulfill(status=200, json={"browser_session_id": "bsFs"}))
+    sent = {"session_id": "bsFs", "n": 1, "at": 0, "actor": "person", "action": "sent", "target": "POST portal.saltmarsh.example",
+            "url": "https://portal.saltmarsh.example/", "shot_ref": None}
+    await ctx.route(re.compile(r".*/api/browser/bsFs/frames$"), lambda r: r.fulfill(
+        status=200, headers={"Content-Type": "text/event-stream"},
+        body=_brw_frame("https://portal.saltmarsh.example/", "person") + _frame({"log": sent})))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/browser/sessions", wait_until="domcontentloaded")
+        await page.locator("main h1").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await page.get_by_role("button", name="Keep me signed in to a site").first.click()
+        ask = page.get_by_role("dialog", name="Keep me signed in to a site")
+        await ask.get_by_label("Site").fill("portal.saltmarsh.example")
+        await ask.get_by_role("button", name="Open the browser").click()
+        pane = _pane(page)
+        await pane.wait_for(timeout=8_000)
+        await asyncio.sleep(0.6)
+        fold = pane.locator("details")
+        line = re.sub(r"\s+", " ", await fold.first.locator("summary").inner_text()).strip() if await fold.count() else ""
+        if line != "You sent POST to portal.saltmarsh.example · 1 action":
+            bad.append(f"a sign-in browser's folded line says {line!r}")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("what was done is one closed line, the newest action and how many, opening to the list and kept open; "
+            "'Needs you' while a send is held, the moment above it; the safety note until Got it; a sign-in's the same")
+
+
+@check
+async def check_brwturnreopens(browser) -> str:
+    """A browser turn that arrives while the person watches the chat brings its pane back (F1428, eb and Naveen 11-06):
+    they asked for that browser's task. On a phone the chat stays in front and the Browser button is marked, until they
+    open it."""
+    bad: list[str] = []
+    turn = {"type": "human_input_required", "kind": "browser_turn", "session_id": "bsT", "reason": "Place order: yours to press",
+            "banner_kind": "send"}
+    ctx, page = await _brw_page(browser, "uismoke-brw-reopen")
+    try:
+        await _brw_push(page, "post", _frame({"type": "browser_session", "session_id": "bsT", "owner": "chat:uismoke-brw-reopen"}, "t-1"))
+        pane = _pane(page)
+        await pane.wait_for(timeout=8_000)
+        await pane.get_by_role("button", name="Close the browser pane").click()
+        await pane.wait_for(state="detached", timeout=5_000)
+        await _brw_push(page, "post", _frame(turn, "t-2"))
+        try:
+            await pane.wait_for(timeout=5_000)
+        except Exception:
+            bad.append("1440: a browser turn left the pane the person had hidden hidden")
+    finally:
+        await ctx.close()
+
+    ctx, page = await _brw_page(browser, "uismoke-brw-reopen-phone", width=(390, 844))
+    try:
+        await _brw_push(page, "post", _frame({"type": "browser_session", "session_id": "bsT", "owner": "chat:uismoke-brw-reopen-phone"}, "t-1"))
+        await asyncio.sleep(0.6)
+        await _brw_push(page, "post", _frame(turn, "t-2"))
+        await asyncio.sleep(0.8)
+        if await _pane(page).count() and await _pane(page).is_visible():
+            bad.append("390: a browser turn took the phone away from the chat")
+        marked = page.get_by_role("button", name="Browser: needs you").locator("visible=true")
+        if not await marked.count():
+            bad.append("390: the Browser button does not say it needs the person")
+        else:
+            await marked.first.click()
+            try:
+                await _pane(page).wait_for(timeout=5_000)
+            except Exception:
+                bad.append("390: the marked Browser button does not open the browser")
+            await page.get_by_role("button", name="Chat", exact=True).locator("visible=true").first.click()
+            await asyncio.sleep(0.3)
+            if await page.get_by_role("button", name="Browser: needs you").locator("visible=true").count():
+                bad.append("390: the mark stays after the person opened the browser")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("a browser turn brings back a pane the person hid; on a phone the chat stays and the Browser button is "
+            "marked until opened")
+
 
 @check
 async def check_brwchatpicks(browser) -> str:

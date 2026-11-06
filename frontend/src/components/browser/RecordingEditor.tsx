@@ -16,6 +16,7 @@ import { useHelpTopic } from '@/components/help';
 import { Button, buttonStyles, ConfirmDialog, ErrorNote, Input, Menu, MenuItem, Modal } from '@/components/ui';
 
 import { BrowserPane } from './BrowserPane';
+import { BrowserPanel } from './BrowserPanel';
 import type { BrowserHost } from './model';
 import {
   carryOn, changeRecording, decideEdit, deleteRecording, fieldOf, getRecording, inputName, listVersions, openRecordBrowser,
@@ -533,7 +534,7 @@ function Redo({ host, sessionsHost, browserHost, doc, from, onClose, onKept, onP
 
   if (open) {
     return (
-      <div role="dialog" aria-modal="true" aria-label="Re-record from here" className="fixed inset-0 z-50 bg-scrim/60 p-3 md:p-8">
+      <BrowserPanel label="Re-record from here">
         <BrowserPane
           host={browserHost}
           sessionId={open.browserSessionId}
@@ -541,9 +542,9 @@ function Redo({ host, sessionsHost, browserHost, doc, from, onClose, onKept, onP
           actions={[]}
           record={{ onStop: stop, busy, handover, onCarryOn: goOn, failed }}
           onClosed={() => setOpen(null)}
-          className="h-full overflow-hidden rounded-xl border border-border shadow-elevated"
+          className="h-full"
         />
-      </div>
+      </BrowserPanel>
     );
   }
 
