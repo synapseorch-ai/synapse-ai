@@ -2839,7 +2839,8 @@ def render_code(code: str, state: dict) -> str:
     - in code: `_values[i]`;
     - in a string literal (plain, raw, bytes, triple-quoted): the literal becomes an expression of `repr()`-written
       pieces and `str(_values[i])` (`.encode()` for bytes), so no escaping is relied on;
-    - in an f-string's text or format spec: a replacement field `{_values[i]}`;
+    - in an f-string's text or format spec: a replacement field `{_values[i]}` (before 3.12, where an f-string is one
+      token, through its tree, F1437);
     - in a comment: its name, `state.<path>`.
     Code that does not compile with its references in place gets every one as `_values[i]` (the runner says what is
     wrong with it); a program that would not compile once filled is refused (`UnsafeCodeRef`), never sent as text.
@@ -2892,6 +2893,43 @@ def render_code(code: str, state: dict) -> str:
             out = [repr(p) if i % 2 == 0 else f"str(_values[{p}])" for i, p in enumerate(parts) if i % 2 or p]
         return "(" + " + ".join(out) + ")"
 
+    def _value(i: str) -> ast.expr:
+        return ast.Subscript(ast.Name("_values", ast.Load()), ast.Constant(int(i)), ast.Load())
+
+    class _Fields(ast.NodeTransformer):
+        """Each marker in an f-string's tree, as 3.12's f-string tokens fill it: a field in its text or format spec,
+        `_values[i]` as a name, a string in a field's expression as `as_expression` writes it."""
+
+        def visit_JoinedStr(self, node):
+            values = []
+            for v in node.values:
+                if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                    values += [ast.FormattedValue(_value(p), -1, None) if i % 2 else ast.Constant(p)
+                               for i, p in enumerate(mark.split(v.value)) if i % 2 or p]
+                else:
+                    values.append(self.visit(v))
+            node.values = values
+            return node
+
+        def visit_Constant(self, node):
+            v = node.value
+            if (isinstance(v, str) and mark.search(v)) or (isinstance(v, bytes) and b"__synapse_ref_" in v):
+                return ast.parse(as_expression(repr(v)), mode="eval").body
+            return node
+
+        def visit_Name(self, node):
+            m = mark.fullmatch(node.id)
+            return _value(m.group(1)) if m else node
+
+    def in_fields(literal: str) -> str:
+        """An f-string that is one STRING token (before 3.12, PEP 701), filled through its tree (F1437)."""
+        try:
+            tree = _Fields().visit(ast.parse(literal, mode="eval"))
+            return ast.unparse(ast.fix_missing_locations(tree))
+        except (SyntaxError, ValueError, RecursionError):
+            raise UnsafeCodeRef("a reference in this f-string cannot be filled as data: write it outside the "
+                                f"string, e.g. 'x = {{{{state.{found[0]}}}}}', and use x") from None
+
     edits: list[tuple[int, int, str]] = []
     ends = {tokenize.STRING} | {getattr(tokenize, n) for n in ("FSTRING_END", "TSTRING_END") if hasattr(tokenize, n)}
     begins = {tokenize.STRING} | {getattr(tokenize, n) for n in ("FSTRING_START", "TSTRING_START")
@@ -2903,6 +2941,8 @@ def render_code(code: str, state: dict) -> str:
         a, b = at(tok.start), at(tok.end)
         if tok.type == tokenize.NAME:
             edits.append((a, b, mark.sub(data, tok.string)))
+        elif tok.type == tokenize.STRING and "f" in re.match(r"[A-Za-z]*", tok.string).group().lower():
+            edits.append((a, b, in_fields(marked[a:b])))  # still a string literal: what is beside it joins as before
         elif tok.type == tokenize.STRING:
             # Beside another string, Python joins the two as written (`'a' 'b'`): the expression is joined with `+`.
             before = next((t for t in reversed(tokens[:k]) if t.type not in quiet), None)
