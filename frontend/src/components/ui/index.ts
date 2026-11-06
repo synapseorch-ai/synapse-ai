@@ -86,6 +86,7 @@ export { StatusBadge, normaliseStatus, type RunStatus } from "./status";
 export { InToastStack, Toast, ToastStack, toastLook, useToast, type ToastTone } from "./toast";
 export { Hint, TooltipProvider } from "./tooltip";
 export { useOwnScroll } from "./own-scroll";
+export { showWhileScrolling } from "./quiet-scroll";
 export { usePersisted } from "./use-persisted";
 
 // The editor family. `CodeEditor` loads CodeMirror on demand — nothing here

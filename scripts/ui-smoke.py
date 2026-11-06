@@ -4640,6 +4640,142 @@ def _conversation_text(page_js_main: str = "main") -> str:
     }}"""
 
 
+#: The conversation's pane in Synapse AI's tab (BuilderPanel's list): where it is, and its scrollbar's gutter.
+QUIET_PANE = """() => {
+  const greeting = [...document.querySelectorAll('h2')].find((h) => h.textContent.trim() === 'What can I do for you?');
+  let pane = greeting && greeting.parentElement;
+  while (pane && !/(auto|scroll)/.test(getComputedStyle(pane).overflowY)) pane = pane.parentElement;
+  if (!pane) return null;
+  const r = pane.getBoundingClientRect();
+  return {
+    quiet: pane.classList.contains('scroll-quiet'), over: pane.scrollHeight - pane.clientHeight,
+    scrolls: getComputedStyle(pane).overflowY, top: pane.scrollTop,
+    gutter: pane.offsetWidth - pane.clientWidth - pane.clientLeft * 2,
+    x: r.left + pane.clientLeft + pane.clientWidth, y: r.top + 8, h: r.height - 16, mx: r.left + r.width / 2, my: r.top + r.height / 2,
+  };
+}"""
+
+
+@check
+async def check_quietscroll(browser) -> str:
+    """A conversation's scrollbar is clear until it is wanted (F1414, Naveen 11-06): a long Synapse AI chat's pane keeps
+    its bar's place, but the bar is drawn only with the pointer over the pane or for a second after it moves, and the
+    pane still scrolls by wheel and keys. An empty chat and a short one do not overflow at all. Its own browser, with
+    scrollbars drawn (Playwright's headless default hides them); both themes, wide and narrow. Model-free: the chats
+    are ASSISTANT_STUB's."""
+    _assistant_agent()
+    long_chat = [{"user": f"Question {i}: what ran overnight?", "assistant": "Three runs finished and one waits on you. "
+                  * 4} for i in range(30)]
+    chats = {"uismoke-quiet-long": long_chat, "uismoke-quiet-short": long_chat[:1]}
+    shown = await browser.browser_type.launch(
+        executable_path=CHROME if os.path.exists(CHROME) else None,
+        args=["--disable-dev-shm-usage", "--no-sandbox", "--disable-gpu"], ignore_default_args=["--hide-scrollbars"])
+    bad: list[str] = []
+
+    async def bar_drawn(page, pane) -> bool:
+        """Whether the bar's column differs from the pane's own padding beside it (16px of it, plain background)."""
+        clip = {"y": pane["y"], "width": 10, "height": pane["h"]}
+        bar = await page.screenshot(clip={**clip, "x": pane["x"]})
+        padding = await page.screenshot(clip={**clip, "x": pane["x"] - 14})
+        return bar != padding
+
+    async def settled(page) -> dict:
+        """The pane once it has stopped: its scrollTop unchanged for 1.25 s, so its last scroll is older than
+        showWhileScrolling's second. The chat opens with a smooth scroll to its end (BuilderPanel's bottomRef), still
+        going after two seconds at 390, and a wheel or a key's scroll is animated too."""
+        last, same, pane = None, 0, None
+        for _ in range(80):
+            pane = await page.evaluate(QUIET_PANE)
+            same = same + 1 if pane and pane["top"] == last else 0
+            last = pane and pane["top"]
+            if same >= 5:
+                return pane
+            await asyncio.sleep(0.25)
+        raise AssertionError(f"the pane never stopped scrolling: {pane}")
+
+    try:
+        for scheme in ("dark", "light"):
+            for width in ((1440, 900), (390, 844)):
+                where = f"{scheme} {width[0]}"
+                for chat in ("uismoke-quiet-empty", "uismoke-quiet-short", "uismoke-quiet-long"):
+                    seeded = {"tabs": [{"id": "uismoke-quiet", "sessionId": chat, "agentId": "agent_synapse_ai",
+                                        "title": "", "usedAt": 1}], "activeId": "uismoke-quiet", "pins": []}
+                    ctx = await shown.new_context(viewport={"width": width[0], "height": width[1]}, color_scheme=scheme)
+                    await ctx.add_init_script(TOURS_SEEN)
+                    await ctx.add_init_script(f"window.__chats = {json.dumps(chats)};\n"
+                                              f"try {{ localStorage.setItem('synapseTabs:chat', {json.dumps(json.dumps(seeded))}); }} catch (e) {{}}")
+                    await ctx.add_init_script(ASSISTANT_STUB)
+                    page = await ctx.new_page()
+                    try:
+                        await page.goto(f"{APP}/", wait_until="domcontentloaded")
+                        pane = None
+                        for _ in range(40):
+                            await asyncio.sleep(0.25)
+                            pane = await page.evaluate(QUIET_PANE)
+                            if pane and (not chat.endswith("long") or pane["over"] > 0):
+                                break
+                        await asyncio.sleep(0.5)
+                        pane = await page.evaluate(QUIET_PANE) or pane
+                        if not pane:
+                            bad.append(f"{where}, {chat}: no conversation pane drew"); continue
+                        if not pane["quiet"]:
+                            bad.append(f"{where}, {chat}: the conversation's pane is not scroll-quiet")
+                        if not chat.endswith("long"):
+                            if pane["over"] > 0:
+                                bad.append(f"{where}, {chat}: the pane overflows by {pane['over']}px with nothing to scroll")
+                            continue
+                        if pane["over"] < 500 or pane["scrolls"] not in ("auto", "scroll"):
+                            bad.append(f"{where}: the long chat does not scroll: {pane}"); continue
+                        if pane["gutter"] < 6:
+                            bad.append(f"{where}: the bar's place is not kept ({pane['gutter']}px), so the text moves when it shows")
+                        # At rest: the pointer elsewhere, and the chat's own scroll to its end over.
+                        await page.mouse.move(2, width[1] - 2)
+                        pane = await settled(page)
+                        if await bar_drawn(page, pane):
+                            bad.append(f"{where}: the bar is drawn at rest")
+                        await page.mouse.move(pane["mx"], pane["my"])
+                        await asyncio.sleep(0.3)
+                        if not await bar_drawn(page, pane):
+                            bad.append(f"{where}: the bar is not drawn with the pointer over the pane")
+                        # The pane still scrolls, by the wheel and by the keys.
+                        await page.mouse.wheel(0, -400)
+                        await asyncio.sleep(0.4)
+                        wheeled = await page.evaluate(QUIET_PANE)
+                        if wheeled["top"] >= pane["top"]:
+                            bad.append(f"{where}: the wheel did not scroll the pane ({pane['top']} → {wheeled['top']})")
+                        await page.mouse.click(pane["x"] - 8, pane["my"])  # the pane's own padding: nothing to press
+                        await page.keyboard.press("PageUp")
+                        await asyncio.sleep(0.4)
+                        keyed = await page.evaluate(QUIET_PANE)
+                        if keyed["top"] >= wheeled["top"]:
+                            bad.append(f"{where}: Page Up did not scroll the pane ({wheeled['top']} → {keyed['top']})")
+                        # While it moves the bar shows, the pointer elsewhere and nothing focused; a second after, it is clear.
+                        await page.mouse.move(2, width[1] - 2)
+                        await page.evaluate("() => document.activeElement && document.activeElement.blur()")
+                        keyed = await settled(page)
+                        if await bar_drawn(page, keyed):
+                            bad.append(f"{where}: the bar is drawn once Page Up's scroll is over")
+                        await page.evaluate("""() => {
+                          const h = [...document.querySelectorAll('h2')].find((e) => e.textContent.trim() === 'What can I do for you?');
+                          let p = h.parentElement; while (!/(auto|scroll)/.test(getComputedStyle(p).overflowY)) p = p.parentElement;
+                          p.scrollTop -= 300;
+                        }""")
+                        await asyncio.sleep(0.2)
+                        if not await bar_drawn(page, keyed):
+                            bad.append(f"{where}: the bar is not drawn while the pane moves")
+                        await asyncio.sleep(1.5)
+                        if await bar_drawn(page, keyed):
+                            bad.append(f"{where}: the bar stays drawn after the pane stopped")
+                    finally:
+                        await ctx.close()
+    finally:
+        await shown.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("a long chat's scrollbar keeps its place but is drawn only under the pointer or while the pane moves; wheel "
+            "and Page Up still scroll it; an empty and a short chat do not overflow — dark and light, 1440 and 390")
+
+
 @check
 async def check_tabsassistantnew(browser) -> str:
     """Each new Synapse AI tab is a new chat, and each keeps its own words (TABS2, F1061).
