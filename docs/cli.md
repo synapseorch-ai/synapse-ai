@@ -2,8 +2,8 @@
 
 ## Prerequisites
 
-None to install first. The setup script (`releases/latest/download/setup.sh`, or
-`setup.ps1` on Windows) brings Python through uv and, when the system's is missing
+None to install first. The setup script (`synapseorch.com/install.sh`, or
+`install.ps1` on Windows) brings Python through uv and, when the system's is missing
 or older than 20.9, Node.js into `~/.synapse/runtime` — no sudo. A pip install
 needs Python 3.11–3.14 and Node.js 20.9+ on `PATH`. `ollama` is optional (local
 models only).
@@ -11,8 +11,10 @@ models only).
 ## Installation
 
 ```bash
-curl -LsSf https://github.com/synapseorch-ai/synapse-ai/releases/latest/download/setup.sh | bash
+curl -LsSf https://synapseorch.com/install.sh | bash
 ```
+
+The short address redirects to the latest GitHub release's `setup.sh` (https://github.com/synapseorch-ai/synapse-ai/releases/latest/download/setup.sh).
 
 The installer shows its steps, asks which AI to use and whether to start on login
 (while it installs), and ends with the link. `--yes` takes every default. It also
