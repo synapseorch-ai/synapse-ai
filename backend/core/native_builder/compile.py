@@ -30,7 +30,7 @@ from typing import Any, Callable
 
 from core.models_orchestration import Orchestration, StepConfig
 from core.native_builder import prompt_lint
-from core.native_builder.objects import Edit, Plan, PlanDraft, Step, settled
+from core.native_builder.objects import Edit, Plan, PlanDraft, Step, arm_ends, settled
 from core.orchestration.read_shapes import read_steps
 
 _log = logging.getLogger(__name__)
@@ -185,7 +185,10 @@ def _workflow(title: str, summary: str, steps: list[Step], settings: dict[str, A
     if end_steps:
         steps = settled(steps)
     ids = {s.id for s in steps}
-    ends = [s.id for s in steps if s.type == "end"]
+    # A plain "end" is an End no arm names: an arm's own End ("End — Not Approved") is never where the rest of a
+    # plan ends (F1429), so one "End" is added when every End is an arm's.
+    owned = arm_ends(steps)
+    ends = [s.id for s in steps if s.type == "end" and s.id not in owned]
     needs_end = any(t == "end" for s in steps for t in _plan_targets(s))
     end_id = None
     if needs_end:
@@ -753,7 +756,9 @@ def plan_from_workflow(orch: dict[str, Any], *, agents: dict[str, dict] | None =
     steps, read_differently = read_steps(orch.get("steps"))
     for note in read_differently:
         _log.warning("workflow %s: %s", orch.get("id"), note)
+    # With one End every end is that End; with more, each arm keeps the End it goes to (F1429).
     end_ids = {s["id"] for s in steps if s.get("type") == "end"}
+    end_ids = end_ids if len(end_ids) == 1 else set()
     entry = orch.get("entry_step_id")
     steps.sort(key=lambda s: s.get("id") != entry)  # the entry first: a Plan starts where the workflow does
     bodies = {b for s in steps for b in [*(s.get("loop_step_ids") or []),
