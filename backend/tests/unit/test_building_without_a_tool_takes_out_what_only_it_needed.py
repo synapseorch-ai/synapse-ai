@@ -94,7 +94,8 @@ async def test_a_parallel_with_every_lane_dropped_goes_too(client):
 
 
 async def test_a_loop_with_a_step_left_in_it_stays(client):
-    note = {"id": "note", "type": "llm", "name": "Note each tweet", "does": "Notes it", "prompt": "Note {{state.item}}."}
+    note = {"id": "note", "type": "llm", "name": "Note each tweet", "does": "Notes it",
+            "prompt": "Note {{state.item}}."}
     out = await _without(*NAVEENS[:6], {**LOOP, "body": ["post_tweet", "note"]}, TWEET, note, DECLINED)
     assert "post_loop" in _ids(out) and "tweets_array" in _ids(out) and "extract_tweets" in _ids(out)
     assert next(s for s in out["plan"]["steps"] if s["id"] == "post_loop")["body"] == ["note"]

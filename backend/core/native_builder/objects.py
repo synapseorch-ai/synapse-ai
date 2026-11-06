@@ -325,6 +325,8 @@ class ToolStatus(BaseModel):
     detail: str | None = None
     #: `http_tool`: the API spec the research read, to make the tool from (F943, F944).
     api: dict | None = None
+    #: Its API takes only the person's own sign-in (F1121's OAuth), so no tool is made: the card says why (F1427).
+    signs_in: bool = False
 
 
 def only_reads(status: ToolStatus) -> bool:
