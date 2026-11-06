@@ -291,7 +291,12 @@ def _is_tool_call(obj) -> bool:
     return isinstance(name, str) and bool(name.strip())
 
 
-def _scan_tool_calls(llm_output: str, *, stop_on_non_tool_json: bool) -> list[dict]:
+def _scan_text(llm_output: str) -> str:
+    """The text `_scan_tool_calls` reads calls from: no reasoning blocks, no code fences, trimmed."""
+    return strip_reasoning(llm_output or "").replace("```json", "").replace("```", "").strip()
+
+
+def _scan_tool_calls(llm_output: str, *, stop_on_non_tool_json: bool, ends: list[int] | None = None) -> list[dict]:
     """Single source of truth for tool-call extraction.
 
     Strategy (in order):
@@ -317,9 +322,11 @@ def _scan_tool_calls(llm_output: str, *, stop_on_non_tool_json: bool) -> list[di
 
     Reasoning blocks are stripped *before* scanning so a `tool` keyword inside
     [REASONING] prose can never produce a false positive.
+
+    `ends`, when given, is filled with where each call's JSON ends in `_scan_text(llm_output)`, one per call returned.
     """
-    cleaned = strip_reasoning(llm_output or "")
-    cleaned = cleaned.replace("```json", "").replace("```", "").strip()
+    cleaned = _scan_text(llm_output)
+    ends = [] if ends is None else ends
 
     # ── 1. XML <tool_call> wrappers (CLI providers) ─────────────────────────
     xml_calls: list[dict] = []
@@ -331,6 +338,7 @@ def _scan_tool_calls(llm_output: str, *, stop_on_non_tool_json: bool) -> list[di
         calls = calls_in(obj)
         if calls:
             xml_calls.extend(calls)
+            ends.extend([m.end()] * len(calls))
             if stop_on_non_tool_json:
                 return [xml_calls[0]]
     if xml_calls:
@@ -372,6 +380,7 @@ def _scan_tool_calls(llm_output: str, *, stop_on_non_tool_json: bool) -> list[di
                         fresh.append(call)
                 calls = fresh
             tool_calls.extend(calls)
+            ends.extend([used_end] * len(calls))
             if stop_on_non_tool_json and tool_calls:
                 return [tool_calls[0]]
         elif isinstance(obj, dict) and stop_on_non_tool_json:
@@ -465,6 +474,43 @@ def _unwrap_parallel(calls: list[dict], offered) -> list[dict]:
         held = [] if call.get("tool") in offered else parallel_calls(call)
         unwrapped.extend(held or [call])
     return unwrapped
+
+
+#: The lines only the engine writes into a transcript and its tail (F1409): a turn's action, observation and cut-off
+#: reply, and the browser's blocks; at a line's start, as the engine writes them, so never inside a call's JSON.
+_ENGINE_MARKER = _re.compile(
+    r"^[ \t]*(\[Turn \d+ — (?:Action|Observation|Partial)\]|<</?BROWSER_(?:HISTORY|STATE)>>)", _re.MULTILINE)
+
+
+def _reply_kept(action_text: str, offered, is_browser) -> tuple[str | None, list[dict], list[dict], str | None]:
+    """What the loop acts on of a reply: the text it keeps (None when the reply is kept as it was), the calls it makes,
+    the calls it does not make, and the engine's line it wrote, without its brackets, when that is where it ends.
+
+    A model that writes its calls as text gets nothing back inside a reply, and each browser call changes the page:
+    what a reply wrote after its first browser call was written before that call's result (F1408; take4: 54 calls in
+    one reply, on results it never had). And a reply that writes a line only the engine writes has begun to write the
+    engine's side (F1409; take4's third turn wrote its own observation and page, and the next answered from them). The
+    reply ends at whichever comes first: the words after it are not kept, and no call after it is made, a browser one
+    or not. A reply with neither, and one that makes no call (the answer), is as it was. The cut is made in the text
+    the calls were read from (`_scan_text`).
+    """
+    ends: list[int] = []
+    found = _scan_tool_calls(action_text, stop_on_non_tool_json=False, ends=ends)
+    calls = [(c, end) for call, end in zip(found, ends) for c in _unwrap_parallel([call], offered)]
+    if not calls:
+        return None, [], [], None
+    text = _scan_text(action_text)
+    forged = _ENGINE_MARKER.search(text)
+    cut = forged.start() if forged else len(text)
+    kept = sum(1 for _c, end in calls if end <= cut)
+    first = next((i for i, (c, _end) in enumerate(calls[:kept])
+                  if isinstance(name := _offered_name(c.get("tool", ""), offered), str) and is_browser(name)), None)
+    if first is not None and (first < len(calls) - 1 or text[calls[first][1]:].strip()):
+        cut, kept, forged = calls[first][1], first + 1, None
+    elif forged is None:
+        return None, [c for c, _end in calls], [], None
+    return (text[:cut].rstrip(), [c for c, _end in calls[:kept]], [c for c, _end in calls[kept:]],
+            forged.group(1).strip("[]<>/") if forged else None)
 
 
 #: The namespaces providers put on a function's name: OpenAI's `functions.` (F550, gpt-4.1-mini) and the Gemini SDK's
@@ -2899,7 +2945,20 @@ async def run_agent_step(
             # Parse every tool call the LLM emitted in this response and execute
             # them sequentially before the next LLM turn.  This prevents partial
             # saves when a provider batches multiple calls into one response.
-            tool_calls = _unwrap_parallel(parse_all_tool_calls(action_text), tool_schema_map)
+            # Only as far as its first browser call (F1408), or the first line it wrote that is the engine's (F1409):
+            # what came after it is not kept, and its calls not made.
+            _kept_text, tool_calls, _not_made, _forged = _reply_kept(action_text, tool_schema_map, _is_browser_tool)
+            _cut_line = ""
+            if _kept_text is not None:
+                action_text = _kept_text
+                _names = ", ".join(dict.fromkeys(str(_offered_name(c.get("tool", ""), tool_schema_map))
+                                                 for c in _not_made))
+                _cut_line = ((f"\nSystem: that reply wrote `{_forged}` itself, which only Synapse writes, so nothing "
+                              "from there on was kept") if _forged else
+                             ("\nSystem: that reply went on after its first browser call, before that call's result "
+                              "was back, so nothing after it was kept")) \
+                    + (f" and these calls were not made: {_names}." if _names else ".") \
+                    + ("\n" if _forged else " Read what it returned, then go on.\n")
             if _answering_from is not None and _answering_from.get("no_tools") and tool_calls:
                 # Offered nothing and told so, it called again: its answer is a sentence in words (SAI2-P4).
                 for _e in _unstream("tool_call"):
@@ -2928,6 +2987,14 @@ async def run_agent_step(
                 # it as reasoning, so a stream takes it back.
                 for _e in _unstream("tool_call"):
                     yield _e
+            elif _kept_text is not None:
+                # It wrote the engine's line before any call (F1409): nothing ran, and the reply is no answer.
+                for _e in _unstream("tool_call"):
+                    yield _e
+                if action_text.strip():
+                    current_context_text += f"\n[Turn {turn + 1} — Action]\n{action_text}\n"
+                current_context_text += _cut_line
+                continue
 
             if not tool_calls:
                 # A reply that opens with argument objects names no tool (F551), and the
@@ -3092,7 +3159,7 @@ async def run_agent_step(
             # Reasoning blocks are intentionally NOT re-injected — they were
             # private scratch space for that single turn.
             if action_text.strip() and not (_replaying and _action_kept(current_context_text, turn + 1)):
-                current_context_text += f"\n[Turn {turn + 1} — Action]\n{action_text}\n"
+                current_context_text += f"\n[Turn {turn + 1} — Action]\n{action_text}\n{_cut_line}"
 
             # ── SPAWN_SUBTASK: helpers run where their calls are ────────────────
             # A reply's spawns side by side, started when the loop reaches the
@@ -4077,7 +4144,10 @@ async def run_agent_step(
                     except (json.JSONDecodeError, KeyError, TypeError):
                         pass
 
-                    if _is_browser_tool(tool_name):
+                    # A browser call that came back as an error (a refusal, Playwright's `### Error`, the person still
+                    # driving) is read as what it said, and the page before it stays the page (F1407: take4 read
+                    # "This browser session has used its 30 actions." as the page for three turns).
+                    if _is_browser_tool(tool_name) and not getattr(result, "isError", False):
                         # Browser snapshots go stale on every navigation/click.
                         # A page snapshot is only useful this turn. It goes in the
                         # volatile tail of the user message (see
