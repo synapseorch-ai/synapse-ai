@@ -136,12 +136,14 @@ jobs:
           hatch build
 
       - name: Verify the built wheel installs and the CLI runs
-        # Gate the ACTUAL artifact before it reaches PyPI. --no-deps keeps it fast;
-        # the full-dependency install is validated on main by install.yml.
+        # Gate the ACTUAL artifact before it reaches PyPI, with the dependencies it
+        # declares, as `pip install synapse-orch-ai` gets them: 2.0's CLI imports
+        # rich (synapse/client/commands.py) before it can print --help, so a
+        # --no-deps install stopped v2.0.0-rc1's PyPI publish on No module named 'rich'.
         run: |
           python -m venv /tmp/verify
           /tmp/verify/bin/pip install --upgrade pip
-          /tmp/verify/bin/pip install --no-deps dist/*.whl
+          /tmp/verify/bin/pip install dist/*.whl
           /tmp/verify/bin/synapse --help
           /tmp/verify/bin/python -c "import synapse.cli; assert callable(synapse.cli.main)"
 
@@ -180,8 +182,16 @@ jobs:
 
       - name: Publish to npm
         # A pre-release goes under `next`: `npm install -g synapse-orch-ai` keeps
-        # installing the last final release.
-        run: npm publish --access public --tag ${{ needs.gate.outputs.npm_tag }}
+        # installing the last final release. A version npm already has is left as it
+        # is (npm refuses to publish over one), so a tag re-pushed after a later job
+        # failed still reaches PyPI and the GitHub release.
+        run: |
+          V=$(node -p "require('./package.json').version")
+          if npm view "synapse-orch-ai@$V" version 2>/dev/null | grep -qx "$V"; then
+            echo "npm already has synapse-orch-ai@$V: not published again"
+          else
+            npm publish --access public --tag ${{ needs.gate.outputs.npm_tag }}
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
