@@ -48,7 +48,7 @@ import {
     useImageAttachments,
 } from '@/components/app/ImageAttachments';
 import { SUGGESTED_LABEL } from '@/components/tabs';
-import { Button, Combobox, Hint, Mark, Markdown } from '@/components/ui';
+import { Button, Combobox, Hint, Mark, Markdown, showWhileScrolling } from '@/components/ui';
 import { effortAnswer, isPlanReview, shownInTrail, type BuilderMessage } from '@/lib/builderEvents';
 import { cn, focusRing } from '@/lib/cn';
 import { modelOptions, withUnreachable } from '@/lib/models';
@@ -275,7 +275,7 @@ export function BuilderConversation({
     const fresh = ready && state.messages.every((m) => m.key === 'welcome') && !streaming;
     return (
         <>
-                <div className="flex flex-1 flex-col gap-4 overflow-y-auto overscroll-contain px-4 py-5">
+                <div className="scroll-quiet flex flex-1 flex-col gap-4 overflow-y-auto overscroll-contain px-4 py-5" onScroll={showWhileScrolling}>
                     {/* A chat being read back shows neither the greeting nor nothing: it says so (F873's class). */}
                     {!ready && <p className="py-10 text-center text-xs text-text-faint">Opening the chat…</p>}
                     {ready && groups.map((group, i) => {

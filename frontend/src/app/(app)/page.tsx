@@ -15,7 +15,7 @@ import { AttachButton, AttachmentChips, AttachmentError, useImageAttachments } f
 import { ImageThumbnails } from '@/components/app/ImageThumbnails';
 import { BuilderConversation } from '@/components/app/BuilderPanel';
 import { useBuilderChat } from '@/components/app/BuilderProvider';
-import { Button, IconButton, Mark, Markdown, PageHeaderSlot, Spinner, useOwnScroll, usePersisted } from '@/components/ui';
+import { Button, IconButton, Mark, Markdown, PageHeaderSlot, showWhileScrolling, Spinner, useOwnScroll, usePersisted } from '@/components/ui';
 import { useIsPhone } from '@/components/app/PhoneBar';
 import {
   MAX_TABS, NewTabMenu, SideRail, TabStrip, TabSwitcher, chatKey, draftHome, openTab, readAssistantDraft, restoreChatTabs,
@@ -3257,7 +3257,7 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
           />
         ) : (<>
         {/* Chat Area */}
-        <div className="custom-scrollbar relative flex-1 overflow-y-auto scroll-smooth">
+        <div className="scroll-quiet relative flex-1 overflow-y-auto scroll-smooth" onScroll={showWhileScrolling}>
 
           {messages.length === 0 && !isLoading && (opening || openFailed) ? (
             /* The conversation is being read back, or the read failed: never the empty
