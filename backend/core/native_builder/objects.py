@@ -622,10 +622,11 @@ def settled(steps: list[Step]) -> list[Step]:
 
 def arm_ends(steps: list[Step]) -> set[str]:
     """The End steps an arm of a branching step names: that arm's own, which no other step reaches by list order and
-    no plain "end" compiles to (F1429)."""
+    no plain "end" compiles to (F1429). An arm's `"end"` is the plain end, even where an End step's id is `end`
+    (a compiled plan's own, read back: bld-07)."""
     ends = {s.id for s in steps if s.type == "end"}
     return {t for s in steps if s.type in ("if_else", "switch", "evaluator") for t in (s.branches or {}).values()
-            if t in ends}
+            if t in ends and t != "end"}
 
 
 def _unreached(steps: list[Step], where: str) -> list[str]:
