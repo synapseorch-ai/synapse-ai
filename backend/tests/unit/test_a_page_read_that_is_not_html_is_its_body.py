@@ -9,6 +9,11 @@ Chromium's viewer, whose page adds its own header. Now the read whose own respon
 is JSON, XML or text other than HTML is that response's body, in every page read (one seam, `_read_page`): scrape_url,
 the batch read, the session crawl and search_page. An HTML page reads exactly as before, a response that names no type
 too, and a PDF keeps its own path.
+
+A response Chromium downloads instead of showing (a CSV, or any file sent as an attachment) never reached that seam: it
+went to the download path, which read a PDF and refused every other file, so the CSV cases failed at the first fix's
+own tip in CI2's run (eb 11-06). A download whose content-type is one of these is its body too; a PDF keeps its path,
+and any other file is refused as before.
 """
 from __future__ import annotations
 
@@ -70,6 +75,12 @@ PAGES = {
     "/menu": ("text/html; charset=utf-8", MENU),
     "/pre": ("text/html; charset=utf-8", JSON_IN_HTML),
 }
+#: Sent as attachments: Chromium downloads them, whatever their type.
+DOWNLOADS = {
+    "/export.json": ("application/json; charset=utf-8", FORECAST),
+    "/rules-download.txt": ("text/plain; charset=utf-8", NOTES),
+    "/blob.bin": ("application/octet-stream", "binary \x00\x01 payload"),
+}
 #: scrape_url's own excluded tags, so its HTML read is the page's `_markdown`, as it was.
 SCRAPE_URL_EXCLUDED = ("script", "style", "nav", "footer")
 
@@ -85,9 +96,11 @@ async def site(monkeypatch):
     async def serve(reader, writer):
         try:
             path = (await reader.readuntil(b"\r\n\r\n")).decode("latin-1").split(" ", 2)[1]
-            content_type, text = PAGES[path]
+            attached = path in DOWNLOADS
+            content_type, text = DOWNLOADS[path] if attached else PAGES[path]
             body = text.encode("utf-8")
-            writer.write(f"HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nConnection: close\r\n"
+            disposition = f"Content-Disposition: attachment; filename={path[1:]}\r\n" if attached else ""
+            writer.write(f"HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n{disposition}Connection: close\r\n"
                          f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
             await writer.drain()
         except (asyncio.IncompleteReadError, ConnectionError, KeyError):
@@ -122,6 +135,15 @@ class TestEveryPageRead:
     async def test_scrape_url_reads_text_and_xml_as_sent(self, site, path, body):
         out = _answer(await web_scraper._handle_scrape_url({"url": site + path}))
         assert out["success"] is True and out["markdown"] == body, out
+
+    @pytest.mark.parametrize("path,body", [("/export.json", FORECAST), ("/rules-download.txt", NOTES)])
+    async def test_a_file_it_downloads_that_is_json_or_text_is_its_body(self, site, path, body):
+        out = _answer(await web_scraper._handle_scrape_url({"url": site + path}))
+        assert out["success"] is True and out["markdown"] == body, out
+
+    async def test_any_other_file_it_downloads_is_still_refused(self, site):
+        out = _answer(await web_scraper._handle_scrape_url({"url": site + "/blob.bin"}))
+        assert out["success"] is False and "not a page" in out["error"], out
 
     async def test_the_batch_read(self, site):
         out = _answer(await web_scraper._handle_crawl_multiple({"urls": [site + "/forecast", site + "/rain.csv"]}))
