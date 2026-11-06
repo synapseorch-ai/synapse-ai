@@ -104,6 +104,42 @@ class TestAValueInAnFStringIsAField:
         assert _value_of(render_code("x = f'{ {{state.n}} + 1 }'", {"n": 41})) == "42"
 
 
+class TestAnFStringThatIsOneToken:
+    """Before 3.12 (PEP 701) an f-string is one STRING token, braces and all: it is filled through its tree, with the
+    same answers as 3.12's f-string tokens give (F1437; 3.11 is the publish gate's Python)."""
+
+    @pytest.mark.parametrize("value", VALUES)
+    def test_a_key_in_a_fields_string(self, value):
+        code = "d = {{state.d}}\nx = f" + DQ + "<{d['{{state.v}}']}>" + DQ
+        assert _value_of(render_code(code, {"v": value, "d": {value: "hit"}})) == "<hit>"
+
+    def test_the_hostile_value_in_its_text_is_never_in_the_program(self):
+        out = render_code("x = f'<{{state.v}}>'", {"v": HOSTILE})
+        assert "SystemExit" not in out.split("\n", 2)[2]
+        assert _value_of(out) == f"<{HOSTILE}>"
+
+    @pytest.mark.parametrize("value", VALUES)
+    def test_beside_a_plain_string(self, value):
+        assert _value_of(render_code("x = 'a {{state.v}}' f'-{{state.v}}-'", {"v": value})) == f"a {value}-{value}-"
+
+    @pytest.mark.parametrize("value", VALUES)
+    def test_raw_with_backslashes(self, value):
+        assert _value_of(render_code(r"x = rf'\d {{state.v}} \n'", {"v": value})) == "\\d " + value + " \\n"
+
+    @pytest.mark.parametrize("value", VALUES)
+    def test_triple_quoted_over_two_lines(self, value):
+        assert _value_of(render_code("x = f'''a\n{{state.v}} {1 + 1}'''", {"v": value})) == f"a\n{value} 2"
+
+    @pytest.mark.parametrize("value", VALUES)
+    def test_bytes_in_a_field(self, value):
+        code = "x = f" + DQ + "{b'{{state.v}}'}" + DQ
+        assert _value_of(render_code(code, {"v": value})) == str(value.encode("utf-8", "surrogatepass"))
+
+    @pytest.mark.parametrize("value", VALUES)
+    def test_a_conversion(self, value):
+        assert _value_of(render_code("x = f'{ {{state.v}} !r}'", {"v": value})) == repr(value)
+
+
 class TestAValueAnywhereElseIsData:
     def test_a_number_is_a_number(self):
         assert _value_of(render_code("x = {{state.n}} + 1", {"n": 41})) == 42
