@@ -273,7 +273,7 @@ def asked_text(question: str, options: list[str]) -> str:
 
 
 async def submit_change(args: dict, server_module: Any, events: list[dict]) -> dict:
-    from core.native_builder.build_plan import change_it_waits
+    from core.native_builder.build_plan import SUBMITTED_KEY, change_it_waits
     from core.native_builder.objects import Change
 
     ops = C.as_planned(args.get("ops") if isinstance(args.get("ops"), list) else [])
@@ -295,7 +295,14 @@ async def submit_change(args: dict, server_module: Any, events: list[dict]) -> d
         if _plan_send_back(run):
             return {"error": PLAN_UNDER_REVIEW}
         return {"finish": "submit_change", "kept_plan": _kept_plan(run.shared_state, ops)}
-    kinds = run.shared_state.setdefault(_KINDS_KEY, {}) if run is not None else {}
+    if run is not None and _plan_unshown(run.shared_state):
+        # This run's plan is checked and not yet shown (F1431, cap-02 c1: research, then a change making the tool
+        # alone ended the build): sent back for the whole plan; then the plan last submitted goes to its check, once.
+        submitted = run.shared_state.get(SUBMITTED_KEY)
+        if _unshown_send_back(run) or not isinstance(submitted, dict):
+            return {"error": PLAN_UNSHOWN}
+        return dict(submitted)
+    kinds =run.shared_state.setdefault(_KINDS_KEY, {}) if run is not None else {}
     for n, op in enumerate(ops, 1):
         if not isinstance(op, dict):
             found.append(f"op {n} is not an object")
@@ -429,6 +436,36 @@ def _plan_under_review(state: dict) -> bool:
     if not card.get("plan") or card.get("outcome") not in ("review", "same"):
         return False
     return (_obj(state.get("build_saved")) or {}).get("outcome") != "saved"
+
+
+#: Sent back while this run's plan is checked and not yet shown (F1431): `PLAN_SEND_BACKS` times, its own count beside
+#: F1384's; then the plan last submitted goes to its check once.
+_UNSHOWN_SENT = "_plan_unshown_sent_back"
+PLAN_UNSHOWN = ("This run's plan is being checked and the person hasn't seen it yet: finish with submit_plan, the "
+                "whole plan again. A tool it needs is a part of the plan (its API, made at the build's yes), never a "
+                "change on its own: a change here would make that part alone and leave the rest of the plan unbuilt.")
+
+
+def _plan_unshown(state: dict) -> bool:
+    """Whether this run's build plan is checked and not yet shown (F1431): code sent it to research or to its
+    prompts, the person has seen no card of it, and nothing is saved. A question before any plan carries none; a
+    manage turn's change is not a build's. A plan shown is F1384's (`_plan_under_review`)."""
+    from core.native_builder.build_plan import _obj, checked_in
+
+    if state.get("intent") == "manage":
+        return False
+    card = checked_in(state)
+    if not card.get("plan") or card.get("outcome") not in ("research", "prompts"):
+        return False
+    return (_obj(state.get("build_saved")) or {}).get("outcome") != "saved"
+
+
+def _unshown_send_back(run: Any) -> bool:
+    """Whether a change goes back once more while the plan is not yet shown; counts it. False once, when the plan
+    goes to its check; after that every change goes back (the planner's rounds end it, never a part built alone)."""
+    sent = int(run.shared_state.get(_UNSHOWN_SENT) or 0)
+    run.shared_state[_UNSHOWN_SENT] = sent + 1
+    return sent != PLAN_SEND_BACKS
 
 
 def _plan_send_back(run: Any) -> bool:

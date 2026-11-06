@@ -107,6 +107,11 @@ def _list_again(options: list[dict]) -> str:
     return "\n".join(f"{n}. {_quoted(str(o.get('name')))} ({o.get('id')})" for n, o in enumerate(options, 1))
 
 
+#: A yes with nothing waiting (F959's third part): said, then what was done last.
+NOTHING_WAITS = "Nothing is waiting for a yes."
+LAST_DONE = "The last thing I did:"
+
+
 def _first_sentence(text: str) -> str:
     text = " ".join(str(text or "").split())
     if not text:
@@ -285,11 +290,17 @@ def decide(message: str, *, previous: dict, facts: dict, change: dict | None = N
         last = str(previous.get("summary") or "").strip()
         if findings.get("options") or last.endswith("?"):
             return Turn(route="classify")
+        if last.startswith(NOTHING_WAITS):
+            # Its own words last time (F1431): what it did last is what they said, never "Nothing is waiting" itself.
+            last = last.removeprefix(NOTHING_WAITS).strip()
+            if last.startswith(LAST_DONE):
+                return Turn(route="yes_without_review", then="said", say=f"{NOTHING_WAITS} {last}")
+            last = ""
         if last:
             return Turn(route="yes_without_review", then="said",
-                        say=f"Nothing is waiting for a yes. The last thing I did: {_first_sentence(last)}")
+                        say=f"{NOTHING_WAITS} {LAST_DONE} {_first_sentence(last)}")
         return Turn(route="yes_without_review", then="said",
-                    say="Nothing is waiting for a yes. What would you like me to do?")
+                    say=f"{NOTHING_WAITS} What would you like me to do?")
 
     return Turn(route="classify")
 
