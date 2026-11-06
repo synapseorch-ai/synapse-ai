@@ -2444,6 +2444,7 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
             f"- `{t.name}`: {t.api['endpoint']['method']} {t.api['endpoint']['path']} on "
             f"{urlsplit(t.api['base_url']).hostname} ({t.provider}). "
             + ("It takes no key." if t.api.get("keyless") else "You give it your key on a card after your yes.")
+            + (" It only reads, so it runs without asking you first." if O.only_reads(t) else "")
             for t in makes if t.api) + "\n"
     out = {**base, "outcome": "review", "plan": plan.model_dump(), "prompts": prompts or {}, "review": review,
            "offers": offers, "say": " ".join([*said, *board_notes]), "issues": found.errors, "offered": offered,
