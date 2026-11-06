@@ -2204,11 +2204,14 @@ def no_tool_line(provider: str, names: list[str], *, signs_in: bool = False, bro
     if not signs_in:
         return (f"I can't build {tools} here yet: {provider} has an API, but I can't make a tool for it yet. Add an "
                 "MCP server for it on the MCP servers screen and ask again, or say \"build without it\".")
+    # An MCP server first: it is the way that works (REACH1, 11-06: x.com answers 403 to any automated browser, and the
+    # browser never hides that it is one), so the browser is offered only as what may work.
     return (f"I can't build {tools} here yet: {provider} has an API, but it needs you signed in to your own account, "
-            "which a tool can't hold. "
-            + (f"A browser agent can do it with your signed-in {provider} session instead: sign in under Agents › "
-               "Browser › Sessions, then ask me for a browser agent. " if browser else "")
-            + "Or add an MCP server for it on the MCP servers screen and ask again, or say \"build without it\".")
+            "which a tool can't hold. Add an MCP server for it on the MCP servers screen and ask again, or say \"build "
+            "without it\"."
+            + (f" If {provider} allows automated browsers, a browser agent can do it with your signed-in session "
+               "instead (sign in under Agents › Browser › Sessions); some sites turn automated browsers away."
+               if browser else ""))
 
 
 def browser_agents_on() -> bool:

@@ -3,11 +3,13 @@ An API that needs the person's own sign-in says why no tool is made, and offers 
 browser agents (F1427, BLD1; Naveen's scratch, 11-06, run builder_77a81e4bb602).
 
 For posting on X the research said OAuth user context; `_signs_in_only` rightly made no tool from its spec (F1121), but
-the card said only "Twitter (X) has an API, but I can't make a tool for it yet. Add an MCP server…", and Naveen had to
-ask for the browser himself ("use browser i can login a session"). Now the line says why: the API needs you signed in
-to your own account, which a tool can't hold. With browser agents on (`browser_automation_enabled`, the switch the
-server registers the browser on) it offers one with the person's signed-in session, under Agents › Browser ›
-Sessions. The MCP server and "build without it" stay; any other API with no tool keeps its line as it was.
+the card said only "Twitter (X) has an API, but I can't make a tool for it yet. Add an MCP server…", and the browser
+came up only when Naveen asked for it ("use browser i can login a session"). Now the line says why: the API needs you
+signed in to your own account, which a tool can't hold. The MCP server comes first, as the way that works, with "build
+without it". With browser agents on (`browser_automation_enabled`, the switch the server registers the browser on) a
+browser agent with the person's signed-in session is offered after it, honestly: only if the site allows automated
+browsers, since some turn them away (REACH1, 11-06: x.com answers 403 to any, and the browser never hides that it is
+one). Any other API with no tool keeps its line as it was.
 """
 from __future__ import annotations
 
@@ -36,9 +38,9 @@ X = {"provider": "Twitter (X)", "how": "api",
                          "post-tweets"}}
 WHY = ("I can't build `twitter_x_post_tweet_x` here yet: Twitter (X) has an API, but it needs you signed in to your "
        "own account, which a tool can't hold.")
-BROWSER = ("A browser agent can do it with your signed-in Twitter (X) session instead: sign in under Agents › Browser "
-           "› Sessions, then ask me for a browser agent.")
-STILL = "Or add an MCP server for it on the MCP servers screen and ask again, or say \"build without it\"."
+STILL = "Add an MCP server for it on the MCP servers screen and ask again, or say \"build without it\"."
+BROWSER = ("If Twitter (X) allows automated browsers, a browser agent can do it with your signed-in session instead "
+           "(sign in under Agents › Browser › Sessions); some sites turn automated browsers away.")
 
 
 @pytest.fixture
@@ -56,7 +58,7 @@ async def test_a_sign_in_api_says_why_and_offers_a_browser_agent(client, browser
     await browser(True)
     _, _, out = await _reviewed(WRITE, POST, options=[X])
     assert out["outcome"] == "review"
-    assert f"{WHY} {BROWSER} {STILL}" in out["say"]
+    assert f"{WHY} {STILL} {BROWSER}" in out["say"], "the MCP server first, the browser only as what may work"
     assert "but I can't make a tool for it yet" not in out["say"]
     assert out["no_tool"] == ["twitter_x_post_tweet_x"] and "without:twitter_x_post_tweet_x" in out["offers"]
 
