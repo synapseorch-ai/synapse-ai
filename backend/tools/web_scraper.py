@@ -474,7 +474,15 @@ async def _read_page(page, url: str, config: RunConfig) -> CrawlResult:
     if (blocked := _refusal(response, html)) is not None:
         return CrawlResult(success=False, error_message=blocked)
     found = await page.evaluate(_LINKS_AND_IMAGES, ", ".join(config.excluded_tags))
-    result = CrawlResult(success=True, markdown=_markdown(html, page.url, config.excluded_tags),
+    markdown = None
+    if response is not None and _read_as_sent(response.headers.get("content-type")):
+        try:
+            markdown = await response.text()
+        except PlaywrightError:
+            pass  # a body Chromium no longer holds is read as the page it showed
+    if markdown is None:
+        markdown = _markdown(html, page.url, config.excluded_tags)
+    result = CrawlResult(success=True, markdown=markdown,
                          links=_links(found["links"], page.url), media={"images": found["images"]})
     if config.extraction_strategy is not None:
         result.extracted_content = json.dumps(config.extraction_strategy.extract(html), ensure_ascii=False)
@@ -627,6 +635,17 @@ def _links(found: list[dict], page_url: str) -> dict:
 #: An empty link to a place in the page (a heading's own anchor): kept as `[](url#place)`, which research's
 #: `_section` matches a heading by, and which the converter would otherwise drop with the link's empty text.
 _EMPTY_ANCHOR = re.compile(r"""<a\b[^>]*?\bhref\s*=\s*["'](#[^"'<>\s]+)["'][^>]*>\s*</a>""", re.IGNORECASE)
+
+
+def _read_as_sent(content_type: str | None) -> bool:
+    """Whether a response of this content-type is read as the server sent it, not as a page (F1406): JSON, XML, and
+    text that is not HTML. Chromium shows them in a `<pre>` or its XML viewer, and a page's Markdown of that is a fence
+    round the body (an API's JSON no longer parses) or the viewer's own words. HTML, XHTML and no type are pages."""
+    mime = (content_type or "").split(";", 1)[0].strip().lower()
+    if mime in ("text/html", "application/xhtml+xml"):
+        return False
+    return mime.startswith("text/") or mime in ("application/json", "application/xml") \
+        or mime.endswith(("+json", "+xml"))
 
 
 def _markdown(html: str, url: str, excluded_tags: tuple[str, ...]) -> str:
