@@ -18,7 +18,7 @@
  * reason's headline (`lib/runErrors.ts`'s `reasonHeadline`, F195's rule, which
  * both products keep word for word), or "stopped without recording why".
  */
-import { reasonHeadline } from '@/lib/runErrors';
+import { reasonHeadline, TRANSFORM_RAISED } from '@/lib/runErrors';
 
 import { duration, type NestedRun, type StepExecution } from './model';
 
@@ -335,7 +335,7 @@ export function explainFailure(input: FailureInput): Explained {
     if (/Docker is not available/.test(raw)) {
         return { kind: 'code-no-docker', sentence: `${step} couldn’t run its Python code: Docker isn’t running on this machine.`, advice: 'Start Docker, then Replay.', fixes: ['replay'] };
     }
-    if ((m = /Transform( \(host\))? failed on line (\d+)(?: \(`([^`]*)`\))?: ([\s\S]+)$/.exec(raw))) {
+    if ((m = TRANSFORM_RAISED.exec(raw))) {
         // The engine names your line, its source and what it raised (F407).
         return {
             kind: 'code-error',

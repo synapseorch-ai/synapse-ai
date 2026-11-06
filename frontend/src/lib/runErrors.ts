@@ -33,11 +33,22 @@ export function failureReason(
 }
 
 /**
- * The one line of a reason worth showing on a step card: a traceback's last
- * line names the exception; anything else leads with its point. The card
- * keeps the whole text for a hover, and the run log shows all of it.
+ * A Transform that raised, as the engine says it in one line (F407): "Transform failed on line N (`its source`):
+ * what it raised", or "Transform (host) failed …". Groups: the host, the line, its source, what it raised.
+ */
+export const TRANSFORM_RAISED = /Transform( \(host\))? failed on line (\d+)(?: \(`([^`]*)`\))?: ([\s\S]+)$/;
+
+/**
+ * The one line of a reason worth showing on a step card: a Transform that
+ * raised says its line and what it raised, never its source (F1419: the
+ * card's clip cut the error off after it); a traceback's last line names the
+ * exception; anything else leads with its point. The card keeps the whole
+ * text for a hover, and the run log shows all of it.
  */
 export function reasonHeadline(reason: string): string {
+    const raised = TRANSFORM_RAISED.exec(reason);
+    const what = raised?.[4].split('\n').map((l) => l.trim()).find(Boolean);
+    if (raised && what) return `Line ${raised[2]} raised ${what}`;
     const lines = reason.split('\n').map((l) => l.trim()).filter(Boolean);
     if (!lines.length) return '';
     return reason.includes('Traceback (most recent call last)') ? lines[lines.length - 1] : lines[0];
