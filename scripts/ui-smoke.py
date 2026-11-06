@@ -12041,6 +12041,122 @@ async def check_logfirst(browser) -> str:
     return "the newest log is open beside the list, with Copy"
 
 
+# ── Logs names a run by what a person knows (F1416) ─────────────────────────────────────────────────────────────
+
+#: Synapse AI's turn is a run `builder_…` whose steps' agents write agent logs with the run as their source; a
+#: workflow's agent step does the same with its own run; the rest come from Chat, a call, the OpenAI-compatible
+#: endpoint, and one source no product names.
+_F1416_AGENTS = [
+    {"run_id": "agentrun_f1416_talk", "agent_name": "Builder — Talk", "agent_id": "agent_native_builder_talker",
+     "source": "orchestration:builder_f1416a", "session_id": "orch_builder_f1416a",
+     "started_at": "2026-11-06 11:43:00", "user_input": "You are the talker for Synapse AI.", "file_size_kb": 10.8},
+    {"run_id": "agentrun_f1416_class", "agent_name": "Builder — Classifier",
+     "agent_id": "agent_native_builder_classifier", "source": "orchestration:builder_f1416a",
+     "session_id": "orch_builder_f1416a", "started_at": "2026-11-06 11:42:00",
+     "user_input": "You are the classifier for Synapse AI.", "file_size_kb": 4.2},
+    {"run_id": "agentrun_f1416_step", "agent_name": "Smoke Researcher", "agent_id": "agent_smoke_researcher",
+     "source": "orchestration:run_f1416", "session_id": "orch_run_f1416", "started_at": "2026-11-06 11:40:00",
+     "user_input": "Find the tides", "file_size_kb": 3.1},
+    {"run_id": "agentrun_f1416_chat", "agent_name": "Smoke Support", "agent_id": "agent_smoke_support",
+     "source": "chat", "session_id": "", "started_at": "2026-11-06 11:30:00", "file_size_kb": 1.2},
+    {"run_id": "agentrun_f1416_call", "agent_name": "Smoke Caller", "agent_id": "agent_smoke_caller",
+     "source": "voice", "session_id": "", "started_at": "2026-11-06 11:20:00", "file_size_kb": 1.0},
+    {"run_id": "agentrun_f1416_api", "agent_name": "Smoke Endpoint", "agent_id": "agent_smoke_endpoint",
+     "source": "openai", "session_id": "", "started_at": "2026-11-06 11:10:00", "file_size_kb": 0.9},
+    {"run_id": "agentrun_f1416_kiosk", "agent_name": "Smoke Kiosk", "agent_id": "agent_smoke_kiosk",
+     "source": "kiosk", "session_id": "", "started_at": "2026-11-06 11:00:00", "file_size_kb": 0.5},
+]
+_F1416_WORKFLOWS = [
+    {"run_id": "builder_f1416a", "orchestration_name": "Synapse AI", "orchestration_id": "orch_native_builder",
+     "session_id": "", "started_at": "2026-11-06 11:43:00", "file_size_kb": 10.8},
+    {"run_id": "run_f1416", "orchestration_name": "Patio check", "orchestration_id": "orch_f1416_patio",
+     "session_id": "", "started_at": "2026-11-06 11:40:00", "file_size_kb": 3.1},
+]
+_F1416_SCHEDULES = [
+    {"run_id": "schedrun_f1416_wf", "schedule_name": "Monday report", "schedule_id": "sched_f1416_wf",
+     "target_type": "orchestration", "started_at": "2026-11-06 09:00:00", "file_size_kb": 2.0},
+    {"run_id": "schedrun_f1416_agent", "schedule_name": "Daily digest", "schedule_id": "sched_f1416_agent",
+     "target_type": "agent", "started_at": "2026-11-06 08:00:00", "file_size_kb": 1.5},
+]
+#: What each row reads: its name, and its line 2 (None: none).
+_F1416_ROWS = {
+    "agents": {"agentrun_f1416_talk": ("Synapse AI", None), "agentrun_f1416_class": ("Synapse AI", None),
+               "agentrun_f1416_step": ("Smoke Researcher", "From a workflow"),
+               "agentrun_f1416_chat": ("Smoke Support", "Chat"), "agentrun_f1416_call": ("Smoke Caller", "Phone call"),
+               "agentrun_f1416_api": ("Smoke Endpoint", "OpenAI-compatible API"),
+               "agentrun_f1416_kiosk": ("Smoke Kiosk", "kiosk")},
+    "orchestrations": {"builder_f1416a": ("Synapse AI", None), "run_f1416": ("Patio check", None)},
+    "schedules": {"schedrun_f1416_wf": ("Monday report", "Runs a workflow"),
+                  "schedrun_f1416_agent": ("Daily digest", "Runs an agent")},
+}
+#: A key no person knows, a retired word (D209) or a step agent's own name, anywhere in the list.
+_F1416_NEVER = re.compile(r"orchestration|builder_|orch_|agent_native_builder|Builder —|You are the", re.I)
+
+_LOG_ROWS_JS = r"""() => [...document.querySelectorAll('[data-log-row]')].map(li => {
+  const subs = [...li.querySelectorAll('span.truncate')];
+  return {id: li.dataset.logRow, name: li.querySelector('[data-row-open]').innerText.trim(),
+          sub: subs.length ? subs[subs.length - 1].getAttribute('title') : null,
+          remove: (li.querySelector('button[aria-label^="Delete log"]') || {getAttribute: () => null})
+                    .getAttribute('aria-label'),
+          said: [li.innerText, ...[...li.querySelectorAll('[aria-label],[title]')]
+                   .flatMap(e => [e.getAttribute('aria-label'), e.getAttribute('title')])].filter(Boolean).join(' | ')};
+}).concat([...document.querySelectorAll('[data-log-group]')].map(g => ({group: true, said: g.innerText})))"""
+
+
+@check
+async def check_logsnames(browser) -> str:
+    """Logs names a run by what a person knows (F1416; eb's oldwords find on FF22 9649b4cd; Naveen 11-06: "Plain
+    words"). Synapse AI's turns are runs `builder_…`, and each step's agent writes an agent log whose source is the
+    run: /logs listed them as "Builder — Talk" over `orchestration:builder_<id>`, in the row and in its Delete log
+    control, and every workflow's agent step as `orchestration:<run id>`, the word D209 retired. Since F1412 and
+    F1413 every person who chats meets them. Now a log of Synapse AI's reads "Synapse AI" with its time and size, and
+    no prompt of its own quoted; line 2 says where a log came from in words ("From a workflow", "Chat", "Phone call",
+    "OpenAI-compatible API"), what a schedule runs ("Runs a workflow", "Runs an agent"), and nothing on a workflow's
+    log, whose name says which; a source no product names yet is shown as it is. The filter lists Synapse AI once."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    for kind, logs in (("agents", _F1416_AGENTS), ("orchestrations", _F1416_WORKFLOWS),
+                       ("schedules", _F1416_SCHEDULES)):
+        await ctx.route(f"**/api/logs/{kind}?*", _answer(logs))
+        await ctx.route(f"**/api/logs/{kind}/*", _answer("🔄 LLM CALL — TURN 1\nhello\n", content_type="text/plain"))
+    await ctx.route("**/api/orchestrations/runs?*", _answer([]))
+    page = await ctx.new_page()
+    bad: list[str] = []
+    try:
+        await page.goto(f"{APP}/logs", wait_until="domcontentloaded")
+        for kind, label in (("agents", "Agent logs"), ("orchestrations", "Workflow logs"),
+                            ("schedules", "Schedule logs")):
+            await page.get_by_role("group", name="Show logs").get_by_role("button", name=label).click(timeout=30_000)
+            want = _F1416_ROWS[kind]
+            await page.locator(f'[data-log-row="{next(iter(want))}"]').wait_for(timeout=15_000)
+            await asyncio.sleep(0.5)
+            listed = await page.evaluate(_LOG_ROWS_JS)
+            rows = {r["id"]: r for r in listed if not r.get("group")}
+            for rid, (name, sub) in want.items():
+                row = rows.get(rid)
+                if row is None:
+                    bad.append(f"{label}: no row for {rid}")
+                    continue
+                if (row["name"], row["sub"]) != (name, sub):
+                    bad.append(f"{label}: {rid} reads {(row['name'], row['sub'])}, not {(name, sub)}")
+                if row["remove"] != f"Delete log {name}":
+                    bad.append(f"{label}: {rid}'s delete control is {row['remove']!r}")
+            for said in sorted({m.group(0) for r in listed for m in _F1416_NEVER.finditer(r["said"])}):
+                bad.append(f"{label}: the list says {said!r}")
+            if kind == "agents":
+                await page.get_by_role("button", name="Filter by id").click()
+                options = [t.strip() for t in await page.get_by_role("option").all_inner_texts()]
+                await page.keyboard.press("Escape")
+                if options.count("Synapse AI") != 1 or any(_F1416_NEVER.search(t) for t in options):
+                    bad.append(f"the filter offers {options}")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("Synapse AI's logs read 'Synapse AI'; line 2 says From a workflow, Chat, Phone call, the OpenAI-compatible "
+            "API, what a schedule runs, nothing on a workflow's log, an unnamed source as it is; one Synapse AI to "
+            "filter by")
+
+
 @check
 async def check_goldendelete(browser) -> str:
     """A golden set can be deleted from Evals (F508): before, only through the API. Never while it runs: the
