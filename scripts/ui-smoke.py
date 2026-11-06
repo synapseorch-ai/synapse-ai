@@ -7574,6 +7574,9 @@ async def check_agentname(browser) -> str:
     name = f"Named {aid[-6:]}"
     api("/api/agents", "POST", _agent(aid, name))
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    # The agent this browser kept: a new browser's first tab is Synapse AI's since F1413, and the active agent seeds
+    # none. The status still names it active, so the tab coming forward leaves the install's own active agent alone.
+    await ctx.add_init_script(f"try {{ localStorage.setItem('synapseAgentId', {json.dumps(aid)}); }} catch (e) {{}}")
     page = await ctx.new_page()
 
     async def active(route):
