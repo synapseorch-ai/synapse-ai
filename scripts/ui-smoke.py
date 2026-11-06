@@ -4573,6 +4573,20 @@ async def check_quietscroll(browser) -> str:
         padding = await page.screenshot(clip={**clip, "x": pane["x"] - 14})
         return bar != padding
 
+    async def settled(page) -> dict:
+        """The pane once it has stopped: its scrollTop unchanged for 1.25 s, so its last scroll is older than
+        showWhileScrolling's second. The chat opens with a smooth scroll to its end (BuilderPanel's bottomRef), still
+        going after two seconds at 390, and a wheel or a key's scroll is animated too."""
+        last, same, pane = None, 0, None
+        for _ in range(80):
+            pane = await page.evaluate(QUIET_PANE)
+            same = same + 1 if pane and pane["top"] == last else 0
+            last = pane and pane["top"]
+            if same >= 5:
+                return pane
+            await asyncio.sleep(0.25)
+        raise AssertionError(f"the pane never stopped scrolling: {pane}")
+
     try:
         for scheme in ("dark", "light"):
             for width in ((1440, 900), (390, 844)):
@@ -4608,9 +4622,9 @@ async def check_quietscroll(browser) -> str:
                             bad.append(f"{where}: the long chat does not scroll: {pane}"); continue
                         if pane["gutter"] < 6:
                             bad.append(f"{where}: the bar's place is not kept ({pane['gutter']}px), so the text moves when it shows")
-                        # At rest: the pointer elsewhere, the chat's own scroll to its end over a second ago.
+                        # At rest: the pointer elsewhere, and the chat's own scroll to its end over.
                         await page.mouse.move(2, width[1] - 2)
-                        await asyncio.sleep(1.5)
+                        pane = await settled(page)
                         if await bar_drawn(page, pane):
                             bad.append(f"{where}: the bar is drawn at rest")
                         await page.mouse.move(pane["mx"], pane["my"])
@@ -4632,7 +4646,9 @@ async def check_quietscroll(browser) -> str:
                         # While it moves the bar shows, the pointer elsewhere and nothing focused; a second after, it is clear.
                         await page.mouse.move(2, width[1] - 2)
                         await page.evaluate("() => document.activeElement && document.activeElement.blur()")
-                        await asyncio.sleep(1.5)
+                        keyed = await settled(page)
+                        if await bar_drawn(page, keyed):
+                            bad.append(f"{where}: the bar is drawn once Page Up's scroll is over")
                         await page.evaluate("""() => {
                           const h = [...document.querySelectorAll('h2')].find((e) => e.textContent.trim() === 'What can I do for you?');
                           let p = h.parentElement; while (!/(auto|scroll)/.test(getComputedStyle(p).overflowY)) p = p.parentElement;
