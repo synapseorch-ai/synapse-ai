@@ -3845,6 +3845,8 @@ export default function Home() {
   return (
     <div className="flex h-full min-h-0 overflow-hidden">
       <div className="relative flex min-w-0 flex-1 flex-col">
+        {/* The page's title, for a screen reader's jump to it (F1421): the tabs are the title a person sees. */}
+        <h1 className="sr-only">Chat</h1>
         {/* The strip where the page's title was: the tabs are the page's title now. */}
         <div data-tour="chat-tabs" className="hidden shrink-0 items-end gap-2 border-b border-border px-4 pt-3 md:flex md:px-6">
           {ready && (
