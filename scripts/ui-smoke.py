@@ -1488,6 +1488,7 @@ async def check_delegate(browser) -> str:
     """
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     await ctx.add_init_script(DELEGATE_STUB)
+    await ctx.add_init_script(_kept_plain_agent())
     page = await ctx.new_page()
     try:
         await page.goto(APP, wait_until="domcontentloaded")
@@ -3638,6 +3639,7 @@ async def check_humanfields(browser) -> str:
     # Chat, fed the same question by a stubbed stream.
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     await ctx.add_init_script(HUMAN_CHAT_STUB.replace("FIELDS", json.dumps(HUMAN_FIELDS)))
+    await ctx.add_init_script(_kept_plain_agent())
     page = await ctx.new_page()
     try:
         await page.goto(APP, wait_until="domcontentloaded")
@@ -3750,6 +3752,18 @@ window.fetch = function (input, init) {
 
 def _frame(event: dict, cursor: str | None = None) -> str:
     return (f"id: {cursor}\n" if cursor else "") + f"data: {json.dumps(event)}\n\n"
+
+
+def _kept_plain_agent() -> str:
+    """An init script keeping the install's first plain agent as this browser's (synapseAgentId), for a check of an
+    agent's chat that opens a fresh Chat: a new browser's first tab is Synapse AI's since F1413, and the active agent
+    seeds none. Nothing is kept on an install with no plain agent."""
+    agents = api("/api/status").get("agents") or {}
+    plain = next((aid for aid, info in agents.items() if not aid.startswith("agent_native_builder")
+                  and not (isinstance(info, dict) and info.get("type") in ("builder", "orchestrator"))), None)
+    if not plain:
+        return ";"
+    return f"try {{ localStorage.setItem('synapseAgentId', {json.dumps(plain)}); }} catch (e) {{}}"
 
 
 async def _chat_page(browser, session_id: str, history: dict | None = None,
@@ -15373,7 +15387,8 @@ async def check_answertaken(browser) -> str:
     try:
         await _build_with_ai(page)
         panel = page.locator('[data-testid="assistant-panel"]')
-        composer = page.get_by_role("textbox", name="Message Synapse AI")
+        # The panel's own: Chat's first tab is a Synapse AI chat of its own since F1413, with a composer of that name.
+        composer = panel.get_by_role("textbox", name="Message Synapse AI")
         await composer.wait_for(timeout=10_000)
         await composer.fill("4111 1111 1111 1111")
         await composer.press("Enter")
