@@ -19,8 +19,8 @@ import pytest
 from core import model_choices
 from core.native_builder import models_menu as M
 
-SIMPLE_TOOLS = "the strongest that fits, within the automatic price ceiling, from your CLI models (this workspace has " \
-               "no own key or platform model): one that calls tools"
+SIMPLE_TOOLS = ("the strongest that fits, within the automatic price ceiling, from your CLI models (this workspace "
+                "has no own key or platform model): one that calls tools")
 
 
 def _entry(id, *, source="cli", tools="prompt", vision=False, reasoning=False, price_out=None, rank_out=None,
@@ -134,6 +134,38 @@ class TestTheMenu:
         assert all(by_id[i].price_out is None for i in by_id if i.startswith("cli."))
         # An own-key model is ranked by its price, as ever.
         assert by_id["claude-haiku-4-5"].rank_out is None and by_id["claude-haiku-4-5"].price_out == 5
+
+
+
+class TestAWish:
+    """A person's wish on a workspace with no own-key or platform model is read among its CLI models, else its local
+    ones (eb: the same class; "the strongest" must never be "I don't know which model"), and a CLI model ranks by the
+    list price of the model it runs wherever a wish reads the CLI models."""
+
+    def test_the_strongest_and_the_cheapest(self):
+        assert M.resolve_wish("the strongest model", "simple", has_tools=True, menu=TAKE2) == M.Picked(
+            FABLE.id, "you asked for the strongest model")
+        assert M.resolve_wish("the cheapest one", "reasoning", has_tools=True, menu=TAKE2) == M.Picked(
+            HAIKU.id, "you asked for the lowest-cost model")
+
+    def test_a_family_is_ranked_not_read_alphabetically(self):
+        assert M.resolve_wish("use Claude", "simple", has_tools=True, menu=TAKE2) == M.Picked(
+            HAIKU.id, "you asked for Claude")
+        assert M.resolve_wish("use Claude", "reasoning", has_tools=True, menu=TAKE2).id == SONNET_46.id
+
+    def test_a_cli_model_asked_for_is_ranked_too(self):
+        key = _entry("claude-haiku-4-5", source="key", tools="native", price_out=5, provider="anthropic")
+        assert M.resolve_wish("use the claude cli", "simple", has_tools=True, menu=[key, *TAKE2]) == M.Picked(
+            HAIKU.id, "you asked for claude")
+
+    def test_a_local_only_workspace(self):
+        other = _entry("ollama.qwen", source="local", tools="native", price_out=0, provider="ollama")
+        got = M.resolve_wish("the strongest model", "simple", has_tools=True, menu=[LOCAL, other])
+        assert isinstance(got, M.Picked) and got.id in (LOCAL.id, other.id)
+
+    def test_nothing_it_could_mean_is_still_a_question_with_the_menus_names(self):
+        asked = M.resolve_wish("banana", "simple", has_tools=True, menu=TAKE2)
+        assert isinstance(asked, M.Ask) and asked.options == sorted(e.id for e in TAKE2)
 
 
 @pytest.fixture(autouse=True)
