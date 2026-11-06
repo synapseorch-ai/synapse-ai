@@ -69,3 +69,69 @@ async def test_status_names_the_agent_chat_answers_with_before_anyone_picks_one(
     await default_agent.ensure_default_agent()
     status = (await client.get("/api/status")).json()
     assert status["active_agent_id"] == "agent_synapse_ai"
+
+
+# F1412: the installer was the only thing that made Synapse AI, and a Docker install (its entrypoint runs no setup)
+# or a pip install (`synapse start`'s wizard writes settings only) never runs it. So the server's first start makes
+# it, once: a marker in the store says it did, so an agent the person deleted stays deleted.
+
+_AS_MADE = ("id", "name", "description", "type", "tools", "repos", "system_prompt")
+
+
+async def test_a_first_start_that_no_installer_ran_makes_it():
+    assert await default_agent.create_the_assistant_once() is True
+    agent = await get_agent("agent_synapse_ai")
+    assert {k: agent.get(k) for k in _AS_MADE} == {k: default_agent.DEFAULT_AGENT[k] for k in _AS_MADE}
+    assert await default_agent.create_the_assistant_once() is False
+
+
+async def test_deleted_it_stays_deleted():
+    from core.store.resources import delete_agent
+
+    await default_agent.create_the_assistant_once()
+    assert await delete_agent("agent_synapse_ai") is True
+    assert await default_agent.create_the_assistant_once() is False
+    assert await get_agent("agent_synapse_ai") is None
+
+
+async def test_one_the_installer_made_is_only_marked_and_an_edit_stays():
+    from core.store.resources import delete_agent
+
+    await default_agent.ensure_default_agent()  # `synapse setup --apply`, before the first start
+    await save_agent({**await get_agent("agent_synapse_ai"), "description": "Mine now."})
+    assert await default_agent.create_the_assistant_once() is False
+    assert (await get_agent("agent_synapse_ai"))["description"] == "Mine now."
+    await delete_agent("agent_synapse_ai")
+    assert await default_agent.create_the_assistant_once() is False  # marked on that first start
+    assert await get_agent("agent_synapse_ai") is None
+
+
+async def test_a_1x_docker_volume_brought_across_gets_it(tmp_path):
+    """1.9's image never ran setup.py either, so its /data holds the person's agents and no Synapse AI."""
+    import json
+
+    from core.store.importer import import_data_dir
+
+    (tmp_path / "user_agents.json").write_text(json.dumps([{"id": "agent_mine", "name": "Mine"}]))
+    await import_data_dir(tmp_path)
+    assert await default_agent.create_the_assistant_once() is True
+    assert (await get_agent("agent_synapse_ai"))["type"] == "builder"
+    assert (await get_agent("agent_mine"))["name"] == "Mine"
+
+
+def test_the_server_start_makes_it_after_the_import_and_the_old_defaults_turn():
+    """The Docker path: the lifespan (too heavy to run here: it starts the MCP servers) calls it after the 1.x import,
+    so an imported agent is the person's, and after adopt_the_assistant, so an old default turned is only marked."""
+    import inspect
+
+    import core.server as server
+
+    src = inspect.getsource(server.lifespan)
+    assert "create_the_assistant_once()" in src
+    assert (src.index("import_legacy_data_if_present()") < src.index("adopt_the_assistant()")
+            < src.index("create_the_assistant_once()"))
+
+
+async def test_settings_do_not_show_the_marker(client):
+    await default_agent.create_the_assistant_once()
+    assert "default_agent_seeded" not in (await client.get("/api/settings")).json()

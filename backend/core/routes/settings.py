@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from core.config import SECRET_SETTINGS, load_settings, sanitize_db_url
+from core.default_agent import SEEDED_MARKER
 from core.models import Settings, PersonalDetails
 from core.personal_details import load_personal_details, save_personal_details
 from core.llm_providers import _make_aws_client, OLLAMA_MODEL
@@ -196,6 +197,7 @@ def public_settings(settings: dict) -> dict:
     """
     view = dict(settings)
     view.pop("login_password_hash", None)
+    view.pop(SEEDED_MARKER, None)  # the server's own record of a first start (F1412), not a setting
     # Where transforms run is the server operator's (F968): what this server runs, not a stored choice.
     view["transform_runtime"] = transform_runtime()
     for name in SECRET_SETTINGS:

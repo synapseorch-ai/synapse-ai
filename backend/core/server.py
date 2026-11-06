@@ -744,6 +744,14 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"Warning: Failed to adopt the assistant as the default agent: {e}")
 
+        # --- An install the installer never ran (Docker, pip) starts with Synapse AI too: once (F1412) ---
+        try:
+            from core.default_agent import create_the_assistant_once
+            if await create_the_assistant_once():
+                print("Synapse AI, the assistant, is ready in Chat.")
+        except Exception as e:
+            print(f"Warning: Failed to create Synapse AI, the default agent: {e}")
+
         # --- Sweep zombie orchestration runs (stale "running" from prior server crash) ---
         try:
             from core.scale.config import get_scale_config as _sweep_scale_cfg
