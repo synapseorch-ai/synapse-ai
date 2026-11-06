@@ -93,4 +93,24 @@ if [ "$SYNAPSE_AUTOGEN_TOKEN" = "1" ] && [ "$SYNAPSE_TOKEN_MODE" = "generate" ] 
     fi
 fi
 
+# ── The sign-in secret (F1430) ────────────────────────────────────────────────
+# SYNAPSE_JWT_SECRET signs every session and the website widget's tokens. Kept
+# on the volume like the tokens above, so a restart signs no one out: made once
+# by the backend (generate role), read on every start, and taken by the frontend
+# (read role) once it is there. One set in the environment wins, as it does for
+# `synapse start`, which keeps it in .env instead.
+JWT_FILE="$SYNAPSE_SECRETS_DIR/jwt_secret"
+if [ "$SYNAPSE_AUTOGEN_TOKEN" = "1" ] && [ -z "$SYNAPSE_JWT_SECRET" ]; then
+    if [ "$SYNAPSE_TOKEN_MODE" = "generate" ] && [ ! -s "$JWT_FILE" ]; then
+        mkdir -p "$SYNAPSE_SECRETS_DIR"
+        _tmp="$JWT_FILE.tmp.$$"
+        ( umask 077; _gen_token > "$_tmp" )
+        [ -s "$_tmp" ] && mv "$_tmp" "$JWT_FILE" || rm -f "$_tmp"
+    fi
+    if [ -s "$JWT_FILE" ]; then
+        SYNAPSE_JWT_SECRET="$(cat "$JWT_FILE")"
+        export SYNAPSE_JWT_SECRET
+    fi
+fi
+
 exec "$@"
