@@ -62,6 +62,35 @@ def test_the_npm_spelling_of_a_version(pep440, semver):
     assert cli._npm_version(pep440) == semver
 
 
+# ── a release's tag, and the line that installs it again (F1443) ─────────────
+
+@pytest.mark.parametrize("typed", ["2.0.0rc2", "2.0.0-rc2", "2.0.0-rc.2", "v2.0.0rc2"])
+def test_a_releases_tag_is_spelled_as_it_was_published(typed):
+    """v2.0.0-rc1 was tagged in npm's spelling, and synapseorch.com/install/<tag>.sh takes only that one."""
+    from synapse.installer import versions
+
+    assert versions.tag(typed) == "v2.0.0-rc2"
+    assert versions.tag("2.0.1") == "v2.0.1"
+
+
+def test_an_rc_is_installed_again_from_its_own_release():
+    """releases/latest is the newest final, which has no setup files for an rc: the rc's own address does."""
+    from synapse.installer import versions
+
+    assert versions.install_command("2.0.0rc2") == "curl -LsSf https://synapseorch.com/install/v2.0.0-rc2.sh | bash"
+    assert versions.install_command("2.0.0rc2", windows=True) == \
+        "irm https://synapseorch.com/install/v2.0.0-rc2.ps1 | iex"
+
+
+@pytest.mark.parametrize("version", ["2.0.1", ""])
+def test_a_final_or_unknown_version_is_installed_again_from_the_latest_release(version):
+    from synapse.installer import versions
+
+    latest = "https://github.com/synapseorch-ai/synapse-ai/releases/latest/download"
+    assert versions.install_command(version) == f"curl -LsSf {latest}/setup.sh | bash"
+    assert versions.install_command(version, windows=True) == f"irm {latest}/setup.ps1 | iex"
+
+
 # ── what `synapse upgrade` does with them ────────────────────────────────────
 
 def _world(monkeypatch, *, current, latest, method="uv"):
@@ -153,6 +182,19 @@ def test_a_final_release_url_is_unchanged(fetches, monkeypatch):
     urls, _ = fetches
     cli._upgrade_with_installer("2.0.1")
     assert urls[0] == "https://github.com/synapseorch-ai/synapse-ai/releases/download/v2.0.1/synapse-install.pyz"
+
+
+def test_with_its_uv_gone_an_rc_upgrade_says_how_to_install_that_rc(fetches, monkeypatch, capsys):
+    """F1443: it named releases/latest's setup.sh, which an rc's install never had."""
+    from synapse.installer import runtime
+
+    monkeypatch.setattr("synapse.installer.home.read_install", lambda h: {})
+    monkeypatch.setattr(runtime, "find_uv", lambda home: None)
+    with pytest.raises(SystemExit):
+        cli._upgrade_with_installer("2.0.0rc2")
+    out = capsys.readouterr().out
+    assert "curl -LsSf https://synapseorch.com/install/v2.0.0-rc2.sh | bash" in out
+    assert "releases/latest" not in out
 
 
 def test_a_local_release_folder_can_stand_in_for_github(fetches, monkeypatch):
