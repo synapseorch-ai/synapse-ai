@@ -21,7 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from synapse import versions  # noqa: E402
+from synapse.installer import versions  # noqa: E402
 
 
 class Mismatch(ValueError):

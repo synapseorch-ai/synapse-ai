@@ -32,7 +32,7 @@ import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import autostart, backup, home as home_mod, legacy, ports, providers, runtime
+from . import autostart, backup, home as home_mod, legacy, ports, providers, runtime, versions
 from .progress import Downloads, UvInstall
 from .runner import CommandFailed, Log, kill_children, run
 from .screen import make_screen
@@ -48,10 +48,6 @@ BACKEND_PORT = 8765
 IS_WIN = sys.platform == "win32"
 #: The optional parts `--with` takes (pyproject's extras, less `test`).
 EXTRAS = ("knowledge", "telemetry")
-RETRY = {
-    "posix": "curl -LsSf https://github.com/synapseorch-ai/synapse-ai/releases/latest/download/setup.sh | bash",
-    "nt": "irm https://github.com/synapseorch-ai/synapse-ai/releases/latest/download/setup.ps1 | iex",
-}
 
 
 @dataclass
@@ -783,7 +779,8 @@ class Installer:
         lines += ["", "  " + self._safe_line(),
                   "  " + t.style(f"Full log: {_tilde(self.log.path)}", "dim")]
         if self.o.method != "npm" and not self.o.upgrade:
-            lines.append("  " + t.style(f"Try again: {RETRY[os.name if os.name == 'nt' else 'posix']}", "dim"))
+            retry = versions.install_command(self.version, windows=os.name == "nt")
+            lines.append("  " + t.style(f"Try again: {retry}", "dim"))
         lines.append("")
         return lines
 

@@ -6,8 +6,12 @@ the release, then its post releases. npm spells the same version in semver
 (`2.0.0rc1` on PyPI is `2.0.0-rc1` on npm). `synapse upgrade` compares with
 `key`; the release workflow checks the tag, pyproject.toml and package.json
 agree, and whether this is a pre-release, with `scripts/release_version.py`.
+A release's tag is npm's spelling with a `v` (`v2.0.0-rc1`), and `install_command`
+is the line that installs a release again (F1443).
 
-Standard library only: the release script imports this without the app.
+Standard library only, and in the installer's package: the release script
+imports this without the app, and synapse-install.pyz, which carries only
+synapse/installer/, prints `install_command` when an install fails.
 """
 from __future__ import annotations
 
@@ -95,3 +99,26 @@ def is_prerelease(v: str) -> bool:
     """An alpha, beta, rc or dev release — what pip and npm users get only by asking."""
     parts = _parts(v)
     return parts is not None and (parts[1] is not None or parts[3] is not None)
+
+
+#: Where one release's setup scripts are: the site's short address, which redirects to that release's files.
+_RELEASE_SETUP = "https://synapseorch.com/install"
+#: The newest final release's setup scripts.
+_LATEST_SETUP = "https://github.com/synapseorch-ai/synapse-ai/releases/latest/download"
+
+
+def tag(v: str) -> str:
+    """The release's git tag: npm's spelling with a `v`, as v2.0.0-rc1 was published and as the
+    site's short install address takes it (`2.0.0rc2` → `v2.0.0-rc2`, `2.0.1` → `v2.0.1`)."""
+    return "v" + npm(v)
+
+
+def install_command(v: str, windows: bool = False) -> str:
+    """The one line that installs release `v` again. A pre-release from its own release:
+    releases/latest is the newest final, which has no setup files of an rc's (F1443).
+    A final, or no version, from the latest."""
+    if v and is_prerelease(v):
+        name = tag(v)
+        return (f"irm {_RELEASE_SETUP}/{name}.ps1 | iex" if windows
+                else f"curl -LsSf {_RELEASE_SETUP}/{name}.sh | bash")
+    return f"irm {_LATEST_SETUP}/setup.ps1 | iex" if windows else f"curl -LsSf {_LATEST_SETUP}/setup.sh | bash"
