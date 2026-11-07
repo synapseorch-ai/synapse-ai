@@ -73,14 +73,27 @@ main() {
     exec "$uv" run --no-project --quiet --python 3.12 python "$pyz" --uv "$uv" "$@" </dev/null
 }
 
+# GitHub's release files resolve to several addresses, and one that drops the
+# connection would hold curl or wget for minutes with no connect timeout: each
+# address gets at most 10 s (curl splits that over the addresses it has), so the
+# next is tried at once (F1445). After 10 s the terminal says it is still trying.
 fetch() {
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --retry 3 "$1"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -qO- "$1"
-    else
-        fail "Neither curl nor wget is installed; install one, then try again."
+    local tool note="" code=0
+    if command -v curl >/dev/null 2>&1; then tool=curl
+    elif command -v wget >/dev/null 2>&1; then tool=wget
+    else fail "Neither curl nor wget is installed; install one, then try again."
     fi
+    if [ -t 2 ]; then
+        ( sleep 10; printf '\r\033[2K  Still getting the Synapse installer… (a slow connection; still trying)' >&2 ) >/dev/null &
+        note=$!
+    fi
+    if [ "$tool" = curl ]; then
+        curl -fsSL --connect-timeout 10 --retry 3 --retry-connrefused "$1" || code=$?
+    else
+        wget -qO- --connect-timeout=10 --tries=4 "$1" || code=$?
+    fi
+    if [ -n "$note" ]; then kill "$note" 2>/dev/null || true; fi
+    return "$code"
 }
 
 sha256() {

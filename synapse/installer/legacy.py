@@ -38,6 +38,27 @@ _JSON_SOURCES = ("orchestrations", "user_agents", "custom_tools", "mcp_servers",
 _CONTENT_DIRS = ("chat_sessions", "vault", "datasets")
 _LOG_DIRS = ("orchestration_logs", "agent_logs", "orchestration_runs")
 
+#: What a v1.x data folder holds that the product made, not the person, by id: Synapse AI
+#: (the default agent), the builder's agents in any release (`agent_native_builder` and
+#: `agent_native_builder_*`), the builder's workflow, and the builder's runs (`builder_*`).
+#: 2.0's import replaces them with its own (core.store.importer._seeded_ids and
+#: core.native_builder.seed.is_builder_agent), so the confirm screen counts only the
+#: person's work (F1446: "6 agents" were all 1.9's own). The installer can't import core,
+#: being standard library only; test_installer_parts checks these agree with it.
+BUILT_INS = {
+    "agents": {"ids": ("agent_synapse_ai",), "prefix": "agent_native_builder"},
+    "orchestrations": {"ids": ("orch_native_builder",)},
+    "runs": {"prefix": "builder"},
+}
+
+
+def is_built_in(kind: str, item_id: str) -> bool:
+    """Whether a v1.x agent, orchestration or run (by its id) is the product's own (`BUILT_INS`).
+    A prefix covers the name itself and the name followed by `_`, never a longer word."""
+    rule = BUILT_INS.get(kind, {})
+    prefix = rule.get("prefix")
+    return item_id in rule.get("ids", ()) or bool(prefix) and (item_id == prefix or item_id.startswith(prefix + "_"))
+
 #: What a v1.x process leaves in its environment that must not reach 2.0: the
 #: flag its upgrade re-exec sets, its data folder, and its venv. The installer
 #: clears these before it runs anything (flow.py, handoff.py).
@@ -320,7 +341,7 @@ def _json(path: Path):
 
 
 def count(data_dirs: list[Path], logs_dirs: list[Path]) -> dict:
-    """What the confirm screen names: agents, orchestrations, chats, …"""
+    """What the confirm screen names: agents, orchestrations, chats, … — the person's, not the product's own."""
     ids: dict[str, set] = {k: set() for k in ("agents", "orchestrations", "schedules",
                                                "tools", "mcp_servers", "api_keys")}
     chats: set[str] = set()
@@ -333,21 +354,23 @@ def count(data_dirs: list[Path], logs_dirs: list[Path]) -> dict:
             if isinstance(items, list):
                 ids[key] |= {str(i.get(field_) or i.get("name") or n)
                              for n, i in enumerate(items) if isinstance(i, dict)}
+                ids[key] = {i for i in ids[key] if not is_built_in(key, i)}
         sessions = d / "chat_sessions"
         if sessions.is_dir():
             chats |= {p.name for p in sessions.glob("*.json")}
         vault = d / "vault"
         if vault.is_dir():
             vault_bytes += sum(p.stat().st_size for p in vault.rglob("*") if p.is_file())
-    runs = sum(len(list((d / "orchestration_logs").glob("*.log"))) for d in logs_dirs
-               if (d / "orchestration_logs").is_dir())
+    runs = sum(1 for d in logs_dirs if (d / "orchestration_logs").is_dir()
+               for log in (d / "orchestration_logs").glob("*.log") if not is_built_in("runs", log.stem))
     out = {k: len(v) for k, v in ids.items()}
     out.update(chats=len(chats), runs=runs, vault_bytes=vault_bytes)
     return out
 
 
 def mentions(data_dirs: list[Path], roots: list[str]) -> list[str]:
-    """The agents, orchestrations, tools and MCP servers whose definition names a path in `roots`.
+    """The agents, workflows, tools and MCP servers whose definition names a path in `roots`, the
+    product's own left out (2.0 replaces them).
 
     A repo, a working folder or a stdio server's command inside the old
     install's folder keeps its path through the import, and stops working when
@@ -359,19 +382,22 @@ def mentions(data_dirs: list[Path], roots: list[str]) -> list[str]:
     needles = set(roots) | {json.dumps(r)[1:-1] for r in roots}
     found: list[str] = []
     for d in data_dirs:
-        for kind, name in (("agent", "user_agents"), ("orchestration", "orchestrations"),
-                           ("tool", "custom_tools"), ("MCP server", "mcp_servers"), ("repo", "repos")):
+        for kind, name, key in (("agent", "user_agents", "agents"), ("workflow", "orchestrations", "orchestrations"),
+                                ("tool", "custom_tools", ""), ("MCP server", "mcp_servers", ""),
+                                ("repo", "repos", "")):
             items = _json(d / f"{name}.json")
             for item in items if isinstance(items, list) else []:
-                if isinstance(item, dict) and any(n in json.dumps(item) for n in needles):
+                if not isinstance(item, dict) or is_built_in(key, str(item.get("id") or "")):
+                    continue
+                if any(n in json.dumps(item) for n in needles):
                     found.append(f"{kind} {item.get('name') or item.get('id') or '?'}")
     return found
 
 
 def summary(counts: dict) -> list[str]:
-    """["7 agents", "4 orchestrations", "312 chats"] — only what is there."""
+    """["7 agents", "4 workflows", "312 chats"] — only what is there, in 2.0's words."""
     parts = []
-    for key, one, many in (("agents", "agent", "agents"), ("orchestrations", "orchestration", "orchestrations"),
+    for key, one, many in (("agents", "agent", "agents"), ("orchestrations", "workflow", "workflows"),
                            ("chats", "chat", "chats"), ("schedules", "schedule", "schedules"),
                            ("tools", "tool", "tools"), ("mcp_servers", "MCP server", "MCP servers"),
                            ("api_keys", "API key", "API keys"), ("runs", "run log", "run logs")):

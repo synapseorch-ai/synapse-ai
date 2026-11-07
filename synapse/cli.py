@@ -1664,14 +1664,14 @@ def _get_current_version() -> str:
 
 def _parse_version(v: str) -> tuple:
     """A key that orders versions as PyPI does, pre-releases included (F826)."""
-    from synapse import versions
+    from synapse.installer import versions
 
     return versions.key(v)
 
 
 def _npm_version(v: str) -> str:
     """The same version as npm spells it: `2.0.0rc1` → `2.0.0-rc1`."""
-    from synapse import versions
+    from synapse.installer import versions
 
     return versions.npm(v)
 
@@ -1787,7 +1787,7 @@ def _installer_args(pyz: Path, uv: str, target: str, extras, method: str) -> lis
 
 def _upgrade_with_installer(target: str, extras=(), method: str = "uv") -> None:
     """Hand over to release `target`'s own installer (`synapse-install.pyz upgrade`)."""
-    from synapse.installer import net, runtime
+    from synapse.installer import net, runtime, versions
     from synapse.installer.home import home_dir, read_install
 
     home = synapse_home() or home_dir()
@@ -1798,17 +1798,16 @@ def _upgrade_with_installer(target: str, extras=(), method: str = "uv") -> None:
         uv = str(found) if found else ""
     if not uv:
         print("uv, which this install was made with, is missing. Reinstall with:")
-        print(f"  curl -LsSf {RELEASES}/latest/download/setup.sh | bash")
+        print(f"  {versions.install_command(target, windows=IS_WIN)}")
         sys.exit(1)
-    from synapse import versions
 
-    # One version is one release, however it was typed: tags are PyPI's spelling
-    # (`v2.0.0rc1`, F830). SYNAPSE_RELEASES_URL stands in for GitHub's releases when
-    # a pre-release is tested from a local folder, as the setup scripts'
-    # SYNAPSE_INSTALLER_URL does (F831).
+    # One version is one release, however it was typed (F830), at its tag as it was
+    # published: npm's spelling with a v, `v2.0.0-rc1` (F1444). SYNAPSE_RELEASES_URL
+    # stands in for GitHub's releases when a pre-release is tested from a local
+    # folder, as the setup scripts' SYNAPSE_INSTALLER_URL does (F831).
     target = versions.pep440(target)
     releases = (os.environ.get("SYNAPSE_RELEASES_URL") or RELEASES).rstrip("/")
-    base = f"{releases}/download/v{target}"
+    base = f"{releases}/download/{versions.tag(target)}"
     pyz = home / "runtime" / f"synapse-install-{target}.pyz"
     with _Spinner(f"Getting Synapse {target}…"):
         try:

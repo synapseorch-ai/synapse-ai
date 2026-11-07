@@ -331,6 +331,28 @@ def test_a_failed_download_says_which_step_why_and_how_to_retry(world, monkeypat
     assert "setup --apply" not in _names(calls)
 
 
+def test_a_failed_rc_install_says_how_to_try_that_rc_again(world, monkeypatch):
+    """F1443: "Try again" named releases/latest, the newest final, which has no setup.sh of an rc's (a 404 for
+    v2.0.0-rc1, whose port check stopped an upgrade). It names the release being installed."""
+    monkeypatch.setenv("FAKE_UV_FAIL", "1")
+
+    code, out, _ = world["install"](version_override="2.0.0rc2")
+
+    assert code == 1
+    assert "Try again: curl -LsSf https://synapseorch.com/install/v2.0.0-rc2.sh | bash" in out
+    assert "releases/latest" not in out
+
+
+def test_a_failed_final_install_tries_again_from_the_latest_release(world, monkeypatch):
+    monkeypatch.setenv("FAKE_UV_FAIL", "1")
+
+    code, out, _ = world["install"](version_override="2.0.1")
+
+    assert code == 1
+    assert ("Try again: curl -LsSf https://github.com/synapseorch-ai/synapse-ai/releases/latest/download/setup.sh"
+            " | bash") in out
+
+
 def test_a_v19_install_is_stopped_backed_up_moved_then_removed(world):
     tmp = world["tmp"]
     root = tmp / ".local" / "share" / "SynapseAI"

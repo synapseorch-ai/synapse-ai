@@ -426,6 +426,65 @@ def _v19_script_install(root: Path) -> Path:
     return root
 
 
+#: What 1.9's own data dir held that the product made, not the person (Naveen's 1.9.0, F1446).
+_V19_BUILT_INS = {
+    "user_agents": ["agent_synapse_ai", "agent_native_builder", "agent_native_builder_creator",
+                    "agent_native_builder_analyst", "agent_native_builder_saver_create",
+                    "agent_native_builder_saver_update"],
+    "orchestrations": ["orch_native_builder"],
+}
+
+
+def _v19_with_its_built_ins(root: Path) -> Path:
+    """A 1.9 install holding the product's own agents, the builder's workflow and a builder run, beside
+    the person's one workflow and its run."""
+    root = _v19_script_install(root)
+    data = root / "backend" / "data"
+    (data / "user_agents.json").write_text(json.dumps([{"id": i, "name": i} for i in _V19_BUILT_INS["user_agents"]]))
+    (data / "orchestrations.json").write_text(json.dumps(
+        [{"id": "orch_native_builder", "name": "Builder"}, {"id": "orch_f8jvej5", "name": "New Orchestration"}]))
+    (root / "backend" / "logs" / "orchestration_logs" / "builder_0a1b2c3d4e5f.log").write_text("x")
+    return root
+
+
+def test_the_products_own_1x_agents_workflow_and_runs_are_not_counted_as_the_persons(fake_home):
+    """F1446: Naveen's upgrade said "6 agents, 2 orchestrations, 1 run log", and he looked for 6 agents and found
+    none: all six were 1.9's own (Synapse AI and the builder's), as was one of the two workflows. 2.0's import
+    replaces those with its own, so the confirm screen names only the person's work, in 2.0's words."""
+    _v19_with_its_built_ins(_script_root(fake_home))
+
+    m = legacy.find(fake_home / ".synapse")
+
+    assert m.counts["agents"] == 0 and m.counts["orchestrations"] == 1 and m.counts["runs"] == 1
+    assert legacy.summary(m.counts) == ["1 workflow", "1 chat", "1 run log"]
+
+
+def test_a_built_in_that_names_the_old_folder_is_not_reported(fake_home):
+    """The log lists what still names the old install's folder; the product's own are replaced, so not them."""
+    root = _v19_with_its_built_ins(_script_root(fake_home))
+    data = root / "backend" / "data"
+    (data / "orchestrations.json").write_text(json.dumps(
+        [{"id": "orch_native_builder", "name": "Builder", "cwd": str(root)},
+         {"id": "orch_f8jvej5", "name": "New Orchestration", "cwd": str(root)}]))
+
+    assert legacy.mentions([data], [str(root)]) == ["workflow New Orchestration"]
+
+
+def test_the_installer_knows_the_products_own_as_2_0s_import_does():
+    """The installer can't import core (standard library only), so it keeps its own copy of the rule; they agree."""
+    from core.default_agent import DEFAULT_AGENT_ID
+    from core.native_builder.seed import BUILDER_AGENT_PREFIX, NATIVE_BUILDER_ORCH_ID, BUILDER_RUN_PREFIX
+
+    assert legacy.is_built_in("agents", DEFAULT_AGENT_ID)
+    assert legacy.is_built_in("agents", BUILDER_AGENT_PREFIX)
+    assert legacy.is_built_in("agents", BUILDER_AGENT_PREFIX + "_creator")
+    assert not legacy.is_built_in("agents", BUILDER_AGENT_PREFIX + "s_of_mine")
+    assert legacy.is_built_in("orchestrations", NATIVE_BUILDER_ORCH_ID)
+    assert legacy.is_built_in("runs", BUILDER_RUN_PREFIX + "0a1b2c3d4e5f")
+    assert not legacy.is_built_in("orchestrations", "orch_f8jvej5")
+    assert not legacy.is_built_in("runs", "run_0a1b2c3d4e5f")
+
+
 def _script_root(home_dir: Path) -> Path:
     if sys.platform == "darwin":
         return home_dir / "Library" / "Application Support" / "SynapseAI"
@@ -445,7 +504,7 @@ def test_a_v19_script_install_is_found_with_what_it_holds(fake_home):
     assert m.counts["agents"] == 2 and m.counts["orchestrations"] == 1
     assert m.counts["chats"] == 1 and m.counts["runs"] == 1
     assert m.has_model()
-    assert legacy.summary(m.counts)[:2] == ["2 agents", "1 orchestration"]
+    assert legacy.summary(m.counts)[:2] == ["2 agents", "1 workflow"]
     assert root in m.leftovers
 
 
