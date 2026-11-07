@@ -268,6 +268,10 @@ export function KnowledgeScreen({ tabs }: { tabs?: React.ReactNode } = {}) {
                 onCreated={async created => {
                     setCreating(false);
                     show(`${created.name} created. Files already in ${created.folder} are being indexed.`);
+                    // Listed and open from the create's own answer: the re-read can take seconds on a service just
+                    // woken, and "created" over "No knowledge bases yet" reads as a failure (F1454).
+                    setBases(b => (b?.some(x => x.id === created.id) ? b : [...(b ?? []), created]));
+                    setSelected(created.id);
                     await load();
                     setSelected(created.id);
                 }}
