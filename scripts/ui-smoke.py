@@ -15244,6 +15244,173 @@ def _panel_close(page):
         has=page.get_by_role("region", name="Browser")).get_by_role("button", name="Close", exact=True)
 
 
+def _sched_smoke(sid: str, name: str, enabled: bool, **timing) -> dict:
+    return {"id": sid, "name": name, "enabled": enabled, "created_at": _NOW, "target_type": "agent",
+            "target_id": "agent_x", "prompt": timing.pop("prompt", ""), "next_run_at": _NOW if enabled else None,
+            "last_run_at": None, **timing}
+
+
+@check
+async def check_schedenable(browser) -> str:
+    """A schedule turns on and pauses from its row (F1452, Naveen 11-07: today it is open, tick Enabled, save), at
+    1440 and 390: an On / Paused switch named "<name> schedule" in the status column (line 2 on a phone), and the
+    row's menu Turn on / Pause. Pausing is one click, no ask, and the switch moves before the PATCH answers. Turning
+    on asks first, Cancel focused, with the message each run starts with and the first run: an interval's time, a
+    cron's words on its own clock (F155). Cancel sends nothing; Turn on sends {"enabled": true} and toasts the
+    server's next run; a refused PATCH puts the switch back and toasts the server's words."""
+    bad: list[str] = []
+    patched: list[tuple[str, dict]] = []
+    next_at = "2026-11-08T09:00:00Z"
+    refused = "Its agent was deleted, so it cannot be turned on."
+
+    def fresh() -> dict[str, dict]:
+        return {s["id"]: s for s in (
+            _sched_smoke("sched_on", "Smoke nightly", True, schedule_type="interval", interval_value=30,
+                         interval_unit="minutes", prompt="p"),
+            _sched_smoke("sched_cron", "Smoke weekdays", False, schedule_type="cron", cron_expression="0 9 * * 1-5",
+                         timezone="Europe/London", prompt="Summarise yesterday's failures for the ops channel."),
+            _sched_smoke("sched_iv", "Smoke stock", False, schedule_type="interval", interval_value=2,
+                         interval_unit="hours", prompt="Check the shop's stock."),
+            _sched_smoke("sched_bad", "Smoke refused", False, schedule_type="interval", interval_value=1,
+                         interval_unit="days"))}
+
+    async def switch_on(page, name: str) -> bool | None:
+        sw = page.get_by_role("switch", name=f"{name} schedule")
+        if not await sw.count() or not await sw.first.is_visible():
+            return None
+        return (await sw.first.get_attribute("aria-checked")) == "true"
+
+    async def toasted(page, words: str, what: str):
+        try:
+            await page.get_by_text(words, exact=False).first.wait_for(timeout=5_000)
+        except Exception:
+            bad.append(f"{what}: no toast {words!r}")
+
+    for size in ((1440, 900), (390, 844)):
+        at = f"{size[0]}"
+        rows = fresh()
+        patched.clear()
+
+        async def listing(route):
+            if route.request.method != "GET":
+                return await route.fallback()
+            await route.fulfill(status=200, json=list(rows.values()))
+
+        async def patch(route):
+            if route.request.method != "PATCH":
+                return await route.fallback()
+            sid = route.request.url.rstrip("/").split("/")[-1]
+            body = json.loads(route.request.post_data or "{}")
+            patched.append((sid, body))
+            if sid == "sched_bad":
+                return await route.fulfill(status=422, json={"detail": [{"msg": refused}]})
+            await asyncio.sleep(1.0)          # held: the switch moves before the answer
+            row = {**rows[sid], **body, "next_run_at": next_at if body.get("enabled") else None}
+            rows[sid] = row
+            await route.fulfill(status=200, json=row)
+
+        ctx = await browser.new_context(viewport={"width": size[0], "height": size[1]})
+        await ctx.add_init_script(TOURS_SEEN)
+        await ctx.route(re.compile(r".*/api/schedules$"), listing)
+        await ctx.route(re.compile(r".*/api/schedules/sched_\w+$"), patch)
+        page = await ctx.new_page()
+        try:
+            await page.goto(f"{APP}/schedules", wait_until="domcontentloaded")
+            await page.get_by_role("button", name="Open Smoke nightly").wait_for(timeout=30_000)
+            await asyncio.sleep(SETTLE)
+
+            for name, on in (("Smoke nightly", True), ("Smoke weekdays", False), ("Smoke stock", False)):
+                if await switch_on(page, name) is not on:
+                    raise AssertionError(f"{at}: {name}'s row has no switch named {name + ' schedule'!r} "
+                                         f"showing {'on' if on else 'paused'} ({await switch_on(page, name)})")
+            if size[0] >= 1024:
+                # In the status column: between the Next run and Last run headings.
+                sw = await page.get_by_role("switch", name="Smoke nightly schedule").first.bounding_box()
+                nxt = await page.get_by_text("Next run", exact=True).first.bounding_box()
+                last = await page.get_by_text("Last run", exact=True).first.bounding_box()
+                if not (sw and nxt and last and nxt["x"] - 2 <= sw["x"] < last["x"]):
+                    bad.append(f"{at}: the switch is not in the status column ({sw}, {nxt}, {last})")
+
+            # Pause: one click, no ask, the switch moves before the PATCH answers.
+            await page.get_by_role("switch", name="Smoke nightly schedule").first.click()
+            await asyncio.sleep(0.3)
+            if await page.get_by_role("dialog").count():
+                bad.append(f"{at}: pausing asked first")
+            if await switch_on(page, "Smoke nightly") is not False:
+                bad.append(f"{at}: the switch did not move before the PATCH answered")
+            await toasted(page, "Paused Smoke nightly.", f"{at}: pause")
+            if patched != [("sched_on", {"enabled": False})]:
+                bad.append(f"{at}: pausing sent {patched}")
+
+            # Turn on a cron: it asks, Cancel focused, its message and its words on its own clock; Cancel sends nothing.
+            patched.clear()
+            await page.get_by_role("switch", name="Smoke weekdays schedule").first.click()
+            ask = page.get_by_role("dialog", name="Turn on Smoke weekdays?")
+            await ask.wait_for(timeout=5_000)
+            await asyncio.sleep(0.3)
+            said = await ask.inner_text()
+            if "Summarise yesterday's failures for the ops channel." not in said:
+                bad.append(f"{at}: the ask does not show the message each run starts with: {said!r}")
+            if "London time" not in said or "the first run is the next of those" not in said:
+                bad.append(f"{at}: a cron's ask does not say its times on its own clock: {said!r}")
+            focus = await page.evaluate("() => (document.activeElement?.textContent || '').trim()")
+            if focus != "Cancel":
+                bad.append(f"{at}: the ask's focus is on {focus!r}, not Cancel")
+            await ask.get_by_role("button", name="Cancel").click()
+            await ask.wait_for(state="detached", timeout=5_000)
+            if patched or await switch_on(page, "Smoke weekdays") is not False:
+                bad.append(f"{at}: Cancel sent {patched} or moved the switch")
+
+            # Turn on an interval from the row's menu: its first run's time; Turn on sends it and toasts the server's.
+            await page.get_by_role("button", name="Actions for Smoke stock").click()
+            await page.get_by_role("menuitem", name="Turn on").click()
+            ask = page.get_by_role("dialog", name="Turn on Smoke stock?")
+            await ask.wait_for(timeout=5_000)
+            said = await ask.inner_text()
+            if "Check the shop's stock." not in said or not re.search(r"First run (Today|Yesterday|\w{3} \d+ \w{3},) ", said):
+                bad.append(f"{at}: an interval's ask does not say its first run's time: {said!r}")
+            await ask.get_by_role("button", name="Turn on").click()
+            await asyncio.sleep(0.3)
+            if await switch_on(page, "Smoke stock") is not True:
+                bad.append(f"{at}: Turn on did not move the switch at once")
+            await toasted(page, "Smoke stock is on. Next run", f"{at}: turn on")
+            if patched != [("sched_iv", {"enabled": True})]:
+                bad.append(f"{at}: turning on sent {patched}")
+
+            # Its menu now says Pause, and pauses with no ask.
+            patched.clear()
+            await asyncio.sleep(0.5)
+            await page.get_by_role("button", name="Actions for Smoke stock").click()
+            await page.get_by_role("menuitem", name="Pause").click()
+            await asyncio.sleep(0.3)
+            if await page.get_by_role("dialog").count():
+                bad.append(f"{at}: the menu's Pause asked first")
+            await toasted(page, "Paused Smoke stock.", f"{at}: the menu's Pause")
+            if patched != [("sched_iv", {"enabled": False})]:
+                bad.append(f"{at}: the menu's Pause sent {patched}")
+
+            # Refused: the switch goes back and the server's words are said.
+            patched.clear()
+            await page.get_by_role("switch", name="Smoke refused schedule").first.click()
+            ask = page.get_by_role("dialog", name="Turn on Smoke refused?")
+            await ask.wait_for(timeout=5_000)
+            if "No message" not in await ask.inner_text():
+                bad.append(f"{at}: a schedule with no message does not say so")
+            await ask.get_by_role("button", name="Turn on").click()
+            await toasted(page, refused, f"{at}: a refused turn-on")
+            await asyncio.sleep(0.3)
+            if await switch_on(page, "Smoke refused") is not False:
+                bad.append(f"{at}: a refused turn-on left the switch on")
+        finally:
+            await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("each row's On / Paused switch is in its status column at 1440 and 390, with Turn on / Pause in its menu; "
+            "pausing is one click and moves before the PATCH answers; turning on asks with its message and first run "
+            "(an interval's time, a cron's words on its clock), Cancel focused and sending nothing; a refused PATCH "
+            "goes back with the server's words")
+
+
 @check
 async def check_brwpanelclose(browser) -> str:
     """The browser panel's ✕ (F1439, Naveen 11-06: "i don't see close button on the new browser popup"): a button

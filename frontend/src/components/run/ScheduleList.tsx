@@ -12,12 +12,16 @@
  * (`scheduleList.ts`) and brings its own controls through `actions`, and opens
  * its own editor through `onOpen`. Colour only for meaning (D202): a finished
  * last run is a time, with no word. Nothing here reads an API.
+ *
+ * With `onEnabledChange` (F1452) the status column holds an On / Paused switch
+ * and the row's menu Turn on / Pause; the product's `useScheduleSwitch` asks
+ * before it turns one on and saves.
  */
 import Link from 'next/link';
-import { Bot, CalendarClock, Workflow } from 'lucide-react';
+import { Bot, CalendarClock, Pause, Power, Workflow } from 'lucide-react';
 import { useMemo, useState, type ReactNode } from 'react';
 
-import { SearchInput } from '@/components/ui';
+import { MenuItem, RowMenu, SearchInput, Switch } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
 import { type Clock } from './model';
@@ -26,7 +30,7 @@ import { useClock, When } from './When';
 import { lastRunBucket, matchSchedule, type ScheduleListRow } from './scheduleList';
 
 export function ScheduleList({
-    rows, onOpen, actions, actionsWidth = '120px', runHref, empty, toolbar, className,
+    rows, onOpen, actions, actionsWidth = '120px', runHref, empty, toolbar, className, onEnabledChange, enabledBusy,
 }: {
     rows: ScheduleListRow[];
     /** Open the schedule's editor. */
@@ -40,13 +44,22 @@ export function ScheduleList({
     empty: ReactNode;
     toolbar?: ReactNode;
     className?: string;
+    /** Turn the row on or pause it (F1452): the switch and the menu item. None draws "Paused" alone, as before. */
+    onEnabledChange?: (row: ScheduleListRow, on: boolean) => void;
+    /** Whether the row's save is out: its switch waits. */
+    enabledBusy?: (id: string) => boolean;
 }) {
     const clock = useClock();
     const [query, setQuery] = useState('');
     const shown = useMemo(() => rows.filter((r) => matchSchedule(r, query)), [rows, query]);
 
-    const cols = ['minmax(0,1fr)', 'minmax(0,190px)', 'minmax(0,180px)', '150px', '170px', ...(actions ? [actionsWidth] : [])].join(' ');
-    const phoneCols = ['minmax(0,1fr)', ...(actions ? ['auto'] : [])].join(' ');
+    const controls = Boolean(actions || onEnabledChange);
+    // The switch sits before the next run's time, so its column is wider; the menu is one more button.
+    const cols = [
+        'minmax(0,1fr)', 'minmax(0,190px)', 'minmax(0,180px)', onEnabledChange ? '196px' : '150px', '170px',
+        ...(controls ? [onEnabledChange ? `calc(${actions ? actionsWidth : '0px'} + 32px)` : actionsWidth] : []),
+    ].join(' ');
+    const phoneCols = ['minmax(0,1fr)', ...(controls ? ['auto'] : [])].join(' ');
     const gridStyle = { '--cols': cols, '--cols-phone': phoneCols } as React.CSSProperties;
     const grid = 'grid items-center gap-x-4 px-2.5 [grid-template-columns:var(--cols-phone)] lg:[grid-template-columns:var(--cols)]';
 
@@ -65,7 +78,7 @@ export function ScheduleList({
                     <span aria-hidden>How often</span>
                     <span aria-hidden>Next run</span>
                     <span aria-hidden>Last run</span>
-                    {actions && <span aria-hidden />}
+                    {controls && <span aria-hidden />}
                 </div>
                 {shown.length === 0 ? (
                     <p className="px-2.5 py-10 text-center text-sm text-text-faint">No schedules match “{query}”.</p>
@@ -75,6 +88,7 @@ export function ScheduleList({
                             <Row
                                 key={row.id} row={row} clock={clock} grid={grid} gridStyle={gridStyle}
                                 onOpen={onOpen} actions={actions} runHref={runHref}
+                                onEnabledChange={onEnabledChange} busy={enabledBusy?.(row.id) ?? false}
                             />
                         ))}
                     </ul>
@@ -116,6 +130,25 @@ function NextRun({ row, clock }: { row: ScheduleListRow; clock: Clock }) {
     return row.nextAt ? <When iso={row.nextAt} clock={clock} /> : <span className="text-text-faint">—</span>;
 }
 
+/** The status column with its switch (F1452): On shows the next run's time, Paused says so. */
+function Status({ row, clock, onEnabledChange, busy }: {
+    row: ScheduleListRow; clock: Clock; onEnabledChange?: (row: ScheduleListRow, on: boolean) => void; busy: boolean;
+}) {
+    if (!onEnabledChange) return <NextRun row={row} clock={clock} />;
+    return (
+        <span className="relative z-10 inline-flex min-w-0 items-center gap-2 align-middle">
+            <Switch
+                size="sm"
+                checked={row.enabled}
+                onChange={(on) => onEnabledChange(row, on)}
+                label={`${row.name} schedule`}
+                disabled={busy}
+            />
+            <span className="min-w-0 truncate"><NextRun row={row} clock={clock} /></span>
+        </span>
+    );
+}
+
 function LastRun({ row, clock, runHref }: { row: ScheduleListRow; clock: Clock; runHref?: (id: string) => string }) {
     const bucket = lastRunBucket(row);
     if (!row.lastAt && !row.last) return <span className="text-text-faint">Never</span>;
@@ -140,11 +173,12 @@ function LastRun({ row, clock, runHref }: { row: ScheduleListRow; clock: Clock; 
 }
 
 function Row({
-    row, clock, grid, gridStyle, onOpen, actions, runHref,
+    row, clock, grid, gridStyle, onOpen, actions, runHref, onEnabledChange, busy,
 }: {
     row: ScheduleListRow; clock: Clock; grid: string; gridStyle: React.CSSProperties;
     onOpen: (row: ScheduleListRow) => void; actions?: (row: ScheduleListRow) => ReactNode;
     runHref?: (id: string) => string;
+    onEnabledChange?: (row: ScheduleListRow, on: boolean) => void; busy: boolean;
 }) {
     const stretch = 'after:absolute after:inset-0 after:content-[""]';
     const cell = 'hidden min-w-0 whitespace-nowrap text-[13px] tabular-nums text-text-muted lg:block';
@@ -174,9 +208,24 @@ function Row({
             </span>
             <span className="hidden min-w-0 lg:block"><TargetLabel row={row} /></span>
             <span className="hidden min-w-0 lg:block"><WordsChip row={row} /></span>
-            <span className={cell}><NextRun row={row} clock={clock} /></span>
+            <span className={cell}><Status row={row} clock={clock} onEnabledChange={onEnabledChange} busy={busy} /></span>
             <span className={cn(cell, 'truncate')}><LastRun row={row} clock={clock} runHref={runHref} /></span>
-            {actions && <span className="relative z-10 flex items-center justify-end gap-0.5">{actions(row)}</span>}
+            {(actions || onEnabledChange) && (
+                <span className="relative z-10 flex items-center justify-end gap-0.5">
+                    {actions?.(row)}
+                    {onEnabledChange && (
+                        <RowMenu label={`Actions for ${row.name}`}>
+                            <MenuItem
+                                icon={row.enabled ? Pause : Power}
+                                disabled={busy}
+                                onSelect={() => onEnabledChange(row, !row.enabled)}
+                            >
+                                {row.enabled ? 'Pause' : 'Turn on'}
+                            </MenuItem>
+                        </RowMenu>
+                    )}
+                </span>
+            )}
 
             {/* Line 2, under the name and across the row. */}
             <span style={{ gridColumn: '1 / -1' }} className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-text-faint">
@@ -184,7 +233,7 @@ function Row({
                 <span className="flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-1 lg:hidden">
                     <TargetLabel row={row} />
                     <WordsChip row={row} />
-                    <span className="text-text-muted">Next <NextRun row={row} clock={clock} /></span>
+                    <span className="text-text-muted">Next <Status row={row} clock={clock} onEnabledChange={onEnabledChange} busy={busy} /></span>
                     <span className="text-text-muted">Last <LastRun row={row} clock={clock} runHref={runHref} /></span>
                 </span>
                 {row.sub && <span className="min-w-0 max-w-full truncate text-text-muted" title={row.sub}>{row.sub}</span>}
