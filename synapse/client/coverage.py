@@ -71,7 +71,9 @@ TOOLS: dict[str, str] = {
     "list_schedules": "schedules list",
     "create_schedule": "schedules create",
     "update_schedule": "schedules update",
-    "set_schedule_enabled": "schedules pause",
+    # F1451: on and off as two tools (`set_schedule_enabled` is the app's own card's, offered to no key).
+    "pause_schedule": "schedules pause",
+    "turn_on_schedule": "schedules resume",
     "delete_schedule": "schedules delete",
     "trigger_schedule": "schedules trigger",
     "list_knowledge_bases": "knowledge bases list",
