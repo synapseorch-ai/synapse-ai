@@ -15,6 +15,11 @@
 # $env:SYNAPSE_PACKAGE = a local wheel, $env:SYNAPSE_HOME = another home.
 #
 # No `exit` anywhere: under `irm | iex` it would close the user's window.
+#
+# Every download has -TimeoutSec 30 (PowerShell 5.1 and 7): Windows gives up on an
+# address that drops the connection after about 21 s and .NET tries the next one,
+# and the cap keeps a stalled request from holding the install (F1445). The
+# installer is about 66 KB.
 
 # The installer's published sha256, as uppercase hex. Read from a file, not from
 # Invoke-WebRequest's .Content: GitHub serves release assets as
@@ -22,7 +27,7 @@
 # gave "51" (F833).
 function Get-PublishedSha256 {
     param([string]$Uri, [string]$Path)
-    Invoke-WebRequest -UseBasicParsing -Uri $Uri -OutFile $Path
+    Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 -Uri $Uri -OutFile $Path
     $text = [System.IO.File]::ReadAllText($Path)
     Remove-Item $Path
     return (($text.Trim() -split '\s+')[0]).ToUpper()
@@ -53,7 +58,7 @@ function Install-Synapse {
         if (-not $uv -and (Test-Path $private)) { $uv = $private }
         if (-not $uv) {
             $installer = Join-Path $runtime 'uv-install.ps1'
-            Invoke-WebRequest -UseBasicParsing -Uri "https://astral.sh/uv/$uvVersion/install.ps1" -OutFile $installer
+            Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 -Uri "https://astral.sh/uv/$uvVersion/install.ps1" -OutFile $installer
             $env:UV_UNMANAGED_INSTALL = Join-Path $runtime 'uv'
             # Native programs write progress to stderr; under 'Stop', Windows
             # PowerShell 5.1 turns that into an error. Their exit code decides.
@@ -70,7 +75,7 @@ function Install-Synapse {
         $pyz = $env:SYNAPSE_INSTALLER
         if (-not $pyz) {
             $pyz = Join-Path $runtime 'synapse-install.pyz'
-            Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile "$pyz.part"
+            Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 -Uri $url -OutFile "$pyz.part"
             $expected = Get-PublishedSha256 -Uri "$url.sha256" -Path "$pyz.sha256"
             $actual = (Get-FileHash -Algorithm SHA256 -Path "$pyz.part").Hash
             if ($actual -ne $expected) {
