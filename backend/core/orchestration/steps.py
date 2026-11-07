@@ -1365,7 +1365,7 @@ class ToolStepExecutor:
                     resource_events.extend(session.take_events(browser_client.owner_for(None, run_id)))
                 from core.tool_result import mcp_text
 
-                text = mcp_text(result)  # as the agent path reads it: [] is "", a list whole (F1344)
+                text = mcp_text(result)  # as the agent path reads it: a list whole, no content never an error (F1344)
                 if getattr(result, "isError", False):
                     # MCP's own way of saying the call failed; it was never read.
                     raise ToolCallFailed(
