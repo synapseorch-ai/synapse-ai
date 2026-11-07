@@ -1801,13 +1801,13 @@ def _upgrade_with_installer(target: str, extras=(), method: str = "uv") -> None:
         print(f"  {versions.install_command(target, windows=IS_WIN)}")
         sys.exit(1)
 
-    # One version is one release, however it was typed: tags are PyPI's spelling
-    # (`v2.0.0rc1`, F830). SYNAPSE_RELEASES_URL stands in for GitHub's releases when
-    # a pre-release is tested from a local folder, as the setup scripts'
-    # SYNAPSE_INSTALLER_URL does (F831).
+    # One version is one release, however it was typed (F830), at its tag as it was
+    # published: npm's spelling with a v, `v2.0.0-rc1` (F1444). SYNAPSE_RELEASES_URL
+    # stands in for GitHub's releases when a pre-release is tested from a local
+    # folder, as the setup scripts' SYNAPSE_INSTALLER_URL does (F831).
     target = versions.pep440(target)
     releases = (os.environ.get("SYNAPSE_RELEASES_URL") or RELEASES).rstrip("/")
-    base = f"{releases}/download/v{target}"
+    base = f"{releases}/download/{versions.tag(target)}"
     pyz = home / "runtime" / f"synapse-install-{target}.pyz"
     with _Spinner(f"Getting Synapse {target}…"):
         try:
