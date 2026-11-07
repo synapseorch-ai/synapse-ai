@@ -11,6 +11,9 @@
  * The last run's status is known for a workflow's schedule: its runs carry the
  * `schedule_<id>` session (Run now's too), so the runs list (one read of the
  * newest 200) says how the latest went. An agent's schedule shows only when.
+ *
+ * A row's switch turns it on or pauses it (F1452, the shared `useScheduleSwitch`): pausing is one click, turning on
+ * asks first, the row moves at once and goes back with the server's words if the PATCH is refused.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Bot, Edit2, Play, Plus, RefreshCw, Trash2, Workflow } from 'lucide-react';
@@ -21,7 +24,7 @@ import { useNavFlags } from '@/components/app/NavFlags';
 import { ScheduleBoard } from '@/components/boards/ScheduleBoard';
 import { OssBoardsHost } from '@/lib/boardsHost';
 import { useNotifications } from '@/components/notifications/NotificationProvider';
-import { cronWords, lastScheduledRun, ScheduleList, scheduleRow, zoneWords } from '@/components/run';
+import { cronWords, lastScheduledRun, ScheduleList, scheduleRow, useScheduleSwitch, zoneWords } from '@/components/run';
 import type { RunSummary } from '@/components/runs/summary';
 import {
     Button, buttonStyles, ConfirmDialog, Drawer, EmptyState, Field, IconButton, Input, Section, Segmented, Select, Switch,
@@ -265,19 +268,25 @@ export const SchedulesTab = () => {
         }
     }
 
-    // -- Toggle enable/disable ------------------------------------------
+    // -- Turn on / pause ------------------------------------------------
 
-    async function toggleEnabled(s: Schedule) {
+    // The PATCH turns it on (next run from now) or pauses it (never refused); the row is swapped for its answer.
+    const saveEnabled = useCallback(async (s: Schedule, on: boolean) => {
         const res = await fetch(`/api/schedules/${s.id}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ enabled: !s.enabled }),
+            body: JSON.stringify({ enabled: on }),
         });
-        if (res.ok) {
-            const updated = await res.json();
-            setSchedules(prev => prev.map(x => x.id === s.id ? updated : x));
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            // A 422's detail is a list of problems: say the first one's words.
+            const detail = Array.isArray(body.detail) ? body.detail[0]?.msg : body.detail;
+            throw new Error(typeof detail === 'string' ? detail : '');
         }
-    }
+        setSchedules(prev => prev.map(x => x.id === s.id ? body : x));
+        return body as Schedule;
+    }, []);
+    const enabledSwitch = useScheduleSwitch({ schedules, save: saveEnabled, say: show });
 
     // -- Delete ---------------------------------------------------------
 
@@ -327,7 +336,7 @@ export const SchedulesTab = () => {
 
     const rows = schedules.map(s => {
         const run = s.target_type === 'orchestration' ? lastScheduledRun(s.id, runs) : undefined;
-        return scheduleRow(s, targetLabel(s), run ? { status: run.status, waitingForHuman: run.waiting_for_human, runId: run.run_id } : null);
+        return scheduleRow({ ...s, enabled: enabledSwitch.enabledOf(s.id, s.enabled) }, targetLabel(s), run ? { status: run.status, waitingForHuman: run.waiting_for_human, runId: run.run_id } : null);
     });
     const byId = new Map(schedules.map(s => [s.id, s]));
     const deleting = confirmDelete ? byId.get(confirmDelete) : undefined;
@@ -361,20 +370,14 @@ export const SchedulesTab = () => {
                     rows={rows}
                     onOpen={(row) => { const s = byId.get(row.id); if (s) openEdit(s); }}
                     runHref={(runId) => `/runs/${encodeURIComponent(runId)}`}
-                    actionsWidth="152px"
+                    actionsWidth="96px"
+                    onEnabledChange={(row, on) => enabledSwitch.ask(row.id, on)}
+                    enabledBusy={enabledSwitch.busy}
                     actions={(row) => {
                         const s = byId.get(row.id);
                         if (!s) return null;
                         return (
                             <>
-                                <span className="mr-1 flex items-center" title={s.enabled ? 'Disable' : 'Enable'}>
-                                    <Switch
-                                        size="sm"
-                                        checked={s.enabled}
-                                        onChange={() => void toggleEnabled(s)}
-                                        label={`${s.name} enabled`}
-                                    />
-                                </span>
                                 <IconButton
                                     label={`Run ${s.name} now`}
                                     title="Run now"
@@ -646,6 +649,8 @@ export const SchedulesTab = () => {
                 confirmLabel="Delete"
                 onConfirm={() => confirmDelete && void deleteSchedule(confirmDelete)}
             />
+            {enabledSwitch.confirm}
+
             <Toast message={toast.message} tone={toast.tone} onDismiss={dismiss} />
         </AppScreen>
     );
