@@ -77,6 +77,12 @@ def _env_file() -> Path:
     return home / ".env" if home else ROOT_DIR / ".env"
 
 
+def _make_env_dir(env_file: Path) -> None:
+    """Make the folder .env goes in before writing it: a packaged install's SYNAPSE_HOME
+    does not exist before its first `synapse start` writes the secrets (F1442)."""
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+
+
 def _var_dir() -> Path:
     """Where the database, blobs, run and log files live when nothing overrides it."""
     home = synapse_home()
@@ -851,6 +857,7 @@ def _ensure_internal_token():
 
     # Append to .env file
     try:
+        _make_env_dir(env_file)
         with open(env_file, "a", encoding="utf-8") as f:
             f.write(f"\n# Internal token for frontend<->backend security (auto-generated)\n")
             f.write(f"{token_var}={token}\n")
@@ -896,6 +903,7 @@ def _ensure_access_token(rotate: bool = False) -> str:
     token = _secrets.token_urlsafe(32)
     os.environ[ACCESS_TOKEN_VAR] = token
     try:
+        _make_env_dir(env_file)
         lines = env_file.read_text(encoding="utf-8").splitlines() if env_file.exists() else []
         lines = [l for l in lines if not l.strip().startswith(f"{ACCESS_TOKEN_VAR}=")]
         if not any("access link" in l for l in lines):
@@ -963,6 +971,7 @@ def _ensure_jwt_secret():
     secret = _secrets.token_hex(32)
     os.environ[var] = secret
     try:
+        _make_env_dir(env_file)
         with open(env_file, "a", encoding="utf-8") as f:
             f.write(f"\n# JWT secret for session tokens (auto-generated)\n")
             f.write(f"{var}={secret}\n")
