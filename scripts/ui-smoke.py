@@ -6904,6 +6904,59 @@ async def check_knowledge_first(browser) -> str:
 
 
 @check
+async def check_kbshownatonce(browser) -> str:
+    """A base just made is listed and open at once, from its create's answer, while the list's re-read is still on its
+    way (F1454; eb's prod QA, 11-07): "QA docs created" showed over "No knowledge bases yet" for as long as the
+    re-read took, ~10 s on a knowledge service just woken. Here every re-read after the create is held 10 s."""
+    made = {**_SMOKE_KB, "id": "kb_00000000shown", "name": "Shown at once", "folder": "shown_at_once"}
+    state = {"created": False, "reread_answered": False}
+
+    async def bases(route):
+        method = route.request.method
+        if method == "POST":
+            state["created"] = True
+            return await route.fulfill(status=201, content_type="application/json", body=json.dumps(made))
+        if method != "GET":
+            return await route.fallback()
+        if not state["created"]:
+            return await route.fulfill(status=200, content_type="application/json", body="[]")
+        await asyncio.sleep(10)
+        state["reread_answered"] = True
+        await route.fulfill(status=200, content_type="application/json", body=json.dumps([made]))
+
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    for pattern, handler in _SMOKE_KB_ROUTES:
+        await ctx.route(pattern, handler)
+    await ctx.route("**/api/knowledge/bases", bases)        # added last, so it answers first
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/knowledge", wait_until="domcontentloaded")
+        try:
+            await page.get_by_text("No knowledge bases yet").first.wait_for(timeout=30_000)
+        except Exception:
+            raise AssertionError("Knowledge did not open on its empty state")
+        await page.get_by_role("button", name="New knowledge base").first.click()
+        dialog = page.get_by_role("dialog")
+        await dialog.get_by_label("Name").fill("Shown at once")
+        await dialog.get_by_label("Vault folder").fill("shown_at_once")
+        await dialog.get_by_role("button", name="Create").click()
+        row = page.get_by_role("navigation", name="Knowledge bases").get_by_role("button", name=re.compile("Shown at once"))
+        try:
+            await row.wait_for(timeout=3_000)
+        except Exception:
+            raise AssertionError("3 s after Create the new base is not listed: the page waits on the list's re-read")
+        if state["reread_answered"]:
+            raise AssertionError("the re-read answered before the row was checked, so this proves nothing")
+        if await row.get_attribute("aria-current") != "true":
+            raise AssertionError("the new base is listed but not the one open")
+        if await page.get_by_text("No knowledge bases yet").count():
+            raise AssertionError("the empty state still shows beside the new base")
+    finally:
+        await ctx.close()
+    return "a base just made is listed and open at once, before the list's re-read answers"
+
+
+@check
 async def check_knowledge_eval(browser) -> str:
     """A knowledge base's eval (V1, D168): the Run dialog is named, every control in it is named, it prices the
     run before anything starts, and Escape closes it without starting one."""
