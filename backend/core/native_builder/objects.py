@@ -13,6 +13,7 @@ A model writes language and judgement once, into one of these; code does everyth
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -573,6 +574,41 @@ def read(raw: dict[str, Any]) -> tuple[Plan | None, list[str]]:
         return Plan.from_draft(raw), []
     except ValidationError as e:
         return None, [f"{'.'.join(map(str, x['loc']))}: {x['msg']}" for x in e.errors()[:8]]
+
+
+def _as_object(raw: Any) -> Any:
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except ValueError:
+            return None
+    return raw
+
+
+def wrapped_in(raw: Any) -> str | None:
+    """The one key of `raw` (a planner's arguments), not a plan field itself, whose object holds plan fields: the
+    shape `check_draft` takes, sent to `submit_plan` (F1441). None when there is no one such key."""
+    raw = _as_object(raw)
+    if not isinstance(raw, dict):
+        return None
+    keys = [k for k, v in raw.items() if k not in PlanDraft.model_fields
+            and isinstance(o := _as_object(v), dict) and set(o) & set(PlanDraft.model_fields)]
+    return keys[0] if len(keys) == 1 else None
+
+
+def plan_args(raw: Any) -> Any:
+    """A planner's plan arguments with a plan sent inside one wrapper key read as the plan (F1441: Haiku sent
+    `{"draft": {...}}` to `submit_plan`, the shape `check_draft` takes): only when the top level holds no plan field
+    and that one object has a kind and a title, steps or edits. The keys beside it (its questions) are kept, under the
+    plan's own. Anything else is `raw` as it came (a JSON string read), for the check to say what it lacks."""
+    raw = _as_object(raw)
+    key = wrapped_in(raw)
+    if key is None or set(raw) & set(PlanDraft.model_fields):
+        return raw
+    inner = _as_object(raw[key])
+    if "kind" not in inner or not {"title", "steps", "edits"} & set(inner):
+        return raw
+    return {**{k: v for k, v in raw.items() if k != key}, **inner}
 
 
 def _targets(step: Step) -> list[str]:

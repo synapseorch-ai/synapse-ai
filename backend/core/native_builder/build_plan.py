@@ -2086,6 +2086,8 @@ SUBMITTED_KEY = "_plan_submitted"
 
 
 async def submit_plan(args: dict, server_module: Any, events: list[dict]) -> dict:
+    # A plan sent inside one key, as `check_draft` takes it, is the plan (F1441: Haiku sent `{"draft": {...}}`).
+    args = O.plan_args(args)
     found = await examine(args, server_module)
     _, here = _run()
     said = list(here.shared_state.get(_STRUCTURE_SAID_KEY) or []) if here is not None else []
@@ -2100,7 +2102,12 @@ async def submit_plan(args: dict, server_module: Any, events: list[dict]) -> dic
         if found.plan is None or sent < SENDBACKS:
             if run is not None:
                 run.shared_state[_SENDBACK_KEY] = sent + 1
-            return {"error": "Fix these, then submit the plan again:\n" + "\n".join(f"- {e}" for e in found.errors)}
+            # Its fields split between the top and a wrapper are not guessed at: said where they go, first (F1441).
+            where = ([f"The plan's fields go at the top level of submit_plan's arguments, not inside `{key}`: send "
+                      f"kind, title, summary and steps as its own arguments"]
+                     if (key := O.wrapped_in(args)) is not None else [])
+            return {"error": "Fix these, then submit the plan again:\n" + "\n".join(f"- {e}" for e in
+                                                                                   [*where, *found.errors])}
     _, run = _run()
     if run is not None:
         run.shared_state.pop(_SENDBACK_KEY, None)
@@ -2134,7 +2141,12 @@ async def check_draft(args: dict, server_module: Any, events: list[dict]) -> dic
     nothing to the run (no sendback, no checked plan), shows no card, asks nothing and looks nothing up."""
     from core.native_builder import imitation
 
+    args = _obj(args) if isinstance(_obj(args), dict) else {}
     draft = _obj(args.get("draft"))
+    if not isinstance(draft, dict) and set(args) & set(O.PlanDraft.model_fields):
+        draft = args  # a plan sent where its draft goes, as `submit_plan` takes it (F1441)
+    # And a draft wrapped once more, read as `submit_plan` reads one.
+    draft = O.plan_args(draft)
     ws = await workspace(server_module)
     found = await examine(draft if isinstance(draft, dict) else {}, server_module, ws=ws)
     if found.plan is None:
