@@ -1824,7 +1824,8 @@ BUILDER_TOOL_SCHEMAS = [
             "description": (
                 "Run an agent or orchestration on a cadence. Either an interval "
                 "(interval_value + interval_unit) or a cron expression — not both. "
-                "It is created paused: a person checks what each run starts with and turns it on."
+                "It is created paused: show the person the message each run starts with and when it would first "
+                "run, and on their yes turn it on with turn_on_schedule."
             ),
             "parameters": {
                 "type": "object",
@@ -1862,6 +1863,36 @@ BUILDER_TOOL_SCHEMAS = [
                     "enabled": {"type": "boolean"},
                 },
                 "required": ["schedule_id", "enabled"],
+            },
+        },
+    },
+    # F1451: on and off as two tools, since MCP marks a tool, not an argument: turning one on asks a client's person
+    # first (`product_tools.build.OVERWRITES`), pausing does not. `set_schedule_enabled` is the app's own card's.
+    {
+        "type": "function",
+        "function": {
+            "name": "turn_on_schedule",
+            "description": (
+                "Turn a paused schedule on, so it starts its runs, only once the person has said yes to it: first show "
+                "them the message each run starts with and when it would next run (list_schedules, or "
+                "create_schedule's reply). Its next run is worked out from now."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"schedule_id": {"type": "string"}},
+                "required": ["schedule_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "pause_schedule",
+            "description": "Pause a schedule, so it starts no runs until it is turned on again. It is kept as it is.",
+            "parameters": {
+                "type": "object",
+                "properties": {"schedule_id": {"type": "string"}},
+                "required": ["schedule_id"],
             },
         },
     },
@@ -2527,6 +2558,41 @@ def _emit(
         "resource": resource,
         **({"reason": reason} if reason else {}),
     })
+
+
+async def _switch_schedule(schedule_id: str, on: bool, events: list[dict], *, same_said: bool = False) -> dict:
+    """A schedule turned on or paused. Turned on from paused, its timing is checked, as the Schedules screen's PATCH
+    does (`routes.schedules`), and a next run already past is worked out again from now (F1451: made paused at nine
+    for half past and turned on at eleven, it kept half past, a run it had missed); one still to come stands, so a
+    deployment that arms hears the time it was made with (F149). `same_said`: one already as asked is said so, and
+    nothing is written (`turn_on_schedule` and `pause_schedule`)."""
+    from core.models_schedule import ScheduleInvalid, validate_timing
+    from core.scheduler import _iso, _parse_iso, _utc_now, compute_next_run
+    from core.store import schedules as schedule_store
+
+    schedule = await schedule_store.get(schedule_id)
+    if schedule is None:
+        return {"error": f"Schedule '{schedule_id}' not found"}
+    was_on = bool(schedule.get("enabled", True))
+    said = {"id": schedule_id, "name": schedule.get("name"), "prompt": schedule.get("prompt"),
+            "timezone": schedule.get("timezone") or "UTC"}
+    if same_said and was_on == on:
+        return {"status": "unchanged", **said, "enabled": on, "next_run_at": schedule.get("next_run_at"),
+                "note": f"It is already {'on' if on else 'paused'}: nothing changed."}
+    if on and not was_on:
+        try:
+            validate_timing(schedule)
+            now = _utc_now()
+            if not schedule.get("next_run_at") or _parse_iso(str(schedule["next_run_at"])) <= now:
+                schedule["next_run_at"] = _iso(compute_next_run(schedule, now))
+        except ScheduleInvalid as exc:
+            return {"error": f"Invalid schedule: {exc}"}
+        except Exception as exc:
+            return {"error": f"Could not work out when that would next run: {exc}"}
+    schedule["enabled"] = on
+    await schedule_store.save(schedule)
+    _emit(events, "schedule", "updated", schedule_id, schedule.get("name"), schedule)
+    return {"status": "updated", **said, "enabled": on, "next_run_at": schedule.get("next_run_at")}
 
 
 #: The builder tools that read the whole session set (`agent_sessions`, or
@@ -3983,8 +4049,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         # schedules began each run with a restatement of the task rather than its
         # input ("Pull the latest blog posts from our client's three competitors"
         # with none named), so every run would have chosen its own subject. A
-        # person reads what it starts with and turns it on — `set_schedule_enabled`
-        # when they ask the builder, or the Schedules screen.
+        # person reads what it starts with and turns it on — on their yes in the chat
+        # (`turn_on_schedule`, F1451; Synapse AI's Turn on card), or the Schedules screen.
         schedule["enabled"] = False
         schedule["id"] = _mint_id("sched", length=8)
         schedule["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -4001,28 +4067,24 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             "name": schedule["name"],
             "enabled": False,
             "next_run_at": schedule["next_run_at"],
+            "prompt": schedule.get("prompt"),
+            "timezone": schedule.get("timezone") or "UTC",
+            # F1451: what the person is shown, and their yes in the chat turns it on.
             "note": (
-                "Created paused. Check the message each run starts with, then turn it on "
-                "under Schedules."
+                f"Created paused: nothing runs until it is turned on. Show the person the message each run "
+                f"starts with ({json.dumps(schedule.get('prompt') or '', ensure_ascii=False)}) and when it would "
+                f"first run ({schedule['next_run_at']} UTC; its times are read in "
+                f"{schedule.get('timezone') or 'UTC'}), and ask whether to turn it on; on their yes, turn it on "
+                f"with turn_on_schedule."
             ),
         }
 
     elif tool_name == "set_schedule_enabled":
-        from core.store import schedules as schedule_store
+        return await _switch_schedule(str(args.get("schedule_id") or ""), bool(args.get("enabled")), events)
 
-        schedule_id = str(args.get("schedule_id") or "")
-        schedule = await schedule_store.get(schedule_id)
-        if schedule is None:
-            return {"error": f"Schedule '{schedule_id}' not found"}
-        schedule["enabled"] = bool(args.get("enabled"))
-        await schedule_store.save(schedule)
-        _emit(events, "schedule", "updated", schedule_id, schedule.get("name"), schedule)
-        return {
-            "status": "updated",
-            "id": schedule_id,
-            "name": schedule.get("name"),
-            "enabled": schedule["enabled"],
-        }
+    elif tool_name in ("turn_on_schedule", "pause_schedule"):
+        return await _switch_schedule(str(args.get("schedule_id") or ""), tool_name == "turn_on_schedule", events,
+                                      same_said=True)
 
     elif tool_name == "update_schedule":
         # F578: the builder could only delete a schedule and create another to move its time, which lost its id

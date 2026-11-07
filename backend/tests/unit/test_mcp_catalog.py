@@ -35,7 +35,9 @@ class TestTheAllowlist:
             "create_orchestration_skeleton", "add_steps", "add_single_step", "add_multiple_steps",
             "update_step", "remove_step", "update_orchestration", "set_orchestration_meta",
             "create_http_tool", "import_openapi", "create_skill", "update_skill", "attach_skills",
-            "create_schedule", "set_schedule_enabled",
+            "create_schedule",
+            # F1451 (Naveen 11-07): on and off as two tools, turning on asking first; the on/off switch is the app's.
+            "turn_on_schedule", "pause_schedule",
             # F694 (MCP2, D292): builder tools nothing had decided to hold back.
             "deploy_orchestration", "update_schedule",
             # D292 (Naveen): deletes, behind a confirmation token.

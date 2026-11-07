@@ -74,11 +74,14 @@ ACTS: dict[str, str] = {
     "attach_skills": "agent.updated",
     "create_schedule": "schedule.created",
     "update_schedule": "schedule.updated",
-    "set_schedule_enabled": "schedule.updated",
+    # F1451: on and off as two tools, since MCP marks a tool and not an argument (`set_schedule_enabled` is the app's).
+    "turn_on_schedule": "schedule.updated",
+    "pause_schedule": "schedule.updated",
 }
 
 #: Acts that replace or remove what is already there: every step of an orchestration, one step, or a tool or skill
-#: of the same name. Marked destructive, so a client asks its person first.
+#: of the same name; and turning a schedule on, which then starts runs by itself, unwatched (F1451, Naveen 11-07).
+#: Marked destructive, so a client asks its person first.
 OVERWRITES: frozenset[str] = frozenset({
     "update_orchestration",
     "remove_step",
@@ -87,7 +90,11 @@ OVERWRITES: frozenset[str] = frozenset({
     "create_python_tool",
     "update_python_tool",
     "create_skill",
+    "turn_on_schedule",
 })
+
+#: Acts that change nothing when made again with the same arguments: a schedule turned on or paused that already is.
+IDEMPOTENT: frozenset[str] = frozenset({"turn_on_schedule", "pause_schedule"})
 
 #: Acts the person sees before they are done, with a token, though they can be undone (F1198, Naveen 10-29): a Python
 #: tool is code that will run with the internet, so its preview shows the code.
@@ -95,8 +102,10 @@ CONFIRMED: frozenset[str] = frozenset({"create_python_tool", "update_python_tool
 
 #: Acts the app keeps to itself (F1325, Naveen 11-04), with the host's audit action for each: registered as acts but
 #: never served to an MCP client, so `ACTS` is exactly what MCP serves (F1315's guard reads it so). `test_code_change`
-#: tests a Synapse AI change's fix by that run's own id, which means nothing to a client.
-APP_ACTS: dict[str, str] = {"test_code_change": "tool.tested"}
+#: tests a Synapse AI change's fix by that run's own id, which means nothing to a client. `set_schedule_enabled` is
+#: Synapse AI's Turn on / Turn off card (F1451): over MCP an on/off switch could not ask before "on" alone, so a
+#: client has `turn_on_schedule`, which asks, and `pause_schedule`, which does not.
+APP_ACTS: dict[str, str] = {"test_code_change": "tool.tested", "set_schedule_enabled": "schedule.updated"}
 APP_ONLY: frozenset[str] = frozenset(APP_ACTS)
 
 #: Acts that reach outside the workspace.
@@ -322,7 +331,8 @@ def entries() -> list[ProductTool]:
     tools += [
         ProductTool(name=n, description=by_name[n].get("description", ""), input_schema=schema(n),
                     handler=_handler(n), kind="act", area="build", min_role=Role.BUILDER, scope="build",
-                    destructive=n in OVERWRITES, open_world=n in OPEN_WORLD, audit_action=action,
+                    destructive=n in OVERWRITES, idempotent=n in IDEMPOTENT, open_world=n in OPEN_WORLD,
+                    audit_action=action,
                     target=_target(action), offered=_offered(n), confirmed=n in CONFIRMED,
                     preview=_PREVIEWS.get(n), app_only=n in APP_ONLY)
         for n, action in {**ACTS, **APP_ACTS}.items()
