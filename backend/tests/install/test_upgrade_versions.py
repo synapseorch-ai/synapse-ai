@@ -167,12 +167,14 @@ def fetches(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("typed", ["2.0.0rc1", "2.0.0-rc1", "2.0.0-rc.1", "v2.0.0rc1"])
-def test_the_installer_is_fetched_from_the_tag_in_pypis_spelling(fetches, monkeypatch, typed):
-    """F830: one version, one release URL — the tag is `v2.0.0rc1` however it was typed."""
+def test_the_installer_is_fetched_from_the_tag_as_it_was_published(fetches, monkeypatch, typed):
+    """F830: one version, one release URL, however it was typed. F1444: that URL is the tag as it was
+    published, v2.0.0-rc1 (npm's spelling with a v, the one the site's short address takes): F830 had
+    v2.0.0rc1, which is not a tag, so an rc's `synapse upgrade` could not download its installer."""
     monkeypatch.delenv("SYNAPSE_RELEASES_URL", raising=False)
     urls, ran = fetches
     cli._upgrade_with_installer(typed)
-    base = "https://github.com/synapseorch-ai/synapse-ai/releases/download/v2.0.0rc1"
+    base = "https://github.com/synapseorch-ai/synapse-ai/releases/download/v2.0.0-rc1"
     assert urls == [f"{base}/synapse-install.pyz", f"{base}/synapse-install.pyz.sha256"]
     assert ran and ran[0][ran[0].index("--version") + 1] == "2.0.0rc1"
 
@@ -203,5 +205,5 @@ def test_a_local_release_folder_can_stand_in_for_github(fetches, monkeypatch):
     monkeypatch.setenv("SYNAPSE_RELEASES_URL", "http://localhost:8799/releases/")
     urls, _ = fetches
     cli._upgrade_with_installer("2.0.0rc0.post1")
-    assert urls == ["http://localhost:8799/releases/download/v2.0.0rc0.post1/synapse-install.pyz",
-                    "http://localhost:8799/releases/download/v2.0.0rc0.post1/synapse-install.pyz.sha256"]
+    assert urls == ["http://localhost:8799/releases/download/v2.0.0-rc0-post1/synapse-install.pyz",
+                    "http://localhost:8799/releases/download/v2.0.0-rc0-post1/synapse-install.pyz.sha256"]
