@@ -67,9 +67,10 @@ CENSUS: tuple[Screen, ...] = (
        ("create_orchestration", "update_orchestration", "add_single_step", "update_step", "remove_step",
         "validate_orchestration", "run_orchestration", "delete_orchestration", "read_workspace:workflow"),
        names=("orchestration", "pipeline"), plan_part=True),
-    _s("schedules", "Schedules", "/schedules", "makes, changes, pauses, runs now and deletes schedules, sets what one "
-       "does with a time it missed and points one at another workflow or agent",
-       ("create_schedule", "update_schedule", "set_schedule_enabled", "trigger_schedule", "delete_schedule"),
+    _s("schedules", "Schedules", "/schedules", "makes, changes, turns on, pauses, runs now and deletes schedules, sets "
+       "what one does with a time it missed and points one at another workflow or agent",
+       ("create_schedule", "update_schedule", "set_schedule_enabled", "turn_on_schedule", "pause_schedule",
+        "trigger_schedule", "delete_schedule"),
        names=("cron", "cron job", "timer")),
     _s("templates", "Templates", "/templates", cant="browsing and importing the ready-made template packs",
        names=("template", "template pack", "starter workflows"),

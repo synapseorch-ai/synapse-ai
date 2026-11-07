@@ -1,7 +1,8 @@
 """A schedule's "Run now", as a product tool `trigger_schedule` (ASSIST1, D291, F683).
 
 The Schedules screen's Run now: the schedule's target runs once, now, enabled or not, and its next time does not
-move (F72). Turning a schedule on or off is the builder's `set_schedule_enabled` (`build.py`). A builder's act, as
+move (F72). Turning a schedule on or off is the builder's (`build.py`): `turn_on_schedule` and `pause_schedule`, and
+the app's own card's `set_schedule_enabled` (F1451). A builder's act, as
 on the screen. Where the run starts is a host's: this process's schedule manager by default; cloud's fleet is its
 own (`set_trigger`).
 """

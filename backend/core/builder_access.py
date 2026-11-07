@@ -74,8 +74,8 @@ WRITES: frozenset[str] = frozenset({
     "remove_step", "add_single_step", "add_multiple_steps", "create_http_tool", "update_http_tool",
     "create_python_tool", "update_python_tool", "test_python_tool", "test_code_change", "import_openapi",
     "delete_custom_tool", "create_skill", "update_skill", "attach_skills", "finish_build", "create_schedule",
-    "set_schedule_enabled", "update_schedule", "delete_schedule", "delete_agent", "delete_orchestration",
-    "approve_change", "apply_change", "approve_plan", "save_build",
+    "set_schedule_enabled", "turn_on_schedule", "pause_schedule", "update_schedule", "delete_schedule",
+    "delete_agent", "delete_orchestration", "approve_change", "apply_change", "approve_plan", "save_build",
     # Reads the answer at a build's wait for a connection, and removes the tools that build made on "stop" or "build
     # without" (F946): a write, of the build's own unsaved tools only.
     "read_connect_answer",
@@ -97,7 +97,7 @@ ANYWHERE: frozenset[str] = frozenset({
     "add_steps", "add_single_step", "add_multiple_steps", "update_step", "remove_step", "update_orchestration",
     "set_orchestration_meta", "deploy_orchestration", "create_http_tool", "update_http_tool", "create_python_tool",
     "update_python_tool", "test_python_tool", "import_openapi", "create_skill", "update_skill", "attach_skills",
-    "create_schedule", "update_schedule",
+    "create_schedule", "update_schedule", "turn_on_schedule", "pause_schedule",
     "set_schedule_enabled", "delete_agent", "delete_orchestration", "delete_schedule", "delete_custom_tool",
     "list_variables", "list_recent_runs", "get_run_summary", "read_workspace", "search_help", "product_capabilities",
     "find_in_catalog", "search_mcp_registry", "search_the_web", "read_web_page", "look_up_providers", "read_api_spec",
