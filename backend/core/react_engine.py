@@ -1259,6 +1259,12 @@ async def run_agent_step(
     else:
         from core import variables as _variables
         _global_variables = await _variables.load()
+    # The workspace's held secrets (F1307's output side), loaded for this turn (F1474). The engine loads them at each
+    # workflow step's start, but a chat or Try turn loaded nothing, so what it stored, and a tool output it spilled to
+    # the vault, kept them in clear. Loaded here on every turn, not "once per task": a task that runs turn after turn
+    # (a worker's job loop) would keep the first turn's.
+    from core.secret_scrub import refresh_held
+    await refresh_held()
     # `@[path]` in a system prompt reads a vault file in — its author is always
     # a member, so this holds whoever sent the message. Masked before the render
     # and filled after it, so a file that says `{{ global.KEY }}` reaches the

@@ -210,15 +210,21 @@ def maybe_vault(tool_name: str, raw_output: str, *, threshold: int | None = None
     if len(raw_output) <= threshold:
         return raw_output
 
+    # What the vault keeps holds the run's secrets by name (F1474), as a chat turn and a compaction archive do: a
+    # member who opens the Vault, or Knowledge, which follows it, reads this file. Here, before both writes (the
+    # documents below and the one file after), and never in a backend's `write`, so cloud's object store gets the
+    # same. JSON is scrubbed value by value, so a secret JSON escapes is still found; then its text, for a key.
+    from core.secret_scrub import scrub_secrets, scrub_secrets_in
+
     # Decide extension: JSON gets pretty-validated, everything else is text.
     try:
-        parsed = json.loads(raw_output)
+        parsed = scrub_secrets_in(json.loads(raw_output))
         ext = "json"
-        content = json.dumps(parsed, indent=2, ensure_ascii=False)
+        content = scrub_secrets(json.dumps(parsed, indent=2, ensure_ascii=False))
     except (json.JSONDecodeError, ValueError):
         parsed = None
         ext = "txt"
-        content = raw_output
+        content = scrub_secrets(raw_output)
     # A list of documents is saved a document a file, with an index (D339 P2): pretty JSON held each page on one
     # line, so no slice by lines was smaller than a page.
     if (docs := _documents(parsed)) is not None:
