@@ -55,7 +55,12 @@ _NO = frozenset({"no", "n", "false", "0"})
 #: The types an answer is checked against.
 CHECKED = frozenset({"email", "date", "phone", "choice"})
 
-_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+#: A domain is labels without dots joined by dots (F1472): one way to read it, so the check's time grows with the
+#: answer's length. The domain's run used to take dots too, and a long dotted answer that failed at its end was tried
+#: at every dot (CodeQL 9877). `a@b..c` is no longer taken; no mail server takes it either.
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s.]+(?:\.[^@\s.]+)+$")
+#: The longest an address can be (RFC 5321's path limit): a longer answer is refused before the pattern runs.
+_EMAIL_MAX = 254
 _PHONE = re.compile(r"^\+?[0-9 ()\-.]+$")
 _PHONE_MIN_DIGITS = 6
 
@@ -109,6 +114,8 @@ def check_value(field: dict[str, Any], value: Any) -> Any:
     label = str(field.get("label") or "").strip() or name
     text = str(value).strip()
     if kind == "email":
+        if len(text) > _EMAIL_MAX:
+            raise BadAnswer(name, f"{label}: “{text[:60]}…” is not an email address.")
         if not _EMAIL.match(text):
             raise BadAnswer(name, f"{label}: “{text}” is not an email address.")
         return text
