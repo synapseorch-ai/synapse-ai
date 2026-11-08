@@ -19,9 +19,12 @@ Sentinel event types:
 """
 import asyncio
 import json
+import logging
 from typing import AsyncGenerator
 
 from core.events_public import public_event
+
+_log = logging.getLogger(__name__)
 
 
 KEEPALIVE_INTERVAL = 15   # seconds between keep-alive comments when idle
@@ -64,6 +67,18 @@ async def _is_stream_done(redis_client, key: str) -> bool:
         return False
 
 
+#: What a reader is told when Redis cannot be read: fixed words (F1478). The exception's own text named Redis's address
+#: and its client's words to every stream's reader, an API key's caller among them.
+UNREAD = ": error reading stream\n\n"
+
+
+def _unread(exc: Exception) -> str:
+    """The comment frame for a failed read, the error logged by its type alone (an exception's words can carry a
+    value). A comment: a browser drops it, and it keeps the connection alive while the loop retries."""
+    _log.warning("event stream: Redis could not be read (%s); retrying", type(exc).__name__)
+    return UNREAD
+
+
 async def stream_run_events(
     redis_client,
     run_id: str,
@@ -101,7 +116,7 @@ async def stream_run_events(
         except asyncio.CancelledError:
             return
         except Exception as e:
-            yield f": error reading stream: {e}\n\n"
+            yield _unread(e)
             await asyncio.sleep(1)
             continue
 
@@ -163,7 +178,7 @@ async def stream_chat_events(
         except asyncio.CancelledError:
             return
         except Exception as e:
-            yield f": error reading stream: {e}\n\n"
+            yield _unread(e)
             await asyncio.sleep(1)
             continue
 
