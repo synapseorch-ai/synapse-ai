@@ -299,7 +299,7 @@
   "summary": "Connect the apps your agents work with, and their actions become tools your agents can use. An app can run on this machine or be reached by its web address.",
   "steps": [
    "Google Workspace is connected in Integrations; the card at the top goes there. For another app, choose “On this machine (stdio)” or “By web address (URL)”, and click a preset to fill in the form, or fill it in yourself.",
-   "Enter a “Name” and a “Short id (no spaces)”; for an app on this machine, its command, arguments and environment.",
+   "Enter a “Name” and a “Short id (letters, digits, - and _)”; for an app on this machine, its command, arguments and environment.",
    "For an app by web address, enter the “Server URL”; leave the access token empty to sign in instead.",
    "Click “Connect”, then tick its tools under “Tools” on an agent’s “Setup”.",
    "If other people can reach this install over a network, turn apps on this machine off or limit their commands."
