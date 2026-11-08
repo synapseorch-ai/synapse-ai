@@ -353,9 +353,17 @@ def test_a_failed_final_install_tries_again_from_the_latest_release(world, monke
             " | bash") in out
 
 
+def _v19_root(tmp: Path) -> Path:
+    """Where 1.9's setup.sh installed on this platform, as 1.9's own cli.py had it: macOS under Application Support,
+    Linux under ~/.local/share (F1468; these tests ran only on Linux before, and legacy.py reads the platform's own)."""
+    if sys.platform == "darwin":
+        return tmp / "Library" / "Application Support" / "SynapseAI"
+    return tmp / ".local" / "share" / "SynapseAI"
+
+
 def test_a_v19_install_is_stopped_backed_up_moved_then_removed(world):
     tmp = world["tmp"]
-    root = tmp / ".local" / "share" / "SynapseAI"
+    root = _v19_root(tmp)
     data = root / "backend" / "data"
     (data / "chat_sessions").mkdir(parents=True)
     (root / "bin").mkdir()
@@ -404,7 +412,7 @@ def test_a_v19_install_is_stopped_backed_up_moved_then_removed(world):
 
 def _v19(tmp: Path, settings: dict) -> Path:
     """A 1.9 script install as setup.sh left it, its settings.json the 1.x model plus `settings`."""
-    root = tmp / ".local" / "share" / "SynapseAI"
+    root = _v19_root(tmp)
     data = root / "backend" / "data"
     (data / "chat_sessions").mkdir(parents=True)
     (root / "bin").mkdir()
@@ -537,7 +545,7 @@ def test_a_failure_ends_the_open_question(world, monkeypatch):
 
 def test_not_now_changes_nothing(world, monkeypatch):
     tmp = world["tmp"]
-    root = tmp / ".local" / "share" / "SynapseAI"
+    root = _v19_root(tmp)
     (root / "backend" / "data").mkdir(parents=True)
     (root / ".installed").write_text("{}")
     (root / "backend" / "data" / "user_agents.json").write_text("[]")

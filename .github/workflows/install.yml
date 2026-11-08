@@ -36,13 +36,12 @@ jobs:
           hatch build
 
       - name: Install the WHEEL in a clean venv and run the CLI
-        # --no-deps keeps this a fast packaging/entry-point check; the full
-        # dependency resolution across this Python matrix is covered by the
-        # backend-tests job in ci.yml (which installs backend/requirements.txt).
+        # With its dependencies, as publish.yml checks the wheel it uploads: 2.0's
+        # CLI imports them (rich among them), so a --no-deps install can't start it (F1468).
         run: |
           python -m venv /tmp/whl
           /tmp/whl/bin/pip install --upgrade pip
-          /tmp/whl/bin/pip install --no-deps dist/*.whl
+          /tmp/whl/bin/pip install dist/*.whl
           /tmp/whl/bin/synapse --help
           /tmp/whl/bin/python -c "import synapse.cli; assert callable(synapse.cli.main)"
 
@@ -50,7 +49,7 @@ jobs:
         run: |
           python -m venv /tmp/sdist
           /tmp/sdist/bin/pip install --upgrade pip
-          /tmp/sdist/bin/pip install --no-deps dist/*.tar.gz
+          /tmp/sdist/bin/pip install dist/*.tar.gz
           /tmp/sdist/bin/synapse --help
 
       - name: Assert the lockfiles are packaged
@@ -181,7 +180,9 @@ jobs:
   # ── the installer (synapse/installer), on every OS it runs on ───────────────
   # Standard library only, so no dependencies are installed: that is part of
   # what is being checked. --noconftest keeps the backend's fixtures (and their
-  # imports) out of it.
+  # imports) out of it. backend/ is on the path, as the conftest puts it, for the
+  # cases that hold the installer's own copies to core's (core.default_agent,
+  # core.providers.cli_status), which import only the standard library too (F1468).
   installer:
     strategy:
       fail-fast: false
@@ -194,6 +195,8 @@ jobs:
         with:
           python-version: '3.11'
       - name: Installer tests
+        env:
+          PYTHONPATH: backend
         run: |
           python -m pip install pytest
           python -m pytest --noconftest -ra backend/tests/install/test_installer_parts.py backend/tests/install/test_installer_flow.py
