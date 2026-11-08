@@ -109,6 +109,45 @@ def test_npm_leaves_a_version_it_already_has(jobs, tmp_path):
     assert _npm_step(jobs, tmp_path, has="2.0.0-rc1") == []
 
 
+def _next_step(jobs, tmp_path, version: str, prerelease: str, next_is: str) -> list[str]:
+    """The step that moves npm's `next`, run as its own script: a stand-in `node` (package.json says `version`) and
+    `npm` (the registry's `next` is `next_is`); the gate says `prerelease`. Returns each `npm dist-tag` it ran."""
+    import subprocess
+
+    step = _step(jobs["publish-npm"], run="npm dist-tag add")
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    (bin_ / "node").write_text(f"#!/bin/sh\necho {version}\n")
+    (bin_ / "npm").write_text('#!/bin/sh\ncase "$1" in\n  view) [ -n "$NEXT" ] && echo "$NEXT"; exit 0;;\n'
+                              '  dist-tag) echo "$*" >> "$LOG";;\nesac\n')
+    for f in bin_.iterdir():
+        f.chmod(0o755)
+    log = tmp_path / "tagged"
+    log.touch()
+    env = {k: v.replace("${{ needs.gate.outputs.prerelease }}", prerelease)
+           for k, v in step.get("env", {}).items() if "secrets." not in v}
+    subprocess.run(["bash", "-e", "-c", step["run"]], check=True,
+                   env={**env, "PATH": f"{bin_}:/usr/bin:/bin", "NEXT": next_is, "LOG": str(log)})
+    return log.read_text().splitlines()
+
+
+def test_a_final_moves_next_to_itself(jobs, tmp_path):
+    """npm's `next` stayed on the last candidate after a final went out, so `@next` installed something older than
+    `@latest` (Naveen 11-08: next follows a final)."""
+    assert _next_step(jobs, tmp_path, "2.0.0", "false", next_is="2.0.0-rc3") == [
+        "dist-tag add synapse-orch-ai@2.0.0 next"]
+
+
+def test_a_final_already_on_next_is_left_as_it_is(jobs, tmp_path):
+    """Safe to run again: a re-pushed tag finds `next` already moved and leaves it."""
+    assert _next_step(jobs, tmp_path, "2.0.0", "false", next_is="2.0.0") == []
+
+
+def test_a_prerelease_leaves_next_to_its_own_publish(jobs, tmp_path):
+    """A candidate is published under `next` already; this step moves nothing for it."""
+    assert _next_step(jobs, tmp_path, "2.0.0-rc4", "true", next_is="2.0.0-rc4") == []
+
+
 def test_the_wheel_is_checked_with_its_dependencies(jobs):
     """2.0's CLI imports rich before it prints --help; a --no-deps install stopped v2.0.0-rc1's PyPI publish."""
     run = _step(jobs["publish-python"], run="synapse --help")["run"]
