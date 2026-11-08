@@ -117,6 +117,34 @@ export function parentRunId(runId: string): string | null {
     return i > 0 ? runId.slice(0, i) : null;
 }
 
+const NESTED = "Sub-orchestration '";
+/** How far into a reason its workflow names are looked for: the engine caps each level at 300 characters. */
+const NESTED_NAMES_MAX = 4000;
+
+/**
+ * A nested run's failure as the engine chains it (steps.py, NestedOutcome.failure):
+ * "Sub-orchestration 'Outer' › 'Inner' failed: why" or "… was cancelled: why". Read by position, not by a regex
+ * whose repeated part could split each "' › '" many ways: a long chain that never said how it ended hung the tab
+ * (F1470, CodeQL js/redos). The names end at the first "' failed: " or "' was cancelled: ", within the cap.
+ */
+export function nestedChain(raw: string): { names: string[]; verb: 'failed' | 'was cancelled'; reason: string } | null {
+    const start = raw.indexOf(NESTED);
+    if (start < 0) return null;
+    const from = start + NESTED.length;
+    const scope = raw.slice(from, from + NESTED_NAMES_MAX);
+    const ends = (["' failed: ", "' was cancelled: "] as const)
+        .map((marker) => ({ marker, at: scope.indexOf(marker) }))
+        .filter((e) => e.at > 0)
+        .sort((a, b) => a.at - b.at);
+    if (!ends.length) return null;
+    const { marker, at } = ends[0];
+    const header = scope.slice(0, at);
+    if (header.includes('\n')) return null;
+    const names = header.split("' › '");
+    if (names.some((n) => !n)) return null;
+    return { names, verb: marker === "' failed: " ? 'failed' : 'was cancelled', reason: raw.slice(from + at + marker.length) };
+}
+
 /** The plain sentence and its fix, for a failed or cancelled run. */
 export function explainFailure(input: FailureInput): Explained {
     const raw = (input.reason ?? '').trim();
@@ -266,13 +294,14 @@ export function explainFailure(input: FailureInput): Explained {
     if ((m = /Loop nesting exceeded (\d+) levels at '(.+?)'/.exec(raw))) {
         return { kind: 'loop-nesting', sentence: `Loops inside ${m[2]} go more than ${m[1]} levels deep, so it would never end.`, fixes: ['editor'] };
     }
-    if ((m = /Sub-orchestration '(.+?)'((?: › '.+?')*) (failed|was cancelled): ([\s\S]*)$/.exec(raw))) {
-        const name = m[1] + m[2].replace(/ › '(.+?)'/g, ' › $1');
+    const chain = nestedChain(raw);
+    if (chain) {
+        const name = chain.names.join(' › ');
         const child = nestedChild(input);
-        const inner = explainFailure({ status: m[3] === 'failed' ? 'failed' : 'cancelled', reason: m[4], runId: child ?? input.runId, stepName: null });
+        const inner = explainFailure({ status: chain.verb === 'failed' ? 'failed' : 'cancelled', reason: chain.reason, runId: child ?? input.runId, stepName: null });
         return {
             kind: 'nested-failed',
-            sentence: `The workflow ${name}, which ${step} runs, ${m[3] === 'failed' ? 'failed' : 'was cancelled'}.`,
+            sentence: `The workflow ${name}, which ${step} runs, ${chain.verb}.`,
             detail: inner.sentence,
             fixes: child ? ['nested', 'replay'] : ['replay'],
             nestedRunId: child ?? undefined,
