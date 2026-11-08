@@ -195,6 +195,26 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Move next to a final
+        # A final is newer than every candidate before it, so `next` follows it and
+        # `npm install -g synapse-orch-ai@next` never installs something older than
+        # `@latest`. A pre-release was published under `next` just now and moves
+        # nothing here. Safe to run again: a `next` already on this version is left.
+        run: |
+          if [ "$PRERELEASE" = "true" ]; then
+            echo "a pre-release is published under next itself"
+            exit 0
+          fi
+          V=$(node -p "require('./package.json').version")
+          if [ "$(npm view synapse-orch-ai dist-tags.next 2>/dev/null)" = "$V" ]; then
+            echo "next is already $V"
+          else
+            npm dist-tag add "synapse-orch-ai@$V" next
+          fi
+        env:
+          PRERELEASE: ${{ needs.gate.outputs.prerelease }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
   # The GitHub release carries the installer (synapse-install.pyz and its
   # sha256) and both scripts; the README's install command and setup.sh fetch
   # them from `releases/latest`. So does 1.x's `synapse upgrade` (its source
