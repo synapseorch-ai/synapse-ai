@@ -70,8 +70,13 @@ export type HelpHost = {
     topicFor: (pathname: string) => string | null;
     /** A topic id that always exists: what the panel says on a page it has no topic for. */
     fallback: string;
-    /** Guided tours, keyed by topic id: shown once on a page's first visit, and again from the "?" panel. */
+    /** Guided tours, keyed by topic id: each runs from its page's "?" panel ("Take the tour"). */
     tours?: Record<string, Tour>;
+    /**
+     * The one topic whose tour starts by itself, once, on its first visit: Home's (F1457; Naveen 2026-11-08: a tour
+     * on every new page was too many). Every other tour waits for "Take the tour"; with none named, none starts.
+     */
+    firstRunTour?: string;
     /**
      * The tabs of the section a page sits in, one stop each saying what it is for (GUIDE1, F1028; Naveen: "when they
      * land on runs page let's show other tabs and its uses"). `id` is the section's, so it shows once per section,

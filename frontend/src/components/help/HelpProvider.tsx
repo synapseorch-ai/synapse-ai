@@ -12,11 +12,12 @@
  * clicking"). One panel for the whole app, rendered here, so two "?" on one
  * screen could never open two.
  *
- * A page's guided tour (GUIDE1, F919) is the one thing shown without a click: once per browser on a page's first
- * visit, after the page settles, never over a dialog or the open panel, and never again once finished or put away.
- * A dialog up when it is due makes it wait for that dialog to close; a first-run surface holds it back from the start
- * (`tour/hold`, F1060), so onboarding and the model step always come first and the tour once after.
- * The panel's "Take the tour" runs it any time.
+ * Home's guided tour (GUIDE1, F919; the host's `firstRunTour`) is the one thing shown without a click: once per
+ * browser on Home's first visit, after the page settles, never over a dialog, a menu, an open list or the open panel,
+ * and never again once finished or put away. Every other page's tour waits for its panel's "Take the tour" (F1457,
+ * Naveen 2026-11-08: one on every new page was too many). Something open when the tour is due makes it wait for that
+ * to close; a first-run surface holds it back from the start (`tour/hold`, F1060), so onboarding and the model step
+ * always come first and the tour once after. The panel's "Take the tour" runs any page's any time.
  */
 import { usePathname } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -76,30 +77,39 @@ export function HelpProvider({ host, children }: { host: HelpHost; children: Rea
 
     // A first-run surface (onboarding, the model step) holds the tour back while it is up (F1060).
     const held = useToursHeld();
+    const startsByItself = topicId === host.firstRunTour;
     useEffect(() => {
-        const unseen = parts.filter(p => !tourSeen(p.id, p.tour));
+        const unseen = startsByItself ? parts.filter(p => !tourSeen(p.id, p.tour)) : [];
         if (!unseen.length || !tourMayStart({ held, panelOpen: open })) return;
+        let live = true;
         let timer: ReturnType<typeof setTimeout> | undefined;
         let watch: MutationObserver | null = null;
         const arm = () => {
             timer = setTimeout(() => {
-                if (!screenBusy()) return run(unseen);
-                // A dialog has the screen: the tour waits for it to close, then lets the page settle again.
-                watch = new MutationObserver(() => {
-                    if (screenBusy()) return;
-                    watch?.disconnect();
-                    watch = null;
-                    arm();
+                // Driver is fetched before the last look, so nothing opens between that look and the tour.
+                void import('./tour/runTour').then(({ loadDriver }) => loadDriver()).then(() => {
+                    if (!live) return;
+                    if (!screenBusy()) return run(unseen);
+                    // Something has the screen: the tour waits for it to close, then lets the page settle again.
+                    watch = new MutationObserver(() => {
+                        if (screenBusy()) return;
+                        watch?.disconnect();
+                        watch = null;
+                        arm();
+                    });
+                    watch.observe(document.body, {
+                        childList: true, subtree: true, attributes: true, attributeFilter: ['role', 'aria-expanded'],
+                    });
                 });
-                watch.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['role'] });
             }, TOUR_AFTER_MS);
         };
         arm();
         return () => {
+            live = false;
             clearTimeout(timer);
             watch?.disconnect();
         };
-    }, [parts, open, held, run]);
+    }, [startsByItself, parts, open, held, run]);
 
     const value = useMemo<HelpState>(
         () => ({

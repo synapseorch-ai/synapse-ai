@@ -37,7 +37,13 @@ export function markTourSeen(id: string, tour: Tour): void {
     }
 }
 
-/** Something else has the screen: a dialog (onboarding, model setup) or a drawer. A tour waits for it to close. */
+/**
+ * What has the screen while it is open: a dialog (onboarding, model setup) or a drawer, a menu, a list to pick from,
+ * a combobox (F1457: a tour over the model dropdown took the pick).
+ */
+const BUSY = '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [role="combobox"][aria-expanded="true"]';
+
+/** Something else has the screen. A tour waits for it to close. */
 export function screenBusy(root: ParentNode = document): boolean {
-    return root.querySelector('[role="dialog"], [role="alertdialog"]') !== null;
+    return root.querySelector(BUSY) !== null;
 }

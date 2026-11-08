@@ -25,6 +25,11 @@ const POPOVER = [
     '[&_.driver-popover-arrow]:!hidden',
 ].join(' ');
 
+/** Fetches driver.js ahead of a tour, so the screen's last look before it draws is not followed by a wait. */
+export async function loadDriver(): Promise<void> {
+    await import('driver.js');
+}
+
 /**
  * Runs the steps whose anchors are on the page now. `onEnd` runs once, however the tour ends (Done, ✕, Esc, a
  * click outside), and at once when no step can show.

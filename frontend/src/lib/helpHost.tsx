@@ -20,5 +20,6 @@ export const ossHelpHost: HelpHost = {
     },
     fallback: HELP_FALLBACK,
     tours: TOURS,
+    firstRunTour: 'dashboard',
     tabTourFor,
 };
