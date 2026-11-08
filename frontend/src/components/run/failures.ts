@@ -534,7 +534,7 @@ function limitWords(why: string): string {
     const own = /the workflow '(.+?)''?s own (\d+)-minute timeout/.exec(why);
     if (own) return `the workflow’s own ${own[2]}-minute timeout`;
     if (/what was left of this run's own timeout/.test(why)) return 'what was left of the run’s timeout';
-    return why.replace(/^what was left of /, 'what was left of ');
+    return why;
 }
 
 function capital(s: string): string {
