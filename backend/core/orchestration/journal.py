@@ -39,6 +39,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 from core.log import get_logger
+from core.run_ids import run_file
 
 _log = get_logger(__name__)
 
@@ -169,7 +170,7 @@ class FileRunJournal:
 
     def __init__(self, run_id: str):
         self.run_id = run_id
-        self._path = _events_dir() / f"{run_id}.jsonl"
+        self._path = run_file(_events_dir(), run_id, ".jsonl")
         self._fh = None            # opened, written and closed on the writer thread only
         self._pending: Future | None = None
         self._seq = self._recover_seq()
@@ -317,12 +318,12 @@ class FileRunJournal:
 
     @classmethod
     def exists(cls, run_id: str) -> bool:
-        return (_events_dir() / f"{run_id}.jsonl").exists()
+        return run_file(_events_dir(), run_id, ".jsonl").exists()
 
     @classmethod
     def delete(cls, run_id: str) -> bool:
         close_journal(run_id)
-        path = _events_dir() / f"{run_id}.jsonl"
+        path = run_file(_events_dir(), run_id, ".jsonl")
         try:
             path.unlink()
             return True

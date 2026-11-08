@@ -16,6 +16,7 @@ from concurrent.futures import Future
 from pathlib import Path
 
 from core.log import get_logger
+from core.run_ids import run_file
 
 _log = get_logger(__name__)
 
@@ -97,7 +98,7 @@ class OrchestrationLogger:
     def __init__(self, run_id: str, orchestration_id: str, orchestration_name: str, user_input: str, session_id: str | None = None):
         self.run_id = run_id
         self.session_id = session_id
-        self.path = _logs_dir() / f"{run_id}.log"
+        self.path = run_file(_logs_dir(), run_id, ".log")
         self._start_time = time.time()
         self._fh = None                 # writer-thread owned
         self._pending: Future | None = None
@@ -511,7 +512,7 @@ class OrchestrationLogger:
 
     @staticmethod
     def get_log(run_id: str) -> str | None:
-        path = _logs_dir() / f"{run_id}.log"
+        path = run_file(_logs_dir(), run_id, ".log")
         if path.exists():
             return path.read_text(encoding="utf-8")
         try:
@@ -569,7 +570,7 @@ class OrchestrationLogger:
 
     @staticmethod
     def delete_log(run_id: str) -> bool:
-        path = _logs_dir() / f"{run_id}.log"
+        path = run_file(_logs_dir(), run_id, ".log")
         deleted = False
         if path.exists():
             path.unlink()

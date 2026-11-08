@@ -9,7 +9,7 @@ import threading
 import time
 from pathlib import Path
 
-from core.run_ids import new_run_id
+from core.run_ids import new_run_id, run_file
 from core.secret_scrub import for_storage
 
 #: Blob key prefix for finished logs. The blob store applies the tenant
@@ -92,7 +92,7 @@ class AgentLogger:
         # suffix keeps two runs in one millisecond apart (F259)
         short_id = agent_id.replace("agent_", "") if agent_id.startswith("agent_") else agent_id
         self.run_id = new_run_id(short_id, prefix="agentrun")
-        self.path = _logs_dir() / f"{self.run_id}.log"
+        self.path = run_file(_logs_dir(), self.run_id, ".log")
         self._start_time = time.time()
         self._q: queue.SimpleQueue = queue.SimpleQueue()
         self._thread = threading.Thread(target=self._drain, daemon=True, name=f"agent-log-{self.run_id}")
@@ -295,7 +295,7 @@ class AgentLogger:
 
     @staticmethod
     def get_log(run_id: str) -> str | None:
-        path = _logs_dir() / f"{run_id}.log"
+        path = run_file(_logs_dir(), run_id, ".log")
         if path.exists():
             return path.read_text(encoding="utf-8")
         # Finished logs live in the blob store — any worker can serve them.
@@ -372,7 +372,7 @@ class AgentLogger:
 
     @staticmethod
     def delete_log(run_id: str) -> bool:
-        path = _logs_dir() / f"{run_id}.log"
+        path = run_file(_logs_dir(), run_id, ".log")
         deleted = False
         if path.exists():
             path.unlink()

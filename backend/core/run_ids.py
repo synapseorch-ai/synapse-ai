@@ -11,9 +11,12 @@ A leaf module: the loggers that mint ids are imported by the engine itself.
 """
 from __future__ import annotations
 
+import hashlib
+import os
 import re
 import secrets
 import time
+from pathlib import Path
 
 
 def new_run_id(name: str, prefix: str = "run") -> str:
@@ -49,3 +52,30 @@ def orchestration_of(run_id: str) -> str | None:
     if run_id.startswith("run_") and run_id.count("_") >= 2:
         return run_id[len("run_"):].rsplit("_", 1)[0]
     return None
+
+
+#: What a file name made from a run id may not hold: a separator on any platform (`\\` is one on Windows), a drive
+#: or stream mark (`:`), or NUL. `.` and `..` name a folder, not a run.
+_NOT_IN_A_NAME = ("/", "\\", ":", "\x00")
+
+
+def _plain(run_id: str) -> bool:
+    return bool(run_id) and run_id not in (".", "..") and not any(c in run_id for c in _NOT_IN_A_NAME)
+
+
+def run_file(directory: str | os.PathLike, run_id: str, suffix: str, *, _path=os.path) -> Path:
+    """The file `<run_id><suffix>` in `directory`, and nowhere else (F1479, CodeQL py/path-injection).
+
+    A run's log and its journal are named from its id, and the log and events routes take that id from the URL. On
+    Windows `\\` is a separator and `C:\\x` replaces the folder outright, so `..\\..\\x` read or deleted any `.log`
+    the server could reach. An id that is not a plain file name is kept under a name made from its hash: a run whose
+    own id holds one of those characters still has its file, found again the same way, and an id from a URL that
+    climbs out names a file that is not there. Then the resolved path must sit in the folder itself.
+    `_path` is `os.path`; tests pass `ntpath` to check Windows' rules on any machine.
+    """
+    name = run_id if _plain(str(run_id)) else "id_" + hashlib.sha256(str(run_id).encode("utf-8", "surrogatepass")).hexdigest()[:32]
+    base = _path.realpath(directory)
+    target = _path.realpath(_path.join(base, name + suffix))
+    if not target.startswith(base.rstrip(_path.sep) + _path.sep) or _path.dirname(target) != base:
+        raise ValueError(f"a run's file must be in {base!r}")
+    return Path(target)
