@@ -21,8 +21,8 @@ Rules that are not style:
 * Exit status is the number of failed checks, so a broken check cannot hide
   the rest.
 * Every check's browser has already seen every guided tour (`ToursSeen`): a
-  page's first-visit tour covers it until put away, so a fresh browser would
-  meet one on every page. Only `tour` starts fresh, with `fresh_context`.
+  tour covers the page until put away (Home's opens by itself on a first
+  visit, F1457). Only the tour checks start fresh, with `fresh_context`.
 """
 from __future__ import annotations
 
@@ -81,8 +81,9 @@ class ToursSeen:
     """The browser every check gets: each context it opens has seen every tour already.
 
     Naveen (2026-10-24): a page's guided tour opens by itself once, on the first visit, and its overlay takes
-    the clicks until it is put away; that replaced "help only on click". A check about anything else must not
-    meet one by accident, so this is where no check can forget it. `fresh_context` is the exception, for `tour`.
+    the clicks until it is put away; that replaced "help only on click" (since 2026-11-08, F1457, only Home's opens
+    by itself). A check about anything else must not meet one by accident, so this is where no check can forget it.
+    `fresh_context` is the exception, for the tour checks.
     """
 
     def __init__(self, browser):
@@ -10122,23 +10123,25 @@ async def _no_tour(page, path: str) -> None:
 
 @check
 async def check_tour(browser) -> str:
-    """A page's guided tour opens by itself once, on the first visit, and never the help panel (GUIDE1, F919/F1028).
+    """Home's guided tour opens by itself once, on the first visit, and never the help panel (GUIDE1, F919/F1457).
 
-    Naveen (2026-10-24): guides open once on their own, the panel only on a click. A fresh browser: Home's tour
-    opens with no panel behind it; Esc puts it away and a reload doesn't bring it back; the panel's "Take the
-    tour" runs it again. A section's tab guide shows on its first tab and not on the section's next one.
+    Naveen (2026-10-24): guides open once on their own, the panel only on a click; (2026-11-08, F1457) of the
+    pages' tours only Home's opens on its own, every other is "Take the tour" in its "?" panel. A fresh browser:
+    Home's tour opens with no panel behind it; Esc puts it away and a reload doesn't bring it back; the panel's
+    "Take the tour" runs it again. Runs opens with no guide, and its panel's "Take the tour" starts at the
+    section's tabs.
     """
     ctx = await browser.fresh_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     page = await ctx.new_page()
     try:
-        await page.goto(f"{APP}/", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/dashboard", wait_until="domcontentloaded")
         popover = page.locator(TOUR_POPOVER)
         await popover.wait_for(state="visible", timeout=30_000)
         if await page.locator(f"[role=dialog]:not({TOUR_POPOVER})").count():
-            raise AssertionError("/: a dialog other than the tour opened by itself")
+            raise AssertionError("/dashboard: a dialog other than the tour opened by itself")
         await page.keyboard.press("Escape")
         await popover.wait_for(state="hidden", timeout=5_000)
-        await _no_tour(page, "/")
+        await _no_tour(page, "/dashboard")
 
         _, dialog = await _open_help(page)
         await dialog.get_by_role("button", name="Take the tour").click()
@@ -10146,17 +10149,85 @@ async def check_tour(browser) -> str:
         await page.keyboard.press("Escape")
         await popover.wait_for(state="hidden", timeout=5_000)
 
-        await page.goto(f"{APP}/runs", wait_until="domcontentloaded")
-        await popover.wait_for(state="visible", timeout=30_000)
+        await _no_tour(page, "/runs")
+        _, dialog = await _open_help(page)
+        await dialog.get_by_role("button", name="Take the tour").click()
+        await popover.wait_for(state="visible", timeout=10_000)
         title = (await page.locator("#driver-popover-title").inner_text()).strip()
         if not title.startswith("Runs ›"):
-            raise AssertionError(f"/runs: the first visit's guide is {title!r}, not the section's tabs")
+            raise AssertionError(f"/runs: \"Take the tour\" starts at {title!r}, not the section's tabs")
         await page.keyboard.press("Escape")
         await popover.wait_for(state="hidden", timeout=5_000)
-        await _no_tour(page, "/logs")
     finally:
         await ctx.close()
-    return "a first visit shows the page's tour once, never the panel; the panel replays it; a section's tabs once"
+    return "Home's first visit shows its tour once, never the panel; the panel replays it; Runs' tabs from the panel"
+
+
+@check
+async def check_tourhomeonly(browser) -> str:
+    """Only Home's tour starts by itself, and no tour opens while a menu is open (GUIDE1, F1457).
+
+    Naveen (2026-11-08): a new person met a tour on nearly every page (eb's prod QA counted seven), and one opened
+    over the model dropdown and took the pick. Now only Home's first-run tour starts by itself; every other page's is
+    one click away, "Take the tour" in its "?" panel; and none opens while a menu, popover, combobox or dialog is
+    open. A fresh browser: Workflows, Agents and Runs open with no tour, and Home with its own. Another fresh browser
+    opens the rail's "More" menu on Home before the tour is due: no tour while the menu is open, Home's once it shuts.
+    """
+    bad: list[str] = []
+    ctx = await browser.fresh_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    popover = page.locator(TOUR_POPOVER)
+    try:
+        for path in ("/workflows", "/agents", "/runs"):
+            await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+            await page.get_by_role("button", name=HELP_BUTTON, exact=True).first.wait_for(timeout=30_000)
+            await asyncio.sleep(SETTLE + 2)
+            if await popover.is_visible():
+                title = (await page.locator("#driver-popover-title").inner_text()).strip()
+                bad.append(f"{path}: a tour started by itself ({title!r})")
+                await page.keyboard.press("Escape")
+                await popover.wait_for(state="hidden", timeout=5_000)
+        await page.goto(f"{APP}/dashboard", wait_until="domcontentloaded")
+        try:
+            await popover.wait_for(state="visible", timeout=30_000)
+        except Exception:
+            bad.append("/dashboard: Home's tour did not start on the first visit")
+    finally:
+        await ctx.close()
+
+    ctx = await browser.fresh_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    popover = page.locator(TOUR_POPOVER)
+    try:
+        await page.goto(f"{APP}/dashboard", wait_until="domcontentloaded")
+        # The tour's countdown starts as the page hydrates, which is when the "?" says it is ready: the menu opens
+        # well inside the countdown's 1.5 s.
+        await page.locator(f'button[aria-label="{HELP_BUTTON}"][data-ready]').wait_for(timeout=30_000)
+        await page.locator('nav[aria-label="Primary"]').get_by_role("button", name="More", exact=True).click()
+        menu = page.get_by_role("menu")
+        await menu.wait_for(timeout=5_000)
+        if await popover.is_visible():
+            raise AssertionError("Home's tour was up before the menu could open: timing, not a verdict; run it again")
+        over = False
+        deadline = time.monotonic() + SETTLE + 3
+        while time.monotonic() < deadline:
+            if await popover.is_visible():
+                over = True
+                bad.append("Home's tour opened over the open \"More\" menu")
+                break
+            await asyncio.sleep(0.25)
+        if not over:
+            await page.keyboard.press("Escape")
+            await menu.wait_for(state="hidden", timeout=5_000)
+            try:
+                await popover.wait_for(state="visible", timeout=15_000)
+            except Exception:
+                bad.append("Home's tour did not follow once the menu shut")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "Workflows, Agents, Runs: no tour; Home's starts by itself; none over an open menu, Home's once it shuts"
 
 
 @check
