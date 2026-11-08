@@ -279,8 +279,35 @@ def maybe_vault(tool_name: str, raw_output: str, *, threshold: int | None = None
 
 
 
-#: A mention: `@[`, then anything up to the closing bracket on the same line.
-MENTION_RE = re.compile(r"@\[([^\]\n]+)\]")
+#: The longest name a mention is read with, in characters: no vault path comes near it (F1481).
+MENTION_MAX = 1024
+
+
+def mention_spans(text: str):
+    """Each mention in `text` as (start, end): `@[`, then up to MENTION_MAX characters up to the closing bracket on the
+    same line. The name may hold `@` or `[` (`@[exports/user@example.csv]`), as it could before.
+
+    In one pass, never a regex (F1481, CodeQL py/polynomial-redos): `@\\[([^\\]\\n]+)\\]` scanned from every `@[` to the
+    end of its line, so a message of `@[` and no `]` took time by the square of its length (17.6 s for 100,000
+    characters), on the server's own loop. Here the next `]` and the next line break are each found once and kept
+    until a mention passes them.
+    """
+    end = len(text)
+    bracket = newline = -1          # the next `]` and line break at or after the last name's start; `end` for none
+    i = 0
+    while (i := text.find("@[", i)) >= 0:
+        body = i + 2
+        if bracket < body:
+            bracket = text.find("]", body)
+            bracket = end if bracket < 0 else bracket
+        if newline < body:
+            newline = text.find("\n", body)
+            newline = end if newline < 0 else newline
+        if bracket < newline and 1 <= bracket - body <= MENTION_MAX:
+            yield i, bracket + 1
+            i = bracket + 1
+        else:
+            i += 1
 
 #: A prompt may inline this many times the per-mention cap in total.
 MENTION_TOTAL_FACTOR = 2
@@ -413,11 +440,16 @@ class MentionReader:
         """Every mention replaced by a placeholder; the mentions, as typed, in order."""
         raws: list[str] = []
 
-        def _sub(match: re.Match) -> str:
-            raws.append(match.group(0))
-            return f"{_MARK}{len(raws) - 1}{_MARK}"
-
-        return MENTION_RE.sub(_sub, text or ""), raws
+        text = text or ""
+        parts: list[str] = []
+        last = 0
+        for start, end in mention_spans(text):
+            parts.append(text[last:start])
+            raws.append(text[start:end])
+            parts.append(f"{_MARK}{len(raws) - 1}{_MARK}")
+            last = end
+        parts.append(text[last:])
+        return "".join(parts), raws
 
     async def fill(self, masked: str, raws: list[str]) -> tuple[str, list[Mention]]:
         """The placeholders of `mask` swapped for what each mention resolved to."""
