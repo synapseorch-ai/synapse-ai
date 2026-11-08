@@ -88,21 +88,36 @@ INSTRUCTIONS = (
 )
 
 
+def version_beside(module: "Path") -> str | None:
+    """The version in the nearest `pyproject.toml` above `module` whose `[project]` is synapse-orch-ai (F1462, ISS1 —
+    GitHub #378). Two places, for the layouts there are: beside `core/` (`parents[2]`: the backend image's `/app`, the
+    combined image's `/app/backend`, where each copies it) and the repo root (`parents[3]`: a source checkout)."""
+    import tomllib
+
+    for root in (module.parents[2], module.parents[3]):
+        try:
+            project = tomllib.loads((root / "pyproject.toml").read_text()).get("project") or {}
+        except (OSError, tomllib.TOMLDecodeError, IndexError):
+            continue
+        if project.get("name") == "synapse-orch-ai" and project.get("version"):
+            return str(project["version"])
+    return None
+
+
 def synapse_version() -> str | None:
-    """The installed Synapse's version, as the CLI reads it; the SDK's own otherwise."""
+    """The installed Synapse's version, as the CLI reads it; else the pyproject.toml it was built from — the Docker
+    images carry one beside `core/` (F1462); None, and the SDK's own, only when neither is there. The images had
+    neither, so the endpoint answered as the mcp SDK's 1.29.0 (#378)."""
     try:
         from importlib.metadata import version
         return version("synapse-orch-ai")
     except Exception:
         pass
+    from pathlib import Path
     try:
-        from pathlib import Path
-        for line in (Path(__file__).resolve().parents[3] / "pyproject.toml").read_text().splitlines():
-            if line.startswith("version") and "=" in line:
-                return line.split("=", 1)[1].strip().strip('"')
-    except OSError:
-        pass
-    return None
+        return version_beside(Path(__file__).resolve())
+    except IndexError:  # a module too near the filesystem's root to have both parents
+        return None
 
 
 def bearer_from(headers: Any) -> str | None:

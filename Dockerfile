@@ -38,6 +38,8 @@ COPY backend/core ./core
 COPY backend/services ./services
 COPY backend/tools ./tools
 COPY backend/main.py .
+# The version the MCP endpoint reports, beside core/ (F1462, #378: it was the mcp SDK's).
+COPY pyproject.toml ./
 
 WORKDIR /app/frontend
 COPY --from=frontend-builder /app/.next/standalone ./
