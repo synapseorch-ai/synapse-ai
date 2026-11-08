@@ -2,6 +2,7 @@
 Pydantic models and data classes used across the backend.
 Extracted from server.py for better readability.
 """
+import re
 from typing import List, Dict, Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
@@ -435,8 +436,29 @@ class PersonalDetails(BaseModel):
     address: PersonalAddress = PersonalAddress()
 
 
+#: An MCP server's short id: its tools are named `<id>__<tool>`, and MCP clients and model providers refuse a tool name
+#: outside `^[a-zA-Z0-9_-]{1,64}$` (core/product_tools/registry.py). 32 leaves room for the tool's own name. The routes
+#: take it whole in their path (F1460, ISS1 — GitHub #377: "github/prod" was saved, then never removed or retried).
+MCP_SERVER_ID = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+
+
+def mcp_server_id_problem(name: str) -> str | None:
+    """Why `name` cannot be a server's short id, in words; None when it can."""
+    if MCP_SERVER_ID.fullmatch(name or ""):
+        return None
+    return (f"The short id {name!r} can't be used: it may hold only letters, digits, '-' and '_', 1 to 32 of them "
+            f"(e.g. github-prod), because its tools are named after it. The name shown can be anything.")
+
+
 class AddMCPServerRequest(BaseModel):
     name: str
+
+    @field_validator("name")
+    @classmethod
+    def _short_id(cls, value: str) -> str:
+        if (problem := mcp_server_id_problem(value)) is not None:
+            raise ValueError(problem)
+        return value
     label: str = ""                # human-friendly display name (falls back to name if empty)
     server_type: str = "stdio"     # "stdio" | "remote"
     # stdio fields

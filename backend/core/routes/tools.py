@@ -705,7 +705,7 @@ async def add_mcp_server(req: AddMCPServerRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/api/mcp/servers/{name}/reconnect")
+@router.post("/api/mcp/servers/{name:path}/reconnect")
 async def reconnect_mcp_server(name: str):
     import core.server as _server
     if not _server.mcp_manager:
@@ -815,8 +815,9 @@ async def mcp_oauth_callback(code: str = None, state: str = None, error: str = N
     return HTMLResponse(html)
 
 
-@router.delete("/api/mcp/servers/{name}")
+@router.delete("/api/mcp/servers/{name:path}")
 async def remove_mcp_server(name: str):
+    # `{name:path}`: a server saved before its id had a rule (F1460) may hold a "/", and is removed like any other.
     import core.server as _server
     if not _server.mcp_manager:
         raise HTTPException(status_code=500, detail="MCP Manager not initialized")

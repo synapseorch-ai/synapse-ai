@@ -455,8 +455,9 @@ export const McpServersTab = ({
                                 className={inputCls} placeholder="e.g. GitHub Production" />
                         </div>
                         <div className="space-y-2">
-                            <Label htmlFor="mcp-draftmcpserver-name" className="block">Short id (no spaces)</Label>
+                            <Label htmlFor="mcp-draftmcpserver-name" className="block">Short id (letters, digits, - and _)</Label>
                             <input id="mcp-draftmcpserver-name" type="text" value={draftMcpServer.name}
+                                pattern="[A-Za-z0-9_\-]{1,32}" maxLength={32}
                                 onChange={e => setDraftMcpServer({ ...draftMcpServer, name: e.target.value })}
                                 className={inputCls} placeholder="e.g. github-prod" />
                         </div>

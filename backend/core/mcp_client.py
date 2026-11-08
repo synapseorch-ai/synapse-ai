@@ -962,6 +962,11 @@ class MCPClientManager:
     ) -> Dict[str, Any]:
         import shutil
 
+        from core.models import mcp_server_id_problem
+
+        # The short id its tools are named after, and the routes take whole (F1460): checked here too, for any door.
+        if (problem := mcp_server_id_problem(name)) is not None:
+            raise ValueError(problem)
         for s in self.servers_config:
             if s["name"] == name:
                 if server_type != "remote" or s.get("server_type") != "remote" or not _same_server_url(s.get("url"), url):

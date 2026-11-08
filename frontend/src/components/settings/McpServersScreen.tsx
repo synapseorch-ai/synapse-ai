@@ -97,6 +97,9 @@ export function McpServersScreen() {
 
     const handleAdd = async () => {
         if (!draft.name) return show("Server name is required.", "danger");
+        // Its tools are named after it, so it holds to a tool name's characters (F1460); the server says the same.
+        if (!/^[A-Za-z0-9_-]{1,32}$/.test(draft.name))
+            return show("The short id may hold only letters, digits, - and _, up to 32 of them (e.g. github-prod).", "danger");
         if (draft.server_type === "stdio" && !draft.command)
             return show("Command is required for local servers.", "danger");
         if (draft.server_type === "remote" && !draft.url)
@@ -129,7 +132,11 @@ export function McpServersScreen() {
 
             if (!res.ok) {
                 const err = await res.json();
-                show(`Error: ${err.detail || "Unknown error"}`, "danger");
+                // A refused field arrives as a list of {msg} (422), not as text.
+                const said = Array.isArray(err.detail)
+                    ? err.detail.map((d: { msg?: string }) => (d.msg || "").replace(/^Value error, /, "")).join(" ")
+                    : err.detail;
+                show(`Error: ${said || "Unknown error"}`, "danger");
                 return;
             }
 
@@ -170,7 +177,7 @@ export function McpServersScreen() {
     const handleReconnect = async (name: string) => {
         try {
             dispatch(updateMcpServerStatus({ name, status: "connecting" }));
-            const res = await fetch(`/api/mcp/servers/${name}/reconnect`, { method: "POST" });
+            const res = await fetch(`/api/mcp/servers/${encodeURIComponent(name)}/reconnect`, { method: "POST" });
             const data = await res.json();
 
             if (data.connected) {
@@ -193,7 +200,7 @@ export function McpServersScreen() {
     const confirmDeleteServer = async () => {
         if (!confirmDelete) return;
         try {
-            const res = await fetch(`/api/mcp/servers/${confirmDelete}`, { method: "DELETE" });
+            const res = await fetch(`/api/mcp/servers/${encodeURIComponent(confirmDelete)}`, { method: "DELETE" });
             if (res.ok) dispatch(removeMcpServer(confirmDelete));
         } catch {
             show("Could not remove the server.", "danger");
