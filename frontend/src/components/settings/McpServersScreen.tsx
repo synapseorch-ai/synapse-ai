@@ -189,7 +189,8 @@ export function McpServersScreen() {
                 show(`Re-authenticating ${name} — complete OAuth in the popup.`, "warning");
             } else {
                 dispatch(updateMcpServerStatus({ name, status: "disconnected" }));
-                show(`Could not connect to ${name}. Try re-adding the server.`, "warning");
+                // The server's own reason when it gave one: a local server's last line, say (F1461).
+                show(data.message || `Could not connect to ${name}. Try re-adding the server.`, "warning");
             }
         } catch {
             dispatch(updateMcpServerStatus({ name, status: "disconnected" }));

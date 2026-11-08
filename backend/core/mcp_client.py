@@ -447,8 +447,65 @@ def said_safely(text: str, config: Optional[Dict] = None) -> str:
     token = str((config or {}).get("token") or "").strip()
     if token:
         text = text.replace(token, CREDENTIAL_MARK)
+    # A local server's own env holds its keys, and the line it wrote as it exited may quote one (F1461). Values too
+    # short to be a key ("1", "true") are left, so the reason still reads.
+    for value in sorted(((config or {}).get("env") or {}).values(), key=lambda v: -len(str(v))):
+        if len(str(value).strip()) >= 6:
+            text = text.replace(str(value).strip(), CREDENTIAL_MARK)
     text = _QUERY_VALUE.sub(lambda m: m.group(1) + CREDENTIAL_MARK, _USERINFO.sub(rf"\1{CREDENTIAL_MARK}@", text))
     return clean(text)[:300]
+
+
+class _StderrTail:
+    """A local server's stderr (F1461, ISS1 — GitHub #377): passed on to the backend's own stderr, where it went before,
+    with its last lines kept, so a server that exits as it starts says why ("bad config: GITHUB_TOKEN is not set")
+    rather than "Connection closed". A pipe drained by a thread: nothing on disk, and a server that writes a lot
+    never waits on a full pipe."""
+
+    KEEP = 20
+
+    def __init__(self, name: str):
+        import collections
+        import threading
+
+        read_fd, write_fd = os.pipe()
+        #: Handed to the child as its stderr; the parent's copy is closed once the child holds its own (`spawned`).
+        self.writer = os.fdopen(write_fd, "w", encoding="utf-8", errors="replace")
+        self._reader = os.fdopen(read_fd, "r", encoding="utf-8", errors="replace")
+        self.lines: "collections.deque[str]" = collections.deque(maxlen=self.KEEP)
+        self._thread = threading.Thread(target=self._drain, name=f"mcp-stderr:{name}", daemon=True)
+        self._thread.start()
+
+    def _drain(self) -> None:
+        import sys
+
+        try:
+            for line in self._reader:
+                try:
+                    sys.stderr.write(line)
+                except Exception:  # noqa: BLE001 — a closed or odd stderr never stops the drain
+                    pass
+                if line.strip():
+                    self.lines.append(line.rstrip("\n"))
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                self._reader.close()
+            except OSError:
+                pass
+
+    def spawned(self) -> None:
+        """The child has its own copy now; ours would keep the pipe open after it exits."""
+        try:
+            self.writer.close()
+        except OSError:
+            pass
+
+    def last_line(self, wait: float = 1.0) -> Optional[str]:
+        """The last non-empty line it wrote; waits up to `wait` seconds for an exited child's last write to arrive."""
+        self._thread.join(wait)
+        return self.lines[-1] if self.lines else None
 
 
 class MCPClientManager:
@@ -556,9 +613,12 @@ class MCPClientManager:
         """Why `name` last failed to connect, in `connect_failure`'s words; None once it connects (F1306)."""
         return (self.get_server_config(name) or {}).get("last_error")
 
-    async def _failed(self, name: str, exc: BaseException, config: Optional[Dict] = None) -> str:
-        """Keep why `name` did not connect, beside its status, and return it (F1306)."""
-        said = connect_failure(exc, config or self.get_server_config(name))
+    async def _failed(self, name: str, exc: BaseException, config: Optional[Dict] = None, *,
+                      stderr: Optional[str] = None) -> str:
+        """Keep why `name` did not connect, beside its status, and return it (F1306). A local server's last stderr
+        line, when it wrote one, is the reason: it says what the transport's "Connection closed" does not (F1461)."""
+        config = config or self.get_server_config(name)
+        said = said_safely(stderr, config) if stderr else connect_failure(exc, config)
         if (kept := self.get_server_config(name)) is not None:
             kept["last_error"] = said
             await self.save_servers()
@@ -631,9 +691,14 @@ class MCPClientManager:
 
         _log.info(f"Connecting to stdio MCP server '{name}' ({command} {args})...")
 
+        tail = _StderrTail(name)
+
         async def opener(stack: AsyncExitStack) -> ClientSession:
             params = StdioServerParameters(command=command, args=args, env=env)
-            read, write = await stack.enter_async_context(stdio_client(params))
+            try:
+                read, write = await stack.enter_async_context(stdio_client(params, errlog=tail.writer))
+            finally:
+                tail.spawned()
             session = await stack.enter_async_context(
                 ClientSession(read, write, read_timeout_seconds=_SESSION_READ_TIMEOUT)
             )
@@ -643,7 +708,9 @@ class MCPClientManager:
         try:
             session = await self._hold(name, opener)
         except Exception as e:
-            _log.info(f"Failed stdio connect '{name}': {await self._failed(name, e, config)}")
+            tail.spawned()  # closed already when the child started; closed now if it never did
+            said = await self._failed(name, e, config, stderr=tail.last_line())
+            _log.info(f"Failed stdio connect '{name}': {said}")
             return None
         self._connected(name)
         self.sessions[name] = session
@@ -1003,7 +1070,9 @@ class MCPClientManager:
                 await self._set_status(name, "connected")
                 new_config["status"] = "connected"
                 await self._auto_register(name)
-            return {"config": new_config, "connected": bool(session), "status": new_config["status"]}
+            # Why it did not connect, as a remote add says it (F1306): its last stderr line, when it wrote one (F1461).
+            return {"config": new_config, "connected": bool(session), "status": new_config["status"],
+                    "error": None if session else self.last_error(name)}
 
         # Remote
         if token:

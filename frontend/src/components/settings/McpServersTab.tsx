@@ -363,6 +363,12 @@ export const McpServersTab = ({
                                                 : `Remove it and add it again from the ${placeholder.preset} preset with a GitHub personal access token.`}
                                         </p>
                                     )}
+                                    {/* Why it did not connect, as the server said it (F1306): a local server's last line (F1461). */}
+                                    {!placeholder && server.status === 'disconnected' && server.last_error && (
+                                        <p className="break-words text-xs text-danger" data-mcp-reason="">
+                                            Did not connect: {server.last_error}
+                                        </p>
+                                    )}
                                 </div>
                                 <div className="hidden shrink-0 sm:block"><ServerStatus status={server.status} /></div>
                                 <div className="flex shrink-0 items-center gap-0.5">
