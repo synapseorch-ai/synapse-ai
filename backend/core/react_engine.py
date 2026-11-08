@@ -1169,6 +1169,16 @@ def _left_out_note(left_out: list[dict]) -> str | None:
             "to use them.")
 
 
+def _arg_sizes(args) -> str:
+    """A tool call's arguments as a log line holds them (F1475): each name and its size, never its value. A workflow
+    renders `{{ global.KEY }}` into a tool's arguments on purpose, and a log is kept where F854's masking does not
+    reach."""
+    if not isinstance(args, dict):
+        return f"{type(args).__name__} ({len(json.dumps(args, default=str, ensure_ascii=False))} chars)"
+    return ", ".join(f"{name} ({len(json.dumps(value, default=str, ensure_ascii=False))} chars)"
+                     for name, value in args.items()) or "none"
+
+
 @_spans.traced_generator("synapse.agent_step", _spans.agent_step_attributes,
                          on_event=_spans.agent_step_events)
 async def run_agent_step(
@@ -3249,7 +3259,7 @@ async def run_agent_step(
                 yield {"type": "tool_execution", "tool_name": tool_name, "args": tool_args}
                 _open_call = (tool_name, tool_args, len(current_context_text))
                 _log.debug(f"🔧 Tool Call: {tool_name}")
-                _log.debug(f"📥 Args: {json.dumps(tool_args, indent=2, default=str)[:1000]}")
+                _log.debug(f"📥 Args: {_arg_sizes(tool_args)}")
 
                 # ── UPDATE_TASKS: native task list, handled in-engine ─────────────
                 if _output_step and tool_name in (_step_refs.WRITE_OUTPUT, _step_refs.SUBMIT_OUTPUT):
