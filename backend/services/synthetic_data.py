@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import re
 from datetime import datetime
 from pydantic import BaseModel
 from typing import List, Optional
@@ -44,6 +45,19 @@ current_job = {
     "error": None
 }
 
+#: The most of a topic a dataset's file name carries.
+_NAME_TOPIC_MAX = 60
+
+
+def _dataset_name(topic: str, timestamp: str) -> str:
+    """The dataset's file name, from a slug of its topic (F1473): letters, digits, `_` and `-`, at most 60 of them.
+
+    The topic used to go in as it came, spaces made `_`: "HR/payroll" named a directory that is not there, so every
+    record failed, and on Windows a `..\\` was a step out of the datasets directory (CodeQL 9913/9914)."""
+    slug = re.sub(r"[^\w-]+", "_", topic or "").strip("_")[:_NAME_TOPIC_MAX].strip("_")
+    return f"dataset_{slug}_{timestamp}.jsonl" if slug else f"dataset_{timestamp}.jsonl"
+
+
 async def generate_synthetic_data(request: SyntheticDataRequest):
     global current_job
     current_job["status"] = "generating"
@@ -52,7 +66,7 @@ async def generate_synthetic_data(request: SyntheticDataRequest):
     current_job["error"] = None
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"dataset_{request.topic.replace(' ', '_')}_{timestamp}.jsonl"
+    filename = _dataset_name(request.topic, timestamp)
     from core.storage.scratch import scratch_dir
     filepath = os.path.join(str(scratch_dir("datasets")), filename)
     current_job["file"] = filename
