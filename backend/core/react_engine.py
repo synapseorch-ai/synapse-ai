@@ -3528,7 +3528,7 @@ async def run_agent_step(
                         current_context_text += f"\nSystem: {_mem_preview}.\n"
                     tools_used_summary.append(f"{tool_name}: {_mem_preview}")
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": _mem_preview}
-                    _log.debug(f"🧠 {tool_name}: {_mem_preview}")
+                    _log.debug(f"🧠 {tool_name}: {len(_mem_preview)} chars")
                     continue
 
                 # ── KNOWLEDGE tools: handled in-engine (see core/knowledge/tools.py) ──
@@ -3549,7 +3549,7 @@ async def run_agent_step(
                         yield _kn_result.event
                     tools_used_summary.append(f"{tool_name}: {_kn_result.preview}")
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": _kn_result.preview}
-                    _log.debug(f"📚 {tool_name}: {_kn_result.preview}")
+                    _log.debug(f"📚 {tool_name}: {len(_kn_result.preview)} chars")
                     continue
 
                 # ── BOARD tools: handled in-engine, access in code (core/boards/tools.py) ──
@@ -3565,7 +3565,7 @@ async def run_agent_step(
                         f"\n[Turn {turn + 1} — Observation] Tool '{tool_name}' returned:\n{_b_out.observation}\n")
                     tools_used_summary.append(f"{tool_name}: {_b_out.preview}")
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": _b_out.preview}
-                    _log.debug(f"📌 {tool_name}: {_b_out.preview}")
+                    _log.debug(f"📌 {tool_name}: {len(_b_out.preview)} chars")
                     continue
 
                 # ── SESSION_HISTORY: this conversation's earlier turns (F242) ──
@@ -3672,7 +3672,7 @@ async def run_agent_step(
                         current_context_text += f"\n[Turn {turn + 1} — Observation] Tool '{tool_name}' returned:\n{raw_output}\n"
                         tools_used_summary.append(f"{tool_name}: {raw_output}")
                         preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
-                        _log.debug(f"🔧 Executor result ({tool_name}): {preview}")
+                        _log.debug(f"🔧 Executor result ({tool_name}): {len(raw_output)} chars")
                         yield {"type": "tool_result", "tool_name": tool_name, "preview": preview}
                         if post_tool_hook is not None:
                             async for _extra in post_tool_hook(tool_name, raw_output):
@@ -3836,7 +3836,7 @@ async def run_agent_step(
                     current_context_text += f"\n[Turn {turn + 1} — Observation] Agent '{agent_name}' response:\n{raw_output}\n"
                     tools_used_summary.append(f"delegate_to_agent({agent_name}): {raw_output}")
                     preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
-                    _log.debug(f"🤝 Delegate result from '{agent_name}': {preview}")
+                    _log.debug(f"🤝 Delegate result from '{agent_name}': {len(raw_output)} chars")
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": preview, "handed_off": True}
                     continue
 
@@ -3855,7 +3855,7 @@ async def run_agent_step(
                     current_context_text += f"\n[Turn {turn + 1} — Observation] Tool '{tool_name}' returned:\n{raw_output}\n"
                     tools_used_summary.append(f"{tool_name}: {raw_output}")
                     preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
-                    _log.debug(f"🏗 Builder tool ({tool_name}): {preview}")
+                    _log.debug(f"🏗 Builder tool ({tool_name}): {len(raw_output)} chars")
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": preview}
                     # What the tool actually changed, in full, after the
                     # truncated preview the model sees. This is what the panel
@@ -3933,12 +3933,12 @@ async def run_agent_step(
                                     except Exception:
                                         raw_output = json.dumps({"output": _result.stdout})
                                     if _result.stderr:
-                                        _log.debug(f"Python tool stderr: {_result.stderr[:200]}")
+                                        _log.debug(f"Python tool stderr: {len(_result.stderr)} chars")
 
                                 raw_output = maybe_vault(tool_name, raw_output, threshold=_budget.spill_at)
                                 current_context_text += f"\n[Turn {turn + 1} — Observation] Tool '{tool_name}' returned:\n{raw_output}\n"
                                 tools_used_summary.append(f"{tool_name}: {raw_output}")
-                                _log.debug(f"🐍 Python Tool Result ({tool_name}): {raw_output}")
+                                _log.debug(f"🐍 Python Tool Result ({tool_name}): {len(raw_output)} chars")
                                 preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
                                 yield {"type": "tool_result", "tool_name": tool_name, "preview": preview}
                                 last_intent = "custom_tool"
@@ -3970,7 +3970,7 @@ async def run_agent_step(
 
                             current_context_text += f"\n[Turn {turn + 1} — Observation] Tool '{tool_name}' returned:\n{raw_output}\n"
                             tools_used_summary.append(f"{tool_name}: {raw_output}")
-                            _log.debug(f"📤 Tool Result ({tool_name}): {raw_output}")
+                            _log.debug(f"📤 Tool Result ({tool_name}): {len(raw_output)} chars")
                             preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
                             yield {"type": "tool_result", "tool_name": tool_name, "preview": preview}
 
@@ -4168,7 +4168,7 @@ async def run_agent_step(
                         _log.debug(f"📤 Tool Result ({tool_name}): [browser, {len(raw_output)} chars in tail, history={len(browser_action_history)} actions]")
                     else:
                         current_context_text += f"\n[Turn {turn + 1} — Observation] Tool '{tool_name}' returned:\n{raw_output}\n"
-                        _log.debug(f"📤 Tool Result ({tool_name}): {raw_output}")
+                        _log.debug(f"📤 Tool Result ({tool_name}): {len(raw_output)} chars")
 
                     # MCP tool results are no longer embedded in ChromaDB
                     preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
