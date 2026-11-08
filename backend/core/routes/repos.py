@@ -125,6 +125,9 @@ async def create_repo(repo: Repo, background_tasks: BackgroundTasks):
 @router.delete("/api/repos/{repo_id}")
 async def delete_repo(repo_id: str):
     repos = await load_repos()
+    # Only a repo that is there is removed, and only its index dropped (F1480).
+    if not any(r["id"] == repo_id for r in repos):
+        raise HTTPException(status_code=404, detail="Repo not found")
     repos = [r for r in repos if r["id"] != repo_id]
     await save_repos(repos)
 

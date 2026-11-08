@@ -18,6 +18,7 @@ _coco_import_error: str | None = None
 try:
     import cocoindex
     import psycopg
+    from psycopg import sql
     import numpy as np
     from numpy.typing import NDArray
     from cocoindex.typing import VectorInfo
@@ -344,7 +345,7 @@ def _ensure_database_exists():
             with conn.cursor() as cur:
                 cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (db_name,))
                 if not cur.fetchone():
-                    cur.execute(f'CREATE DATABASE "{db_name}"')
+                    cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(db_name)))
                     print(f"Created database '{db_name}'.")
     except Exception as e:
         print(f"Warning: could not ensure database exists: {e}")
@@ -371,7 +372,7 @@ def get_index_status(repo_id: str) -> dict:
                 cur.execute("SELECT to_regclass(%s);", (f"public.{table_name}",))
                 if not cur.fetchone()[0]:
                     return {"status": "pending", "count": 0}
-                cur.execute(f'SELECT COUNT(*) FROM "{table_name}"')
+                cur.execute(sql.SQL("SELECT COUNT(*) FROM {}").format(sql.Identifier(table_name)))
                 count = cur.fetchone()[0]
                 return {"status": "indexed", "count": count}
     except Exception as e:
@@ -414,8 +415,10 @@ def drop_index(repo_id: str):
     try:
         with psycopg.connect(_get_db_url()) as conn:
             with conn.cursor() as cur:
-                cur.execute(f'DROP TABLE IF EXISTS "{table_name}" CASCADE;')
-                cur.execute(f'DROP TABLE IF EXISTS "{tracking}" CASCADE;')
+                # Names, never SQL: a repo's id is the client's (F1479's sibling, F1480), so each is quoted as an
+                # identifier by psycopg, never pasted in.
+                for name in (table_name, tracking):
+                    cur.execute(sql.SQL("DROP TABLE IF EXISTS {} CASCADE").format(sql.Identifier(name)))
                 # cocoindex_setup_metadata is created lazily by cocoindex.init() —
                 # it won't exist on a fresh installation.  Use a SAVEPOINT so a
                 # missing table is a silent no-op that doesn't affect the DROPs above.
