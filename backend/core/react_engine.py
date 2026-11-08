@@ -7,6 +7,7 @@ import asyncio
 import contextvars
 import contextlib
 import json
+import logging
 import sys
 import time
 
@@ -2853,7 +2854,12 @@ async def run_agent_step(
                 _llm_duration = round(time.time() - _llm_start, 1)
             llm_output = _llm_result.text
             _turn_spent_usd += _call_usd(current_model, _llm_result)  # for going on past the limit (F1219)
-            _log.debug(f"🤖 LLM Response ({_llm_duration}s): {llm_output[:500]}{'...(truncated)' if len(llm_output) > 500 else ''}")
+            if _log.isEnabledFor(logging.DEBUG):
+                # The reply with the run's secrets by name (F1476): a tool call's arguments are in it, and a model can
+                # say a key it read. Scrubbed whole, then cut, so a value at the cut is not half shown; and only when
+                # the line is logged, so INFO pays nothing.
+                _said = _scrub_secrets(llm_output)
+                _log.debug(f"🤖 LLM Response ({_llm_duration}s): {_said[:500]}{'...(truncated)' if len(_said) > 500 else ''}")
 
             # ── A response that hit the token ceiling is not an answer ───────
             # Without the stop reason a truncated reply was indistinguishable
