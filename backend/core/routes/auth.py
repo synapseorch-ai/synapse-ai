@@ -25,7 +25,7 @@ _FRONTEND_BASE = f"http://localhost:{_FRONTEND_PORT}"
 @router.get("/auth/login")
 async def login():
     try:
-        auth_url = get_auth_url(redirect_uri=REDIRECT_URI)
+        auth_url = await get_auth_url(redirect_uri=REDIRECT_URI)
         return RedirectResponse(auth_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -55,13 +55,43 @@ async def auth_status(request: Request):
         and s.get("login_username")
         and s.get("login_password_hash")
     )
-    session = request.headers.get("X-Synapse-Session", "")
-    authenticated = bool(session) and verify_session_token(session) is not None
+    from core.internal_auth import session_ok
+    from core.user_auth import access_token
+
+    session = request.headers.get("X-Synapse-Session", "") or request.cookies.get("synapse_session", "")
     return {
         "login_enabled": login_enabled,
         "login_configured": login_configured,
-        "authenticated": authenticated,
+        # Login off, but this install is reachable only with its access link
+        # (D124): the gate asks for the link instead of a password.
+        "access_required": bool(access_token()) and not login_configured,
+        # The middleware's own rule, so the gate and the backend never disagree
+        # about who is signed in (an access-link session dies with its token).
+        "authenticated": session_ok(session),
     }
+
+
+class AccessRequest(BaseModel):
+    token: str
+
+
+@router.post("/api/auth/access")
+async def access_link(body: AccessRequest):
+    """Swap the install's access token for a session (login off, D124).
+
+    409 with login on: a password always wins, so the link is no way around it.
+    404 when no access token is configured — nothing to present.
+    """
+    from core.internal_auth import _login_required
+    from core.user_auth import access_token, access_token_matches, create_access_session
+
+    if _login_required():
+        raise HTTPException(status_code=409, detail="Login is on. Sign in with your username and password.")
+    if not access_token():
+        raise HTTPException(status_code=404, detail="This install has no access link.")
+    if not access_token_matches(body.token.strip()):
+        raise HTTPException(status_code=401, detail="That is not this install's access link.")
+    return {"success": True, "token": create_access_session()}
 
 
 @router.post("/api/auth/login")
@@ -88,7 +118,7 @@ async def user_logout():
 @router.get("/auth/callback")
 async def callback(code: str, state: str = None):
     try:
-        finish_auth(code=code, redirect_uri=REDIRECT_URI)
+        await finish_auth(code=code, redirect_uri=REDIRECT_URI)
         # Redirect back to the frontend with a success flag so the UI can refresh
         return RedirectResponse(f"{_FRONTEND_BASE}?google_auth=success")
     except Exception as e:

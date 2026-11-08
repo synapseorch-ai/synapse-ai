@@ -1,0 +1,195 @@
+"""
+The per-run text log is written off the event loop, in order, and is
+complete when the engine closes it.
+"""
+import threading
+
+
+async def test_lines_land_in_order_and_off_the_loop(monkeypatch):
+    from core.orchestration.logger import OrchestrationLogger
+
+    threads: set[str] = set()
+    real_open = open
+
+    def spying_open(*a, **k):
+        threads.add(threading.current_thread().name)
+        return real_open(*a, **k)
+
+    monkeypatch.setattr("builtins.open", spying_open)
+    log = OrchestrationLogger(run_id="run_log", orchestration_id="o1",
+                              orchestration_name="Test", user_input="hello")
+    for n in range(200):
+        log.step_start(f"s{n}", f"Step {n}", "print")
+    log.run_end("completed")
+    await log.aclose()
+
+    text = log.path.read_text(encoding="utf-8")
+    positions = [text.index(f"Step ID        : s{n}\n") for n in range(200)]
+    assert positions == sorted(positions)
+    assert "RUN FINISHED" in text and text.index("RUN FINISHED") > positions[-1]
+    assert threading.current_thread().name not in threads
+    assert threads and all(t.startswith("synapse-journal") for t in threads)
+
+
+async def test_close_publishes_the_complete_log():
+    from core.orchestration.logger import OrchestrationLogger, _blob_key
+    from core.storage import get_blob_store
+
+    log = OrchestrationLogger(run_id="run_pub", orchestration_id="o1",
+                              orchestration_name="Test", user_input="hi")
+    log.step_start("s1", "One", "print")
+    log.run_end("completed")
+    log.close()   # the synchronous form must also wait for the writer
+
+    published = get_blob_store().get(_blob_key("run_pub"))
+    assert "STEP START: One" in published and "RUN FINISHED" in published
+
+
+async def test_an_engine_run_leaves_a_complete_log(fake_llm):
+    import types
+    from _fakes import seed as S
+    from core.models_orchestration import Orchestration
+    from core.orchestration.engine import OrchestrationEngine
+    from core.orchestration.logger import _blob_key
+    from core.storage import get_blob_store
+
+    orch = S.make_orchestration(id="orch_log", entry_step_id="p", steps=[
+        {"id": "p", "name": "Only", "type": "print", "print_content": "x",
+         "output_key": "o", "next_step_id": None}])
+    engine = OrchestrationEngine(Orchestration.model_validate(orch),
+                                 types.SimpleNamespace(agent_sessions={}, memory_store=None, tool_router={}))
+    events = [e async for e in engine.run("go", run_id="run_engine_log")]
+    assert any(e.get("type") == "orchestration_complete" for e in events)
+    published = get_blob_store().get(_blob_key("run_engine_log"))
+    assert "STEP START: Only" in published
+    assert "Status   : completed" in published
+
+
+async def test_a_warning_and_the_branch_it_explains_both_reach_the_transcript():
+    """The archive is the record that outlives the run, and it had neither.
+
+    `step_warning` was emitted by every failing expression, every exhausted
+    loop and every unconfigured branch, and rendered by nothing — so a run that
+    took the False path because its condition would not evaluate read exactly
+    like one whose condition was false. With the expression evaluator refusing
+    an unsafe condition rather than running it, that difference is the whole
+    report an owner gets.
+    """
+    from core.orchestration.logger import OrchestrationLogger, _blob_key
+    from core.storage import get_blob_store
+
+    log = OrchestrationLogger(run_id="run_warn", orchestration_id="o1",
+                              orchestration_name="Test", user_input="hi")
+    log.step_start("s1", "Branch", "if_else")
+    log.log_event({
+        "type": "step_warning", "orch_step_id": "s1",
+        "message": "Condition eval error (treating as False): unsafe expression — "
+                   "'.__subclasses__' is not readable",
+    })
+    log.log_event({
+        "type": "if_decision", "orch_step_id": "s1", "step_name": "Branch",
+        "condition": "().__class__.__bases__[0].__subclasses__()", "result": "false",
+    })
+    log.log_event({
+        "type": "switch_decision", "orch_step_id": "s2", "step_name": "Route",
+        "expression": "state.category", "value": "None", "matched_case": None,
+    })
+    log.run_end("completed")
+    log.close()
+
+    published = get_blob_store().get(_blob_key("run_warn"))
+    assert "⚠️ WARNING:" in published
+    assert "unsafe expression" in published
+    assert "IF: ().__class__.__bases__[0].__subclasses__() → false" in published
+    assert "SWITCH: state.category → None (case: default)" in published
+
+
+async def test_a_legacy_router_event_from_an_archive_still_renders():
+    """`if_decision` and `switch_decision` used to name two events each.
+
+    The step executor emits one carrying the expression and what it came to;
+    `engine._resolve_next` emitted a second, under the same name, carrying the
+    branch actually taken. They share no field, so rendering only the first
+    shape printed an empty line for the second — `If/Else:  → undefined`, on
+    every if_else run there had ever been.
+
+    The router emits `routing_decision` now, so these shapes only arrive from a
+    run journalled before that change. The journal replays raw events, so this
+    branch is not dead code and cannot be removed once the archives age out
+    without checking journal retention first.
+    """
+    from core.orchestration.logger import OrchestrationLogger, _blob_key
+    from core.storage import get_blob_store
+
+    log = OrchestrationLogger(run_id="run_shapes", orchestration_id="o1",
+                              orchestration_name="Test", user_input="hi")
+    log.step_start("s1", "Branch", "if_else")
+    log.log_event({"type": "if_decision", "orch_step_id": "s1",
+                   "decision": "false", "target_step_id": "s_false"})
+    log.log_event({"type": "switch_decision", "orch_step_id": "s2",
+                   "matched_case": None, "target_step_id": "s_default"})
+    log.run_end("completed")
+    log.close()
+
+    published = get_blob_store().get(_blob_key("run_shapes"))
+    assert "↪ BRANCH: false → s_false" in published
+    assert "↪ BRANCH: case default → s_default" in published
+    assert "→ undefined" not in published
+    assert "IF:  →" not in published
+
+
+async def test_routing_decision_renders_every_routing_step_type():
+    """One router event now, and `step_type` is the only thing that sorts it.
+
+    A `None` decision means two different things — an IF whose step never set
+    its state key, and a SWITCH that matched no case — so anything reading
+    `decision` before `step_type` gets one of them wrong.
+    """
+    from core.orchestration.logger import OrchestrationLogger, _blob_key
+    from core.storage import get_blob_store
+
+    log = OrchestrationLogger(run_id="run_routing", orchestration_id="o1",
+                              orchestration_name="Test", user_input="hi")
+    log.step_start("s1", "Route", "evaluator")
+    log.log_event({"type": "routing_decision", "step_type": "evaluator",
+                   "orch_step_id": "s1", "decision": "needs_work",
+                   "target_step_id": "s2", "reasoning": "too thin"})
+    # The same event with `step_type` stripped: an archive from before the
+    # rename, when only the evaluator answered to this name. It must render
+    # identically, and this is the arm a future reader is likeliest to break.
+    log.log_event({"type": "routing_decision", "orch_step_id": "s1",
+                   "decision": "legacy_route", "target_step_id": "s2",
+                   "reasoning": "from an old journal"})
+    log.log_event({"type": "routing_decision", "step_type": "if_else",
+                   "orch_step_id": "s3", "decision": "false",
+                   "target_step_id": "s_false"})
+    # An IF whose executor never ran: no decision, no target.
+    log.log_event({"type": "routing_decision", "step_type": "if_else",
+                   "orch_step_id": "s4", "decision": None,
+                   "target_step_id": None})
+    log.log_event({"type": "routing_decision", "step_type": "switch",
+                   "orch_step_id": "s5", "decision": None,
+                   "target_step_id": "s_default"})
+    # The evaluator step's own event, which answered to `routing_decision`
+    # until it was separated — it carries neither `decision` nor
+    # `target_step_id`, so the run log said `Evaluator routed → undefined`.
+    log.log_event({"type": "evaluator_decision", "orch_step_id": "s1",
+                   "tool_name": "route_needs_work",
+                   "arguments": {"reasoning": "too thin"}})
+    log.run_end("completed")
+    log.close()
+
+    published = get_blob_store().get(_blob_key("run_routing"))
+    assert "🔀 EVALUATOR: needs_work — too thin" in published
+    assert "🔀 ROUTING DECISION: needs_work" in published
+    assert "Target Step  : s2" in published
+    assert "🔀 ROUTING DECISION: legacy_route" in published
+    assert "↪ BRANCH: false → s_false" in published
+    assert "↪ BRANCH: false → end" in published
+    assert "↪ BRANCH: case default → s_default" in published
+
+    # A switch's `None` is the default branch, never the literal None; and no
+    # if/switch event may fall through to the evaluator arm.
+    assert "case None" not in published
+    assert "→ undefined" not in published
+    assert "ROUTING DECISION: false" not in published

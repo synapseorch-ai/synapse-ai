@@ -1,0 +1,368 @@
+[
+ {
+  "description": "Perform click on a web page",
+  "inputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "additionalProperties": false,
+   "properties": {
+    "button": {
+     "description": "Button to click, defaults to left",
+     "enum": [
+      "left",
+      "right",
+      "middle"
+     ],
+     "type": "string"
+    },
+    "doubleClick": {
+     "description": "Whether to perform a double click instead of a single click",
+     "type": "boolean"
+    },
+    "element": {
+     "description": "Human-readable element description used to obtain permission to interact with the element",
+     "type": "string"
+    },
+    "modifiers": {
+     "description": "Modifier keys to press",
+     "items": {
+      "enum": [
+       "Alt",
+       "Control",
+       "ControlOrMeta",
+       "Meta",
+       "Shift"
+      ],
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "target": {
+     "description": "Exact target element reference from the page snapshot, or a unique element selector",
+     "type": "string"
+    }
+   },
+   "required": [
+    "target"
+   ],
+   "type": "object"
+  },
+  "name": "browser_click"
+ },
+ {
+  "description": "Fill multiple form fields",
+  "inputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "additionalProperties": false,
+   "properties": {
+    "fields": {
+     "description": "Fields to fill in",
+     "items": {
+      "additionalProperties": false,
+      "properties": {
+       "element": {
+        "description": "Human-readable element description used to obtain permission to interact with the element",
+        "type": "string"
+       },
+       "name": {
+        "description": "Human-readable field name",
+        "type": "string"
+       },
+       "target": {
+        "description": "Exact target element reference from the page snapshot, or a unique element selector",
+        "type": "string"
+       },
+       "type": {
+        "description": "Type of the field",
+        "enum": [
+         "textbox",
+         "checkbox",
+         "radio",
+         "combobox",
+         "slider"
+        ],
+        "type": "string"
+       },
+       "value": {
+        "description": "Value to fill in the field. If the field is a checkbox, the value should be `true` or `false`. If the field is a combobox, the value should be the text of the option.",
+        "type": "string"
+       }
+      },
+      "required": [
+       "target",
+       "name",
+       "type",
+       "value"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "fields"
+   ],
+   "type": "object"
+  },
+  "name": "browser_fill_form"
+ },
+ {
+  "description": "Search the accessibility snapshot of the current page for text or a regular expression. Returns matching snapshot nodes with a few lines of surrounding context (like search snippets), each shown under its path from the root of the tree, which is cheaper than capturing the whole snapshot when you only need to locate an element and its ref.",
+  "inputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "additionalProperties": false,
+   "properties": {
+    "filename": {
+     "description": "Save results to a file instead of returning them in the response. Relative file names are resolved against the workspace root.",
+     "type": "string"
+    },
+    "regex": {
+     "description": "Regular expression to search for in the page snapshot. Matching is case-sensitive by default; wrap the pattern in slashes to add flags, e.g. \"/error/i\" for case-insensitive. Provide either text or regex, not both.",
+     "type": "string"
+    },
+    "text": {
+     "description": "Plain text to search for in the page snapshot (case-insensitive substring match). Provide either text or regex, not both.",
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "name": "browser_find"
+ },
+ {
+  "description": "Handle a dialog",
+  "inputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "additionalProperties": false,
+   "properties": {
+    "accept": {
+     "description": "Whether to accept the dialog.",
+     "type": "boolean"
+    },
+    "promptText": {
+     "description": "The text of the prompt in case of a prompt dialog.",
+     "type": "string"
+    }
+   },
+   "required": [
+    "accept"
+   ],
+   "type": "object"
+  },
+  "name": "browser_handle_dialog"
+ },
+ {
+  "description": "Hover over element on page",
+  "inputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "additionalProperties": false,
+   "properties": {
+    "element": {
+     "description": "Human-readable element description used to obtain permission to interact with the element",
+     "type": "string"
+    },
+    "target": {
+     "description": "Exact target element reference from the page snapshot, or a unique element selector",
+     "type": "string"
+    }
+   },
+   "required": [
+    "target"
+   ],
+   "type": "object"
+  },
+  "name": "browser_hover"
+ },
+ {
+  "description": "Navigate to a URL",
+  "inputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "additionalProperties": false,
+   "properties": {
+    "url": {
+     "description": "The URL to navigate to",
+     "type": "string"
+    }
+   },
+   "required": [
+    "url"
+   ],
+   "type": "object"
+  },
+  "name": "browser_navigate"
+ },
+ {
+  "description": "Go back to the previous page in the history",
+  "inputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "additionalProperties": false,
+   "properties": {},
+   "type": "object"
+  },
+  "name": "browser_navigate_back"
+ },
+ {
+  "description": "Press a key on the keyboard",
+  "inputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "additionalProperties": false,
+   "properties": {
+    "key": {
+     "description": "Name of the key to press or a character to generate, such as `ArrowLeft` or `a`",
+     "type": "string"
+    }
+   },
+   "required": [
+    "key"
+   ],
+   "type": "object"
+  },
+  "name": "browser_press_key"
+ },
+ {
+  "description": "Select an option in a dropdown",
+  "inputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "additionalProperties": false,
+   "properties": {
+    "element": {
+     "description": "Human-readable element description used to obtain permission to interact with the element",
+     "type": "string"
+    },
+    "target": {
+     "description": "Exact target element reference from the page snapshot, or a unique element selector",
+     "type": "string"
+    },
+    "values": {
+     "description": "Array of values to select in the dropdown. This can be a single value or multiple values.",
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "target",
+    "values"
+   ],
+   "type": "object"
+  },
+  "name": "browser_select_option"
+ },
+ {
+  "description": "Capture accessibility snapshot of the current page, this is better than screenshot",
+  "inputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "additionalProperties": false,
+   "properties": {
+    "boxes": {
+     "description": "Include each element's bounding box as [box=x,y,width,height] in the snapshot. Coordinates are viewport-relative, in CSS pixels (Element.getBoundingClientRect)",
+     "type": "boolean"
+    },
+    "depth": {
+     "description": "Limit the depth of the snapshot tree",
+     "type": "number"
+    },
+    "filename": {
+     "description": "Save snapshot to a file instead of returning it in the response. Relative file names are resolved against the workspace root.",
+     "type": "string"
+    },
+    "target": {
+     "description": "Exact target element reference from the page snapshot, or a unique element selector",
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "name": "browser_snapshot"
+ },
+ {
+  "description": "List, create, close, or select a browser tab.",
+  "inputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "additionalProperties": false,
+   "properties": {
+    "action": {
+     "description": "Operation to perform",
+     "enum": [
+      "list",
+      "new",
+      "close",
+      "select"
+     ],
+     "type": "string"
+    },
+    "index": {
+     "description": "Tab index, used for close/select. If omitted for close, current tab is closed.",
+     "type": "number"
+    },
+    "url": {
+     "description": "URL to navigate to in the new tab, used for new.",
+     "type": "string"
+    }
+   },
+   "required": [
+    "action"
+   ],
+   "type": "object"
+  },
+  "name": "browser_tabs"
+ },
+ {
+  "description": "Type text into editable element",
+  "inputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "additionalProperties": false,
+   "properties": {
+    "element": {
+     "description": "Human-readable element description used to obtain permission to interact with the element",
+     "type": "string"
+    },
+    "slowly": {
+     "description": "Whether to type one character at a time. Useful for triggering key handlers in the page. By default entire text is filled in at once.",
+     "type": "boolean"
+    },
+    "submit": {
+     "description": "Whether to submit entered text (press Enter after)",
+     "type": "boolean"
+    },
+    "target": {
+     "description": "Exact target element reference from the page snapshot, or a unique element selector",
+     "type": "string"
+    },
+    "text": {
+     "description": "Text to type into the element",
+     "type": "string"
+    }
+   },
+   "required": [
+    "target",
+    "text"
+   ],
+   "type": "object"
+  },
+  "name": "browser_type"
+ },
+ {
+  "description": "Wait for text to appear or disappear or a specified time to pass",
+  "inputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "additionalProperties": false,
+   "properties": {
+    "text": {
+     "description": "The text to wait for",
+     "type": "string"
+    },
+    "textGone": {
+     "description": "The text to wait for to disappear",
+     "type": "string"
+    },
+    "time": {
+     "description": "The time to wait in seconds, at most 30",
+     "type": "number"
+    }
+   },
+   "type": "object"
+  },
+  "name": "browser_wait_for"
+ }
+]

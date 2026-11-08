@@ -1,9 +1,5 @@
-import json
-import os
-
-from core.config import DATA_DIR
-
-PERSONAL_DETAILS_FILE = os.path.join(DATA_DIR, "personal_details.json")
+#: One document per tenant, not a list — stored as a collection singleton.
+_COLLECTION = "personal_details"
 
 
 def default_personal_details() -> dict:
@@ -22,30 +18,23 @@ def default_personal_details() -> dict:
     }
 
 
-def load_personal_details() -> dict:
+async def load_personal_details() -> dict:
+    from core.store import collections
+
     defaults = default_personal_details()
-
-    if not os.path.exists(PERSONAL_DETAILS_FILE):
-        return defaults
-
     try:
-        with open(PERSONAL_DETAILS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        # Merge root
-        merged = {**defaults, **(data if isinstance(data, dict) else {})}
-
-        # Merge address
-        addr = merged.get("address") if isinstance(merged.get("address"), dict) else {}
-        merged["address"] = {**defaults["address"], **addr}
-
-        return merged
+        data = await collections.load_one(_COLLECTION)
     except Exception as e:
         print(f"DEBUG: Error loading personal_details: {e}")
         return defaults
 
+    merged = {**defaults, **(data if isinstance(data, dict) else {})}
+    addr = merged.get("address") if isinstance(merged.get("address"), dict) else {}
+    merged["address"] = {**defaults["address"], **addr}
+    return merged
 
-def save_personal_details(details: dict) -> dict:
+
+async def save_personal_details(details: dict) -> dict:
     # Normalize to our schema with defaults
     defaults = default_personal_details()
     d = details if isinstance(details, dict) else {}
@@ -54,7 +43,7 @@ def save_personal_details(details: dict) -> dict:
     addr = d.get("address") if isinstance(d.get("address"), dict) else {}
     normalized["address"] = {**defaults["address"], **addr}
 
-    with open(PERSONAL_DETAILS_FILE, "w", encoding="utf-8") as f:
-        json.dump(normalized, f, indent=4)
+    from core.store import collections
+    await collections.save_one(_COLLECTION, normalized)
 
     return normalized

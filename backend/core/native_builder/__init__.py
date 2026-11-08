@@ -3,14 +3,45 @@ Native Builder — Synapse's AI Builder implemented as a real orchestration.
 
 This package holds the seed JSON definitions (orchestration + sub-agents) and
 the idempotent seeding function used at startup. See seed.py.
+
+The "See how I'm built" modal draws `orchestration.json` on a read-only canvas
+(`/api/builder/legend` → `canvas`), so a step's `position_x`/`position_y` is
+what the customer sees: give a new step a place of its own.
 """
-from .seed import seed_native_builder, NATIVE_BUILDER_ORCH_ID, NATIVE_BUILDER_AGENT_ID
+from .seed import (
+    BUILDER_RUN_PREFIX,
+    NATIVE_BUILDER_AGENT_ID,
+    NATIVE_BUILDER_ORCH_ID,
+    SYSTEM_MARKER,
+    bundle_version,
+    bundled_definitions,
+    seed_native_builder,
+)
+from .export import (
+    AGENTS_SDK_GUIDE,
+    CREDENTIAL_MARK,
+    ExportRead,
+    export_state,
+    read_export,
+    scrub_credentials,
+)
 
 __all__ = [
     "seed_native_builder",
+    "bundled_definitions",
+    "bundle_version",
     "NATIVE_BUILDER_ORCH_ID",
     "NATIVE_BUILDER_AGENT_ID",
+    "BUILDER_RUN_PREFIX",
+    "SYSTEM_MARKER",
     "STEP_TYPE_CHEATSHEET",
+    "KNOWLEDGE_STEPS_PALETTE",
+    "AGENTS_SDK_GUIDE",
+    "CREDENTIAL_MARK",
+    "ExportRead",
+    "export_state",
+    "read_export",
+    "scrub_credentials",
 ]
 
 
@@ -24,22 +55,23 @@ __all__ = [
 # their zero-defaults (`route_map: {}`, `parallel_branches: []`, etc.) so the
 # engine deserialises cleanly.
 STEP_TYPE_CHEATSHEET = """\
-- **agent**: runs a configured sub-agent with a prompt + its tool set. Required: `agent_id`, `prompt_template`. Optional: `include_full_history` (bool) — default behaviour auto-shows full revision history on any re-run; set this to `false` only if you need to keep the prompt small. Use for any step that needs multi-turn reasoning or tool use.
+- **agent**: runs a configured sub-agent with a prompt + its tool set. Required: `agent_id`, `prompt_template`. An agent step can also run another orchestration as a sub-workflow: its `agent_id` is that orchestration's deployed agent (type `orchestrator`), and the step's rendered `prompt_template` is the sub-workflow's input. Only an orchestration that exists can be one — reuse its agent from `list_agents`, or deploy it with `deploy_orchestration(orch_id)`. Optional: `include_full_history` (bool) — default behaviour auto-shows full revision history on any re-run; set this to `false` only if you need to keep the prompt small. Optional: `pass_images` (bool, "Sees attachments") — the images a person attaches in chat reach this step; set it on the step that should read them, on a model that can see (chat offers Attach only when some step has it). Use for any step that needs multi-turn reasoning or tool use.
 - **llm**: single one-shot LLM call, no tools. Required: `prompt_template` (optional `model`). Use for lightweight summarisation, rewriting, or deterministic prose generation.
 - **tool**: forces a single tool call with no LLM reasoning. Required: `forced_tool` (+ `agent_id` for tool-resolution). Use when the arguments are already in state and just need forwarding.
 - **evaluator**: pure routing node. Required: `route_map_json` (JSON-encoded `{label: target_step_id}`), `route_descriptions_json` (JSON), `evaluator_prompt`. Output_key stores the bare route label. Use to fork on a classifier decision.
-- **parallel**: runs multiple branches concurrently. Required: `parallel_branches_json` (JSON-encoded list of step-id lists), `next_step_id` (where they converge). Use when independent work can overlap.
-- **merge**: combines parallel-branch outputs. Required: `merge_strategy` (`concat` | `list` | `dict`). Place immediately after a parallel's convergence.
-- **loop**: runs a body N times. Required: `loop_step_ids` (ordered body), `loop_count`. Use for fixed repetition; for conditional loops use an evaluator that routes back.
-- **human**: pauses for user input. Required: `human_prompt`, `human_fields_json` (JSON-encoded list of `{name, type, label}`). Output_key stores the response dict.
-- **transform**: runs a snippet of Python against state. Required: `transform_code` — reads `state`, assigns to `result`. Use for pure-data reshapes; avoid heavy logic.
+- **parallel**: runs multiple branches concurrently. Required: `parallel_branches_json` (JSON-encoded list of step-id lists), `next_step_id` — the join, which MUST be a `merge` step. A branch follows its entry step's `next_step_id` chain until it reaches that join, so leaving it empty makes every branch run the whole rest of the orchestration, one after another, until one reaches `end` and takes the run with it. Each branch's last step points at the same merge. Use when independent work can overlap.
+- **merge**: combines parallel-branch outputs. Required: `merge_strategy` (`concat` | `list` | `dict`). Every parallel needs one as its `next_step_id`; the merge's own `next_step_id` carries the flow on.
+- **loop**: repeats a body. Required: `loop_step_ids` (ordered body). Pick ONE mode: `loop_count` (fixed repetition); `loop_over` — an expression yielding a list, e.g. `state.tickets`, which runs the body once per item and writes each to `loop_item_key` (default `loop_item`); or `loop_while_condition` — an expression re-checked before each iteration. Every mode writes the iteration's 0-based position to `loop_index_key` (default `loop_index`). `loop_break_condition` stops any of them early, `loop_max_iterations` caps all of them (default 50). Prefer these over an evaluator that routes backwards: a back-edge is capped by the target step's `max_iterations` (default 3). A loop body runs exactly the steps in `loop_step_ids`, in order — routing steps (`if_else`/`switch`/`evaluator`) and `human` steps do not belong inside one.
+- **human**: pauses for user input. Required: `human_prompt`, `human_fields_json` (JSON-encoded list of `{name, type, label}`). The answer is stored under `output_key` as a mapping `{field name: value}`, so name the output_key for the step (e.g. `review`), never after one of its fields, declare it `dict` in the state schema, and read one field as `{{ state.review.final_summary }}`; `{{ state.review }}` alone prints the whole mapping.
+- **extract_json**: pulls JSON out of text, with no model call. Required: `input_keys` (the text to read) and `output_key`. Put one after any `llm` or `agent` step whose output a later step reads as a list or an object: a model writes text, and a numbered list written as text is not a list — a transform indexing it indexes characters. Ask the model step for JSON, then extract it here into the key declared `list`/`dict`.
+- **transform**: runs a snippet of Python against state. Required: `transform_code` — reads `state.key` (or `state["key"]`), assigns to `result`. Use for pure-data reshapes; avoid heavy logic. A Vault file is read in the code with `read_vault("path/in/vault.csv")` (the path written out): a `vault_read` step's answer in state is JSON `{"path", "content"}`, not the file.
 - **end**: terminates the orchestration. No type-specific fields. Every flow must reach an `end` step.
 
 JSON-string fields (the saver's tool schemas accept these as JSON-encoded strings — Gemini hangs on open objects, so these are passed as strings and parsed server-side):
 - `route_map_json` → object mapping decision label → target step_id. Empty string ends that branch. Example: `'{"approved":"step_abc1234","denied":""}'`
 - `route_descriptions_json` → object mapping label → short classifier hint. Example: `'{"approved":"User accepts the draft"}'`
 - `parallel_branches_json` → array of arrays of step ids. Example: `'[["step_a","step_b"],["step_c"]]'`
-- `human_fields_json` → array of `{name, type, label}` objects. Example: `'[{"name":"approved","type":"boolean","label":"Approve?"}]'`
+- `human_fields_json` → array of `{name, type, label}` objects; `type` is one of string, textarea, number, boolean, email, date, phone, choice (a dropdown: add `options`, a list of strings, one of which is picked). Example: `'[{"name":"approved","type":"boolean","label":"Approve?"},{"name":"when","type":"date","label":"Start date"}]'`
 - `state_schema_json` (orchestration-level) → object mapping key → `{type, default, description}`. Allowed types: str, int, float, bool, list, dict. Example: `'{"user_input":{"type":"str","default":"","description":"Initial message"}}'`
 
 Wiring rules that apply to every step:
@@ -50,11 +82,23 @@ Wiring rules that apply to every step:
 - For tool steps, confirm the tool exists via `get_tools_detail` before naming it in `forced_tool`.
 
 State lifecycle rules (CRITICAL — think of state keys as step outputs):
-- `user_input` and `user_query` are ALWAYS pre-populated with the user's initial message before any step runs. Use either freely in `input_keys` or `{state.user_input}` / `{state.user_query}` in `prompt_template`.
+- `user_input` and `user_query` are ALWAYS pre-populated with the user's initial message before any step runs. Use either freely in `input_keys` or `{{ state.user_input }}` / `{{ state.user_query }}` in `prompt_template`.
 - Every other state key enters state via exactly one mechanism: some step's `output_key` writes it. Keys that no step writes are meaningless — they can only ever be their schema default.
-- HARD RULE: a key may appear in a step's `input_keys` (or be referenced as `{state.X}` in a prompt) only if ONE of these holds:
+- HARD RULE: a key may appear in a step's `input_keys` (or be referenced as `{{ state.X }}` in a prompt) only if ONE of these holds:
   (a) X is `user_input` or `user_query`, OR
   (b) Some step in the orchestration has `output_key: X`.
-- Branch conditioning is NOT the validator's concern. If a key's producer sits on one branch and a downstream step on another branch still reads it, that's fine — the engine falls back to the schema default on unset reads. Iterative refinement loops (first pass reads the default, subsequent passes read real data) are first-class patterns.
+- Branch conditioning is NOT the validator's concern. If a key's producer sits on one branch and a downstream step on another branch still reads it, that's fine — an unset read gets the schema default, and with none a prompt reads it empty. Iterative refinement loops (first pass reads the default, subsequent passes read real data) are first-class patterns: give the key a default when the first pass should read something, and `validate_orchestration` lists such reads under `warnings`, which never block.
 - When designing `state_schema`, for each declared key you must be able to name the single step whose `output_key` writes it. If you cannot name the writer, delete the key — don't declare or read phantom keys.
+"""
+
+
+# Knowledge's two step types (R1), for the builder's planner only while Knowledge is on: `routes/builder.py` puts
+# this in the run's `knowledge_steps` state key (empty while off), which the planner's step reads. Written in the
+# Plan's own fields (SAI2-P3): a step's `config` carries the engine's `retrieve` / `ingest` settings, and the knowledge
+# bases come by id from the planner's pack. Kept out of the step guide so a workspace without Knowledge is never
+# offered steps that would fail its runs.
+KNOWLEDGE_STEPS_PALETTE = """\
+Knowledge steps — this workspace can also search its documents; its knowledge bases are listed by id with what it has:
+- **retrieve**: searches knowledge bases, with no model call. Its `config` is `{"retrieve": {"kb_ids": [...], "query": "..."}}`: the ids from the list, and what to look for, with `{{ state.key }}` placeholders, e.g. `{{ state.user_input }}`. Optional in it: `filters` (a metadata filter such as `{"doc_type": "contract"}`), `top_k`, `rerank`. Its output holds `{context, chunks, citations}`: a later agent or llm step reads the passages as `{{ state.<step id>.context }}` in its prompt — double braces, because a single-brace reference reads only a top-level key. Use it to ground an answer in the workspace's own documents.
+- **ingest**: adds records to a knowledge base so later searches find them, with no model call. Its `config` is `{"ingest": {"kb_id": "...", "records_from": "<a step id>"}}`, where that step's output is a list of objects (put an `extract_json` step after a model step to make one). Optional in it: `id_field` (the same id replaces its record), `text_field`, `metadata_fields`. Indexing happens after the step, so a retrieve in the same run may not find what it just added.
 """

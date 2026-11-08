@@ -18,6 +18,7 @@ _coco_import_error: str | None = None
 try:
     import cocoindex
     import psycopg
+    from psycopg import sql
     import numpy as np
     from numpy.typing import NDArray
     from cocoindex.typing import VectorInfo
@@ -36,6 +37,8 @@ except ImportError as _coco_import_err:
 
 # Lock for repos.json read/write
 _repos_lock = threading.Lock()
+#: The event loop that started indexing — see _update_repo_status.
+_owner_loop: 'asyncio.AbstractEventLoop | None' = None
 
 # Cache of active CocoIndex Flow objects
 _active_flows: dict[str, object] = {}
@@ -47,6 +50,13 @@ _embedding_fn_cache: dict[tuple[str, int], Any] = {}
 _stop_events: dict[str, threading.Event] = {}
 # Active index threads so we can check is_alive()
 _active_threads: dict[str, threading.Thread] = {}
+
+#: What this pass embedded, by model: [estimated tokens, texts] (F394). Added up
+#: on CocoIndex's thread and written as one usage row from the owner's loop when
+#: the pass ends — `embed_batch` returns vectors only, so the tokens are counted
+#: from the text.
+_embedded_this_pass: dict[str, list[int]] = {}
+_embedded_lock = threading.Lock()
 
 def _get_db_url() -> str:
     """Always read the database URL from settings.json (never from the environment).
@@ -182,7 +192,9 @@ def probe_embedding_dim(model: str, settings: dict) -> int:
             result = new_loop.run_until_complete(embed_batch(["dimension probe"], model, probe_settings))
         finally:
             new_loop.close()
-        if result and len(result[0]) > 0:
+        # `embed_batch` answers a failed call with zeros, whose length is a
+        # default, not the model's width: refuse it (B2a, D163).
+        if result and len(result[0]) > 0 and any(result[0]):
             dim = len(result[0])
             print(f"[index] Probed embedding dim for '{model}': {dim}")
             return dim
@@ -220,6 +232,7 @@ def get_embedding_fn(model: str, dim: int):
                 embeddings = new_loop.run_until_complete(embed_batch(texts, current_model, cfg))
             finally:
                 new_loop.close()
+            _count_embedded(current_model, texts)
         except Exception as e:
             print(f"ERROR: embed call failed: {e}")
             traceback.print_exc()
@@ -332,7 +345,7 @@ def _ensure_database_exists():
             with conn.cursor() as cur:
                 cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (db_name,))
                 if not cur.fetchone():
-                    cur.execute(f'CREATE DATABASE "{db_name}"')
+                    cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(db_name)))
                     print(f"Created database '{db_name}'.")
     except Exception as e:
         print(f"Warning: could not ensure database exists: {e}")
@@ -359,7 +372,7 @@ def get_index_status(repo_id: str) -> dict:
                 cur.execute("SELECT to_regclass(%s);", (f"public.{table_name}",))
                 if not cur.fetchone()[0]:
                     return {"status": "pending", "count": 0}
-                cur.execute(f'SELECT COUNT(*) FROM "{table_name}"')
+                cur.execute(sql.SQL("SELECT COUNT(*) FROM {}").format(sql.Identifier(table_name)))
                 count = cur.fetchone()[0]
                 return {"status": "indexed", "count": count}
     except Exception as e:
@@ -402,8 +415,10 @@ def drop_index(repo_id: str):
     try:
         with psycopg.connect(_get_db_url()) as conn:
             with conn.cursor() as cur:
-                cur.execute(f'DROP TABLE IF EXISTS "{table_name}" CASCADE;')
-                cur.execute(f'DROP TABLE IF EXISTS "{tracking}" CASCADE;')
+                # Names, never SQL: a repo's id is the client's (F1479's sibling, F1480), so each is quoted as an
+                # identifier by psycopg, never pasted in.
+                for name in (table_name, tracking):
+                    cur.execute(sql.SQL("DROP TABLE IF EXISTS {} CASCADE").format(sql.Identifier(name)))
                 # cocoindex_setup_metadata is created lazily by cocoindex.init() —
                 # it won't exist on a fresh installation.  Use a SAVEPOINT so a
                 # missing table is a silent no-op that doesn't affect the DROPs above.
@@ -420,19 +435,71 @@ def drop_index(repo_id: str):
         print(f"Warning during drop_index({repo_id}): {e}")
 
 
+async def _write_repo_status(repo_id: str, fields: dict) -> None:
+    from core.store import collections
+
+    repos = await collections.load("repos")
+    for r in repos:
+        if r.get("id") == repo_id:
+            r.update(fields)
+            break
+    else:
+        return
+    await collections.save("repos", repos, key_field="path")
+
+
+def _count_embedded(model: str, texts: list[str]) -> None:
+    from core.usage_tracker import estimate_tokens
+
+    with _embedded_lock:
+        tally = _embedded_this_pass.setdefault(model, [0, 0])
+        tally[0] += estimate_tokens(texts)
+        tally[1] += len(texts)
+
+
+def _record_embedded() -> None:
+    """One usage row per model for what the pass embedded (F394), on the owner's loop."""
+    with _embedded_lock:
+        tallies = dict(_embedded_this_pass)
+        _embedded_this_pass.clear()
+    loop = _owner_loop
+    if not tallies or loop is None or loop.is_closed():
+        return
+    from core import usage_tracker
+    from core.providers.registry import provider_for
+
+    for model, (tokens, texts) in tallies.items():
+        future = asyncio.run_coroutine_threadsafe(usage_tracker.log_embedding(
+            model=model, provider=provider_for(model).id, source="code_index",
+            input_tokens=tokens, texts=texts, estimated=True), loop)
+        try:
+            future.result(timeout=10)
+        except Exception as e:
+            print(f"Warning: the indexing pass's usage row was not written: {e}")
+
+
 def _update_repo_status(repo_id: str, **fields):
-    repos_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "repos.json")
-    if not os.path.exists(repos_file):
+    """Record indexing progress from the indexer thread.
+
+    Indexing runs in a plain daemon thread with no event loop of its own, so
+    the write is submitted to the loop that started it. Running the coroutine
+    on a fresh loop here instead would bind the store's engine to a loop that
+    dies with the thread, which surfaces much later as "Event loop is closed"
+    against whatever unrelated request is running at the time.
+
+    This used to write `backend/data/repos.json` directly — a second writer for
+    a collection that had already moved into the store, so indexing status
+    updates were going to a file nothing reads.
+    """
+    loop = _owner_loop
+    if loop is None or loop.is_closed():
         return
     with _repos_lock:
-        with open(repos_file, "r", encoding="utf-8") as f:
-            repos = json.load(f)
-        for r in repos:
-            if r["id"] == repo_id:
-                r.update(fields)
-                break
-        with open(repos_file, "w", encoding="utf-8") as f:
-            json.dump(repos, f, indent=4)
+        future = asyncio.run_coroutine_threadsafe(_write_repo_status(repo_id, fields), loop)
+        try:
+            future.result(timeout=10)
+        except Exception as e:
+            print(f"Warning: could not record repo status for {repo_id}: {e}")
 
 
 def run_index_task(repo_id: str, repo_path: str, included_patterns: list[str], excluded_patterns: list[str], full_reindex: bool = True):
@@ -541,6 +608,8 @@ def run_index_task(repo_id: str, repo_path: str, included_patterns: list[str], e
             traceback.print_exc()
             _update_repo_status(repo_id, status="error", error_message=str(e)[:500])
     finally:
+        # Spent whether the pass finished, stopped or failed.
+        _record_embedded()
         _active_threads.pop(repo_id, None)
         # Close the CocoIndex flow to release its internal DB connections.
         # Without this, each indexed repo holds persistent connections and
@@ -566,6 +635,14 @@ def stop_index(repo_id: str) -> bool:
 
 
 def run_index(repo_id: str, repo_path: str, included_patterns: list[str], excluded_patterns: list[str], full_reindex: bool = True):
+    global _owner_loop
+    try:
+        # Captured here, on the caller's thread, because the indexer thread has
+        # no loop to find one from. See _update_repo_status.
+        _owner_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _owner_loop = None
+
     t = threading.Thread(
         target=run_index_task,
         args=(repo_id, repo_path, included_patterns, excluded_patterns, full_reindex),

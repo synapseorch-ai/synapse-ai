@@ -16,6 +16,7 @@ async def list_tools() -> list[types.Tool]:
     return [
         types.Tool(
             name="get_personal_details",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "Get saved personal details (name, email, phone, address) from the system. "
                 "Use when you need the user's details to complete a workflow."

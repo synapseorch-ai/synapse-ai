@@ -1,0 +1,425 @@
+"""The web scraper must not reach private networks.
+
+`web_scraper`'s seven tools all fetch model-supplied URLs through Chromium
+from inside the worker task. On cloud runtimes the task metadata endpoint
+(169.254.170.2 / 169.254.169.254) turns one prompt-injected URL into live
+credentials, and everything else on the subnet — loopback services, RFC1918
+neighbours — relies on being unreachable from outside.
+
+Two layers are under test, because a URL-string check alone is bypassable
+from inside the browser (redirect hops, `js_code` navigation, in-page
+fetches):
+
+  * `core.egress_guard` — the address policy and the pre-flight `check_url`
+  * `tools.web_scraper._guard_route` — the Playwright route interceptor that
+    aborts blocked requests at the browser's own network layer
+
+Plus the success-derivation fix that rode along: `crawl_multiple` and
+`scrape_with_session` used to report top-level ``success: true`` even when
+every URL or step had failed.
+"""
+from __future__ import annotations
+
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from core import egress_guard
+from core.egress_guard import BlockedEgress, check_host, check_url, reject_address
+from tools import web_scraper
+
+
+@pytest.fixture(autouse=True)
+def _clean_guard_state(monkeypatch):
+    monkeypatch.delenv("EGRESS_ALLOW_HOSTS", raising=False)
+    egress_guard._resolve_cache.clear()
+    yield
+    egress_guard._resolve_cache.clear()
+
+
+# ---------------------------------------------------------------------------
+# Address policy
+# ---------------------------------------------------------------------------
+
+BLOCKED_ADDRESSES = [
+    "169.254.170.2",        # ECS task credentials endpoint
+    "169.254.169.254",      # EC2/IMDS metadata endpoint
+    "10.0.0.1",             # RFC1918
+    "172.16.0.1",           # RFC1918
+    "192.168.1.1",          # RFC1918
+    "127.0.0.1",            # loopback
+    "0.0.0.0",              # unspecified
+    "100.64.0.1",           # carrier-grade NAT / k8s overlays
+    "224.0.0.1",            # multicast
+    "::1",                  # IPv6 loopback
+    "::ffff:169.254.170.2", # IPv4-mapped — must unwrap before range checks
+    "fe80::1",              # IPv6 link-local
+    "fc00::1",              # IPv6 ULA
+    "fd00:ec2::254",        # EC2 IPv6 metadata endpoint (inside fc00::/7)
+]
+
+ALLOWED_ADDRESSES = [
+    "93.184.216.34",         # example.com
+    "8.8.8.8",
+    "2606:2800:220:1:248:1893:25c8:1946",
+]
+
+
+@pytest.mark.parametrize("address", BLOCKED_ADDRESSES)
+def test_private_and_special_addresses_are_rejected(address):
+    assert reject_address(address) is not None
+
+
+@pytest.mark.parametrize("address", ALLOWED_ADDRESSES)
+def test_public_addresses_are_allowed(address):
+    assert reject_address(address) is None
+
+
+def test_non_ip_input_is_rejected():
+    assert reject_address("not-an-ip") is not None
+
+
+# ---------------------------------------------------------------------------
+# check_url / check_host
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("url", [
+    "file:///etc/passwd",
+    "raw://<html></html>",
+    "about:blank",
+    "chrome://settings",
+    "javascript:alert(1)",
+    "",
+])
+async def test_non_http_schemes_are_rejected(url):
+    with pytest.raises(BlockedEgress):
+        await check_url(url)
+
+
+async def test_url_without_host_is_rejected():
+    with pytest.raises(BlockedEgress):
+        await check_url("http:///path-only")
+
+
+@pytest.mark.parametrize("url", [
+    "http://169.254.170.2/v2/credentials",
+    "http://[::ffff:169.254.170.2]/",
+    "https://10.0.0.8:8080/admin",
+    "http://[::1]:6379/",
+])
+async def test_literal_private_urls_are_rejected(url):
+    with pytest.raises(BlockedEgress) as exc:
+        await check_url(url)
+    # The reason is echoed; the resolved topology is not.
+    assert "blocked range" in str(exc.value)
+
+
+async def test_hostname_with_one_private_record_is_rejected(monkeypatch):
+    """A name with one public and one private A record must not pass."""
+    async def fake_resolve(host):
+        return ["93.184.216.34", "10.0.0.5"]
+
+    monkeypatch.setattr(egress_guard, "resolve", fake_resolve)
+    with pytest.raises(BlockedEgress):
+        await check_host("evil.example.com")
+
+
+async def test_hostname_with_only_public_records_passes(monkeypatch):
+    async def fake_resolve(host):
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(egress_guard, "resolve", fake_resolve)
+    await check_host("example.com")  # must not raise
+
+
+async def test_unresolvable_hostname_is_rejected(monkeypatch):
+    async def fake_resolve(host):
+        raise BlockedEgress(f"could not resolve {host}")
+
+    monkeypatch.setattr(egress_guard, "resolve", fake_resolve)
+    with pytest.raises(BlockedEgress):
+        await check_host("no-such-host.invalid")
+
+
+async def test_allowlisted_host_is_exempt(monkeypatch):
+    monkeypatch.setenv("EGRESS_ALLOW_HOSTS", "localhost, intranet.corp")
+    # Exempt hosts skip resolution entirely — no DNS in this test.
+    await check_host("localhost")
+    await check_host("INTRANET.CORP")
+    with pytest.raises(BlockedEgress):
+        await check_host("127.0.0.1")  # a literal address is not the same exemption
+
+
+# ---------------------------------------------------------------------------
+# Browser-layer route guard
+# ---------------------------------------------------------------------------
+
+class FakeRoute:
+    def __init__(self, url: str):
+        self.request = SimpleNamespace(url=url)
+        self.aborted_with: str | None = None
+        self.continued = False
+
+    async def abort(self, error_code: str = "failed"):
+        self.aborted_with = error_code
+
+    async def continue_(self):
+        self.continued = True
+
+
+@pytest.mark.parametrize("url", [
+    "http://169.254.170.2/v2/credentials",
+    "http://192.168.1.1/router",
+    "http://127.0.0.1:8000/api/scale/tenants",
+    "file:///etc/passwd",
+])
+async def test_guard_route_aborts_blocked_requests(url):
+    route = FakeRoute(url)
+    await web_scraper._guard_route(route)
+    assert route.aborted_with == "blockedbyclient"
+    assert not route.continued
+
+
+async def test_guard_route_continues_public_requests():
+    route = FakeRoute("https://93.184.216.34/page")
+    await web_scraper._guard_route(route)
+    assert route.continued
+    assert route.aborted_with is None
+
+
+async def test_a_data_url_is_aborted_at_the_route():
+    """Not a URL the guard can judge, so the route aborts it, never continues it (1.9.2's
+    test_the_browser_layer_aborts_what_the_preflight_cannot_see; F1463)."""
+    route = FakeRoute("data:text/html,hi")
+    await web_scraper._guard_route(route)
+    assert route.aborted_with == "blockedbyclient"
+    assert not route.continued
+
+
+async def test_guard_route_fails_closed_on_resolution_failure(monkeypatch):
+    async def fake_resolve(host):
+        raise OSError("resolver exploded")
+
+    monkeypatch.setattr(egress_guard, "resolve", fake_resolve)
+    route = FakeRoute("https://example.com/")
+    await web_scraper._guard_route(route)
+    assert route.aborted_with == "blockedbyclient"
+
+
+class FakeContext:
+    def __init__(self):
+        self.routes: list = []
+
+    async def route(self, pattern, handler):
+        self.routes.append((pattern, handler))
+
+
+async def test_egress_guard_attaches_once_per_context():
+    ctx = FakeContext()
+    page = SimpleNamespace(context=ctx)
+    await web_scraper._attach_egress_guard(page, context=ctx)
+    await web_scraper._attach_egress_guard(page, context=ctx)  # session reuse
+    assert len(ctx.routes) == 1
+    assert ctx.routes[0][1] is web_scraper._guard_route
+
+
+# ---------------------------------------------------------------------------
+# Handler pre-flight and success derivation
+# ---------------------------------------------------------------------------
+
+def _payload(result) -> dict:
+    return json.loads(result[0].text)
+
+
+class FakeCrawler:
+    """arun succeeds or fails per-URL according to `outcomes`."""
+
+    def __init__(self, outcomes: dict[str, bool]):
+        self.outcomes = outcomes
+        self.seen: list[str] = []
+
+    async def arun(self, url: str, config=None):
+        self.seen.append(url)
+        ok = self.outcomes.get(url, True)
+        return SimpleNamespace(
+            success=ok,
+            markdown="# page" if ok else "",
+            links={},
+            media={},
+            error_message=None if ok else "boom",
+            extracted_content=None,
+            screenshot=None,
+        )
+
+
+@pytest.fixture
+def fake_crawler(monkeypatch):
+    def install(outcomes: dict[str, bool]) -> FakeCrawler:
+        crawler = FakeCrawler(outcomes)
+
+        async def fake_get_crawler():
+            return crawler
+
+        monkeypatch.setattr(web_scraper, "get_crawler", fake_get_crawler)
+        return crawler
+
+    return install
+
+
+async def test_scrape_url_preflight_blocks_metadata_endpoint(fake_crawler):
+    crawler = fake_crawler({})
+    payload = _payload(await web_scraper._handle_scrape_url(
+        {"url": "http://169.254.170.2/v2/credentials"}
+    ))
+    assert payload["success"] is False
+    assert "blocked" in payload["error"].lower()
+    assert crawler.seen == []  # never reached the browser
+
+
+async def test_crawl_multiple_all_fail_is_failure(fake_crawler):
+    fake_crawler({})
+    payload = _payload(await web_scraper._handle_crawl_multiple(
+        {"urls": ["http://10.0.0.1/", "http://192.168.0.1/"]}
+    ))
+    assert payload["success"] is False
+    assert payload["succeeded"] == 0
+    assert payload["failed"] == 2
+    assert all(not r["success"] for r in payload["results"])
+
+
+async def test_crawl_multiple_partial_success_keeps_counts(fake_crawler):
+    crawler = fake_crawler({"https://93.184.216.34/": True})
+    payload = _payload(await web_scraper._handle_crawl_multiple(
+        {"urls": ["https://93.184.216.34/", "http://169.254.170.2/"]}
+    ))
+    assert payload["success"] is True
+    assert payload["succeeded"] == 1
+    assert payload["failed"] == 1
+    assert crawler.seen == ["https://93.184.216.34/"]  # blocked URL never fetched
+
+
+async def test_crawl_multiple_upstream_failures_count(fake_crawler):
+    fake_crawler({"https://93.184.216.34/": False, "https://8.8.8.8/": False})
+    payload = _payload(await web_scraper._handle_crawl_multiple(
+        {"urls": ["https://93.184.216.34/", "https://8.8.8.8/"]}
+    ))
+    assert payload["success"] is False
+    assert payload["failed"] == 2
+
+
+async def test_session_step_to_private_url_fails_that_step(fake_crawler):
+    fake_crawler({"https://93.184.216.34/login": True})
+    payload = _payload(await web_scraper._handle_scrape_with_session({
+        "session_id": "s1",
+        "steps": [
+            {"url": "https://93.184.216.34/login"},
+            {"url": "http://169.254.170.2/v2/credentials"},
+        ],
+    }))
+    assert payload["success"] is False
+    assert payload["results"][0]["success"] is True
+    assert payload["results"][1]["success"] is False
+    assert "blocked" in payload["results"][1]["error"].lower()
+
+
+async def test_session_all_steps_succeed(fake_crawler):
+    fake_crawler({})
+    payload = _payload(await web_scraper._handle_scrape_with_session({
+        "session_id": "s2",
+        "steps": [
+            {"url": "https://93.184.216.34/a"},
+            {"url": "https://93.184.216.34/b"},
+        ],
+    }))
+    assert payload["success"] is True
+    assert payload["steps_completed"] == 2
+
+
+# ── The host's egress proxy (F580) ───────────────────────────────────────────────────────────────────────────────
+#
+# Cloud's worker hands HTTP(S)_PROXY to this process (I1's Smokescreen, which refuses any address that is not
+# public), but Chromium reads no proxy variables: every scrape left the worker directly. The browser now takes the
+# environment's proxy explicitly, NO_PROXY unread, as Knowledge's fetch does.
+
+def _proxy_env(monkeypatch, **values):
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+
+
+def _server(config):
+    proxy = getattr(config, "proxy_config", None)
+    return getattr(proxy, "server", None) or (proxy.get("server") if isinstance(proxy, dict) else None)
+
+
+def test_the_browser_goes_through_the_hosts_egress_proxy(monkeypatch):
+    _proxy_env(monkeypatch, HTTPS_PROXY="http://egress-proxy:4750", HTTP_PROXY="http://egress-proxy:4750",
+               NO_PROXY="localhost,postgres,example.com")
+    assert _server(web_scraper.browser_config()) == "http://egress-proxy:4750"
+
+
+def test_no_proxy_never_lets_a_page_skip_it(monkeypatch):
+    """NO_PROXY names the platform's own hosts; an agent's page is never one, so the browser keeps the proxy."""
+    _proxy_env(monkeypatch, https_proxy="http://egress-proxy:4750", no_proxy="*")
+    assert _server(web_scraper.browser_config()) == "http://egress-proxy:4750"
+
+
+def test_the_scrapers_browser_sends_no_udp_round_the_proxy(monkeypatch):
+    """QUIC is UDP and no proxy carries it, and WebRTC's UDP leaves beside the proxy, so the scraper's Chromium starts
+    with both off, with the host's proxy or Synapse's own (1.9.3's 2bcff21f, held for the built-in browser by
+    test_browser_component; F1463 for the scraper's)."""
+    from core import egress_proxy
+
+    assert "--disable-quic" in egress_proxy.CHROMIUM_ARGS
+    assert "--force-webrtc-ip-handling-policy=disable_non_proxied_udp" in egress_proxy.CHROMIUM_ARGS
+    _proxy_env(monkeypatch)
+    for config in (web_scraper.browser_config(), web_scraper.browser_config("http://127.0.0.1:1")):
+        assert set(egress_proxy.CHROMIUM_ARGS) <= set(config.extra_args)
+
+
+def test_with_no_proxy_set_self_hosted_is_unchanged(monkeypatch):
+    _proxy_env(monkeypatch)
+    assert _server(web_scraper.browser_config()) is None
+
+
+# ── A wait for an element that never appears (F569, SUB1b's number; fixed by BWA1) ──────────────────────────────
+#
+# `wait_for` on something that never appears (`title`, `head`, a missing selector) held every call for crawl4ai's
+# full 60 s page timeout and then failed it; gpt-4.1-mini reaches for it unprompted, so a 1-credit turn billed 4-5.
+# The wait now gives up after WAIT_FOR_TIMEOUT_MS, and the page comes back as it was, saying the wait missed.
+
+class _Crawler:
+    def __init__(self):
+        self.calls = []
+
+    async def arun(self, url, config):
+        self.calls.append(getattr(config, "wait_for", None))
+        if getattr(config, "wait_for", None):
+            return SimpleNamespace(success=False, error_message="Wait condition failed: Timeout 10000ms exceeded")
+        return SimpleNamespace(success=True, error_message=None, markdown="the page")
+
+
+def test_a_wait_gives_up_quickly():
+    config = web_scraper._build_run_config(wait_for="css:.never-there")
+    assert config.wait_for_timeout == web_scraper.WAIT_FOR_TIMEOUT_MS <= 10_000
+
+
+async def test_a_wait_that_misses_returns_the_page_as_it_was():
+    crawler = _Crawler()
+    result = await web_scraper._arun(crawler, "https://example.com/", web_scraper._build_run_config(wait_for="title"))
+    assert result.success and result.markdown == "the page"
+    assert crawler.calls == ["title", None], "one more fetch, without the wait"
+    assert "title" in result.wait_missed
+
+
+async def test_any_other_failure_is_left_as_it_is():
+    class Broken(_Crawler):
+        async def arun(self, url, config):
+            self.calls.append(1)
+            return SimpleNamespace(success=False, error_message="net::ERR_NAME_NOT_RESOLVED")
+
+    crawler = Broken()
+    result = await web_scraper._arun(crawler, "https://nowhere.invalid/", web_scraper._build_run_config(wait_for="h1"))
+    assert not result.success and crawler.calls == [1]

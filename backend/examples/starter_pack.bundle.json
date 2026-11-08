@@ -289,7 +289,7 @@
           "timeout_seconds": 600,
           "allowed_tools": null,
           "next_step_id": "step_eval_research",
-          "max_iterations": 3,
+          "max_iterations": 5,
           "position_x": -800.0,
           "position_y": 0.0
         },
@@ -327,7 +327,7 @@
           "timeout_seconds": 300,
           "allowed_tools": null,
           "next_step_id": null,
-          "max_iterations": 3,
+          "max_iterations": 5,
           "position_x": -500.0,
           "position_y": 0.0
         },
@@ -366,7 +366,7 @@
           "timeout_seconds": 300,
           "allowed_tools": null,
           "next_step_id": "step_research",
-          "max_iterations": 3,
+          "max_iterations": 5,
           "position_x": -500.0,
           "position_y": 300.0
         },

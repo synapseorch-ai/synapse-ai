@@ -1,13 +1,25 @@
-import type { Metadata } from "next";
-import { Geist, Geist_Mono, Inter, JetBrains_Mono, IBM_Plex_Sans } from "next/font/google";
+import type { Metadata, Viewport } from "next";
+import { Geist_Mono, Inter } from "next/font/google";
 // @ts-ignore: CSS module declarations are not present in this repo setup
 import "./globals.css";
 import { StoreProvider } from "./StoreProvider";
-import { NotificationProvider } from "@/components/notifications/NotificationProvider";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+/*
+ * Two families, and only two.
+ *
+ * Inter is the UI font — every label, heading, button and nav item. Geist Mono
+ * is for content that is genuinely code: log output, API keys, run ids, JSON.
+ * Geist Sans, JetBrains Mono and IBM Plex Sans used to be downloaded here too;
+ * two were referenced by nothing at all and the third only by six chat bubbles,
+ * which is what made two near-identical sans faces sit side by side.
+ */
+// With its optical-size axis (14–32): a page title at 28px is drawn from the
+// display cut, tighter and finer, and body text from the text cut. The browser
+// picks the size from font-size (`font-optical-sizing: auto`).
+const inter = Inter({
+  variable: "--font-inter",
   subsets: ["latin"],
+  axes: ["opsz"],
 });
 
 const geistMono = Geist_Mono({
@@ -15,26 +27,50 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-const inter = Inter({
-  variable: "--font-inter",
-  subsets: ["latin"],
-});
-
-const jetbrainsMono = JetBrains_Mono({
-  variable: "--font-jetbrains-mono",
-  subsets: ["latin"],
-});
-
-const ibmPlexSans = IBM_Plex_Sans({
-  variable: "--font-ibm-plex-sans",
-  subsets: ["latin"],
-  weight: ["300", "400", "500", "600", "700"],
-});
-
+// The product's name; "Synapse AI" is the assistant inside it (F829).
 export const metadata: Metadata = {
-  title: "Synapse AI",
-  description: "Synapse AI",
+  title: "SynapseOrch",
+  description: "AI automation you can read, approve and rely on.",
 };
+
+/*
+ * The browser's chrome takes the frame's colour (`--frame` in tokens.css): the
+ * light frame on a light OS, the dark one on a dark OS, from the first paint.
+ * The app shell rewrites it when someone picks a theme against their OS.
+ */
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#ebf1f7" },
+    { media: "(prefers-color-scheme: dark)", color: "#080c10" },
+  ],
+};
+
+/*
+ * The theme, before the first paint (F220).
+ *
+ * The app shell applies the saved theme after hydration, so a light or system
+ * theme used to paint dark first on every load. This runs while <head> is
+ * parsed, so the first frame already has `data-theme`, and the `color-scheme`
+ * that `tokens.css` sets with it makes scrollbars, selects and date pickers
+ * follow. The shell still owns the attribute afterwards: it applies a change,
+ * follows the OS and clears it on leaving. The rule is `lib/theme.ts`'s:
+ * nothing saved, or `system`, follows the OS.
+ *
+ * Not on /login (dark by design) or /embed/* (a widget is themed by its own
+ * settings, and a `color-scheme` there would stop the iframe being
+ * transparent over a light host page). Without the attribute both take the
+ * dark tokens and no `color-scheme`.
+ */
+const THEME_BEFORE_PAINT = `(function () {
+  try {
+    var path = location.pathname;
+    if (path === '/login' || path.indexOf('/login/') === 0 || path.indexOf('/embed/') === 0) return;
+    var mode = localStorage.getItem('synapseTheme');
+    var light = mode === 'light'
+      || (mode !== 'dark' && window.matchMedia('(prefers-color-scheme: light)').matches);
+    document.documentElement.setAttribute('data-theme', light ? 'light' : 'dark');
+  } catch (e) {}
+})();`;
 
 export default function RootLayout({
   children,
@@ -42,14 +78,19 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} ${inter.variable} ${jetbrainsMono.variable} ${ibmPlexSans.variable} antialiased`}
-      >
+    // suppressHydrationWarning: the script below sets an attribute on <html>
+    // that the server could not know. It covers this element only.
+    <html lang="en" className={`${inter.variable} ${geistMono.variable}`} suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_BEFORE_PAINT }} />
+      </head>
+      <body className="antialiased">
+        {/* No NotificationProvider here: it belongs to the app shell,
+            (app)/layout.tsx. Up here it also ran on /login and inside every
+            widget iframe, where nobody is signed in, and polled the stream
+            every 5 s for as long as the page stayed open (F178). */}
         <StoreProvider>
-          <NotificationProvider>
-            {children}
-          </NotificationProvider>
+          {children}
         </StoreProvider>
       </body>
     </html>

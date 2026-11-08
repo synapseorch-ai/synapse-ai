@@ -94,6 +94,40 @@ class TestChatStream:
         response_ev = next(e for e in events if e["type"] == "response")
         assert response_ev["content"] == "It's sunny"
 
+    async def test_delegate_events_say_whose_they_are(self, client, monkeypatch):
+        """A sub-agent's progress is the sub-agent's, and the stream must say so.
+
+        `react_engine` tags every event a delegate produces with `delegate_from`
+        and `delegate_agent_name`. The route rebuilds each event as a fixed dict
+        and never copied either across, so a delegate's thinking and tool calls
+        reached the browser wearing the main agent's name — the chat log claimed
+        the agent you asked did work that another agent did (F7).
+        """
+        import core.routes.chat as chat
+        delegated = lambda ev: {**ev, "delegate_from": "agent_main",
+                                "delegate_agent_name": "Researcher"}
+        monkeypatch.setattr(chat, "run_react_loop", E.gen_from([
+            E.thinking("I will ask the researcher"),
+            delegated(E.thinking("looking it up")),
+            delegated(E.tool_execution("search_web", {"q": "tides"})),
+            delegated(E.tool_result("search_web", "high at 14:02")),
+            E.final("High tide is at 14:02", intent="chat"),
+        ]))
+        resp = await client.post("/chat/stream", json={"message": "when is high tide?"})
+        assert resp.status_code == 200
+        events = _sse_json(resp.text)
+
+        own = next(e for e in events if e["type"] == "thinking")
+        assert "delegate_from" not in own or own["delegate_from"] is None, (
+            "the main agent's own thinking must not be attributed to a delegate"
+        )
+        for kind in ("thinking", "tool_execution", "tool_result"):
+            matches = [e for e in events if e["type"] == kind and e.get("delegate_from")]
+            assert matches, f"no {kind} event carried delegate_from"
+            assert matches[0]["delegate_agent_name"] == "Researcher", (
+                f"{kind} lost the delegate's name: {matches[0]}"
+            )
+
     async def test_error_event_serialized(self, client, monkeypatch):
         import core.routes.chat as chat
         monkeypatch.setattr(chat, "run_react_loop",
@@ -135,11 +169,12 @@ class TestChatRealEngine:
         """Seed a real agent, prime the tool cache so MCP introspection is
         skipped, and let the REAL run_react_loop + run_agent_step run with the
         fake LLM returning a plain final answer."""
-        agent = seed_agent(tools=[], skip_default_tools=True)
+        agent = await seed_agent(tools=[], skip_default_tools=True)
         # Prime the per-session tool cache so aggregate_all_tools doesn't touch
-        # the placeholder session object.
-        import core.tools as tools
-        monkeypatch.setitem(tools._session_tools_cache, "_test", [])
+        # the placeholder session object. It lives on the server module now,
+        # beside the sessions it describes.
+        import core.server as server
+        monkeypatch.setitem(server._session_tools, "_test", [])
         fake_llm.set_default("The answer is 42.")
 
         resp = await client.post("/chat", json={"message": "meaning of life?",

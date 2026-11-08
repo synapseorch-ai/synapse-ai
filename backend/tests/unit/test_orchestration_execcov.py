@@ -45,6 +45,31 @@ class TestEvaluatorStep:
         # A routing decision was emitted.
         assert any(e.get("type") in ("routing_decision", "thinking") for e in events)
 
+    async def test_a_slow_routing_call_keeps_the_watcher_informed(self, fake_llm, monkeypatch):
+        """The AI builder's first step is an evaluator. When its model call hung,
+        the run showed "Evaluator deciding route..." for 120 seconds and then
+        failed with nothing in between."""
+        import core.model_wait as mw
+        monkeypatch.setattr(mw, "HEARTBEAT_SECONDS", 0.05)
+        monkeypatch.setenv("SYNAPSE_FAKE_LLM_DELAY_MIN", "0.25")
+        monkeypatch.setenv("SYNAPSE_FAKE_LLM_DELAY_MAX", "0.25")
+        monkeypatch.setenv("SYNAPSE_FAKE_LLM_DELAY_PROB", "1")
+        orch = S.make_orchestration(
+            entry_step_id="ev",
+            steps=[
+                {"id": "ev", "name": "Decide", "type": "evaluator",
+                 "evaluator_prompt": "pick a route",
+                 "route_map": {"done": None},
+                 "route_descriptions": {"done": "finish"},
+                 "input_keys": [], "model": "claude-x", "next_step_id": None},
+            ],
+        )
+        events, _ = await _run(orch, fake_llm, [tool_call("route_done", reasoning="fine")])
+        beats = [e for e in events if e.get("type") == "thinking"
+                 and "waiting on the model" in str(e.get("message", ""))]
+        assert len(beats) >= 2, [e.get("type") for e in events]
+        assert all(b.get("orch_step_id") == "ev" for b in beats)
+
     async def test_evaluator_no_routes_warns(self, fake_llm):
         orch = S.make_orchestration(
             entry_step_id="ev",
@@ -71,14 +96,16 @@ class TestToolStep:
         # The run terminates (complete or error) without an unhandled crash.
         assert "orchestration_complete" in types_seen or "orchestration_error" in types_seen
 
-    async def test_tool_step_without_forced_tool_warns(self, fake_llm):
+    async def test_tool_step_without_forced_tool_fails_the_run(self, fake_llm):
+        """It used to warn and let the run carry on without it (F90)."""
         orch = S.make_orchestration(
             entry_step_id="tl",
             steps=[{"id": "tl", "name": "Call", "type": "tool", "forced_tool": None,
                     "next_step_id": None}],
         )
         events, _ = await _run(orch, fake_llm, ["x"])
-        assert any(e.get("type") == "step_warning" for e in events)
+        complete = [e for e in events if e.get("type") == "orchestration_complete"]
+        assert complete and complete[-1]["status"] == "failed"
 
 
 class TestCancellation:

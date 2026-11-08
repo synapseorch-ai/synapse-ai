@@ -19,7 +19,12 @@ Sentinel event types:
 """
 import asyncio
 import json
+import logging
 from typing import AsyncGenerator
+
+from core.events_public import public_event
+
+_log = logging.getLogger(__name__)
 
 
 KEEPALIVE_INTERVAL = 15   # seconds between keep-alive comments when idle
@@ -28,6 +33,24 @@ XREAD_BLOCK_MS = 1000     # milliseconds to block per XREAD call
 
 def _decode(value) -> str:
     return value.decode() if isinstance(value, bytes) else value
+
+
+def _shown(data_str: str) -> tuple[dict, str | None]:
+    """A stream entry and its text as a client may see it — `None` when it may not (F854).
+
+    The publishers write only what `public_event` passes; this reads the same way, so an
+    entry written by an older publisher is held back too. A `done` is always read.
+    """
+    try:
+        parsed = json.loads(data_str)
+    except Exception:
+        return {}, data_str
+    if not isinstance(parsed, dict):
+        return {}, None
+    shown = public_event(parsed)
+    if shown is None:
+        return parsed if parsed.get("type") == "done" else {}, None
+    return shown, (data_str if shown == parsed else json.dumps(shown, default=str))
 
 
 async def _is_stream_done(redis_client, key: str) -> bool:
@@ -42,6 +65,18 @@ async def _is_stream_done(redis_client, key: str) -> bool:
         return parsed.get("type") == "done"
     except Exception:
         return False
+
+
+#: What a reader is told when Redis cannot be read: fixed words (F1478). The exception's own text named Redis's address
+#: and its client's words to every stream's reader, an API key's caller among them.
+UNREAD = ": error reading stream\n\n"
+
+
+def _unread(exc: Exception) -> str:
+    """The comment frame for a failed read, the error logged by its type alone (an exception's words can carry a
+    value). A comment: a browser drops it, and it keeps the connection alive while the loop retries."""
+    _log.warning("event stream: Redis could not be read (%s); retrying", type(exc).__name__)
+    return UNREAD
 
 
 async def stream_run_events(
@@ -81,7 +116,7 @@ async def stream_run_events(
         except asyncio.CancelledError:
             return
         except Exception as e:
-            yield f": error reading stream: {e}\n\n"
+            yield _unread(e)
             await asyncio.sleep(1)
             continue
 
@@ -94,12 +129,9 @@ async def stream_run_events(
 
                     current_id = msg_id_str
 
-                    try:
-                        parsed = json.loads(data_str)
-                    except Exception:
-                        parsed = {}
-
-                    yield f"id: {msg_id_str}\ndata: {data_str}\n\n"
+                    parsed, data_str = _shown(data_str)
+                    if data_str is not None:
+                        yield f"id: {msg_id_str}\ndata: {data_str}\n\n"
 
                     if parsed.get("type") == "done":
                         # Backward compat: if this "done" was a pause sentinel
@@ -146,7 +178,7 @@ async def stream_chat_events(
         except asyncio.CancelledError:
             return
         except Exception as e:
-            yield f": error reading stream: {e}\n\n"
+            yield _unread(e)
             await asyncio.sleep(1)
             continue
 
@@ -159,12 +191,9 @@ async def stream_chat_events(
 
                     current_id = msg_id_str
 
-                    try:
-                        parsed = json.loads(data_str)
-                    except Exception:
-                        parsed = {}
-
-                    yield f"id: {msg_id_str}\ndata: {data_str}\n\n"
+                    parsed, data_str = _shown(data_str)
+                    if data_str is not None:
+                        yield f"id: {msg_id_str}\ndata: {data_str}\n\n"
 
                     if parsed.get("type") == "done":
                         try:
@@ -199,10 +228,11 @@ async def get_run_events(
     for msg_id, fields in messages:
         data_raw = fields.get(b"data") or fields.get("data", b"{}")
         try:
-            event = json.loads(_decode(data_raw))
+            event = public_event(json.loads(_decode(data_raw)))
         except Exception:
             event = {}
-        result.append({"id": _decode(msg_id), "event": event})
+        if event is not None:
+            result.append({"id": _decode(msg_id), "event": event})
     return result
 
 
@@ -222,8 +252,9 @@ async def get_chat_events(
     for msg_id, fields in messages:
         data_raw = fields.get(b"data") or fields.get("data", b"{}")
         try:
-            event = json.loads(_decode(data_raw))
+            event = public_event(json.loads(_decode(data_raw)))
         except Exception:
             event = {}
-        result.append({"id": _decode(msg_id), "event": event})
+        if event is not None:
+            result.append({"id": _decode(msg_id), "event": event})
     return result

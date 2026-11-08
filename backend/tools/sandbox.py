@@ -4,36 +4,57 @@ Sandbox — secure workspace + Python execution for agents.
 Combines a persistent shared file vault (create / read / write / patch / list /
 delete) with a Docker-based Python executor.  Vault files are auto-mounted at
 /data inside the container so agents can create data, then run code against it.
+
+The vault root comes from `core.vault._vault_root()`, per call. It used to be a
+module constant built from `__file__` — `backend/tools/../data/vault` — which
+stopped being the vault when blob storage became tenant-scoped, and which this
+module also `mkdir`'d at import, quietly recreating `backend/data`. Nothing
+raised: the Docker `-v` mount below is `.exists()`-guarded, so the container
+simply came up without its `/data` mount. Per call rather than cached because
+the path carries the tenant, and one process serves many.
+
+**Every vault write, read, listing and delete goes through `get_vault()`**
+(`core/vault_backend.py`), so on object storage the store is the vault and the
+directory a working copy of it. This module used to keep its own S3 mirror —
+copies of its writes under `vault/{path}` with no tenant in the key, read back
+only by itself — beside the blob store everything else used (F57).
 """
 
 from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.types import ToolAnnotations, Tool, TextContent
 
 import asyncio
 import json
-import os
-import shutil
-import tempfile
 import uuid
 from pathlib import Path
 from datetime import datetime, timezone
+
+from core.file_roots import within
+from core.tool_result import as_result, failed
 
 server = Server("sandbox")
 
 # ── paths & limits ───────────────────────────────────────────────────────
 
-from core.file_roots import within
+def _vault_root() -> Path:
+    """The current tenant's vault, from the blob store."""
+    from core.vault import _vault_root as blob_vault_root
 
-VAULT_ROOT = Path(__file__).resolve().parent.parent / "data" / "vault"
-VAULT_ROOT.mkdir(parents=True, exist_ok=True)
+    return blob_vault_root()
+
+
+def _vault():
+    """The current tenant's vault backend — asked per call, like the root."""
+    from core.vault_backend import get_vault
+
+    return get_vault()
+
 
 MAX_FILE_SIZE = 10 * 1024 * 1024   # 10 MB read cap
 DEFAULT_TIMEOUT = 30               # seconds
 MAX_TIMEOUT = 120
 MEMORY_LIMIT = "512m"
 CPU_LIMIT = "1.0"
-DOCKER_IMAGE = "sandbox-python:latest"
 MAX_OUTPUT = 50_000                # chars
 
 # ── shared helpers ───────────────────────────────────────────────────────
@@ -43,15 +64,17 @@ def _ok(data: dict) -> list[TextContent]:
 
 
 def _err(msg: str) -> list[TextContent]:
-    return [TextContent(type="text", text=json.dumps({"error": msg}))]
+    # A failure, said the MCP way where `call_tool` answers (F1208): content its callers read, and `isError`.
+    return failed(json.dumps({"error": msg}))
 
 
 def _safe_path(relative: str) -> Path | None:
-    """Resolve *relative* inside VAULT_ROOT; return None if it escapes."""
-    target = (VAULT_ROOT / relative).resolve()
+    """Resolve *relative* inside the vault; return None if it escapes."""
+    root = _vault_root()
+    target = (root / relative).resolve()
     # `within`, not `startswith`: a sibling named `vault-old` starts with the
     # vault's own path (S8).
-    if not within(target, [VAULT_ROOT]):
+    if not within(target, [root]):
         return None
     return target
 
@@ -61,7 +84,7 @@ def _resolve(raw_path: str) -> Path | None:
     p = Path(raw_path)
     if p.is_absolute():
         resolved = p.resolve()
-        if not within(resolved, [VAULT_ROOT]):
+        if not within(resolved, [_vault_root()]):
             return None
         return resolved
     return _safe_path(raw_path)
@@ -90,79 +113,6 @@ def _deep_merge(base: dict, patch: dict) -> dict:
     return base
 
 
-# ── S3 helpers (scale mode only; all are fire-and-forget / best-effort) ──────
-
-def _s3_rel(target: Path) -> str | None:
-    """Vault-relative path for constructing S3 keys (e.g. 'reports/q1.json')."""
-    try:
-        return str(target.resolve().relative_to(VAULT_ROOT.resolve()))
-    except ValueError:
-        return None
-
-
-def _s3_upload(target: Path, content: str) -> None:
-    """Upload content to S3 at vault/{rel}. Never raises."""
-    try:
-        from core.s3_storage import get_s3
-        s3 = get_s3()
-        if s3:
-            rel = _s3_rel(target)
-            if rel:
-                s3.upload_text(f"vault/{rel}", content)
-    except Exception:
-        pass
-
-
-def _s3_ensure_local(target: Path) -> bool:
-    """If target is missing locally, download from S3 and write it. Returns True if now available."""
-    if target.exists():
-        return True
-    try:
-        from core.s3_storage import get_s3
-        s3 = get_s3()
-        if not s3:
-            return False
-        rel = _s3_rel(target)
-        if not rel:
-            return False
-        content = s3.download_text(f"vault/{rel}")
-        if content is None:
-            return False
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-        return True
-    except Exception:
-        return False
-
-
-def _s3_delete(target: Path) -> None:
-    """Delete from S3. Never raises."""
-    try:
-        from core.s3_storage import get_s3
-        s3 = get_s3()
-        if s3:
-            rel = _s3_rel(target)
-            if rel:
-                s3.delete(f"vault/{rel}")
-    except Exception:
-        pass
-
-
-def _s3_list_rels(subdir_rel: str) -> list[str]:
-    """Return vault-relative paths of all objects in S3 under the given subdirectory."""
-    try:
-        from core.s3_storage import get_s3
-        s3 = get_s3()
-        if not s3:
-            return []
-        prefix = f"vault/{subdir_rel}/" if subdir_rel else "vault/"
-        keys = s3.list_keys(prefix) or []
-        # list_keys returns rel-keys that still include the "vault/" prefix
-        return [k[len("vault/"):] for k in keys if k.startswith("vault/") and not k.endswith("/")]
-    except Exception:
-        return []
-
-
 # ── tool definitions ─────────────────────────────────────────────────────
 
 @server.list_tools()
@@ -171,6 +121,7 @@ async def list_tools() -> list[Tool]:
         # -- Vault tools --
         Tool(
             name="vault_create",
+            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
             description=(
                 "Create a new file in the shared vault workspace. "
                 "Returns the absolute path for passing to other tools or the Python sandbox. "
@@ -203,6 +154,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="vault_read",
+            annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description="Read a file from the vault by its path.",
             inputSchema={
                 "type": "object",
@@ -220,6 +172,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="vault_write",
+            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False),
             description=(
                 "Write (overwrite) a file in the vault. Creates it if missing. "
                 "Returns the absolute path."
@@ -241,6 +194,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="vault_patch",
+            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False),
             description=(
                 "Patch an existing file. JSON files: deep-merges the provided object. "
                 "Text files: replaces first occurrence of `find` with `replace`. "
@@ -271,6 +225,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="vault_list",
+            annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description="List files in the vault, optionally filtered by extension or subdirectory.",
             inputSchema={
                 "type": "object",
@@ -289,6 +244,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="vault_delete",
+            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False),
             description="Delete a file from the vault. Returns confirmation.",
             inputSchema={
                 "type": "object",
@@ -304,6 +260,7 @@ async def list_tools() -> list[Tool]:
         # -- Python executor --
         Tool(
             name="execute_python",
+            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False),
             description=(
                 "Execute Python code in a secure Docker container (512 MB RAM, 1 CPU, "
                 "read-only filesystem, no network by default). "
@@ -313,6 +270,8 @@ async def list_tools() -> list[Tool]:
                 "Additional packages can be installed via the 'packages' parameter. "
                 "Vault files are mounted read-only at /data — e.g. vault path "
                 "'reports/q1.json' is available at '/data/reports/q1.json'. "
+                "Write scratch files under /tmp: they are gone when the call ends, so a result to keep is "
+                "printed, or saved to the vault with vault_write. "
                 "Use for calculations, data processing, or testing logic safely."
             ),
             inputSchema={
@@ -346,6 +305,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="tool_code",
+            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False),
             description=(
                 "Alias for execute_python. Execute Python code in a secure Docker container. "
                 "Use this to run calculations, data processing, or test logic safely."
@@ -379,7 +339,19 @@ async def list_tools() -> list[Tool]:
 # ── tool dispatch ────────────────────────────────────────────────────────
 
 @server.call_tool()
+async def answer_tool(name: str, arguments: dict):
+    """What MCP is answered: a failure with `isError` (F1208). `call_tool` keeps its content for direct callers."""
+    return as_result(await call_tool(name, arguments))
+
+
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    # The tenant, the store and this tenant's settings are established by
+    # `bootstrap()`, which now runs alongside the handshake rather than ahead
+    # of it. A handler is the first thing that actually needs any of them.
+    from core.tool_server import ready
+
+    await ready()
+
     try:
         match name:
             case "vault_create":    return _handle_create(arguments)
@@ -408,8 +380,8 @@ def _handle_create(args: dict) -> list[TextContent]:
     if target is None:
         return _err("Path escapes the vault directory")
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
+    vault = _vault()
+    if vault.ensure_local(target).exists():
         return _err(f"File already exists: {target}. Use vault_write to overwrite.")
 
     if target.suffix == ".json":
@@ -418,8 +390,7 @@ def _handle_create(args: dict) -> list[TextContent]:
         except (json.JSONDecodeError, TypeError):
             pass
 
-    target.write_text(content, encoding="utf-8")
-    _s3_upload(target, content)
+    vault.write(target, content)
     return _ok({"path": str(target), "size": len(content), "created": True})
 
 
@@ -427,8 +398,7 @@ def _handle_read(args: dict) -> list[TextContent]:
     target = _resolve(args.get("path", ""))
     if target is None:
         return _err("Invalid path or path escapes the vault")
-    if not target.exists():
-        _s3_ensure_local(target)
+    _vault().ensure_local(target)
     if not target.exists():
         return _err(f"File not found: {target}")
     if target.is_dir():
@@ -447,16 +417,13 @@ def _handle_write(args: dict) -> list[TextContent]:
     if target is None:
         return _err("Invalid path or path escapes the vault")
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-
     if target.suffix == ".json":
         try:
             content = json.dumps(json.loads(content), indent=2)
         except (json.JSONDecodeError, TypeError):
             pass
 
-    target.write_text(content, encoding="utf-8")
-    _s3_upload(target, content)
+    _vault().write(target, content)
     return _ok({"path": str(target), "size": len(content), "written": True})
 
 
@@ -464,8 +431,8 @@ def _handle_patch(args: dict) -> list[TextContent]:
     target = _resolve(args.get("path", ""))
     if target is None:
         return _err("Invalid path or path escapes the vault")
-    if not target.exists():
-        _s3_ensure_local(target)
+    vault = _vault()
+    vault.ensure_local(target)
     if not target.exists():
         return _err(f"File not found: {target}")
 
@@ -492,8 +459,7 @@ def _handle_patch(args: dict) -> list[TextContent]:
             return _err("Cannot merge: incompatible types (both must be objects or both arrays)")
 
         content = json.dumps(existing, indent=2)
-        target.write_text(content, encoding="utf-8")
-        _s3_upload(target, content)
+        vault.write(target, content)
         return _ok({"path": str(target), "content": content, "patched": True})
 
     elif find_str is not None:
@@ -502,8 +468,7 @@ def _handle_patch(args: dict) -> list[TextContent]:
         if find_str not in content:
             return _err(f"Text '{find_str[:80]}' not found in file")
         content = content.replace(find_str, replace_str, 1)
-        target.write_text(content, encoding="utf-8")
-        _s3_upload(target, content)
+        vault.write(target, content)
         return _ok({"path": str(target), "content": content, "patched": True})
 
     return _err("Provide either 'merge' (for JSON) or 'find'+'replace' (for text)")
@@ -513,41 +478,28 @@ def _handle_list(args: dict) -> list[TextContent]:
     subdir = args.get("directory", "")
     ext_filter = args.get("extension")
 
-    base = _safe_path(subdir) if subdir else VAULT_ROOT
+    root = _vault_root()
+    base = _safe_path(subdir) if subdir else root
     if base is None:
         return _err("Path escapes the vault directory")
 
-    files = []
-    seen_rels: set[str] = set()
+    # Everything the vault holds under the directory, not only what this
+    # process has materialised.
+    _vault().hydrate(subdir)
 
+    files = []
     if base.exists():
         for item in sorted(base.rglob("*")):
             if not item.is_file():
                 continue
             if ext_filter and item.suffix != ext_filter:
                 continue
-            rel = str(item.relative_to(VAULT_ROOT))
-            seen_rels.add(rel)
             files.append({
                 "name": item.name,
                 "path": str(item),
-                "relative": rel,
+                "relative": str(item.relative_to(root)),
                 "size": item.stat().st_size,
             })
-
-    # Merge S3-only files (present in S3 but not on this worker's local disk)
-    for rel in _s3_list_rels(subdir):
-        if ext_filter and not rel.endswith(ext_filter):
-            continue
-        if rel in seen_rels:
-            continue
-        s3_local = VAULT_ROOT / rel
-        files.append({
-            "name": s3_local.name,
-            "path": str(s3_local),
-            "relative": rel,
-            "size": 0,
-        })
 
     return _ok({"directory": str(base), "count": len(files), "files": files})
 
@@ -559,71 +511,30 @@ def _handle_delete(args: dict) -> list[TextContent]:
     if target.is_dir():
         return _err("Cannot delete directories. Delete files individually.")
 
+    vault = _vault()
+    vault.ensure_local(target)
     if not target.exists():
-        # File may exist only in S3 (written by another worker)
-        rel = _s3_rel(target)
-        if not rel:
-            return _err(f"File not found: {target}")
-        try:
-            from core.s3_storage import get_s3
-            s3 = get_s3()
-            if s3 and s3.download_text(f"vault/{rel}") is not None:
-                s3.delete(f"vault/{rel}")
-                return _ok({"path": str(target), "deleted": True})
-        except Exception:
-            pass
         return _err(f"File not found: {target}")
 
-    target.unlink()
-    _s3_delete(target)
+    vault.forget(target)
     return _ok({"path": str(target), "deleted": True})
 
 
 # ── python executor ──────────────────────────────────────────────────────
 
-def _build_docker_cmd(
-    script_path: str,
-    *,
-    timeout: int,
-    packages: list[str] | None = None,
-    allow_network: bool = False,
-) -> list[str]:
-    cmd = [
-        "docker", "run",
-        "--rm",
-        "--memory", MEMORY_LIMIT,
-        "--cpus", CPU_LIMIT,
-        "--pids-limit", "64",
-        "--read-only",
-        "--tmpfs", "/tmp:rw,size=512m",
-        "--tmpfs", "/root:rw,size=512m",
-    ]
-
-    cmd += ["-v", f"{script_path}:/sandbox/script.py:ro"]
-
-    if VAULT_ROOT.exists():
-        cmd += ["-v", f"{VAULT_ROOT}:/data:ro"]
-
-    cmd.append(DOCKER_IMAGE)
-
-    inner_parts: list[str] = []
-    if packages:
-        safe_pkgs = " ".join(
-            p for p in packages if all(c.isalnum() or c in "-_.[]=<>!" for c in p)
-        )
-        if safe_pkgs:
-            inner_parts.append(
-                f"pip install --quiet --disable-pip-version-check "
-                f"--root-user-action=ignore --no-warn-script-location "
-                f"{safe_pkgs}"
-            )
-
-    inner_parts.append("python /sandbox/script.py")
-    cmd += ["sh", "-c", " && ".join(inner_parts)]
-    return cmd
-
 
 async def _handle_execute(args: dict) -> list[TextContent]:
+    """Run the agent's code through the registered runner.
+
+    **`allow_network` now does something.** It was accepted here, passed to
+    `_build_docker_cmd(…, allow_network=…)`, and dropped on the floor — every
+    call ran on Docker's default bridge, including the ones that asked not to.
+    `core.execution.Network` is a required field on the request, so the same
+    mistake cannot be made silently again; `test_execution.py` asserts a
+    `Network.NONE` request actually fails to reach a URL.
+    """
+    from core.execution import ExecRequest, ExecUnsupported, Network, get_runner
+
     code: str = args.get("code", "")
     packages: list[str] | None = args.get("packages")
     timeout = min(int(args.get("timeout", DEFAULT_TIMEOUT)), MAX_TIMEOUT)
@@ -632,66 +543,55 @@ async def _handle_execute(args: dict) -> list[TextContent]:
     if not code.strip():
         return _err("No code provided")
 
+    # Installing packages needs pip to reach an index, so asking for packages is
+    # asking for network. Kept as it was, now that the flag has teeth.
     if packages and not allow_network:
         allow_network = True
 
-    tmp_dir = tempfile.mkdtemp(prefix="pysandbox_")
-    script_path = os.path.join(tmp_dir, "script.py")
-
     try:
-        with open(script_path, "w", encoding="utf-8") as f:
-            f.write(code)
-
-        docker_cmd = _build_docker_cmd(
-            script_path,
-            timeout=timeout,
-            packages=packages,
-            allow_network=allow_network,
-        )
-
-        proc = await asyncio.create_subprocess_exec(
-            *docker_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-
-        try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout + 10
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            return _err(f"Execution timed out after {timeout}s")
-
-        stdout = stdout_bytes.decode("utf-8", errors="replace")[:MAX_OUTPUT]
-        stderr = stderr_bytes.decode("utf-8", errors="replace")[:MAX_OUTPUT]
-
-        result: dict = {
-            "exit_code": proc.returncode,
-            "stdout": stdout,
-            "stderr": stderr,
-        }
-
-        return _ok(result)
-
-    except FileNotFoundError:
-        return _err("Docker is not installed or not in PATH")
-    except Exception as e:
+        result = await get_runner().run(ExecRequest(
+            code=code,
+            network=Network.INTERNET if allow_network else Network.NONE,
+            timeout_s=timeout,
+            grace_s=10,
+            tmpfs_mb=512,
+            memory_mb=int(MEMORY_LIMIT.rstrip("m")),
+            cpus=CPU_LIMIT,
+            packages=tuple(packages or ()),
+            vault_path=_vault_root(),
+            max_stdout=MAX_OUTPUT,
+            max_stderr=MAX_OUTPUT,
+        ))
+    except ExecUnsupported as e:
+        return _err(str(e))
+    except Exception as e:  # noqa: BLE001 — reported to the agent, not raised at it
         return _err(f"Sandbox error: {e}")
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    if result.timed_out:
+        return _err(f"Execution timed out after {timeout}s")
+
+    out = _ok({
+        "exit_code": result.exit_code,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+    })
+    # A script that failed is a failed call (F1208): the same content, and `isError`, so a Tool step fails on it
+    # and an agent still reads what happened.
+    return failed(out[0].text) if result.exit_code != 0 else out
 
 
 # ── main ─────────────────────────────────────────────────────────────────
 
 async def main():
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            server.create_initialization_options(),
-        )
+    # This process serves exactly one tenant, and it has to be told which —
+    # see core/tool_server.py.
+    # Serve first, bootstrap alongside. `bootstrap()` reads Postgres, and
+    # putting that ahead of `stdio_server()` meant the MCP handshake waited
+    # on a database — a cold serverless resume expired the 60s bound and
+    # took the whole chat turn with it. Handlers wait via `ready()`.
+    from core.tool_server import serve
+
+    await serve(server)
 
 
 if __name__ == "__main__":

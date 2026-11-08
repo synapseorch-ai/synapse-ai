@@ -15,9 +15,16 @@ before it reaches the SSE queue. A journal/broker/observer failure must never
 kill a run -- all three are best-effort.
 """
 import asyncio
+import inspect
 from typing import AsyncGenerator
 
-from core.orchestration.journal import broker, close_journal, get_journal
+from core.orchestration.journal import aclose_journal, broker, get_journal
+
+from core.events_public import public_event
+from core.log import get_logger
+from core.secret_scrub import scrub_secrets
+
+_log = get_logger(__name__)
 
 # Live in-process runs, keyed by run_id. The cancel endpoint cancels the task
 # to interrupt an in-progress await; the run-status endpoint consults it to
@@ -33,20 +40,28 @@ SENTINEL = object()
 event_observers: list = []
 
 
-def _observe(run_id: str, event: dict):
-    """Journal + broadcast + notify for one event. Never raises."""
+async def _observe(run_id: str, event: dict):
+    """Journal + broadcast + notify for one event. Never raises.
+
+    Async because an observer may need to read run state, which now lives in
+    the store rather than on local disk. Observers are awaited in turn rather
+    than gathered: they are cheap, and ordering keeps a notification's cause
+    ahead of its resolution.
+    """
     entry_id = 0
     try:
         entry_id = get_journal(run_id).append(event)
     except Exception as e:
-        print(f"WARNING: journal append failed for '{run_id}': {e}", flush=True)
+        _log.warning(f"journal append failed for '{run_id}': {e}")
     try:
         broker.publish(run_id, {"id": entry_id, "event": event})
     except Exception:
         pass
     for observer in event_observers:
         try:
-            observer(run_id, event)
+            result = observer(run_id, event)
+            if inspect.isawaitable(result):
+                await result
         except Exception:
             pass
 
@@ -61,45 +76,64 @@ def spawn_engine_run(agen, run_id: str) -> tuple[asyncio.Task, asyncio.Queue]:
     queue: asyncio.Queue = asyncio.Queue()
 
     async def _pump():
+        from core.scale import run_lease
+
         last_type = None
         try:
-            async for event in agen:
-                _observe(run_id, event)
-                last_type = event.get("type")
-                await queue.put(event)
-                # Yield so the SSE consumer can dequeue and flush this event
-                # to the HTTP response before the next one is enqueued.
-                await asyncio.sleep(0)
+            # Held while this task drives the run, where the host shares Redis:
+            # the sign, outside this process, that something is still running
+            # it, and the way its Cancel reaches it (F470). Inside the `try`, so
+            # a cancel that lands while it is taken still ends the stream.
+            async with run_lease.hold(run_id):
+                async for event in agen:
+                    # Every reader of the queue and the journal is a client's (F854).
+                    event = public_event(event)
+                    if event is None:
+                        continue
+                    await _observe(run_id, event)
+                    last_type = event.get("type")
+                    await queue.put(event)
+                    # Yield so the SSE consumer can dequeue and flush this event
+                    # to the HTTP response before the next one is enqueued.
+                    await asyncio.sleep(0)
         except asyncio.CancelledError:
             event = {"type": "orchestration_error", "error": "Cancelled"}
-            _observe(run_id, event)
+            await _observe(run_id, event)
             last_type = event["type"]
             await queue.put(event)
         except FileNotFoundError:
             event = {"type": "orchestration_error", "error": "Run not found"}
-            _observe(run_id, event)
+            await _observe(run_id, event)
             last_type = event["type"]
             await queue.put(event)
         except Exception as e:
-            event = {"type": "orchestration_error", "error": str(e)}
-            _observe(run_id, event)
+            event = {"type": "orchestration_error", "error": scrub_secrets(str(e))}
+            await _observe(run_id, event)
             last_type = event["type"]
             await queue.put(event)
         finally:
             # Journal/broker-only terminator (never sent on the POST SSE):
             # tells tailing GET clients whether to stay open for a resume pump
             # (paused on human input) or close (terminal).
-            _observe(run_id, {
+            await _observe(run_id, {
                 "type": "run_stream_end",
                 "paused": last_type == "human_input_required",
             })
-            close_journal(run_id)
+            # The run is over once its terminator is observed; closing the
+            # journal waits on the writer thread, and nothing that consults
+            # the registry should wait with it.
             _active_tasks.pop(run_id, None)
-            print(f"DEBUG SSE QUEUE: sentinel sent for '{run_id}', stream closing", flush=True)
+            await aclose_journal(run_id)
+            _log.debug(f"SSE QUEUE: sentinel sent for '{run_id}', stream closing")
             await queue.put(SENTINEL)
 
     task = asyncio.create_task(_pump())
     _active_tasks[run_id] = task
+    # A run an orchestrator or builder agent starts inside a chat turn belongs
+    # to that turn as far as Stop is concerned: the turn's reader going away
+    # leaves it running, but Stop on the turn stops it too (F49).
+    from core.chat_turns import note_run
+    note_run(run_id)
     return task, queue
 
 

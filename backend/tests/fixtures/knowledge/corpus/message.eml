@@ -1,0 +1,22 @@
+From: billing@example.com
+To: ops@example.org
+Subject: Renewal of the Acme contract
+Date: Wed, 01 Oct 2025 09:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="===============0407793083849193780=="
+
+--===============0407793083849193780==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Hi, please find the renewal invoice attached.
+
+--===============0407793083849193780==
+Content-Type: text/plain
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="invoice.txt"
+MIME-Version: 1.0
+
+SW52b2ljZSAyMDI1LTExNzogMSw1MDAgZHVlIDMxIE9jdG9iZXIuCg==
+
+--===============0407793083849193780==--

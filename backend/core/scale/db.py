@@ -1,56 +1,23 @@
 """
-Async SQLAlchemy engine and session factory for Postgres.
-Used by both the API server (lifespan) and ARQ workers (startup hook).
+Compatibility shim. The connection layer moved to ``core/store/engine.py``.
+
+``build_engine`` here keeps its original Postgres-shaped signature
+(``postgres_url``) so scale callers are unchanged; it now delegates to the
+dialect-aware builder, which also means a scale deployment can be pointed at
+SQLite for a local smoke test without a second code path.
+
+Import from ``core.store`` in new code.
 """
-from contextlib import asynccontextmanager
-from typing import AsyncGenerator
-
-from sqlalchemy.ext.asyncio import (
-    AsyncEngine,
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
+from core.store.engine import (  # noqa: F401
+    build_session_factory,
+    get_session,
+    init_db,
 )
-from sqlalchemy.pool import NullPool, AsyncAdaptedQueuePool
+from core.store.engine import build_engine as _build_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
 
-from core.scale.models_db import Base
+__all__ = ["build_engine", "build_session_factory", "get_session", "init_db"]
 
 
 def build_engine(postgres_url: str, pgbouncer_mode: bool = False) -> AsyncEngine:
-    """Create an async SQLAlchemy engine.
-
-    PgBouncer transaction-pooling mode is incompatible with SQLAlchemy's
-    connection-level pooling, so we use NullPool when pgbouncer_mode=True.
-    """
-    kwargs = dict(echo=False, future=True)
-    if pgbouncer_mode:
-        # NullPool: open/close a real DB connection on every async with session
-        kwargs["poolclass"] = NullPool
-    else:
-        kwargs["poolclass"] = AsyncAdaptedQueuePool
-        kwargs["pool_size"] = 10
-        kwargs["max_overflow"] = 20
-        kwargs["pool_pre_ping"] = True
-
-    return create_async_engine(postgres_url, **kwargs)
-
-
-def build_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
-    return async_sessionmaker(engine, expire_on_commit=False)
-
-
-async def init_db(engine: AsyncEngine) -> None:
-    """Create all tables defined in models_db.py (CREATE TABLE IF NOT EXISTS)."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-
-@asynccontextmanager
-async def get_session(session_factory: async_sessionmaker) -> AsyncGenerator[AsyncSession, None]:
-    async with session_factory() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
+    return _build_engine(postgres_url, pgbouncer_mode=pgbouncer_mode)

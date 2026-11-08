@@ -10,6 +10,11 @@ class TestModeDetection:
         ("grok-2", "cloud"),
         ("deepseek-chat", "cloud"),
         ("bedrock.anthropic.claude", "bedrock"),
+        ("synapse.nova-pro", "cloud"),
+        # F114: a mode is the dispatch family, not where the server is. Both
+        # go through the OpenAI-compatible branch; `local` means Ollama.
+        ("oaic.some-model", "cloud"),
+        ("locv1.model", "cloud"),
         ("cli.claude.sonnet", "cli"),
         ("hf.Qwen/Qwen2.5", "hf"),
         ("ollama.llama3", "local"),
@@ -33,6 +38,7 @@ class TestProviderDetection:
         ("cli.codex.gpt", "codex_cli"),
         ("oaic.some-model", "openai_compatible"),
         ("locv1.model", "local_compatible"),
+        ("synapse.nova-pro", "model_gateway"),
         ("ollama.llama3", "ollama"),
         ("hf.model", "huggingface"),
         ("unknown", "ollama"),

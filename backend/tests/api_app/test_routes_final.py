@@ -9,8 +9,8 @@ from _fakes import seed as S
 
 class TestImportExportApply:
     async def test_full_bundle_roundtrip_applies(self, client, seed_agent, seed_orchestration):
-        a = seed_agent(id="fx_agent", name="FxAgent")
-        o = seed_orchestration(id="fx_orch", name="FxOrch")
+        a = await seed_agent(id="fx_agent", name="FxAgent")
+        o = await seed_orchestration(id="fx_orch", name="FxOrch")
         t = {"name": "fx_tool", "description": "d", "parameters": {"type": "object", "properties": {}}}
         await client.post("/api/tools/custom", json=t)
 

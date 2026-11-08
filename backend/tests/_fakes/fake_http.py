@@ -25,7 +25,8 @@ class FakeResponse:
     def raise_for_status(self):
         if self.status_code >= 400:
             req = httpx.Request("POST", "http://test")
-            resp = httpx.Response(self.status_code, request=req)
+            # With the body, as httpx's own: the caller reads `e.response.text`.
+            resp = httpx.Response(self.status_code, request=req, text=self.text)
             raise httpx.HTTPStatusError(f"HTTP {self.status_code}", request=req, response=resp)
 
 

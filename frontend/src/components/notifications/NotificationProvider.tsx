@@ -2,8 +2,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { CheckCircle2, AlertCircle, PauseCircle, X } from 'lucide-react';
+import { LogIn, PauseCircle, X } from 'lucide-react';
 import { readWithStallTimeout } from '@/lib/sse';
+import { plainText } from '@/lib/plainText';
+import { voiceItemHref } from '@/components/phone/phone';
+import { InToastStack, ToastStack, toastLook } from '@/components/ui';
 
 export type RunNotification = {
     id: number;
@@ -15,9 +18,12 @@ export type RunNotification = {
     data: Record<string, any>;
     // Set server-side once the requested input was submitted (or the run ended).
     resolved?: boolean;
+    /** How a human_input item was resolved: answered, or its run cancelled (F193);
+     *  a tool_approval item: allowed, refused, or expired unrun (F268). */
+    resolved_as?: 'answered' | 'cancelled' | 'allowed' | 'refused' | 'expired';
 };
 
-type Toast = { key: number; message: string; type: 'success' | 'warning' | 'error' };
+type Toast = { key: number; message: string; type: 'success' | 'warning' | 'error' | 'person' };
 
 type NotificationContextValue = {
     notifications: RunNotification[];
@@ -27,7 +33,22 @@ type NotificationContextValue = {
     browserNotificationsEnabled: boolean;
     setBrowserNotificationsEnabled: (enabled: boolean) => Promise<void>;
     openRun: (runId: string | null) => void;
+    /** Where an item leads: its run, or for a schedule's item the Schedules screen;
+     *  an unanswered question about a run opens the Waiting on you drawer (F457). */
+    openItem: (item: RunNotification) => void;
+    /** The one Waiting on you drawer (F457): open or not, and the run it was opened for,
+     *  whose card it shows first. The rail's and the phone bar's rows open it, and so
+     *  does an unanswered question in the bell (or an OS notification for one). */
+    waiting: { open: boolean; focus: string | null };
+    openWaiting: (focus?: string | null) => void;
+    closeWaiting: () => void;
 };
+
+/** An unanswered question about a run, answered in the drawer on the screen the person is
+ *  on, not by leaving it (F457, Naveen). An answered one, or a call's item, keeps its link. */
+export function opensWaitingDrawer(item: Pick<RunNotification, 'kind' | 'run_id' | 'resolved' | 'data'>): boolean {
+    return item.kind === 'human_input' && !item.resolved && !!item.run_id && !voiceItemHref(item.data);
+}
 
 const NotificationContext = createContext<NotificationContextValue | null>(null);
 
@@ -50,6 +71,10 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     const [seenId, setSeenId] = useState(0);
     const [toasts, setToasts] = useState<Toast[]>([]);
     const [browserEnabled, setBrowserEnabled] = useState(false);
+    // The session ended while this tab was open (expired, signed out elsewhere,
+    // the access link rotated). Said once and kept on screen, rather than
+    // retried every 5 s or sent to /login under the person's unsaved work.
+    const [signedOut, setSignedOut] = useState(false);
     const browserEnabledRef = useRef(false);
     const lastIdRef = useRef(0);
     const toastKeyRef = useRef(0);
@@ -69,9 +94,25 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     }, []);
 
     const openRun = useCallback((runId: string | null) => {
-        if (runId) router.push(`/settings/orchestrations?run=${encodeURIComponent(runId)}`);
-        else router.push('/settings/orchestrations');
+        if (runId) router.push(`/workflows?run=${encodeURIComponent(runId)}`);
+        else router.push('/workflows');
     }, [router]);
+
+    const [waiting, setWaiting] = useState<{ open: boolean; focus: string | null }>({ open: false, focus: null });
+    const openWaiting = useCallback((focus?: string | null) => setWaiting({ open: true, focus: focus ?? null }), []);
+    const closeWaiting = useCallback(() => setWaiting(w => ({ ...w, open: false })), []);
+
+    const openItem = useCallback((item: RunNotification) => {
+        if (opensWaitingDrawer(item)) {
+            openWaiting(item.run_id);
+            return;
+        }
+        // A call's voicemail, hand-off or parked approval has no run: it opens that call's log (VOX1c).
+        const call = voiceItemHref(item.data);
+        if (call) router.push(call);
+        else if (!item.run_id && item.data?.schedule_id) router.push('/schedules');
+        else openRun(item.run_id);
+    }, [router, openRun, openWaiting]);
 
     const handleNotification = useCallback((item: RunNotification, live: boolean) => {
         setNotifications(prev => {
@@ -83,45 +124,85 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         });
         if (!live || item.resolved) return;  // history/updates: no toast/browser popup
         window.dispatchEvent(new CustomEvent(NOTIFICATION_EVENT, { detail: item }));
+        // A run that needs someone is the one warm toast (UX1: amber is a person, M2h-2).
         toast(item.title, item.kind === 'run_failed' ? 'error'
-            : item.kind === 'human_input' ? 'warning' : 'success');
+            : item.kind === 'human_input' || item.kind === 'tool_approval' ? 'person' : 'success');
         if (browserEnabledRef.current && document.hidden
             && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
             try {
                 const notification = new Notification(item.title, {
-                    body: item.body || undefined,
+                    // The OS draws text, not markdown.
+                    body: item.body ? plainText(item.body) : undefined,
                     tag: `synapse-${item.id}`,
                 });
                 notification.onclick = () => {
                     window.focus();
-                    openRun(item.run_id);
+                    openItem(item);
                     notification.close();
                 };
             } catch { /* ignore */ }
         }
-    }, [toast, openRun]);
+    }, [toast, openItem]);
 
-    // Notification SSE: replay-then-tail with reconnect from the last id.
+    // Notifications: history first, then the live tail, on every connection.
+    //
+    // What the ring already holds when this page connects is history — listed
+    // and badged, never toasted (F216). It used to be told apart by timing: the
+    // stream's first read chunk and a 5 s clock window, with the flag kept
+    // across reconnects. A replay longer than one chunk, or any reconnect (a
+    // backend restart, a dropped relay), toasted old runs again — a failure
+    // since resumed among them — and raised them as OS notifications in a
+    // hidden tab. Now the boundary is an id, and an id is announced once.
     useEffect(() => {
         let stopped = false;
         const controller = { current: null as AbortController | null };
+        const announced = new Set<number>();
 
         const connect = async () => {
-            let liveAfterReplay = false;
             while (!stopped) {
                 const abort = new AbortController();
                 controller.current = abort;
                 try {
-                    // Always replay the full ring: re-received ids are upserted, and
-                    // updates to old items (resolved flags) survive reconnects.
-                    const res = await fetch('/api/notifications/stream?after=0',
+                    // The ring as it is now. Read on each connection, so a
+                    // reconnect also picks up what changed meanwhile (a
+                    // resolved flag).
+                    const listRes = await fetch('/api/notifications?after=0', { signal: abort.signal });
+                    // Not signed in: no retry would change that (F178).
+                    if (listRes.status === 401) {
+                        if (!stopped) setSignedOut(true);
+                        return;
+                    }
+                    if (!listRes.ok) throw new Error(`HTTP ${listRes.status}`);
+                    const history = (await listRes.json()) as { notifications?: RunNotification[]; last_id?: number };
+                    let boundary = history.last_id ?? 0;
+                    for (const item of history.notifications ?? []) {
+                        announced.add(item.id);
+                        boundary = Math.max(boundary, item.id);
+                        handleNotification(item, false);
+                    }
+                    if (boundary > lastIdRef.current) lastIdRef.current = boundary;
+                    // Seen past the newest one there is: the server's notifications began again (lost in a reset
+                    // or a new install) while this browser kept the last id it had seen, so every new one read as
+                    // seen and the badge stayed dark (F479's class). None of these was seen here.
+                    setSeenId(prev => {
+                        if (prev <= boundary) return prev;
+                        localStorage.setItem(SEEN_KEY, '0');
+                        return 0;
+                    });
+
+                    // The tail from there. The server subscribes before it
+                    // replays, so anything published after the list arrives
+                    // here; an id already announced is an update, not news.
+                    const res = await fetch(`/api/notifications/stream?after=${boundary}`,
                         { signal: abort.signal });
+                    if (res.status === 401) {
+                        if (!stopped) setSignedOut(true);
+                        return;
+                    }
                     if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
                     const reader = res.body.getReader();
                     const decoder = new TextDecoder();
                     let buffer = '';
-                    // Everything already in the ring at connect time is history.
-                    const replayCutoff = Date.now() / 1000 - 5;
                     while (true) {
                         const { done, value } = await readWithStallTimeout(reader, abort);
                         if (done) break;
@@ -133,11 +214,12 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
                                 try {
                                     const item = JSON.parse(line.slice(6)) as RunNotification;
                                     if (item.id > lastIdRef.current) lastIdRef.current = item.id;
-                                    handleNotification(item, liveAfterReplay || item.ts > replayCutoff);
+                                    const news = !announced.has(item.id);
+                                    announced.add(item.id);
+                                    handleNotification(item, news);
                                 } catch { /* ignore */ }
                             }
                         }
-                        liveAfterReplay = true;
                     }
                 } catch { /* fall through to retry */ }
                 if (stopped) return;
@@ -176,33 +258,59 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         <NotificationContext.Provider value={{
             notifications, unseenCount, markAllSeen, toast,
             browserNotificationsEnabled: browserEnabled,
-            setBrowserNotificationsEnabled, openRun,
+            setBrowserNotificationsEnabled, openRun, openItem,
+            waiting, openWaiting, closeWaiting,
         }}>
+            {/* Every toast in the app stacks in one host, the kit's (F520): this provider's own
+                notifications and the signed-out line, and a page's `Toast`, which once drew a
+                second box in the same corner, over or under these. */}
+            <ToastStack>
             {children}
-            {/* Toast host — app-wide, stacked bottom-right */}
-            <div className="fixed bottom-6 right-6 z-[9999] flex flex-col gap-2 items-end pointer-events-none">
-                {toasts.map(t => (
+            <InToastStack>
+                {signedOut && (
+                    <div
+                        role="status"
+                        className={`pointer-events-auto flex items-center gap-2 px-4 py-2.5 rounded-lg border shadow-elevated text-sm max-w-sm ${toastLook('warning').chip}`}
+                    >
+                        <LogIn size={15} className="shrink-0" aria-hidden />
+                        <span className="flex-1 min-w-0">You&apos;re signed out.</span>
+                        {/* A full navigation, and only when asked: whatever is
+                            unsaved on this page stays until then. */}
+                        <button
+                            onClick={() => window.location.assign(
+                                `/login?redirect=${encodeURIComponent(window.location.pathname + window.location.search)}`)}
+                            className="shrink-0 font-semibold underline underline-offset-2 hover:opacity-80"
+                        >
+                            Sign in
+                        </button>
+                    </div>
+                )}
+                {toasts.map(t => {
+                    // The kit Toast's tones (components/ui/toast.tsx), on a host of
+                    // its own because this one stacks and can be dismissed.
+                    const look = toastLook(t.type === 'error' ? 'danger' : t.type);
+                    const Icon = t.type === 'person' ? PauseCircle : look.icon;
+                    return (
                     <div
                         key={t.key}
-                        className={`pointer-events-auto flex items-center gap-2 px-4 py-2.5 rounded-lg border shadow-xl text-sm max-w-sm animate-in ${
-                            t.type === 'error' ? 'bg-red-950/95 border-red-800 text-red-200' :
-                            t.type === 'warning' ? 'bg-amber-950/95 border-amber-800 text-amber-200' :
-                            'bg-zinc-900/95 border-zinc-700 text-zinc-200'
-                        }`}
+                        className={`pointer-events-auto flex items-center gap-2 px-4 py-2.5 rounded-lg border shadow-elevated text-sm max-w-sm animate-in ${look.chip}`}
                     >
-                        {t.type === 'error' ? <AlertCircle size={15} className="shrink-0" /> :
-                         t.type === 'warning' ? <PauseCircle size={15} className="shrink-0" /> :
-                         <CheckCircle2 size={15} className="shrink-0 text-green-400" />}
-                        <span className="flex-1 min-w-0 truncate">{t.message}</span>
+                        <Icon size={15} className={`shrink-0 ${look.mark}`} aria-hidden />
+                        {/* Wraps, up to three lines, rather than cutting a reason off mid-sentence: a refusal
+                            toasted here says why (F518's Run now); the bell's own titles are one line anyway. */}
+                        <span className="flex-1 min-w-0 line-clamp-3 break-words">{t.message}</span>
                         <button
                             onClick={() => setToasts(prev => prev.filter(x => x.key !== t.key))}
+                            aria-label="Dismiss this notification"
                             className="shrink-0 opacity-60 hover:opacity-100"
                         >
                             <X size={13} />
                         </button>
                     </div>
-                ))}
-            </div>
+                    );
+                })}
+            </InToastStack>
+            </ToastStack>
         </NotificationContext.Provider>
     );
 }

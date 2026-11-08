@@ -1,0 +1,46 @@
+{
+ "agents": {
+  "agent_harbor_front_desk": "Front desk",
+  "agent_harbor_web_helper": "Website helper",
+  "agent_harbor_support_bot": "Support bot"
+ },
+ "workflows": {
+  "orch_harbor_digest": "Nightly digest",
+  "orch_harbor_invoices": "Invoice sync"
+ },
+ "tools": [
+  "collect_data",
+  "crawl_multiple",
+  "execute_python",
+  "extract_links",
+  "fetch_invoices",
+  "find_similar_code",
+  "glob",
+  "grep",
+  "grep_file",
+  "multi_repo_search",
+  "parse_pdf",
+  "parse_xlsx",
+  "read_file",
+  "read_file_by_lines",
+  "read_json",
+  "run_bash",
+  "run_sql_query",
+  "scrape_structured",
+  "scrape_url",
+  "scrape_with_session",
+  "screenshot_url",
+  "search_codebase",
+  "search_files",
+  "search_page",
+  "spawn_subtask",
+  "tool_code",
+  "update_tasks",
+  "vault_create",
+  "vault_delete",
+  "vault_list",
+  "vault_patch",
+  "vault_read",
+  "vault_write"
+ ]
+}

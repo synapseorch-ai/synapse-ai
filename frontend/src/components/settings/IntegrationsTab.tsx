@@ -1,6 +1,23 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useState, useEffect, useCallback } from 'react';
+import { SavedSecret, secretPlaceholder, useSavedSecrets } from './SavedSecret';
 import { Shield, CheckCircle2, XCircle, RefreshCw, ChevronDown, ChevronUp, User, ExternalLink } from 'lucide-react';
+import { IconButton, Input, Section, Textarea, buttonStyles } from '@/components/ui';
+import { FIELD_LABEL, FORM } from './form';
+import { SaveBar } from './SaveBar';
+
+/** A state as a dot and a word (UX1): success is quiet, never a filled chip. */
+const Status = ({ on, children }: { on: boolean; children: React.ReactNode }) => (
+    <span className="inline-flex items-center gap-1.5 text-xs text-text-muted">
+        <span aria-hidden className={`size-1.5 rounded-full ${on ? 'bg-success' : 'bg-text-faint'}`} />
+        {children}
+    </span>
+);
+
+const LINK = 'text-accent-ink underline-offset-2 hover:underline';
+const pasteBorder = (s: string) => s === 'saved' ? 'border-success' : '';
+const pasteTone = (s: string) =>
+    s === 'saved' ? 'text-success' : s === 'error' ? 'text-danger' : s === 'saving' ? 'text-text-muted' : 'text-text-faint';
 
 interface CredInfo {
     has_credentials: boolean;
@@ -9,6 +26,8 @@ interface CredInfo {
     is_connected?: boolean;
     user_email?: string | null;
     error?: string;
+    /** Where Google sends a person back: the backend's own address (F309). */
+    redirect_uri?: string;
 }
 
 interface IntegrationsTabProps {
@@ -21,6 +40,9 @@ export const IntegrationsTab = ({
     n8nUrl, setN8nUrl, n8nApiKey, setN8nApiKey,
     onSave
 }: IntegrationsTabProps) => {
+    // The key is never served back (F201): one is saved, or it is not.
+    const { secrets } = useSavedSecrets();
+    const n8nConfigured = !!n8nApiKey || !!secrets.n8n_api_key?.set;
     const [credInfo, setCredInfo] = useState<CredInfo | null>(null);
     const [loading, setLoading] = useState(true);
     const [showReupload, setShowReupload] = useState(false);
@@ -111,92 +133,88 @@ export const IntegrationsTab = ({
     const userEmail = credInfo?.user_email;
 
     return (
-        <div className="space-y-8">
+        <div>
 
             {/* ── Google Workspace ────────────────────────────────────── */}
-            <div className="bg-zinc-900 border border-zinc-800 overflow-hidden">
-
-                {/* Header */}
-                <div className="p-4 border-b border-zinc-800 bg-zinc-950 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                        <div className={`h-2 w-2 transition-colors ${isConnected ? 'bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.5)]' : 'bg-red-500'}`} />
-                        <span className="text-sm font-bold text-zinc-400">Connection Status</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                        <button
+            <Section
+                variant="plain"
+                collapsible={false}
+                title="Google Workspace"
+                actions={
+                    <>
+                        <span className="text-xs text-text-faint">Connection status</span>
+                        <Status on={!!isConnected}>{isConnected ? 'Connected' : 'Disconnected'}</Status>
+                        <IconButton
+                            label="Refresh status"
+                            icon={RefreshCw}
+                            size="sm"
                             onClick={fetchCredInfo}
                             disabled={loading}
-                            className="p-1 text-zinc-600 hover:text-zinc-400 transition-colors"
-                            title="Refresh status"
-                        >
-                            <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
-                        </button>
-                        <span className={`text-xs px-2 py-1 bg-zinc-900 border border-zinc-800 ${isConnected ? 'text-green-400' : 'text-zinc-500'}`}>
-                            {isConnected ? 'CONNECTED' : 'DISCONNECTED'}
-                        </span>
-                    </div>
-                </div>
-
-                <div className="p-6 space-y-6">
+                            className={loading ? '[&>svg]:animate-spin' : ''}
+                        />
+                    </>
+                }
+            >
+                <div className={`${FORM} space-y-6`}>
 
                     {/* ── CASE A: Credentials Exist ─── */}
                     {hasCredentials ? (
                         <div className="space-y-4">
-                            {/* Credential Summary Card */}
-                            <div className="bg-zinc-950 border border-zinc-800 p-4 space-y-3">
-                                <div className="flex items-center gap-2 mb-3">
-                                    <CheckCircle2 className="h-4 w-4 text-green-500" />
-                                    <span className="text-xs font-bold text-green-400 uppercase tracking-wider">OAuth Credentials Configured</span>
+                            {/* Credential summary: a card of its own (the one bordered object here) */}
+                            <div className="space-y-3 rounded-md border border-border bg-surface p-4">
+                                <div className="flex items-center gap-2">
+                                    <CheckCircle2 className="size-4 text-success" aria-hidden />
+                                    <span className="text-sm font-medium text-text">OAuth credentials configured</span>
                                 </div>
 
-                                <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-[11px]">
+                                <div className="grid grid-cols-2 gap-x-6 gap-y-2">
                                     <div>
-                                        <p className="text-zinc-600 uppercase tracking-wider mb-0.5">Client ID</p>
-                                        <p className="font-mono text-zinc-300">{credInfo?.client_id ?? '—'}</p>
+                                        <p className="mb-0.5 text-xs text-text-faint">Client ID</p>
+                                        <p className="break-all font-code text-xs text-text">{credInfo?.client_id ?? '—'}</p>
                                     </div>
                                     <div>
-                                        <p className="text-zinc-600 uppercase tracking-wider mb-0.5">Project</p>
-                                        <p className="font-mono text-zinc-300">{credInfo?.project_id || '—'}</p>
+                                        <p className="mb-0.5 text-xs text-text-faint">Project</p>
+                                        <p className="break-all font-code text-xs text-text">{credInfo?.project_id || '—'}</p>
                                     </div>
                                 </div>
 
                                 {/* User email or connect prompt */}
                                 {isConnected && userEmail ? (
-                                    <div className="mt-2 pt-2 border-t border-zinc-800 flex items-center gap-2">
-                                        <User className="h-3.5 w-3.5 text-green-500" />
-                                        <span className="text-xs text-zinc-300">{userEmail}</span>
+                                    <div className="flex items-center gap-2 border-t border-border pt-3">
+                                        <User className="size-3.5 text-text-faint" aria-hidden />
+                                        <span className="text-sm text-text">{userEmail}</span>
                                         <a
                                             href="/auth/login"
                                             target="_blank"
                                             rel="noreferrer"
-                                            className="ml-auto text-[10px] text-zinc-500 hover:text-zinc-300 underline decoration-dotted"
+                                            className={`ml-auto text-xs ${LINK}`}
                                             title="Re-authenticate with Google"
                                         >
                                             Reconnect
                                         </a>
-                                        <span className="text-[10px] text-green-500 uppercase tracking-wider">Authenticated</span>
+                                        <Status on>Authenticated</Status>
                                     </div>
                                 ) : isConnected ? (
-                                    <div className="mt-2 pt-2 border-t border-zinc-800 flex items-center gap-2">
-                                        <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
-                                        <span className="text-xs text-zinc-400">Token active — no email info stored</span>
+                                    <div className="flex items-center gap-2 border-t border-border pt-3">
+                                        <CheckCircle2 className="size-3.5 text-success" aria-hidden />
+                                        <span className="text-sm text-text-muted">Token active — no email info stored</span>
                                     </div>
                                 ) : (
-                                    <div className="mt-3 pt-3 border-t border-zinc-800 space-y-2">
-                                        <p className="text-[11px] text-zinc-500">
+                                    <div className="space-y-2 border-t border-border pt-3">
+                                        <p className="text-sm text-text-muted">
                                             OAuth credentials are ready. Click below to authenticate your Google account.
                                         </p>
                                         <a
                                             href="/auth/login"
                                             target="_blank"
                                             rel="noreferrer"
-                                            className="inline-flex items-center gap-2 px-4 py-2 bg-white text-black text-xs font-bold uppercase tracking-wider hover:bg-zinc-200 transition-colors"
+                                            className={buttonStyles({ variant: 'primary', size: 'sm' })}
                                         >
-                                            <Shield className="h-3.5 w-3.5" />
-                                            Connect Google Account
-                                            <ExternalLink className="h-3 w-3 opacity-60" />
+                                            <Shield className="size-3.5" aria-hidden />
+                                            Connect Google account
+                                            <ExternalLink className="size-3 opacity-60" aria-hidden />
                                         </a>
-                                        <p className="text-[10px] text-zinc-600">
+                                        <p className="text-xs text-text-faint">
                                             This opens a Google sign-in page. After completing, return here and refresh.
                                         </p>
                                     </div>
@@ -207,24 +225,20 @@ export const IntegrationsTab = ({
                             <div>
                                 <button
                                     onClick={() => setShowReupload(v => !v)}
-                                    className="flex items-center gap-2 text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors"
+                                    className="flex items-center gap-2 rounded-sm text-sm text-text-muted transition-colors hover:text-text"
                                 >
-                                    {showReupload ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-                                    Replace / Re-upload credentials.json
+                                    {showReupload ? <ChevronUp className="size-3.5" aria-hidden /> : <ChevronDown className="size-3.5" aria-hidden />}
+                                    Replace / re-upload credentials.json
                                 </button>
                                 {showReupload && (
-                                    <div className="mt-2 space-y-2 animate-in fade-in slide-in-from-top-1 duration-150">
-                                        <textarea
-                                            className={`w-full h-28 bg-black border p-3 text-[10px] font-mono text-zinc-300 focus:outline-none resize-none transition-colors ${pasteStatus === 'saved' ? 'border-green-600' :
-                                                    pasteStatus === 'error' ? 'border-red-600' : 'border-zinc-800 focus:border-white'
-                                                }`}
+                                    <div className="mt-2 space-y-1.5 animate-in fade-in slide-in-from-top-1 duration-150">
+                                        <Textarea
+                                            className={`h-28 resize-none font-code text-xs ${pasteBorder(pasteStatus)}`}
+                                            invalid={pasteStatus === 'error'}
                                             placeholder='{"installed":{"client_id":"...","project_id":"..."}}'
                                             onChange={e => handleCredentialsPaste(e.target.value)}
                                         />
-                                        <p className={`text-[10px] ${pasteStatus === 'saved' ? 'text-green-500' :
-                                                pasteStatus === 'error' ? 'text-red-500' :
-                                                    pasteStatus === 'saving' ? 'text-zinc-400' : 'text-zinc-700'
-                                            }`}>
+                                        <p className={`text-xs ${pasteTone(pasteStatus)}`}>
                                             {pasteStatus === 'saved' ? '✓ Credentials saved — refreshing…' :
                                                 pasteStatus === 'error' ? '✗ Failed to save credentials.' :
                                                     pasteStatus === 'saving' ? 'Saving…' :
@@ -238,14 +252,14 @@ export const IntegrationsTab = ({
                             <div>
                                 <button
                                     onClick={() => setShowTokenImport(v => !v)}
-                                    className="text-[11px] text-zinc-600 hover:text-zinc-400 underline decoration-dotted transition-colors"
+                                    className="rounded-sm text-sm text-text-muted underline decoration-dotted underline-offset-2 transition-colors hover:text-text"
                                 >
-                                    Advanced: Import existing Token JSON (Skip OAuth)
+                                    Advanced: import existing token JSON (skip OAuth)
                                 </button>
                                 {showTokenImport && (
                                     <div className="mt-2 animate-in fade-in slide-in-from-top-1 duration-150">
-                                        <textarea
-                                            className="w-full h-24 bg-black border border-zinc-800 p-3 font-mono text-xs text-zinc-300 focus:border-white focus:outline-none resize-none"
+                                        <Textarea
+                                            className="h-24 resize-none font-code text-xs"
                                             placeholder='{"token": "...", "refresh_token": "..."}'
                                             onChange={e => handleTokenPaste(e.target.value)}
                                         />
@@ -257,47 +271,45 @@ export const IntegrationsTab = ({
 
                         /* ── CASE B: No credentials ─── */
                         <div className="space-y-5">
-                            <div className="text-center py-4 px-4">
-                                <div className="relative inline-block mb-3">
-                                    <Shield className="h-8 w-8 text-zinc-700 mx-auto" />
-                                    <XCircle className="h-4 w-4 text-red-500 absolute -bottom-1 -right-1" />
+                            <div className="flex items-start gap-3">
+                                <div className="relative shrink-0">
+                                    <Shield className="size-6 text-text-faint" aria-hidden />
+                                    <XCircle className="absolute -bottom-1 -right-1 size-3.5 text-text-muted" aria-hidden />
                                 </div>
-                                <h3 className="text-base text-white font-bold mb-1">Google Workspace Setup</h3>
-                                <p className="text-xs text-zinc-500 max-w-sm mx-auto mb-4">
-                                    Google Workspace tools are powered by the Google Workspace MCP server.
-                                    Upload your OAuth credentials below to enable it.
-                                </p>
-
-                                <div className="text-left text-[10px] bg-black p-4 border border-zinc-800 mb-5 max-w-md mx-auto overflow-y-auto max-h-[300px]">
-                                    <p className="font-bold text-zinc-300 mb-2">Quick Setup Guide:</p>
-                                    <ol className="list-decimal pl-4 space-y-1.5 text-zinc-500">
-                                        <li>Go to <a href="https://console.cloud.google.com/" target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 underline">Google Cloud Console</a> &amp; create a Project.</li>
-                                        <li>Enable <em>Gmail, Drive, Calendar, Docs, Sheets, Slides, Forms, Tasks, People APIs</em> — <a href="https://console.cloud.google.com/flows/enableapi?apiid=gmail.googleapis.com,drive.googleapis.com,calendar-json.googleapis.com,docs.googleapis.com,sheets.googleapis.com,slides.googleapis.com,forms.googleapis.com,tasks.googleapis.com,people.googleapis.com" target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 underline">one-click enable APIs →</a></li>
-                                        <li>Create OAuth Client ID — use this direct link: <a href="https://console.cloud.google.com/auth/clients/create" target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 underline">Create OAuth Client →</a> and choose <strong className="text-zinc-300">Web application</strong>.</li>
-                                        <li>Under <strong>Authorized redirect URIs</strong>, add <strong className="text-zinc-300">http://localhost:{process.env.NEXT_PUBLIC_BACKEND_PORT || '8765'}/auth/callback</strong></li>
-                                        <li>Download the JSON file, open it, copy all its content, and paste it below.</li>
-                                    </ol>
+                                <div>
+                                    <h3 className="text-sm font-medium text-text">Google Workspace setup</h3>
+                                    <p className="mt-0.5 text-sm text-text-muted">
+                                        Google Workspace tools are powered by the Google Workspace MCP server.
+                                        Upload your OAuth credentials below to enable it.
+                                    </p>
                                 </div>
                             </div>
 
-                            <div className="border-t border-zinc-800 pt-5 space-y-4">
+                            <div className="max-h-[300px] overflow-y-auto rounded-md border border-border bg-surface p-4 text-sm">
+                                <p className="mb-2 font-medium text-text">Quick setup guide:</p>
+                                <ol className="list-decimal space-y-1.5 pl-5 text-text-muted">
+                                    <li>Go to <a href="https://console.cloud.google.com/" target="_blank" rel="noreferrer" className={LINK}>Google Cloud Console</a> &amp; create a Project.</li>
+                                    <li>Enable <em>Gmail, Drive, Calendar, Docs, Sheets, Slides, Forms, Tasks, People APIs</em> — <a href="https://console.cloud.google.com/flows/enableapi?apiid=gmail.googleapis.com,drive.googleapis.com,calendar-json.googleapis.com,docs.googleapis.com,sheets.googleapis.com,slides.googleapis.com,forms.googleapis.com,tasks.googleapis.com,people.googleapis.com" target="_blank" rel="noreferrer" className={LINK}>one-click enable APIs →</a></li>
+                                    <li>Create OAuth Client ID — use this direct link: <a href="https://console.cloud.google.com/auth/clients/create" target="_blank" rel="noreferrer" className={LINK}>Create OAuth Client →</a> and choose <strong className="font-medium text-text">Web application</strong>.</li>
+                                    <li>Under <strong className="font-medium text-text">Authorized redirect URIs</strong>, add <code className="break-all rounded bg-surface-2 px-1 font-code text-xs text-text">{credInfo?.redirect_uri ?? 'http://localhost:8765/auth/callback'}</code></li>
+                                    <li>Download the JSON file, open it, copy all its content, and paste it below.</li>
+                                </ol>
+                            </div>
+
+                            <div className="space-y-4">
                                 {/* Paste area */}
                                 <details className="group appearance-none">
-                                    <summary className="cursor-pointer text-xs font-bold text-zinc-400 hover:text-white list-none flex items-center gap-2 p-3 bg-zinc-950 border border-zinc-800 hover:border-zinc-700 transition-colors">
-                                        <span>+ PASTE CREDENTIALS.JSON CONTENT</span>
+                                    <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md border border-border px-3 py-2.5 text-sm font-medium text-text-muted transition-colors hover:border-border-strong hover:text-text">
+                                        <span>+ Paste credentials.json content</span>
                                     </summary>
-                                    <div className="mt-2">
-                                        <textarea
-                                            className={`w-full h-32 bg-black border p-3 text-[10px] font-mono text-zinc-300 focus:outline-none resize-none transition-colors ${pasteStatus === 'saved' ? 'border-green-600' :
-                                                    pasteStatus === 'error' ? 'border-red-600' : 'border-zinc-800 focus:border-white'
-                                                }`}
+                                    <div className="mt-2 space-y-1.5">
+                                        <Textarea
+                                            className={`h-32 resize-none font-code text-xs ${pasteBorder(pasteStatus)}`}
+                                            invalid={pasteStatus === 'error'}
                                             placeholder='{"installed":{"client_id":"...","project_id":"..."}}'
                                             onChange={e => handleCredentialsPaste(e.target.value)}
                                         />
-                                        <p className={`mt-1 text-[10px] ${pasteStatus === 'saved' ? 'text-green-500' :
-                                                pasteStatus === 'error' ? 'text-red-500' :
-                                                    pasteStatus === 'saving' ? 'text-zinc-400' : 'text-zinc-700'
-                                            }`}>
+                                        <p className={`text-xs ${pasteTone(pasteStatus)}`}>
                                             {pasteStatus === 'saved' ? '✓ Saved — refreshing status…' :
                                                 pasteStatus === 'error' ? '✗ Invalid JSON or save failed.' :
                                                     pasteStatus === 'saving' ? 'Saving…' :
@@ -308,12 +320,12 @@ export const IntegrationsTab = ({
 
                                 {/* Token Import */}
                                 <details className="group appearance-none">
-                                    <summary className="cursor-pointer text-xs font-bold text-zinc-500 hover:text-white mt-2 list-none flex items-center gap-2">
-                                        <span className="underline decoration-dotted decoration-zinc-700 hover:decoration-zinc-500">Advanced: Import existing Token JSON (Skip OAuth)</span>
+                                    <summary className="flex cursor-pointer list-none items-center gap-2 text-sm text-text-muted hover:text-text">
+                                        <span className="underline decoration-dotted underline-offset-2">Advanced: import existing token JSON (skip OAuth)</span>
                                     </summary>
                                     <div className="mt-2">
-                                        <textarea
-                                            className="w-full h-24 bg-black border border-zinc-800 p-3 font-mono text-xs text-zinc-300 focus:border-white focus:outline-none resize-none"
+                                        <Textarea
+                                            className="h-24 resize-none font-code text-xs"
                                             placeholder='{"token": "...", "refresh_token": "..."}'
                                             onChange={e => handleTokenPaste(e.target.value)}
                                         />
@@ -323,53 +335,45 @@ export const IntegrationsTab = ({
                         </div>
                     )}
                 </div>
-            </div>
+            </Section>
 
             {/* ── n8n ─────────────────────────────────────────────────── */}
-            <div className="bg-zinc-900 border border-zinc-800 overflow-hidden">
-                <div className="p-4 border-b border-zinc-800 bg-zinc-950 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                        <div className={`h-2 w-2 ${n8nApiKey ? 'bg-green-500' : 'bg-red-500'}`} />
-                        <span className="text-sm font-bold text-zinc-400">n8n</span>
-                    </div>
-                    <span className={`text-xs px-2 py-1 bg-zinc-900 border border-zinc-800 ${n8nApiKey ? 'text-green-400' : 'text-zinc-500'}`}>
-                        {n8nApiKey ? 'CONFIGURED' : 'NOT CONFIGURED'}
-                    </span>
-                </div>
-                <div className="p-6 space-y-6">
-                    <div className="space-y-2">
-                        <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">n8n URL</label>
-                        <input
+            <Section
+                variant="plain"
+                collapsible={false}
+                title="n8n"
+                actions={<Status on={n8nConfigured}>{n8nConfigured ? 'Configured' : 'Not configured'}</Status>}
+            >
+                <div className={`${FORM} space-y-6`}>
+                    <div className="space-y-1.5">
+                        <label htmlFor="integrations-n8n-url" className={FIELD_LABEL}>n8n URL</label>
+                        <Input
+                            id="integrations-n8n-url"
                             type="text"
                             value={n8nUrl}
                             onChange={(e) => setN8nUrl(e.target.value)}
-                            className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors font-mono"
+                            className="font-code"
                             placeholder="http://localhost:5678"
                         />
-                        <p className="text-xs text-zinc-600">Defaults to localhost for local dev. Use your production n8n base URL in deployment.</p>
+                        <p className="text-xs text-text-faint">Defaults to localhost for local dev. Use your production n8n base URL in deployment.</p>
                     </div>
-                    <div className="space-y-2">
-                        <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">n8n API Key</label>
-                        <input
+                    <div className="space-y-1.5">
+                        <label htmlFor="integrations-n8n-api-key" className={FIELD_LABEL}>n8n API key</label>
+                        <Input
+                            id="integrations-n8n-api-key"
                             type="password"
                             value={n8nApiKey}
                             onChange={(e) => setN8nApiKey(e.target.value)}
-                            className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors font-mono"
-                            placeholder="X-N8N-API-KEY"
+                            className="font-code"
+                            placeholder={secretPlaceholder(secrets, 'n8n_api_key', 'X-N8N-API-KEY')}
                         />
-                        <p className="text-xs text-zinc-600">Used server-side to list workflows and derive webhook URLs.</p>
+                        <SavedSecret name="n8n_api_key" label="n8n API key" typed={n8nApiKey} />
+                        <p className="text-xs text-text-faint">Used server-side to list workflows and derive webhook URLs.</p>
                     </div>
 
-                    <div className="pt-2 flex justify-end">
-                        <button
-                            onClick={onSave}
-                            className="px-6 py-2.5 text-sm font-bold bg-white text-black hover:bg-zinc-200 transition-all shadow-lg"
-                        >
-                            Save Changes
-                        </button>
-                    </div>
+                    <SaveBar onSave={onSave} />
                 </div>
-            </div>
+            </Section>
 
         </div>
     );

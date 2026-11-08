@@ -3,20 +3,25 @@ Tool definitions, aggregation, and system prompt construction.
 Extracted from server.py to eliminate duplication between chat() and chat_stream().
 """
 import json
-import time
 import datetime
 import zoneinfo
 
 import anyio
+from dataclasses import dataclass
 
 from core.config import load_settings, MCP_LIST_TOOLS_TIMEOUT
+from core.tool_router import SEP, ToolRouter
+
+from core.log import get_logger
+
+_log = get_logger(__name__)
 
 
 # Tools auto-injected per agent type. These bypass the agent's tools[] array.
 # "all_types" applies to every agent regardless of type.
 DEFAULT_TOOLS_BY_TYPE = {
     "all_types": {
-        "sequentialthinking",         # multi-step tool execution
+        "update_tasks",               # native task list — see core/task_list.py
         # Filesystem MCP — always available for reading repo + vault files
         "read_file",                  # read any allowed file
         "read_multiple_files",        # batch read
@@ -26,6 +31,13 @@ DEFAULT_TOOLS_BY_TYPE = {
         "grep",
         "glob",
         "read_file_by_lines",         # read specific line range from any file
+        # The vault tool's own two (`tools/vault_fs.py`) — the only file tools a
+        # fleet worker has, whose `read_file`/`search_files` are named above —
+        # and `file_reader`'s real grep, which a vaulted output's reference
+        # names. `grep` above is served by no server (F21).
+        "list_files",
+        "read_json",
+        "grep_file",
     },
     "code": {
         "search_codebase",
@@ -54,43 +66,247 @@ Your mission is to assist the user with everyday tasks, retrieving personal info
 """
 
 
-# Module-level cache of MCP session tools — populated on first successful list_tools() call.
-# Avoids re-querying flaky sessions (e.g. mcp-remote after OAuth state changes) on every agent call.
-_session_tools_cache: dict = {}
-
-
 class VirtualTool:
-    """A lightweight tool descriptor that mimics the shape of an MCP tool."""
-    def __init__(self, name, description, inputSchema):
+    """A lightweight tool descriptor that mimics the shape of an MCP tool.
+
+    `annotations` carries the MCP `ToolAnnotations` a server declared
+    (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`).
+    It used to stop here: a server's hints survived `list_tools()` and were
+    dropped the moment a tool was wrapped, so the engine could not tell a file
+    read from a database write.
+    """
+    def __init__(self, name, description, inputSchema, annotations=None, title=None,
+                 trusted: bool = True):
         self.name = name
         self.description = description
         self.inputSchema = inputSchema
+        self.annotations = annotations
+        self.title = title
+        #: False for a third-party MCP server. Its hints are a claim, not a
+        #: boundary (see core/tool_policy.py) — believed when they restrict,
+        #: not when they reassure.
+        self.trusted = trusted
+
+
+@dataclass(frozen=True)
+class ToolHints:
+    """What a tool says about itself, normalised.
+
+    `declared` is the field that matters for policy. MCP's own defaults are
+    `destructiveHint=True` and `openWorldHint=True`, so treating an absent
+    annotation as its default would mark every un-annotated tool in existence
+    as destructive. An undeclared tool is `declared=False` and policy decides
+    what to do with *that*, rather than pretending it was told something.
+
+    `trusted` separates our own servers from third-party ones — the MCP spec
+    is explicit that hints from an untrusted server are not a security
+    boundary. Ours are declared in this repo; theirs are a claim.
+    """
+    read_only: bool = False
+    destructive: bool = False
+    idempotent: bool = False
+    open_world: bool = False
+    declared: bool = False
+    trusted: bool = True
+
+
+#: Appended to a tool's description so the model knows what a call costs.
+#: Deterministic by construction — the tools array sits inside the prompt
+#: cache prefix, and a suffix that varied per turn would invalidate it.
+_HINT_SUFFIXES = (
+    ("destructive", " (modifies data — not reversible)"),
+    ("open_world", " (reaches systems outside this workspace)"),
+    ("read_only", " (read-only)"),
+)
+
+
+def describe_with_hints(description: str, hints: "ToolHints") -> str:
+    """`description` with at most one behaviour note appended."""
+    if not hints.declared:
+        return description or ""
+    for attr, suffix in _HINT_SUFFIXES:
+        if getattr(hints, attr):
+            base = (description or "").rstrip()
+            return base + suffix if not base.endswith(suffix) else base
+    return description or ""
+
+
+#: Who wrote a custom tool's hints when it was not the person: the AI builder's are a claim, believed only when they
+#: restrict (F488), as a third-party server's are.
+BUILDER_HINTS = "builder"
+
+
+def method_hints(method: str | None) -> dict:
+    """The MCP hints a custom HTTP tool declares from its method (F488, BWA1; the table is `core.tool_tags`, TAG1).
+
+    Every custom tool was undeclared, so a policy of `open_world: confirm` let a booking API's POST run with no
+    approval. GET reads (and reaches outside, as the built-in web tools say they do); DELETE destroys; every other
+    method changes something outside this workspace; PUT and DELETE are safe to repeat (RFC 9110).
+    """
+    from core.tool_tags import defaults_for, hints_of
+
+    return hints_of(defaults_for(method))
+
+
+def hinted(tool: dict, *, by_builder: bool = False) -> dict:
+    """`tool` as it is saved: an HTTP tool that declares nothing gets its method's hints (F488).
+
+    Applied where a tool is created or saved, so a tool nobody has saved since keeps behaving as it did (Naveen's
+    call: new and edited tools only). Hints the person set are kept. The AI builder's are marked as its own.
+    """
+    from core.tool_tags import clean_hints
+
+    if isinstance(tool.get("annotations"), dict):
+        # Only MCP's four hints, each a boolean (TAG1): what the person set, as they set it.
+        tool["annotations"] = clean_hints(tool["annotations"])
+    elif "annotations" in tool:
+        tool.pop("annotations")
+    if (tool.get("tool_type") or "http") != "http":
+        return tool
+    if not isinstance(tool.get("annotations"), dict):
+        tool["annotations"] = method_hints(tool.get("method"))
+    if by_builder:
+        tool["annotations_by"] = BUILDER_HINTS
+    return tool
+
+
+def custom_virtual_tool(ct: dict) -> "VirtualTool":
+    """A custom tool as the engine offers it, with the hints it was saved with (none for a tool saved before F488)."""
+    return VirtualTool(ct["name"], ct.get("description", ""), ct.get("inputSchema") or {"type": "object"},
+                       annotations=ct.get("annotations") if isinstance(ct.get("annotations"), dict) else None,
+                       # A person's tags carry no mark; the builder's and a file's are a claim (F488, TAG1).
+                       trusted=not ct.get("annotations_by"))
+
+
+def tool_hints(tool, *, trusted: bool = True) -> ToolHints:
+    """The hints for one `Tool` or `VirtualTool`."""
+    ann = getattr(tool, "annotations", None)
+    if ann is None:
+        return ToolHints(declared=False, trusted=trusted)
+
+    def hint(name):
+        value = getattr(ann, name, None)
+        if value is None and isinstance(ann, dict):
+            value = ann.get(name)
+        return value
+
+    from core.tool_tags import tags_from
+
+    # One reading rule for a live tool and a stored one (TAG1): an absent destructiveHint on a tool that is not
+    # read-only is MCP's default, destructive; idempotent is never inferred from read_only.
+    return ToolHints(
+        **tags_from(hint),
+        declared=True,
+        trusted=trusted,
+    )
+
+
+#: Servers whose tools `"all"` does not cover — an agent has to name one of them
+#: to get any of them.
+#:
+#: `"all"` means "whatever this deployment makes available", and that is the
+#: right default for a tool set that reads a PDF or fetches a page: the worst
+#: case of a wrong guess is a wasted call. `sql` is different in kind. It opens a
+#: connection to a system somebody configured separately, and the reason it was
+#: configured separately is that somebody decided which agents should reach it.
+#: An agent created by ticking nothing should not arrive holding that.
+#:
+#: A floor rather than a policy: naming the tool still turns it on, and a
+#: deployment that wants finer control layers it on top. The set is expected to
+#: grow, and the test for joining it is whether a surprised owner would call the
+#: call a breach rather than a waste.
+OPT_IN_SERVERS: frozenset[str] = frozenset({"sql"})
+
+#: One tool of a server `"all"` otherwise reaches, by `(server, tool)`: the same floor, for a tool whose server's other
+#: tools are every agent's. Cloud's fleet serves the Vault's write on its `vault` server beside the reads (F1289,
+#: `vault_tools.set_writer`): a new write an agent holds only by naming it (79, least privilege). Self-hosted, the
+#: sandbox server's own `vault_write` (`vault_sandbox`) is as it was.
+OPT_IN_TOOLS: frozenset[tuple[str, str]] = frozenset({("vault", "vault_write")})
+
+
+def opt_in(server: str, tool: str) -> bool:
+    """Whether `"all"` leaves `tool` of `server` out: its server is opted in whole, or this one tool of it is."""
+    return server in OPT_IN_SERVERS or (server, tool) in OPT_IN_TOOLS
+
+
+#: How many tokens of declarations `"all"` may add to one turn from the servers a
+#: workspace connected, for tools the agent did not name (F483).
+#:
+#: `"all"` is what an agent made with no `tools` key holds, and nothing bounded
+#: what it reached. A server can grow without anyone in the workspace doing
+#: anything: acme's Vercel server went from the 37 tools its discovery stored to
+#: 236 live, and an `["all"]` turn there sent 343 tools, 169,391 tokens on every
+#: model call. nova-micro (128K) refused each one ("Input Tokens Exceeded"); a
+#: model that could read it paid for it on every call, unseen.
+#:
+#: So a turn leaves out whole servers, largest first, until what `"all"` adds
+#: from them fits, and says which (`react_engine`). Whole servers, so a model is
+#: never handed half of one; never a tool the agent named; never a native or
+#: builder tool, which are the product's own and small. 40K holds what a
+#: workspace usually connects (acme's other two servers are about 2K together)
+#: and stays well inside the smallest context a platform model has.
+ALL_TOOLS_TOKEN_BUDGET = 40_000
+
+
+def declaration_tokens(name: str, description: str | None, schema) -> int:
+    """About how many tokens a tool's declaration costs a call: its characters / 4.
+
+    The product's rule everywhere it estimates, and low for JSON: it puts Vercel's
+    236 at 124K where Bedrock counted 147K. A budget, not a bill.
+    """
+    return (len(name or "") + len(description or "") + len(json.dumps(schema or {}, default=str))) // 4
+
+
+def _over_budget(reached: dict[str, list], budget: int) -> list[tuple[str, int, list]]:
+    """The servers to leave out of a turn, largest first, until the rest fit `budget`.
+
+    `reached` maps a server to the tools it added only through `"all"`.
+    """
+    sizes = {server: sum(declaration_tokens(t.name, t.description, t.inputSchema) for t in tools)
+             for server, tools in reached.items()}
+    total = sum(sizes.values())
+    out = []
+    for server in sorted(sizes, key=lambda s: (-sizes[s], s)):
+        if total <= budget:
+            break
+        out.append((server, sizes[server], reached[server]))
+        total -= sizes[server]
+    return out
+
+
+def permits(allowed_tools, name: str, *, opt_in: bool = False) -> bool:
+    """Whether an agent whose list is `allowed_tools` may call `name`.
+
+    One function rather than the six `"all" in allowed_tools or …` sites it
+    replaces. Those were identical by convention, and a rule applied in five
+    places and forgotten in the sixth is exactly what this exists to prevent.
+
+    `opt_in` marks a tool `opt_in()` names (a server in `OPT_IN_SERVERS`, or one tool in `OPT_IN_TOOLS`), which `"all"`
+    deliberately does not reach. Naming it explicitly always works — that is
+    what opting in is.
+    """
+    if name in allowed_tools:
+        return True
+    return "all" in allowed_tools and not opt_in
 
 
 def build_virtual_tools():
     return []
 
 
-async def aggregate_all_tools(agent_sessions, active_agent, custom_tools_list):
-    """
-    Aggregate all available tools: MCP tools + virtual tools + custom tools.
-    
-    Returns:
-        tuple: (all_tools, tool_schema_map, ollama_tools, tools_json)
-    """
-    all_tools = []
-    tool_schema_map = {}  # name -> inputSchema
+_EMBED_TOOLS = frozenset({"search_codebase", "multi_repo_search", "find_similar_code",
+                          "list_indexed_files", "get_file_chunks"})
 
-    # tool_router is the single source of truth for dispatch (name -> session).
-    # A tool name can be exposed by multiple native MCP servers (e.g.
-    # read_file_by_lines in both file_reader and code_search); we use this map
-    # to declare only the copy from the server that will actually service the
-    # call. Deferred import avoids a circular import at module load — aggregation
-    # always runs per-request, long after startup has populated the map.
-    from core import server as _server
-    tool_router = getattr(_server, "tool_router", {}) or {}
 
-    allowed_tools = active_agent.get("tools", ["all"])
+def effective_allowed_tools(active_agent: dict) -> list[str]:
+    """The agent's tool allowlist with the type defaults added and the embedding
+    tools removed when embedding is off.
+
+    Always a new list. This used to be `active_agent["tools"]` itself with the
+    defaults appended in place, so every aggregation grew the agent's own list
+    by the default set — harmless the first time and wrong every time after.
+    """
+    allowed = list(active_agent.get("tools", ["all"]))
 
     # Auto-inject default tools based on agent type.
     # Agents with `skip_default_tools: true` opt out entirely — their tool list
@@ -100,62 +316,232 @@ async def aggregate_all_tools(agent_sessions, active_agent, custom_tools_list):
         agent_type = active_agent.get("type", "conversational")
         for category in ["all_types", agent_type]:
             for tool_name in DEFAULT_TOOLS_BY_TYPE.get(category, set()):
-                if tool_name not in allowed_tools:
-                    allowed_tools.append(tool_name)
+                if tool_name not in allowed:
+                    allowed.append(tool_name)
+    # What its type brings, by the guard's own rule (`gate.held_by`, `react_engine._type_tools`): a Browser agent is
+    # offered the browser however its list was saved, and `skip_default_tools` does not take it away (F1405: one made
+    # with `"tools": []` held the browser at run time and was never shown it).
+    from core.browser.gate import held_by
 
-    # Remove embedding tools if embed_code is disabled
-    settings = load_settings()
-    if not settings.get("embed_code", False):
-        _embed_tools = {"search_codebase", "multi_repo_search", "find_similar_code",
-                        "list_indexed_files", "get_file_chunks"}
-        allowed_tools = [t for t in allowed_tools if t not in _embed_tools]
+    allowed = held_by(allowed, active_agent.get("type"))
+
+    if not load_settings().get("embed_code", False):
+        allowed = [t for t in allowed if t not in _EMBED_TOOLS]
+    return allowed
+
+
+async def _session_tools_for(server_module, session_key: str):
+    """A session's advertised tools, from the per-module cache or one bounded
+    `list_tools()`. None when the session is unknown or does not answer."""
+    sessions = getattr(server_module, "agent_sessions", None) or {}
+    session = sessions.get(session_key)
+    cache = getattr(server_module, "_session_tools", None)
+    if cache is None:
+        cache = {}
+        try:
+            server_module._session_tools = cache
+        except (AttributeError, TypeError):
+            pass
+    if session_key in cache:
+        return cache[session_key]
+    if session is None:
+        return None
+    try:
+        with anyio.fail_after(MCP_LIST_TOOLS_TIMEOUT):
+            result = await session.list_tools()
+    except Exception as e:  # noqa: BLE001 — a session that does not answer has no tools
+        _log.debug(f"Skipping session '{session_key}' — list_tools failed: {e}")
+        return None
+    cache[session_key] = result.tools
+    return result.tools
+
+
+async def resolve_one_tool(server_module, name: str, active_agent: dict, custom_tools_list: list[dict]):
+    """One tool's declaration by name, or None.
+
+    The forced-tool step used to aggregate every server's tools — list, filter,
+    schema-map, serialise — to find the one it was told to call. The router
+    already knows which session answers a name, and that session's tool list is
+    cached; the rest of the sources are small lists. Same admission rules as
+    `aggregate_all_tools`, so a tool this returns is one the agent could call.
+    """
+    from core.tool_router import ToolRouter
+
+    allowed = effective_allowed_tools(active_agent)
+    router = getattr(server_module, "tool_router", None)
+    if not isinstance(router, ToolRouter):
+        router = ToolRouter(router or {})
+
+    key = router.resolve(name)
+    if key is not None:
+        session_key, actual = router[key]
+        for t in (await _session_tools_for(server_module, session_key)) or []:
+            if t.name != actual:
+                continue
+            if key in allowed or permits(allowed, name, opt_in=opt_in(session_key, actual)):
+                # An external server's hints are a claim: untrusted, exactly as
+                # `aggregate_all_tools` declares them. Without the mark a Tool
+                # step's policy check believed a third party's "I only read".
+                return VirtualTool(name, t.description, t.inputSchema,
+                                   getattr(t, "annotations", None),
+                                   trusted=not session_key.startswith("ext_mcp_"))
+            return None
+
+    for vt in build_virtual_tools():
+        if vt.name == name:
+            return vt
+
+    group_ids = {entry[len("group:"):] for entry in allowed
+                 if isinstance(entry, str) and entry.startswith("group:")}
+    for ct in custom_tools_list or []:
+        if ct.get("name") != name:
+            continue
+        if permits(allowed, name) or (group_ids and ct.get("group") in group_ids):
+            return custom_virtual_tool(ct)
+        return None
+
+    from core.builder_tools import BUILDER_TOOL_SCHEMAS, OPT_IN_BUILDER_TOOLS, builder_tool_offered
+    for bt in BUILDER_TOOL_SCHEMAS:
+        fn = bt["function"]
+        if (fn["name"] == name and permits(allowed, name, opt_in=name in OPT_IN_BUILDER_TOOLS)
+                and builder_tool_offered(name)):
+            return VirtualTool(name, fn.get("description", ""), fn.get("parameters", {"type": "object"}))
+    return None
+
+
+async def aggregate_all_tools(server_module, active_agent, custom_tools_list, *, budget=None, left_out=None):
+    """
+    Aggregate all available tools: MCP tools + virtual tools + custom tools.
+
+    Takes the server module rather than its `agent_sessions`, because the
+    sessions are not the only thing here that belongs to it: so do the tool
+    router that decides which of them services a call, and the cache of what each
+    one advertises. Reading those from `core.server` while the sessions came from
+    somewhere else is what made this function wrong inside a worker.
+
+    `budget` is for a turn's own tool set (F483): the tokens `"all"` may add
+    from connected servers for tools the agent did not name. Past it, whole
+    servers are left out, largest first, and each is appended to `left_out` as
+    `{"server", "tools", "tokens"}` for the turn to say so. A caller asking what
+    exists — the builder's listing, its guard — passes none and sees everything.
+
+    Returns:
+        tuple: (all_tools, tool_schema_map, ollama_tools, tools_json)
+    """
+    all_tools = []
+    tool_schema_map = {}  # name -> inputSchema
+
+    agent_sessions = getattr(server_module, "agent_sessions", None) or {}
+
+    # tool_router is the single source of truth for dispatch (name -> session).
+    # A tool name can be exposed by multiple native MCP servers (e.g.
+    # read_file_by_lines in both file_reader and code_search); we use this map
+    # to declare only the copy from the server that will actually service the
+    # call.
+    #
+    # It comes off `server_module`, not `core.server`. It used to be imported
+    # from that module directly, which meant a worker — holding a
+    # `WorkerServerModule` with its own populated router — read the API server's
+    # empty module global instead, and the collision handling below quietly did
+    # nothing there.
+    tool_router = getattr(server_module, "tool_router", None)
+    # Test doubles and embedders hand over a plain dict; wrapping gives it the
+    # alias table without making every caller construct one.
+    if not isinstance(tool_router, ToolRouter):
+        tool_router = ToolRouter(tool_router or {})
+
+    # Tools each session advertised, cached after the first successful
+    # `list_tools()` — this avoids re-querying flaky sessions (mcp-remote after
+    # an OAuth state change, say) on every agent call. Keyed by session name, and
+    # therefore only safe on the object that owns those sessions: as a module
+    # global it was shared by every tenant a process served, so two tenants with
+    # a server of the same name saw one tool list, whichever answered first.
+    session_tools_cache = getattr(server_module, "_session_tools", None)
+    if session_tools_cache is None:
+        session_tools_cache = {}
+        try:
+            server_module._session_tools = session_tools_cache
+        except (AttributeError, TypeError):
+            pass  # a read-only stand-in still works, just uncached
+
+    allowed_tools = effective_allowed_tools(active_agent)
+    # Each connected server's tools that only `"all"` reached: what a budget may leave out.
+    through_all: dict[str, list] = {}
 
     # Standard MCP Tools
     for session_name, session in agent_sessions.items():
         # Use cached tools from previous successful call — avoids hanging on flaky sessions
-        if session_name in _session_tools_cache:
-            session_tools = _session_tools_cache[session_name]
-            print(f"DEBUG: 📦 Using cached tools for '{session_name}' ({len(session_tools)} tools)", flush=True)
+        if session_name in session_tools_cache:
+            session_tools = session_tools_cache[session_name]
+            _log.debug(f"📦 Using cached tools for '{session_name}' ({len(session_tools)} tools)")
         else:
             try:
                 # Bounded list_tools() — timeout (default 15s, override via
                 # SYNAPSE_MCP_LIST_TOOLS_TIMEOUT) prevents a single flaky
                 # session from blocking all subsequent tool aggregation.
-                print(f"DEBUG: 🔄 Fetching tools for '{session_name}'...", flush=True)
+                _log.debug(f"🔄 Fetching tools for '{session_name}'...")
                 with anyio.fail_after(MCP_LIST_TOOLS_TIMEOUT):
                     result = await session.list_tools()
                 session_tools = result.tools
-                _session_tools_cache[session_name] = session_tools
-                print(f"DEBUG: ✅ Fetched+cached tools for '{session_name}' ({len(session_tools)} tools)", flush=True)
+                session_tools_cache[session_name] = session_tools
+                _log.debug(f"✅ Fetched+cached tools for '{session_name}' ({len(session_tools)} tools)")
             except TimeoutError:
-                print(f"DEBUG: ⏱ Skipping session '{session_name}' — list_tools timed out after 15s", flush=True)
+                _log.debug(f"⏱ Skipping session '{session_name}' — list_tools timed out after 15s")
                 continue
             except Exception as e:
-                print(f"DEBUG: Skipping session '{session_name}' — list_tools failed: {e}", flush=True)
+                _log.debug(f"Skipping session '{session_name}' — list_tools failed: {e}")
                 continue
 
         is_external = session_name.startswith("ext_mcp_")
-        server_name = session_name[len("ext_mcp_"):] if is_external else None
+        # Whether `"all"` reaches this server's tools at all. Decided per
+        # session rather than per tool, because it is a property of what the
+        # server connects to, not of any one call.
+        for t in session_tools:
+            named_only = opt_in(session_name, t.name)
+            key = tool_router.key_for(session_name, t.name)
 
-        if is_external:
-            for t in session_tools:
-                prefixed = f"{server_name}__{t.name}"
-                if "all" in allowed_tools or prefixed in allowed_tools:
-                    all_tools.append(VirtualTool(prefixed, t.description, t.inputSchema))
-        else:
-            candidate = session_tools if "all" in allowed_tools \
-                else [t for t in session_tools if t.name in allowed_tools]
-            for t in candidate:
-                # A tool name can be exposed by multiple native MCP servers
-                # (e.g. read_file_by_lines in BOTH file_reader and code_search).
-                # tool_router decides which server services a call (last to
-                # register at startup wins). Declare only the copy from that
-                # server, so the LLM sees the schema of the impl that runs — and
-                # Gemini never receives a duplicate function declaration.
-                routed = tool_router.get(t.name)
-                if routed and routed[0] != session_name:
+            if is_external:
+                # External servers have always been declared to the model as
+                # `{server}__{tool}`, and that is what an agent's stored tools[]
+                # array holds. Unchanged deliberately: renaming them would make
+                # every existing agent's list silently stop matching.
+                name = key or f"{session_name[len('ext_mcp_'):]}{SEP}{t.name}"
+                if permits(allowed_tools, name, opt_in=named_only):
+                    declared = VirtualTool(name, t.description, t.inputSchema,
+                                           getattr(t, "annotations", None),
+                                           trusted=False)
+                    all_tools.append(declared)
+                    if name not in allowed_tools:
+                        through_all.setdefault(session_name[len('ext_mcp_'):], []).append(declared)
+                continue
+
+            # A native tool an agent asked for *by its namespaced key*. This is
+            # the escape hatch that makes the loser of a collision reachable —
+            # e.g. code_vault_search__read_file_by_lines, whose repo-aware
+            # implementation file_reader has always shadowed.
+            if key is not None and key in allowed_tools:
+                all_tools.append(VirtualTool(key, t.description, t.inputSchema,
+                                             getattr(t, "annotations", None)))
+                continue
+
+            # Otherwise a native tool is declared under its bare name, but only
+            # by the server a bare call actually reaches, so the LLM sees the
+            # schema of the implementation that runs — and Gemini never receives
+            # a duplicate function declaration.
+            if permits(allowed_tools, t.name, opt_in=named_only):
+                if key is not None and not tool_router.declares(session_name, t.name):
                     continue
                 all_tools.append(t)
+
+    # What `"all"` added from connected servers, bounded for a turn (F483).
+    if budget is not None and through_all:
+        for server, tokens, tools in _over_budget(through_all, budget):
+            dropped = {id(t) for t in tools}
+            all_tools = [t for t in all_tools if id(t) not in dropped]
+            _log.info(f"Left out {server}'s {len(tools)} tools from an \"all\" turn: ~{tokens} tokens, "
+                      f"past the {budget}-token budget")
+            if left_out is not None:
+                left_out.append({"server": server, "tools": len(tools), "tokens": tokens})
 
     # Populate schema map for MCP tools
     for t in all_tools:
@@ -168,20 +554,30 @@ async def aggregate_all_tools(agent_sessions, active_agent, custom_tools_list):
         tool_schema_map[vt.name] = vt.inputSchema
     
     # Dynamic Custom Tools (n8n/Webhook)
+    #
+    # An agent's list may name a whole group — `group:<id>` — and every tool
+    # carrying that group is admitted, including one added to the group after
+    # the agent was saved. That is what makes a group a unit rather than a
+    # picker heading (the OpenAPI import makes one group per import).
+    group_ids = {entry[len("group:"):] for entry in allowed_tools if isinstance(entry, str) and entry.startswith("group:")}
     for ct in custom_tools_list:
-        if "all" in allowed_tools or ct['name'] in allowed_tools:
-            vt = VirtualTool(ct['name'], ct['description'], ct['inputSchema'])
+        in_group = bool(group_ids) and ct.get("group") in group_ids
+        if permits(allowed_tools, ct['name']) or in_group:
+            vt = custom_virtual_tool(ct)
             all_tools.append(vt)
             tool_schema_map[vt.name] = vt.inputSchema
 
     # Native Builder tools — first-class so any agent that declares them in its
     # `tools` list can call create_orchestration / list_agents / etc. Dispatch
     # to execute_builder_tool is handled in react_engine and ToolStepExecutor.
-    from core.builder_tools import BUILDER_TOOL_SCHEMAS
+    # Knowledge's builder tool is opt-in — `"all"` does not reach it — and absent
+    # while Knowledge is off, so no `"all"` agent's roster, nor its prompt
+    # cache, changes with it.
+    from core.builder_tools import BUILDER_TOOL_SCHEMAS, OPT_IN_BUILDER_TOOLS, builder_tool_offered
     for bt in BUILDER_TOOL_SCHEMAS:
         fn = bt["function"]
         bt_name = fn["name"]
-        if "all" in allowed_tools or bt_name in allowed_tools:
+        if permits(allowed_tools, bt_name, opt_in=bt_name in OPT_IN_BUILDER_TOOLS) and builder_tool_offered(bt_name):
             vt = VirtualTool(bt_name, fn.get("description", ""), fn.get("parameters", {"type": "object"}))
             all_tools.append(vt)
             tool_schema_map[vt.name] = vt.inputSchema
@@ -194,7 +590,7 @@ async def aggregate_all_tools(agent_sessions, active_agent, custom_tools_list):
     deduped = []
     for t in all_tools:
         if t.name in seen_names:
-            print(f"DEBUG: ⚠️ Skipping duplicate tool declaration '{t.name}'", flush=True)
+            _log.warning(f"⚠️ Skipping duplicate tool declaration '{t.name}'")
             continue
         seen_names.add(t.name)
         deduped.append(t)
@@ -206,7 +602,7 @@ async def aggregate_all_tools(agent_sessions, active_agent, custom_tools_list):
             'type': 'function',
             'function': {
                 'name': t.name,
-                'description': t.description,
+                'description': describe_with_hints(t.description, tool_hints(t)),
                 'parameters': t.inputSchema
             }
         }
@@ -215,32 +611,122 @@ async def aggregate_all_tools(agent_sessions, active_agent, custom_tools_list):
     
     # String version for cloud models (system prompt injection)
     tools_json = str([
-        {'tool': t.name, 'description': t.description, 'schema': t.inputSchema}
+        {'tool': t.name, 'description': describe_with_hints(t.description, tool_hints(t)),
+         'schema': t.inputSchema}
         for t in all_tools
     ])
 
     # Debug: Log exactly which tools will be visible to the LLM
     tool_names_for_llm = [t.name for t in all_tools]
-    print(f"DEBUG: 🔧 Tools sent to LLM ({len(tool_names_for_llm)}): {tool_names_for_llm}")
+    _log.debug(f"🔧 Tools sent to LLM ({len(tool_names_for_llm)}): {tool_names_for_llm}")
 
     return all_tools, tool_schema_map, ollama_tools, tools_json
 
 
-def build_system_prompt(agent_system_template, tools_json, session_id, session_state_getter, memory_store, agent_id=None, turns_remaining=None, max_turns=None, inject_tools=True):
-    """
-    Construct the final system prompt with tool info, date/time, session context, 
-    and recent tool outputs injected.
-    
-    Args:
-        agent_system_template: The base system prompt (tools/datetime are appended automatically)
-        tools_json: String representation of available tools
-        session_id: Current session ID
-        session_state_getter: Function that returns session state dict for a session_id
-        memory_store: Memory store instance (or None)
-        agent_id: Optional agent ID for scoping memory queries
-    
-    Returns:
-        str: The fully constructed system prompt
+#: The Reason-Act contract, in two versions.
+#:
+#: Most models have no reasoning channel, so the thinking panel shows what they
+#: write before a call: a sentence saying why (`llm_thought`), or the contents of
+#: `[REASONING]` markers a model still writes (stripped, `llm_reasoning`). It used
+#: to *ask* for that marker block before every call, and the Claude 5 family
+#: refuses a prompt that does (F757, 2026-10-17): Sonnet 5.5, Opus 5.5 and Fable
+#: 5.1 answered `stop_reason: refusal` with no text, Claude Code "safeguards
+#: flagged this message". Renaming the marker or rewording around it was refused
+#: too; one plain sentence passed on all three. So no version asks for a marker.
+#: A model with a native reasoning channel is told not to narrate at all.
+#:
+#: This sits inside the prompt-cache prefix, so the choice has to be stable for
+#: the life of a run. It is: the model and the agent's effort are both fixed
+#: before the first turn.
+_MARKER_PROTOCOL = """
+
+### ACTION FORMAT
+Each turn is ONE of:
+  (a) A tool call, written as JSON: {"tool": "<tool_name>", "arguments": {"<key>": "<value>"}}
+      Just before it, write one or two sentences saying why this call is the next step. The user sees them beside the call.
+  (b) Your final answer, in plain markdown (no JSON).
+
+If your tool calls go through a native function-calling interface, put those one or two sentences in the text of the same reply instead.
+
+Rules:
+- One tool call per turn unless you need several independent calls (then write them one after another in one reply, with no prose between).
+- Say why, not what: the user already sees which tool you call and with which arguments.
+- Never describe a tool call in prose instead of making it, and never repeat its JSON as commentary.
+"""
+
+_NATIVE_PROTOCOL = """
+
+### ACTION FORMAT
+You operate in a Reason-Act loop. Each turn produces ONE of:
+  (a) A tool call, written as JSON: {"tool": "<tool_name>", "arguments": {"<key>": "<value>"}}
+  (b) A final response in plain markdown for the user (no JSON).
+
+**Your thinking is captured for you.** This model reasons on its own channel,
+and what you think there is shown to the user live, as a "thinking" panel, and
+recorded in the run log. So do not write `[REASONING]` markers — they would put
+a second, worse copy of your reasoning next to the real one. Think as much as
+the question deserves, then act.
+
+Rules:
+- One tool call per turn unless you genuinely need multiple independent calls (then emit them sequentially in one response, no prose between).
+- Never describe your tool call in prose *instead of* making it, and never repeat the call's JSON back as commentary — the user sees the call itself.
+- Say WHY, not WHAT, when you do explain yourself. "Searching DuckDuckGo for India GDP 2025" restates the call the user can already see; "the official statistics office release is the primary source, so I will find it before quoting a figure" is the part only you know.
+"""
+
+
+def _reasoning_protocol(native: bool) -> str:
+    """The reasoning half of the system prompt, for this model's abilities."""
+    return _NATIVE_PROTOCOL if native else _MARKER_PROTOCOL
+
+
+#: What a visitor's agent is told (U69). A visitor's turn has no memory (F276)
+#: and is never offered `remember` (F280), so a model asked to "remember FREE100
+#: for every future customer" made no call there was to refuse — it simply
+#: promised, and nothing was kept. The widget, a channel's stranger and a phone
+#: call share the scope. It asks for nothing the voice line forbids (VOX1d: no
+#: closing question, no link read aloud).
+VISITOR_BLOCK = """
+### WHO YOU ARE TALKING TO
+You are answering a member of the public (someone on a website, in a message or on a call), not the people who run this workspace. You keep nothing between conversations, and you cannot change prices, offers, accounts or settings. Never say you will remember, change or pass on something unless a tool you have just did it; say plainly that you can't.
+"""
+
+
+def _visitor_block() -> str:
+    from core import visitor
+
+    return VISITOR_BLOCK if visitor.current() is not None else ""
+
+
+#: What the stable prompt says of the task list, only to an agent the engine offers `update_tasks` to (F803): one
+#: with `planning` off, `skip_default_tools` or a caller's own tool list does not have it, and a model taught it
+#: calls it anyway.
+TASK_LIST_SECTION = (
+    "**TASK LIST (`update_tasks`):**\n"
+    "Your task list is shown to the user live — it is how they watch you work. "
+    "For any multi-step job (3+ distinct actions), call `update_tasks` FIRST to write the plan, then keep it true: exactly one task `in_progress` at a time, mark a task `completed` the moment it is done (never batch updates), and mark a task `cancelled` if it turns out not to apply. "
+    "Every call must contain the FULL list — it replaces the previous one. "
+    "Skip the task list for trivial single-step requests. "
+    "You will not be able to finish while tasks are still open: complete them or cancel them before giving your final response. "
+    "`update_tasks` only records the plan — it cannot fetch data or act; make progress with real tools between updates.\n\n"
+)
+
+
+def build_system_prompt(agent_system_template, tools_json, session_id, session_state_getter,
+                        memory_store, agent_id=None, turns_remaining=None, max_turns=None,
+                        inject_tools=True, native_reasoning=False, task_list=True):
+    """The STABLE system prompt: identical on every turn of a step.
+
+    Identity, reasoning protocol, tools (for providers without native tool
+    calling), capabilities, example, workspace context — nothing that changes
+    per turn. What used to follow a ``\n---\n`` separator (date/time and the
+    turn budget) is built by `build_volatile_tail` and sent at the end
+    of the user turn instead. Splitting one string on a separator was the
+    previous design; it broke the moment a linked DB or repo — or a user's own
+    markdown rule — put ``---`` inside the stable text, which is why the two
+    now never share a string.
+
+    `turns_remaining` and `max_turns` are accepted for callers that still pass
+    them and ignored; `memory_store` and `agent_id` were never read.
     """
     # Determine if code embedding is enabled (for conditional tool description)
     _embed_code = load_settings().get("embed_code", False)
@@ -257,78 +743,19 @@ def build_system_prompt(agent_system_template, tools_json, session_id, session_s
         " (the semantic outline). Use after finding a relevant file."
     ) if _embed_code else ""
 
-    # Get current date/time for context injection
-    now = datetime.datetime.now(zoneinfo.ZoneInfo("UTC"))
-    current_date = now.strftime("%B %d, %Y")
-    current_time = now.strftime("%I:%M %p")
-    timezone = "UTC"
-
     # ── Resolve Google Workspace email (used later in the stable section) ──
+    # A plain setting, read off the synchronous snapshot. This function is sync
+    # and on the per-turn path, and all it has ever wanted from the Google
+    # credentials is the address to tell the model to pass to the Workspace
+    # tools — so the account email is stored as its own non-secret setting and
+    # the refresh token stays out of the widely-read settings dict entirely.
     google_email = None
     try:
-        from core.config import TOKEN_FILE
-        import os
-        if os.path.exists(TOKEN_FILE):
-            with open(TOKEN_FILE, "r", encoding="utf-8") as f:
-                token_data = json.load(f)
-                google_email = token_data.get("email")
-                if not google_email and token_data.get("id_token"):
-                    import base64
-                    id_token = token_data["id_token"]
-                    payload_b64 = id_token.split(".")[1]
-                    payload_b64 += "=" * (4 - len(payload_b64) % 4)
-                    payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-                    google_email = payload.get("email")
+        from services.google import EMAIL_SETTING
+
+        google_email = load_settings().get(EMAIL_SETTING) or None
     except Exception as e:
-        print(f"DEBUG: Error reading Google Workspace email: {e}")
-
-    # ── Resolve RAG context (volatile — appended after the separator) ──
-    rag_context_block = ""
-    try:
-        ss = session_state_getter(session_id)
-        last_report = ss.get("last_report_context")
-        if last_report and (time.time() - last_report.get("timestamp", 0) < 600):
-            rag_context_block = f"""
-### ACTIVE RAG CONTEXT (AUTOMATICALLY INJECTED)
-You have {last_report.get('row_count', 'some')} items of '{last_report.get('type', 'data')}' embedded in memory (generated {int(time.time() - last_report.get('timestamp', 0))}s ago).
-
-**HOW TO ANSWER QUESTIONS ABOUT THIS DATA:**
-1. **AGGREGATION QUESTIONS** (totals, averages, counts, min/max): If a SUMMARY with `numeric_aggregations` is in the tool output above, use those pre-computed values directly. They are accurate.
-2. **SPECIFIC LOOKUPS** (e.g., "email from John", "meeting tomorrow", "flight details"): Call `search_embedded_report` with a descriptive query. The full data is embedded in RAG memory.
-3. **PATTERN/TREND QUESTIONS** (e.g., "frequent topics", "common contacts"): Call `search_embedded_report` with the pattern description.
-4. **DO NOT RE-RUN TOOL FOR EXISTING DATA:** The data is already here. Only call tools if the user explicitly asks for NEW/DIFFERENT data (e.g., "refresh", "different date", "different query").
-"""
-            print(f"DEBUG: 💉 Injected RAG context into system prompt")
-    except Exception as e:
-        print(f"DEBUG: Error resolving RAG context: {e}")
-
-    # ── Resolve turn-budget block (volatile — appended after the separator) ──
-    turns_block = ""
-    if turns_remaining is not None and max_turns is not None:
-        if turns_remaining <= 0:
-            turns_block = f"""
-### ⚠️ TURN LIMIT REACHED — FINAL RESPONSE REQUIRED
-You have used all {max_turns} available turns. You MUST stop calling tools and provide your **final answer now** based on everything gathered so far.
-- Summarize what you did and what you found.
-- If the task is incomplete, clearly state what could not be completed and why.
-- Do NOT call any more tools.
-"""
-        elif turns_remaining == 1:
-            turns_block = f"""
-### ⚠️ LAST TURN — RESPOND NOW
-This is your **final turn** (Turn {max_turns}/{max_turns}). You MUST provide your final answer now. Do NOT call any more tools.
-- If you have enough information, give the complete answer.
-- If you don't have enough information, say so clearly and summarize what you were able to find.
-- Provide a brief summary of all steps taken so far.
-"""
-        else:
-            turns_block = f"""
-### TURN BUDGET
-You have **{turns_remaining} turn(s) remaining** out of {max_turns} total.
-- Plan your tool calls efficiently — prioritize the most impactful steps first.
-- If you cannot complete the task within the remaining turns, provide a partial answer and summarize what was accomplished so far.
-- On the last turn you MUST answer in plain text (no tool calls), even if the task is not fully complete.
-"""
+        _log.debug(f"Error reading Google Workspace email: {e}")
 
     # ── Tools section (only for providers without native tool calling) ──
     if inject_tools:
@@ -339,12 +766,7 @@ You have access to the following tools:
 
 **CODE & FILE NAVIGATION:**
 {_embed_tools_desc}
-- **`grep`** — search for a pattern inside a file or across all files in a folder. Pass a file path to search that file, or a folder path to search all files within it. Use `file_pattern` to filter by extension (e.g. `*.py`, `*.ts`).
-- **`glob`** — discover file paths by pattern (e.g. `**/*.py`, `src/**/*.ts`).
-- **`read_file`** — read an entire file. Use when you already know the path and the file is small. For large files, prefer `read_file_by_lines` or `grep`.
-- **`read_file_by_lines`** — read a specific line range from a file (1-indexed, inclusive). Ideal when you know approximately where the relevant content is.
-
-If you already know the file path, read it directly — no need to search first. Prefer `grep` or `read_file_by_lines` over reading entire files when you only need a specific section.
+If you already know a file's path, read it directly — no need to search first. When you only need part of a large file, read a line range or search inside it rather than reading all of it; the tools above say which of theirs do that.
 
 ### RESPONSE FORMAT INSTRUCTIONS
 If you need to use a specific tool from the list above, you MUST respond with **ONLY** a valid JSON object in the following format:
@@ -372,54 +794,20 @@ If you do not need to use a tool, reply in plain text.
     # ──────────────────────────────────────────────────────────────────────────
     stable_section = (
         agent_system_template.strip()
-        + """
-
-### REASONING & ACTION FORMAT
-You operate in a Reason–Act loop. Each turn produces ONE of:
-  (a) A tool call **preceded by a `[REASONING]...[/REASONING]` block** explaining why you are making that specific call. The reasoning block is REQUIRED before every tool call — it is what the user sees as your "thinking" panel, and it is what lets you (next turn) recover the intent behind the call.
-  (b) A final response in plain markdown for the user (no `[REASONING]` block, no JSON).
-
-The `[REASONING]` block is private scratch space — it is stripped from your final response and from the context you see next turn, but it is surfaced live to the user as a "thinking" panel and recorded in the run log.
-
-What to put in `[REASONING]`:
-- WHY you are calling this tool right now (what you concluded from the previous observation).
-- WHAT you expect the tool to return.
-- HOW the result will move you toward the user's goal.
-2–4 sentences is plenty. Do not restate the user's question; do not narrate obvious facts.
-
-Example tool-calling turn:
-[REASONING]
-The previous result gave a high-level overview but not the specific field the user asked for. I need to drill into the most relevant source from those results — that should yield the exact value, after which I can answer directly.
-[/REASONING]
-{"tool": "<tool_name>", "arguments": {"<key>": "<value>"}}
-
-Example final-response turn (after gathering enough info):
-Here is the requested information, with the key points the user asked about and any caveats worth flagging.
-
-Rules:
-- Emit a `[REASONING]` block before EVERY tool call. Skipping it produces an empty "thinking" panel for the user.
-- Never wrap a final response in `[REASONING]` blocks.
-- Never put commentary between the closing `[/REASONING]` and the JSON tool call.
-- One tool call per turn unless you genuinely need multiple independent calls (then emit them sequentially in one response, no prose between).
-"""
+        + _reasoning_protocol(native_reasoning)
         + tools_section
         + """
 **VAULT (LARGE OUTPUT HANDLING):**
-When a tool's output exceeds the character limit, it is automatically saved to a vault file. You will receive a JSON reference containing the vault file path, file type, size, and total line count — instead of the raw output. To access the data: use `grep` to search for specific values within the vault file, or use `read_file_by_lines` with `start_line`/`end_line` to read a slice. Do NOT use `read_file` on vault files — they are too large and will be re-vaulted.
+When a tool's output exceeds the character limit, it is automatically saved to a vault file. You will receive a JSON reference containing the vault file path, file type, size, and total line count — instead of the raw output. Its `message` names the path to use and the tools that read a slice of it or search it; follow that rather than reading the whole file, which would only be saved to the vault again.
 
-**SEQUENTIALTHINKING (OPTIONAL — USE SPARINGLY):**
-`sequentialthinking` is a lightweight planning aid. If the request is complex, you MAY call it to outline your plan or refine your thinking — up to **5 times** per task. After each call you MUST make progress with real action tools (browser, search, data tool, etc.). Never call `sequentialthinking` more than 5 times per task, and never call it in place of a real tool — it cannot fetch data, browse the web, or do anything productive by itself.
-
-### LINKS & REFERENCES
+""" + (TASK_LIST_SECTION if task_list else "") + """### LINKS & REFERENCES
 Whenever a tool returns URLs, source links, documentation references, or any other hyperlinks — **always include them in your response**. Present them clearly so the user can visit them directly. If you know of relevant official documentation, articles, or resources that would help the user, proactively include those links even if not explicitly returned by a tool.
 
 ### EXAMPLE INTERACTION
 User: <a question that requires looking something up>
 
 Turn 1 (yours):
-[REASONING]
-I don't have this in context. I'll use the most relevant available tool with the narrowest arguments that satisfy the question, so the result is precise rather than a broad dump.
-[/REASONING]
+I don't have this in context, so I'll use the most relevant available tool with the narrowest arguments that satisfy the question.
 {"tool": "<tool_name>", "arguments": {"<key>": "<value>"}}
 
 Tool result: <some structured payload>
@@ -428,23 +816,64 @@ Turn 2 (yours):
 A direct answer in plain markdown, citing the specific value(s) from the tool result.
 """
         + google_block
+        + _visitor_block()
     )
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # VOLATILE SECTION — changes every turn (datetime, turn budget) or every
-    # ~10 minutes (RAG context). Placed after a separator so the cache prefix
-    # boundary is unambiguous.
-    # ──────────────────────────────────────────────────────────────────────────
-    volatile_section = "\n---\n"
-    if rag_context_block:
-        volatile_section += rag_context_block
-    volatile_section += f"""
+    return stable_section
+
+
+def build_volatile_tail(session_id, session_state_getter, turns_remaining=None, max_turns=None) -> str:
+    """Everything the model must see fresh each turn: current date/time and the
+    turn budget.
+
+    Sent at the END of the user turn rather than in the system prompt. Every
+    provider's prompt cache is a prefix cache — tools, then system, then the
+    conversation — so per-turn text anywhere before the transcript invalidates
+    the transcript's cache entry on every call. Placed last, it is the only
+    thing that misses.
+
+    `session_id` and `session_state_getter` are accepted and no longer read:
+    they fed the report-RAG block, removed with the rest of report RAG (D158).
+    """
+    now = datetime.datetime.now(zoneinfo.ZoneInfo("UTC"))
+    current_date = now.strftime("%B %d, %Y")
+    current_time = now.strftime("%I:%M %p")
+    timezone = "UTC"
+
+    # ── Resolve turn-budget block (volatile) ──
+    turns_block = ""
+    if turns_remaining is not None and max_turns is not None:
+        if turns_remaining <= 0:
+            turns_block = f"""
+### ⚠️ TURN LIMIT REACHED — FINAL RESPONSE REQUIRED
+You have used all {max_turns} available turns. You MUST stop calling tools and provide your **final answer now** based on everything gathered so far.
+- Summarize what you did and what you found.
+- If the task is incomplete, clearly state what could not be completed and why.
+- Do NOT call any more tools.
+"""
+        elif turns_remaining == 1:
+            turns_block = f"""
+### ⚠️ LAST TURN — RESPOND NOW
+This is your **final turn** (Turn {max_turns}/{max_turns}). You MUST provide your final answer now. Do NOT call any more tools.
+- If you have enough information, give the complete answer.
+- If you don't have enough information, say so clearly and summarize what you were able to find.
+- Provide a brief summary of all steps taken so far.
+"""
+        else:
+            turns_block = f"""
+### TURN BUDGET
+You have **{turns_remaining} turn(s) remaining** out of {max_turns} total.
+- Plan your tool calls efficiently — prioritize the most impactful steps first.
+- If you cannot complete the task within the remaining turns, provide a partial answer and summarize what was accomplished so far.
+- On the last turn you MUST answer in plain text (no tool calls), even if the task is not fully complete.
+"""
+
+    tail = f"""
 ### CURRENT DATE & TIME CONTEXT
 **Current Date:** {current_date}
 **Current Time:** {current_time}
 **Timezone:** {timezone}
 """
     if turns_block:
-        volatile_section += turns_block
-
-    return stable_section + volatile_section
+        tail += turns_block
+    return tail.strip("\n")

@@ -136,7 +136,10 @@ async def test_connect_stdio_server_refuses_when_disabled(monkeypatch):
 
     monkeypatch.setattr(mcp_client, "stdio_mcp_allowed", lambda: False)
     mgr = mcp_client.MCPClientManager(AsyncExitStack())
-    monkeypatch.setattr(mgr, "_set_status", lambda *a, **k: None)
+    async def _noop_status(*a, **k):
+        return None
+
+    monkeypatch.setattr(mgr, "_set_status", _noop_status)
 
     session = await mgr.connect_stdio_server(
         {"name": "evil", "command": "bash", "args": ["-c", "id > /tmp/pwned"]}
@@ -155,7 +158,10 @@ async def test_connect_stdio_server_enforces_command_allowlist(monkeypatch):
 
     monkeypatch.setattr(mcp_client, "check_stdio_command_allowed", _deny)
     mgr = mcp_client.MCPClientManager(AsyncExitStack())
-    monkeypatch.setattr(mgr, "_set_status", lambda *a, **k: None)
+    async def _noop_status(*a, **k):
+        return None
+
+    monkeypatch.setattr(mgr, "_set_status", _noop_status)
 
     session = await mgr.connect_stdio_server(
         {"name": "evil", "command": "bash", "args": ["-c", "id"]}

@@ -1,0 +1,20 @@
+{
+    "id": "agent_native_builder_classifier",
+    "name": "Builder \u2014 Classifier",
+    "description": "Says what one message asks for, in four kinds; code checks it and picks the route.",
+    "avatar": "default",
+    "type": "conversational",
+    "skip_default_tools": true,
+    "tools": [
+        "classify_request"
+    ],
+    "repos": [],
+    "db_configs": [],
+    "orchestration_id": null,
+    "model": null,
+    "provider": null,
+    "max_turns": null,
+    "system": "native_builder",
+    "system_role": "classifier",
+    "system_prompt": "# Role\nYou read one message sent to Synapse AI, the assistant inside this product, and say what it asks for by calling `classify_request` once. You do not answer it: the route you name does.\n\n{{PROMPT:classify_kinds}}"
+}

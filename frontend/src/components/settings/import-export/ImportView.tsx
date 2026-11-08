@@ -5,13 +5,14 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import {
   Upload, Package, CheckCircle2, AlertTriangle,
   SkipForward, XCircle, Workflow, Bot, Server, Wrench,
-  AlertCircle, Loader2, Cpu, RotateCcw, ChevronDown, ChevronUp,
+  AlertCircle, Cpu, RotateCcw, ChevronDown, ChevronUp,
 } from "lucide-react";
-import type { ImportBundle, ImportResult, OrchestrationType, AgentType, McpServerType, CustomToolType } from "./types";
-import { orchAgentDeps, agentMcpDeps, agentToolDeps, agentDelegateDeps } from "./utils";
+import type { ImportBundle, ImportResult, ImportWarning, OrchestrationType, AgentType, McpServerType, CustomToolType } from "./types";
+import { orchAgentDeps, agentMcpDeps, agentToolDeps, agentDelegateDeps, normalizeBundle } from "./utils";
 import { SectionTable } from "./SectionTable";
 
-const inputCls = "w-full bg-zinc-900 border border-zinc-800 p-2 text-sm text-white focus:border-white focus:outline-none placeholder:text-zinc-700";
+import { Spinner, Switch, buttonStyles } from '@/components/ui';
+const inputCls = "w-full bg-surface-2 border border-border p-2 text-sm text-text focus:border-accent focus:outline-none placeholder:text-text-faint";
 
 const GOOGLE_WORKSPACE_TOOLS = new Set([
   "start_google_auth",
@@ -136,6 +137,7 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
   const [toolSecrets, setToolSecrets] = useState<Record<string, Record<string, string>>>({});
   const [mcpTokens, setMcpTokens] = useState<Record<string, string>>({});
   const [results, setResults] = useState<Record<string, ImportResult[]>>({});
+  const [warnings, setWarnings] = useState<ImportWarning[]>([]);
   const [googleStatus, setGoogleStatus] = useState<{ is_connected: boolean; user_email?: string | null } | null>(null);
 
   // Refs for always-current selection state
@@ -152,27 +154,28 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
   useEffect(() => {
     if (!preloadedBundle) return;
     try {
-      if (!preloadedBundle.synapse_export) throw new Error("Not a valid Synapse export file.");
-      setBundle(preloadedBundle);
+      const pushed = normalizeBundle(preloadedBundle);
+      if (!pushed) throw new Error("Not a valid Synapse export file.");
+      setBundle(pushed);
       setParseError(null);
-      const orchIds = new Set<string>((preloadedBundle.orchestrations || []).map((o: OrchestrationType) => o.id));
-      const agentIds = new Set<string>((preloadedBundle.agents || []).map((a: AgentType) => a.id));
-      const mcpNames = new Set<string>((preloadedBundle.mcp_servers || []).map((m: McpServerType) => m.name));
-      const toolNames = new Set<string>((preloadedBundle.custom_tools || []).map((t: CustomToolType) => t.name));
+      const orchIds = new Set<string>(pushed.orchestrations.map((o: OrchestrationType) => o.id));
+      const agentIds = new Set<string>(pushed.agents.map((a: AgentType) => a.id));
+      const mcpNames = new Set<string>(pushed.mcp_servers.map((m: McpServerType) => m.name));
+      const toolNames = new Set<string>(pushed.custom_tools.map((t: CustomToolType) => t.name));
       setSelOrch(orchIds); setSelAgent(agentIds); setSelMcp(mcpNames); setSelTool(toolNames);
       const ms: Record<string, Record<string, string>> = {};
-      for (const m of preloadedBundle.mcp_servers || []) {
+      for (const m of pushed.mcp_servers) {
         if (m.env && Object.keys(m.env).length > 0)
           ms[m.name] = Object.fromEntries(Object.keys(m.env).map((k: string) => [k, ""]));
       }
       setMcpSecrets(ms);
       const ts: Record<string, Record<string, string>> = {};
-      for (const t of preloadedBundle.custom_tools || []) {
+      for (const t of pushed.custom_tools) {
         if (t.headers && Object.keys(t.headers).length > 0)
           ts[t.name] = Object.fromEntries(Object.keys(t.headers).map((k: string) => [k, ""]));
       }
       setToolSecrets(ts);
-      recalcImport(orchIds, agentIds, preloadedBundle);
+      recalcImport(orchIds, agentIds, pushed);
       fetchGoogleStatus();
       setStep("preview");
     } catch (err: any) { setParseError(err.message); }
@@ -223,8 +226,8 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
     const reader = new FileReader();
     reader.onload = e => {
       try {
-        const parsed = JSON.parse(e.target?.result as string);
-        if (!parsed.synapse_export) throw new Error("Not a valid Synapse export file.");
+        const parsed = normalizeBundle(JSON.parse(e.target?.result as string));
+        if (!parsed) throw new Error("Not a valid Synapse export file.");
         setBundle(parsed);
         setParseError(null);
         const orchIds = new Set<string>((parsed.orchestrations || []).map((o: OrchestrationType) => o.id));
@@ -259,7 +262,7 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
   }, []);
 
   const reset = () => {
-    setStep("upload"); setBundle(null); setParseError(null); setResults({});
+    setStep("upload"); setBundle(null); setParseError(null); setResults({}); setWarnings([]);
     setSelOrch(new Set()); setSelAgent(new Set()); setSelMcp(new Set()); setSelTool(new Set());
     setLockedAgent(new Set()); setLockedMcp(new Set()); setLockedTool(new Set());
     setMcpSecrets({}); setToolSecrets({}); setMcpTokens({});
@@ -299,7 +302,7 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Import failed");
-      setResults(data.results || {}); setStep("results"); onImportSuccess?.();
+      setResults(data.results || {}); setWarnings(data.warnings || []); setStep("results"); onImportSuccess?.();
     } catch (e: any) { setParseError(e.message); }
     finally { setImporting(false); }
   };
@@ -307,20 +310,23 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
   // ── Upload ────────────────────────────────────────────────────────────────
   if (step === "upload") return (
     <div className="space-y-4">
-      <div
+      {/* A button, still a drop target: a keyboard reached only the invisible
+          file input inside it before (F236). */}
+      <button
+        type="button"
         onDragOver={e => { e.preventDefault(); setDragging(true); }}
         onDragLeave={() => setDragging(false)}
         onDrop={handleDrop}
         onClick={() => fileRef.current?.click()}
-        className={`flex flex-col items-center justify-center border border-dashed py-14 px-8 cursor-pointer transition-colors ${dragging ? "border-white bg-zinc-800" : "border-zinc-700 bg-zinc-900/30 hover:border-zinc-500 hover:bg-zinc-900/60"}`}
+        className={`flex w-full flex-col items-center justify-center border border-dashed py-14 px-8 transition-colors ${dragging ? "border-accent bg-accent-subtle" : "border-border-strong bg-surface hover:border-border-strong hover:bg-row-hover"} rounded-md`}
       >
-        <Upload className="h-8 w-8 text-zinc-600 mb-3" />
-        <p className="text-zinc-300 text-sm font-bold">Drop your export file here</p>
-        <p className="text-zinc-600 text-xs mt-1">or click to browse · JSON files only</p>
-        <input ref={fileRef} type="file" accept=".json" className="sr-only" onChange={e => { const f = e.target.files?.[0]; if (f) parseFile(f); e.target.value = ""; }} />
-      </div>
+        <Upload className="h-8 w-8 text-text-faint mb-3" aria-hidden />
+        <span className="block text-text text-sm font-semibold">Drop your export file here</span>
+        <span className="block text-text-faint text-xs mt-1">or click to browse · JSON files only</span>
+      </button>
+      <input ref={fileRef} type="file" accept=".json" className="hidden" tabIndex={-1} aria-hidden onChange={e => { const f = e.target.files?.[0]; if (f) parseFile(f); e.target.value = ""; }} />
       {parseError && (
-        <div className="flex items-center gap-2 text-red-400 text-xs p-3 border border-red-900/50 bg-red-950/10">
+        <div className="flex items-center gap-2 text-danger text-xs p-3 border border-danger/25 bg-danger-subtle rounded-md">
           <XCircle className="h-4 w-4 flex-shrink-0" /> {parseError}
         </div>
       )}
@@ -338,36 +344,40 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
 
     return (
       <div className="space-y-5">
-        <div className="flex items-center gap-3 px-4 py-3 border border-zinc-800 bg-zinc-900">
-          <Package className="h-4 w-4 text-zinc-400 flex-shrink-0" />
+        <div className="flex items-center gap-3 px-4 py-3 border border-border bg-surface-2 rounded-md">
+          <Package className="h-4 w-4 text-text-muted flex-shrink-0" />
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-bold text-zinc-200">Bundle loaded</p>
-            <p className="text-[10px] text-zinc-600 font-mono">
+            <p className="text-sm font-semibold text-text">Bundle loaded</p>
+            <p className="text-[10px] text-text-faint font-mono">
               v{bundle.version || "1.0"} · {bundle.exported_at ? new Date(bundle.exported_at).toLocaleString() : "unknown date"}
+              {bundle.exported_from === "cloud" && " · from SynapseOrch Cloud"}
+            </p>
+            <p className="text-xs text-text-muted mt-1">
+              A workflow or agent with the same id here, or a tool with the same name, is replaced.
             </p>
           </div>
-          <button onClick={reset} className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors underline underline-offset-2">Change file</button>
+          <button onClick={reset} className="text-xs text-text-faint hover:text-text transition-colors underline underline-offset-2">Change file</button>
         </div>
 
         {googleDependentAgents.length > 0 && googleStatus?.is_connected === false && (
-          <div className="flex items-start gap-3 p-4 border border-orange-900/50 bg-orange-950/10">
-            <AlertTriangle className="h-4 w-4 text-orange-500 flex-shrink-0 mt-0.5" />
+          <div className="flex items-start gap-3 p-4 border border-border bg-surface-2 rounded-md">
+            <AlertTriangle className="h-4 w-4 text-text flex-shrink-0 mt-0.5" />
             <div className="space-y-1.5">
-              <p className="text-orange-400 text-xs font-bold uppercase tracking-wider">Google Workspace Not Connected</p>
-              <p className="text-orange-600 text-xs">
+              <p className="text-text text-sm font-semibold">Google Workspace Not Connected</p>
+              <p className="text-text-muted text-xs">
                 The following agent{googleDependentAgents.length !== 1 ? "s" : ""} use Google Workspace tools
                 (Gmail, Drive, Calendar, etc.) but Google is not connected:
               </p>
               <ul className="space-y-0.5 pl-1">
                 {googleDependentAgents.map(name => (
-                  <li key={name} className="text-orange-400 text-xs font-mono">· {name}</li>
+                  <li key={name} className="text-text-muted text-xs font-mono">· {name}</li>
                 ))}
               </ul>
-              <p className="text-orange-600 text-xs pt-0.5">
+              <p className="text-text-muted text-xs pt-0.5">
                 Connect your Google account in{" "}
                 <button
                   onClick={() => onNavigate?.("workspace")}
-                  className="text-orange-400 font-bold underline underline-offset-2 hover:text-orange-300 transition-colors"
+                  className="text-accent-ink font-semibold underline underline-offset-2 hover:text-accent-hover transition-colors"
                 >
                   Integrations
                 </button>
@@ -377,31 +387,63 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
           </div>
         )}
 
+        {/* Code from this file, in its workflows' Transform steps (F968): listed with the code itself, read before
+            it runs. Computed from the file, not its `has_python_tools` flag, which counts only tools. */}
+        {(() => {
+          const coded = (bundle.orchestrations || []).flatMap(orch =>
+            (orch.steps || [])
+              .filter(st => st.type === 'transform' && String(st.transform_code || '').trim())
+              .map(st => ({ orch: orch.name || orch.id, step: st.name || st.id, code: String(st.transform_code) })));
+          if (!coded.length) return null;
+          return (
+            <div className="flex items-start gap-3 p-4 border border-border bg-surface-2 rounded-md">
+              <AlertTriangle className="h-4 w-4 text-text flex-shrink-0 mt-0.5" />
+              <div className="min-w-0 flex-1">
+                <p className="text-text text-sm font-semibold">Code steps included</p>
+                <p className="text-text-muted text-xs mt-1">
+                  These Transform steps run Python from this file. Read each one before running its workflow: here it
+                  runs in the sandbox with no network.
+                </p>
+                <ul className="mt-2 space-y-1">
+                  {coded.map((c, i) => (
+                    <li key={i}>
+                      <details>
+                        <summary className="cursor-pointer text-xs text-text">{c.orch} · {c.step}</summary>
+                        <pre className="mt-1 max-h-48 overflow-auto rounded bg-surface p-2 font-code text-xs text-text-muted">{c.code}</pre>
+                      </details>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          );
+        })()}
+
         {bundle.has_python_tools && (
-          <div className="flex items-start gap-3 p-4 border border-yellow-900/50 bg-yellow-950/10">
-            <AlertTriangle className="h-4 w-4 text-yellow-500 flex-shrink-0 mt-0.5" />
+          <div className="flex items-start gap-3 p-4 border border-border bg-surface-2 rounded-md">
+            <AlertTriangle className="h-4 w-4 text-text flex-shrink-0 mt-0.5" />
             <div>
-              <p className="text-yellow-400 text-xs font-bold uppercase tracking-wider">Python Tools Included</p>
-              <p className="text-yellow-600 text-xs mt-1">Review all Python tool code carefully for hardcoded secrets before importing.</p>
+              <p className="text-text text-sm font-semibold">Python Tools Included</p>
+              <p className="text-text-muted text-xs mt-1">Review all Python tool code carefully for hardcoded secrets before importing.</p>
             </div>
           </div>
         )}
 
         {/* ── Models Info Panel ─────────────────────────────────────────── */}
         {hasModels ? (
-          <div className="border border-blue-900/40 bg-blue-950/10">
+          <div className="border border-accent/25 bg-accent-subtle rounded-md">
             {/* Header row */}
             <div className="flex items-center gap-3 px-4 py-3">
-              <Cpu className="h-3.5 w-3.5 text-blue-400 flex-shrink-0" />
+              <Cpu className="h-3.5 w-3.5 text-accent-ink flex-shrink-0" />
               <div className="flex-1 min-w-0">
-                <p className="text-blue-400 text-xs font-bold uppercase tracking-wider">Models Used in This Bundle</p>
-                <p className="text-blue-700 text-xs mt-0.5">
-                  {allModels.length} model{allModels.length !== 1 ? "s" : ""} found across agents &amp; orchestration steps.
+                <p className="text-text text-sm font-semibold">Models Used in This Bundle</p>
+                <p className="text-accent-ink text-xs mt-0.5">
+                  {allModels.length} model{allModels.length !== 1 ? "s" : ""} found across agents &amp; workflow steps.
                 </p>
               </div>
               <button
                 onClick={() => setModelsExpanded(v => !v)}
-                className="flex items-center gap-1 text-[10px] text-blue-600 hover:text-blue-400 transition-colors"
+                className="flex items-center gap-1 text-[10px] text-accent-ink hover:text-accent-hover transition-colors"
               >
                 {modelsExpanded ? <><ChevronUp className="h-3 w-3" />Hide</> : <><ChevronDown className="h-3 w-3" />Show</>}
               </button>
@@ -409,13 +451,13 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
 
             {/* Model list (collapsible) */}
             {modelsExpanded && (
-              <div className="border-t border-blue-900/30 divide-y divide-blue-900/20">
+              <div className="border-t border-accent/20 divide-y divide-accent/15">
                 {allModels.map(entry => (
                   <div key={entry.model} className="px-4 py-2.5 flex items-start gap-3">
-                    <span className="font-mono text-xs text-blue-300 font-bold min-w-0 break-all pt-px">{entry.model}</span>
+                    <span className="font-mono text-xs text-text font-semibold min-w-0 break-all pt-px">{entry.model}</span>
                     <div className="flex-1 min-w-0">
                       {entry.usedIn.map(src => (
-                        <p key={src} className="text-[10px] text-blue-700 truncate">{src}</p>
+                        <p key={src} className="text-[10px] text-accent-ink truncate">{src}</p>
                       ))}
                     </div>
                   </div>
@@ -424,39 +466,36 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
             )}
 
             {/* Use default toggle */}
-            <div className="border-t border-blue-900/30 px-4 py-3 flex items-center justify-between gap-4">
+            <div className="border-t border-accent/20 px-4 py-3 flex items-center justify-between gap-4">
               <div className="flex items-center gap-2.5">
-                <RotateCcw className="h-3.5 w-3.5 text-blue-500 flex-shrink-0" />
+                <RotateCcw className="h-3.5 w-3.5 text-accent-ink flex-shrink-0" />
                 <div>
-                  <p className="text-xs font-bold text-blue-300">Use default model for everything</p>
-                  <p className="text-[10px] text-blue-700 mt-0.5">
-                    Strips all model &amp; provider overrides from agents and orchestration steps — they will use your global default model instead.
+                  <p className="text-sm font-semibold text-text">Use default model for everything</p>
+                  <p className="text-xs text-text-muted mt-0.5">
+                    Strips all model &amp; provider overrides from agents and workflow steps — they will use your global default model instead.
                   </p>
                 </div>
               </div>
-              <button
-                onClick={() => setUseDefaultModels(v => !v)}
-                className={`relative flex-shrink-0 w-10 h-5 rounded-full transition-colors duration-200 focus:outline-none ${useDefaultModels ? "bg-blue-500" : "bg-zinc-700"}`}
-              >
-                <span
-                  className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform duration-200 ${useDefaultModels ? "translate-x-5" : "translate-x-0"}`}
-                />
-              </button>
+              <Switch
+                checked={useDefaultModels}
+                onChange={setUseDefaultModels}
+                label="Use default model for everything"
+              />
             </div>
           </div>
         ) : (
           /* No explicit models → neutral info */
-          <div className="flex items-start gap-3 p-3.5 border border-zinc-800 bg-zinc-900/40">
-            <Cpu className="h-3.5 w-3.5 text-zinc-500 flex-shrink-0 mt-0.5" />
-            <p className="text-zinc-500 text-xs leading-relaxed">
-              No explicit model overrides found — agents &amp; orchestration steps will use your global default model.
+          <div className="flex items-start gap-3 p-3.5 border border-border bg-surface-2 rounded-md">
+            <Cpu className="h-3.5 w-3.5 text-text-faint flex-shrink-0 mt-0.5" />
+            <p className="text-text-faint text-xs leading-relaxed">
+              No explicit model overrides found — agents &amp; workflow steps will use your global default model.
             </p>
           </div>
         )}
 
-        <div className="border border-zinc-800 divide-y divide-zinc-800">
+        <div className="border border-border divide-y divide-border">
           <SectionTable
-            title="Orchestrations" icon={Workflow}
+            title="Workflows" icon={Workflow}
             items={bundle.orchestrations || []}
             selected={selOrch} locked={new Set()}
             getId={o => o.id} getLabel={o => o.name} getDesc={o => o.description}
@@ -481,7 +520,7 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
             }}
           />
           <SectionTable
-            title="MCP Servers" icon={Server}
+            title="Apps" icon={Server}
             items={bundle.mcp_servers || []}
             selected={selMcp} locked={lockedMcp}
             getId={m => m.name} getLabel={m => m.label || m.name}
@@ -504,27 +543,27 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
 
         {/* Default-model active badge */}
         {useDefaultModels && hasModels && (
-          <div className="flex items-center gap-2 px-3 py-2 border border-blue-800/50 bg-blue-950/20">
-            <RotateCcw className="h-3.5 w-3.5 text-blue-400 flex-shrink-0" />
-            <p className="text-blue-400 text-xs">
-              <span className="font-bold">Default model active</span> — {allModels.length} model override{allModels.length !== 1 ? "s" : ""} will be stripped on import.
+          <div className="flex items-center gap-2 px-3 py-2 border border-accent/25 bg-accent-subtle rounded-md">
+            <RotateCcw className="h-3.5 w-3.5 text-accent-ink flex-shrink-0" />
+            <p className="text-accent-ink text-xs">
+              <span className="font-semibold">Default model active</span> — {allModels.length} model override{allModels.length !== 1 ? "s" : ""} will be stripped on import.
             </p>
           </div>
         )}
 
         <div className="flex items-center justify-between gap-4 pt-2">
-          <button onClick={reset} className="px-4 py-2 text-sm font-bold border border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-white transition-colors">
+          <button onClick={reset} className={buttonStyles({ variant: "secondary" })}>
             Cancel
           </button>
           <button
             disabled={total === 0}
             onClick={() => needsSecrets ? setStep("secrets") : handleImport()}
-            className="flex items-center gap-2 px-6 py-2 bg-white text-black text-sm font-bold hover:bg-zinc-200 transition-colors disabled:opacity-40"
+            className={buttonStyles({ variant: "primary" })}
           >
             {needsSecrets ? "Configure Secrets →" : <><Upload className="h-4 w-4" /> Import Now</>}
           </button>
         </div>
-        {parseError && <p className="text-red-400 text-xs">{parseError}</p>}
+        {parseError && <p className="text-danger text-xs">{parseError}</p>}
       </div>
     );
   }
@@ -537,29 +576,30 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
 
     return (
       <div className="space-y-6">
-        <div className="flex items-start gap-3 p-4 border border-blue-900/50 bg-blue-950/10">
-          <AlertCircle className="h-4 w-4 text-blue-400 flex-shrink-0 mt-0.5" />
+        <div className="flex items-start gap-3 p-4 border border-accent/25 bg-accent-subtle rounded-md">
+          <AlertCircle className="h-4 w-4 text-accent-ink flex-shrink-0 mt-0.5" />
           <div>
-            <p className="text-blue-400 text-xs font-bold uppercase tracking-wider">Secret Values Required</p>
-            <p className="text-blue-600 text-xs mt-1">MCP server env vars and custom tool headers were redacted during export. Enter the actual values before importing.</p>
+            <p className="text-text text-sm font-semibold">Secret Values Required</p>
+            <p className="text-text-muted text-xs mt-1">App env vars and custom tool headers were redacted during export. Enter the actual values before importing.</p>
           </div>
         </div>
 
         {relevantMcpWithTokens.length > 0 && (
           <div className="space-y-3">
-            <h4 className="text-[10px] uppercase font-bold tracking-wider text-zinc-500 flex items-center gap-2">
-              <Server className="h-3 w-3" /> Remote MCP Server Tokens
+            <h4 className="text-[10px] uppercase font-semibold tracking-wider text-text-faint flex items-center gap-2">
+              <Server className="h-3 w-3" /> Remote app tokens
             </h4>
             {relevantMcpWithTokens.map(m => (
-              <div key={m.name} className="border border-zinc-800">
-                <div className="px-4 py-2.5 bg-zinc-900 flex items-center gap-2">
-                  <span className="text-sm font-bold text-zinc-200">{m.label || m.name}</span>
-                  <span className="text-[10px] text-zinc-600 font-mono">{m.url}</span>
+              <div key={m.name} className="border border-border">
+                <div className="px-4 py-2.5 bg-surface-2 flex items-center gap-2">
+                  <span className="text-sm font-semibold text-text">{m.label || m.name}</span>
+                  <span className="text-[10px] text-text-faint font-mono">{m.url}</span>
                 </div>
                 <div className="p-4">
                   <div className="flex items-center gap-3">
-                    <label className="text-[10px] uppercase font-bold text-zinc-600 font-mono w-36 flex-shrink-0 truncate">Bearer Token</label>
+                    <label htmlFor={`import-bearer-${m.name}`} className="text-[10px] uppercase font-semibold text-text-faint font-mono w-36 flex-shrink-0 truncate">Bearer Token</label>
                     <input
+                        id={`import-bearer-${m.name}`}
                       type="password"
                       value={mcpTokens[m.name] || ""}
                       onChange={e => setMcpTokens(prev => ({ ...prev, [m.name]: e.target.value }))}
@@ -575,20 +615,21 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
 
         {relevantMcp.length > 0 && (
           <div className="space-y-3">
-            <h4 className="text-[10px] uppercase font-bold tracking-wider text-zinc-500 flex items-center gap-2">
-              <Server className="h-3 w-3" /> MCP Server Environment Variables
+            <h4 className="text-[10px] uppercase font-semibold tracking-wider text-text-faint flex items-center gap-2">
+              <Server className="h-3 w-3" /> App environment variables
             </h4>
             {relevantMcp.map(m => (
-              <div key={m.name} className="border border-zinc-800">
-                <div className="px-4 py-2.5 bg-zinc-900 flex items-center gap-2">
-                  <span className="text-sm font-bold text-zinc-200">{m.label || m.name}</span>
-                  <span className="text-[10px] text-zinc-600 font-mono">{m.name}</span>
+              <div key={m.name} className="border border-border">
+                <div className="px-4 py-2.5 bg-surface-2 flex items-center gap-2">
+                  <span className="text-sm font-semibold text-text">{m.label || m.name}</span>
+                  <span className="text-[10px] text-text-faint font-mono">{m.name}</span>
                 </div>
                 <div className="p-4 space-y-3">
                   {Object.keys(m.env || {}).map(key => (
                     <div key={key} className="flex items-center gap-3">
-                      <label className="text-[10px] uppercase font-bold text-zinc-600 font-mono w-36 flex-shrink-0 truncate">{key}</label>
+                      <label htmlFor={`import-secret-${key}`} className="text-[10px] uppercase font-semibold text-text-faint font-mono w-36 flex-shrink-0 truncate">{key}</label>
                       <input
+                          id={`import-secret-${key}`}
                         type="password"
                         value={mcpSecrets[m.name]?.[key] || ""}
                         onChange={e => setMcpSecrets(prev => ({ ...prev, [m.name]: { ...(prev[m.name] || {}), [key]: e.target.value } }))}
@@ -605,20 +646,21 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
 
         {relevantTools.length > 0 && (
           <div className="space-y-3">
-            <h4 className="text-[10px] uppercase font-bold tracking-wider text-zinc-500 flex items-center gap-2">
+            <h4 className="text-[10px] uppercase font-semibold tracking-wider text-text-faint flex items-center gap-2">
               <Wrench className="h-3 w-3" /> Custom Tool Headers
             </h4>
             {relevantTools.map(t => (
-              <div key={t.name} className="border border-zinc-800">
-                <div className="px-4 py-2.5 bg-zinc-900 flex items-center gap-2">
-                  <span className="text-sm font-bold text-zinc-200">{t.generalName || t.name}</span>
-                  <span className="text-[10px] text-zinc-600 font-mono">{t.name}</span>
+              <div key={t.name} className="border border-border">
+                <div className="px-4 py-2.5 bg-surface-2 flex items-center gap-2">
+                  <span className="text-sm font-semibold text-text">{t.generalName || t.name}</span>
+                  <span className="text-[10px] text-text-faint font-mono">{t.name}</span>
                 </div>
                 <div className="p-4 space-y-3">
                   {Object.keys(t.headers || {}).map(key => (
                     <div key={key} className="flex items-center gap-3">
-                      <label className="text-[10px] uppercase font-bold text-zinc-600 font-mono w-36 flex-shrink-0 truncate">{key}</label>
+                      <label htmlFor={`import-secret-2-${key}`} className="text-[10px] uppercase font-semibold text-text-faint font-mono w-36 flex-shrink-0 truncate">{key}</label>
                       <input
+                          id={`import-secret-2-${key}`}
                         type="password"
                         value={toolSecrets[t.name]?.[key] || ""}
                         onChange={e => setToolSecrets(prev => ({ ...prev, [t.name]: { ...(prev[t.name] || {}), [key]: e.target.value } }))}
@@ -634,19 +676,19 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
         )}
 
         <div className="flex items-center justify-between gap-4 pt-2">
-          <button onClick={() => setStep("preview")} className="px-4 py-2 text-sm font-bold border border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-white transition-colors">
+          <button onClick={() => setStep("preview")} className={buttonStyles({ variant: "secondary" })}>
             ← Back
           </button>
           <button
             disabled={importing}
             onClick={handleImport}
-            className="flex items-center gap-2 px-6 py-2 bg-white text-black text-sm font-bold hover:bg-zinc-200 transition-colors disabled:opacity-50"
+            className={buttonStyles({ variant: "primary" })}
           >
-            {importing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+            {importing ? <Spinner size={16} /> : <Upload className="h-4 w-4" />}
             {importing ? "Importing…" : "Start Import"}
           </button>
         </div>
-        {parseError && <p className="text-red-400 text-xs">{parseError}</p>}
+        {parseError && <p className="text-danger text-xs">{parseError}</p>}
       </div>
     );
   }
@@ -654,68 +696,75 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
   // ── Results ───────────────────────────────────────────────────────────────
   if (step === "results") {
     const all = Object.values(results).flat();
-    const importedCount = all.filter(r => r.status === "imported" || r.status === "connected").length;
+    const importedCount = all.filter(r => r.status === "imported" || r.status === "replaced" || r.status === "connected").length;
     const groups = [
-      { key: "orchestrations", label: "Orchestrations", icon: Workflow },
+      { key: "orchestrations", label: "Workflows", icon: Workflow },
       { key: "agents", label: "Agents", icon: Bot },
-      { key: "mcp_servers", label: "MCP Servers", icon: Server },
+      { key: "mcp_servers", label: "Apps", icon: Server },
       { key: "custom_tools", label: "Custom Tools", icon: Wrench },
     ] as const;
 
     return (
       <div className="space-y-5">
-        <div className="flex items-center gap-3 px-4 py-3 border border-green-900/50 bg-green-950/10">
-          <CheckCircle2 className="h-4 w-4 text-green-400 flex-shrink-0" />
+        <div className="flex items-center gap-3 px-4 py-3 border border-success/25 bg-success-subtle rounded-md">
+          <CheckCircle2 className="h-4 w-4 text-success flex-shrink-0" />
           <div>
-            <p className="text-green-400 text-xs font-bold uppercase tracking-wider">Import Complete</p>
-            <p className="text-green-700 text-xs mt-0.5">
+            <p className="text-success text-sm font-semibold">Import Complete</p>
+            <p className="text-success text-xs mt-0.5">
               {importedCount} item{importedCount !== 1 ? "s" : ""} imported.
-              {all.some(r => r.status === "skipped_existing") && " Some MCP servers were skipped (already exist)."}
+              {all.some(r => r.status === "skipped_existing") && " Some apps were skipped (already there)."}
               {useDefaultModels && " · All model overrides were reset to default."}
             </p>
           </div>
         </div>
 
-        <div className="border border-zinc-800 divide-y divide-zinc-800">
+        <div className="border border-border divide-y divide-border">
           {groups.map(({ key, label, icon: Icon }) => {
             const items: ImportResult[] = results[key] || [];
             if (!items.length) return null;
             return (
               <div key={key}>
-                <div className="flex items-center gap-2 px-4 py-2.5 bg-zinc-900">
-                  <Icon className="h-3.5 w-3.5 text-zinc-500" />
-                  <span className="text-[10px] uppercase font-bold tracking-wider text-zinc-500">{label}</span>
+                <div className="flex items-center gap-2 px-4 py-2.5 bg-surface-2">
+                  <Icon className="h-3.5 w-3.5 text-text-faint" />
+                  <span className="text-[10px] uppercase font-semibold tracking-wider text-text-faint">{label}</span>
                 </div>
                 {items.map((item, i) => {
                   const st = item.status;
                   const StatusIcon =
-                    st === "imported" || st === "connected" ? CheckCircle2 :
-                    st === "skipped_existing" ? SkipForward :
+                    st === "imported" || st === "replaced" || st === "connected" ? CheckCircle2 :
+                    st === "skipped_existing" || st === "skipped" ? SkipForward :
                     st === "disconnected" ? AlertTriangle :
                     st === "oauth_pending" ? AlertCircle :
                     XCircle;
                   const statusCls =
-                    st === "imported" || st === "connected" ? "text-green-400" :
-                    st === "skipped_existing" || st === "disconnected" ? "text-yellow-400" :
-                    st === "oauth_pending" ? "text-blue-400" :
-                    "text-red-400";
+                    st === "imported" || st === "replaced" || st === "connected" ? "text-success" :
+                    st === "skipped_existing" || st === "skipped" || st === "disconnected" ? "text-text-muted" :
+                    st === "oauth_pending" ? "text-accent-ink" :
+                    "text-danger";
                   const statusLabel =
                     st === "connected" ? "Connected" :
                     st === "imported" ? "Imported" :
+                    st === "replaced" ? "Replaced" :
                     st === "skipped_existing" ? "Skipped — already exists" :
+                    st === "skipped" ? "Skipped" :
                     st === "disconnected" ? "Saved — needs Retry" :
                     st === "oauth_pending" ? "Needs authorization" :
                     "Error";
                   return (
-                    <div key={i} className="flex items-center gap-3 px-4 py-2.5 border-t border-zinc-800/60">
+                    <div key={i} className="flex items-center gap-3 px-4 py-2.5 border-t border-border">
                       <StatusIcon className={`h-4 w-4 ${statusCls} flex-shrink-0`} />
-                      <span className="flex-1 text-sm text-zinc-200 font-bold">{item.name || item.label}</span>
+                      <span className="flex-1 min-w-0 text-sm text-text font-semibold">
+                        {item.name || item.label}
+                        {st === "skipped" && item.message && (
+                          <span className="block text-xs font-normal text-text-muted">{item.message}</span>
+                        )}
+                      </span>
                       {st === "oauth_pending" && item.auth_url && (
                         <a
                           href={item.auth_url}
                           target="_blank"
                           rel="noreferrer"
-                          className="text-xs font-bold text-blue-400 border border-blue-700 px-2 py-0.5 hover:bg-blue-900/30 transition-colors mr-2"
+                          className="text-xs font-semibold text-accent-ink border border-accent/40 px-2 py-0.5 hover:bg-accent-subtle transition-colors mr-2 rounded-md"
                         >
                           Authorize ↗
                         </a>
@@ -729,29 +778,48 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
           })}
         </div>
 
+        {warnings.length > 0 && (
+          <div className="border border-border rounded-md">
+            <div className="flex items-center gap-2 px-4 py-2.5 bg-surface-2">
+              <AlertTriangle className="h-3.5 w-3.5 text-text-faint" />
+              <span className="text-[10px] uppercase font-semibold tracking-wider text-text-faint">
+                Needs a look before it runs
+              </span>
+            </div>
+            <ul className="divide-y divide-border">
+              {warnings.map((w, i) => (
+                <li key={i} className="px-4 py-2.5 text-sm">
+                  <span className="font-semibold text-text">{w.name}</span>
+                  <span className="text-text-muted"> — {w.message}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         {results.mcp_servers?.some(m => m.status === "disconnected") && (
-          <div className="flex items-start gap-3 p-4 border border-zinc-800 bg-zinc-900/40">
-            <AlertTriangle className="h-4 w-4 text-yellow-500 flex-shrink-0 mt-0.5" />
-            <p className="text-zinc-500 text-xs leading-relaxed">
-              Some MCP servers could not connect automatically. Go to the{" "}
-              <span className="text-zinc-300 font-bold">MCP Servers</span> tab and click{" "}
-              <span className="text-zinc-300 font-bold">Retry</span> to connect them.
+          <div className="flex items-start gap-3 p-4 border border-border bg-surface-2 rounded-md">
+            <AlertTriangle className="h-4 w-4 text-text flex-shrink-0 mt-0.5" />
+            <p className="text-text-faint text-xs leading-relaxed">
+              Some apps could not connect automatically. Go to{" "}
+              <span className="text-text font-semibold">Apps</span> and click{" "}
+              <span className="text-text font-semibold">Retry</span> to connect them.
             </p>
           </div>
         )}
         {results.mcp_servers?.some(m => m.status === "oauth_pending") && (
-          <div className="flex items-start gap-3 p-4 border border-blue-900/40 bg-blue-950/10">
-            <AlertCircle className="h-4 w-4 text-blue-400 flex-shrink-0 mt-0.5" />
-            <p className="text-zinc-400 text-xs leading-relaxed">
+          <div className="flex items-start gap-3 p-4 border border-accent/25 bg-accent-subtle rounded-md">
+            <AlertCircle className="h-4 w-4 text-accent-ink flex-shrink-0 mt-0.5" />
+            <p className="text-text-muted text-xs leading-relaxed">
               Some servers require OAuth authorization. Click the{" "}
-              <span className="text-blue-400 font-bold">Authorize ↗</span> button next to each server above.
+              <span className="text-accent-ink font-semibold">Authorize ↗</span> button next to each server above.
               Once you complete authorization in the browser, the server will connect automatically.
             </p>
           </div>
         )}
 
         <div className="flex justify-end">
-          <button onClick={reset} className="flex items-center gap-2 px-4 py-2 text-sm font-bold border border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-white transition-colors">
+          <button onClick={reset} className={buttonStyles({ variant: "secondary" })}>
             <Upload className="h-4 w-4" /> Import Another File
           </button>
         </div>

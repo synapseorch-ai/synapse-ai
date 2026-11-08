@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
 import * as http from 'http';
 import { URL } from 'url';
-import { internalHeaders } from '@/lib/backend';
+import { BACKEND_URL, internalHeaders } from '@/lib/backend';
 
-const _backendUrl = new URL(process.env.BACKEND_URL || 'http://127.0.0.1:8765');
+const _backendUrl = new URL(BACKEND_URL);
 const BACKEND_HOST = _backendUrl.hostname;
 const BACKEND_PORT = parseInt(_backendUrl.port || '8765', 10);
 

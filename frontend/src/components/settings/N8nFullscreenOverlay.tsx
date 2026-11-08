@@ -18,7 +18,7 @@ export const N8nFullscreenOverlay = ({
             {/* Exit Fullscreen Button - Bottom position */}
             <button
                 onClick={() => setIsIframeFullscreen(false)}
-                className="absolute bottom-4 right-4 z-[210] p-3 bg-zinc-900 hover:bg-zinc-800 text-white rounded border border-zinc-700 flex items-center gap-2 text-sm font-bold shadow-2xl"
+                className="absolute bottom-4 right-4 z-[210] p-3 bg-zinc-900 hover:bg-zinc-800 text-white rounded-md border border-zinc-700 flex items-center gap-2 text-sm font-bold shadow-2xl"
             >
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />

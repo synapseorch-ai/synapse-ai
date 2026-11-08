@@ -3,8 +3,13 @@ S3 storage helper for scale mode.
 Provides a thin boto3 wrapper for vault files and run logs when an S3 bucket is configured.
 Returns None from get_s3() in standalone mode so callers can guard with a simple None check.
 """
+import hashlib
 import threading
-from typing import Optional
+from typing import Iterable, Iterator, Optional
+
+#: S3 needs every part but the last to be at least 5 MiB; 8 MiB keeps the
+#: part count of a 100 MB upload low and each buffered part small.
+MULTIPART_PART_SIZE = 8 * 1024 * 1024
 
 
 class SynapseS3:
@@ -67,6 +72,110 @@ class SynapseS3:
                 return None
             raise
 
+    def upload_bytes(self, rel_key: str, data: bytes, content_type: Optional[str] = None) -> None:
+        """Upload bytes as one object."""
+        self._s3.put_object(
+            Bucket=self.bucket,
+            Key=self.full_key(rel_key),
+            Body=data,
+            ContentType=content_type or "application/octet-stream",
+        )
+
+    def download_bytes(self, rel_key: str) -> Optional[bytes]:
+        """Download an object's bytes. None if the key doesn't exist."""
+        try:
+            resp = self._s3.get_object(Bucket=self.bucket, Key=self.full_key(rel_key))
+            return resp["Body"].read()
+        except Exception as exc:
+            if _not_found(exc):
+                return None
+            raise
+
+    def stream(self, rel_key: str, chunk_size: int) -> Optional[Iterator[bytes]]:
+        """An object's bytes in pieces, or None if the key doesn't exist."""
+        try:
+            resp = self._s3.get_object(Bucket=self.bucket, Key=self.full_key(rel_key))
+        except Exception as exc:
+            if _not_found(exc):
+                return None
+            raise
+        return resp["Body"].iter_chunks(chunk_size)
+
+    def upload_stream(self, rel_key: str, chunks: Iterable[bytes], content_type: Optional[str] = None,
+                      part_size: Optional[int] = None) -> tuple[int, str]:
+        """Upload `chunks` as one object; returns (size, sha256 hex).
+
+        Under one part it is a single `put_object`. Otherwise a multipart
+        upload, aborted if anything fails, so no half-object is ever visible.
+        """
+        key = self.full_key(rel_key)
+        ctype = content_type or "application/octet-stream"
+        part_size = part_size or MULTIPART_PART_SIZE
+        digest = hashlib.sha256()
+        size = 0
+        buffer = bytearray()
+        upload_id: Optional[str] = None
+        parts: list[dict] = []
+
+        def send(body: bytes) -> None:
+            nonlocal upload_id
+            if upload_id is None:
+                upload_id = self._s3.create_multipart_upload(
+                    Bucket=self.bucket, Key=key, ContentType=ctype)["UploadId"]
+            number = len(parts) + 1
+            resp = self._s3.upload_part(Bucket=self.bucket, Key=key, UploadId=upload_id,
+                                        PartNumber=number, Body=body)
+            parts.append({"ETag": resp["ETag"], "PartNumber": number})
+
+        try:
+            for piece in chunks:
+                digest.update(piece)
+                size += len(piece)
+                buffer.extend(piece)
+                while len(buffer) >= part_size:
+                    send(bytes(buffer[:part_size]))
+                    del buffer[:part_size]
+            if upload_id is None:
+                self._s3.put_object(Bucket=self.bucket, Key=key, Body=bytes(buffer), ContentType=ctype)
+            else:
+                if buffer:
+                    send(bytes(buffer))
+                self._s3.complete_multipart_upload(Bucket=self.bucket, Key=key, UploadId=upload_id,
+                                                   MultipartUpload={"Parts": parts})
+        except BaseException:
+            if upload_id is not None:
+                try:
+                    self._s3.abort_multipart_upload(Bucket=self.bucket, Key=key, UploadId=upload_id)
+                except Exception:
+                    pass
+            raise
+        return size, digest.hexdigest()
+
+    def head(self, rel_key: str) -> Optional[dict]:
+        """Size, modification time and ETag of a key. None if it doesn't exist."""
+        try:
+            resp = self._s3.head_object(Bucket=self.bucket, Key=self.full_key(rel_key))
+        except Exception as exc:
+            if _not_found(exc):
+                return None
+            raise
+        return {"size": resp.get("ContentLength", 0), "modified_at": resp.get("LastModified"),
+                "etag": (resp.get("ETag") or "").strip('"') or None}
+
+    def list_objects(self, rel_prefix: str) -> list[dict]:
+        """`list_keys` with each object's size, modification time and ETag."""
+        full_prefix = self.full_key(rel_prefix)
+        out: list[dict] = []
+        paginator = self._s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=full_prefix):
+            for obj in page.get("Contents", []):
+                rel = obj["Key"]
+                if self.prefix and rel.startswith(self.prefix + "/"):
+                    rel = rel[len(self.prefix) + 1:]
+                out.append({"key": rel, "size": obj.get("Size", 0), "modified_at": obj.get("LastModified"),
+                            "etag": (obj.get("ETag") or "").strip('"') or None})
+        return out
+
     def get_metadata(self, rel_key: str) -> Optional[dict]:
         """Return S3 user metadata for a key. None if key not found."""
         try:
@@ -102,6 +211,11 @@ class SynapseS3:
             return {"ok": True}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+
+
+def _not_found(exc: Exception) -> bool:
+    code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
+    return code in ("NoSuchKey", "404", "NotFound")
 
 
 # ── Module-level singleton ─────────────────────────────────────────────────────

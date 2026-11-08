@@ -20,18 +20,63 @@ Builder flows (`builder_*` run ids) are intentionally NOT journaled: they are
 ephemeral UI conversations driven by `routes/builder.py`, which bypasses the
 runner pump on purpose.
 
-Writes are synchronous: a flushed append of a bounded line is microseconds,
-which is noise next to the LLM/tool latency between events, and it keeps this
-module free of extra dependencies. The pump wraps every append in try/except —
-a journal failure must never kill a run.
+`append` is synchronous and returns the event's id at once — the broker needs
+it — but the file write happens on a single writer thread shared by every
+journal in the process. One thread, so writes land in submission order; off
+the loop, so a `write` + `flush` per event is not charged to whichever
+tenant's run happens to be executing. The line is serialised on the loop,
+once: the terminal events reference the run's live shared_state, and a thread
+reading that dict while the engine can still touch it is a race.
+
+The pump wraps every append in try/except — a journal failure must never kill
+a run — and a write that fails on the writer thread is logged, not raised.
 """
+import asyncio
 import json
+import os
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
-import asyncio
+from core.log import get_logger
+from core.run_ids import run_file
 
-EVENTS_DIR = Path(__file__).parent.parent.parent / "logs" / "orchestration_events"
+_log = get_logger(__name__)
+
+_writer: ThreadPoolExecutor | None = None
+
+
+def _executor() -> ThreadPoolExecutor:
+    """The one writer thread. Single so FIFO holds: the default executor has
+    several workers and two appends could land out of order."""
+    global _writer
+    if _writer is None:
+        _writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="synapse-journal")
+    return _writer
+
+
+_dir_cache: dict[tuple, Path] = {}
+
+
+def _events_dir() -> Path:
+    """Where a run's event journal is appended.
+
+    Scratch, and deliberately not published to the blob store on close: the
+    journal is read by the live-tail endpoint while a run is in flight, and in
+    scale mode the Redis stream is already the cross-process answer. Publishing
+    it afterwards would be write amplification for data nothing reads.
+
+    Cached per tenant and per configured location: `scratch_dir` does a
+    `mkdir` on every call, and this used to be called for every event.
+    """
+    from core.storage.scratch import scratch_dir
+    from core.tenancy import get_tenant
+    key = (get_tenant(), os.getenv("SYNAPSE_SCRATCH_DIR"), os.getenv("SYNAPSE_BLOB_DIR"))
+    path = _dir_cache.get(key)
+    if path is None:
+        path = scratch_dir("run_events")
+        _dir_cache[key] = path
+    return path
 
 # A single serialized event line larger than this gets its heavy fields
 # truncated (the UI fetches full run state from the checkpoint endpoint).
@@ -51,14 +96,19 @@ STRUCTURAL_EVENT_TYPES = frozenset({
     "orchestration_start", "step_start", "step_complete", "step_error",
     "loop_iteration", "loop_complete", "loop_limit_reached",
     "parallel_start", "parallel_complete", "branch_start", "merge_complete",
-    "routing_decision", "if_decision", "switch_decision",
+    "routing_decision", "if_decision", "switch_decision", "evaluator_decision",
     "human_input_required", "orchestration_complete", "orchestration_error",
     "orchestration_end", "final", "run_stream_end", "journal_truncated",
+    # A task list is the run's shape: past the event cap a long run must keep
+    # its plan exactly when the plan matters most.
+    "tasks_updated", "tasks_incomplete",
+    # A Retrieve step's trace id and an Ingest step's documents: one event per
+    # execution, and the run panel's only way back to what the step found.
+    "knowledge_retrieve", "knowledge_ingest",
+    # A Team step's shape (TEAM1e): who worked on what, and how it ended. A member's own events
+    # (`member_event`, its tool calls and streamed answer) are its detail, dropped past the cap.
+    "member_started", "member_finished", "team_tasks", "member_answered",
 })
-
-
-def _ensure_events_dir():
-    EVENTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _truncate_strings(value, limit: int):
@@ -70,6 +120,24 @@ def _truncate_strings(value, limit: int):
     if isinstance(value, list):
         return [_truncate_strings(v, limit) for v in value]
     return value
+
+
+def _serialise(seq: int, ts: float, event: dict) -> str:
+    """The journal line for `event`, bounded to roughly MAX_EVENT_BYTES.
+
+    One `json.dumps` in the common case. The old path serialised to measure,
+    serialised again if oversized, and then serialised the wrapped entry — three
+    times per event, on the loop.
+    """
+    try:
+        line = json.dumps({"id": seq, "ts": ts, "event": event}, default=str)
+    except Exception:
+        return json.dumps({"id": seq, "ts": ts, "event": {
+            "type": event.get("type", "unknown"), "truncated": True,
+            "error": "unserializable event"}})
+    if len(line) <= MAX_EVENT_BYTES:
+        return line
+    return json.dumps({"id": seq, "ts": ts, "event": _shrink(event)}, default=str)
 
 
 def _shrink(event: dict) -> dict:
@@ -102,8 +170,9 @@ class FileRunJournal:
 
     def __init__(self, run_id: str):
         self.run_id = run_id
-        self._path = EVENTS_DIR / f"{run_id}.jsonl"
-        self._fh = None
+        self._path = run_file(_events_dir(), run_id, ".jsonl")
+        self._fh = None            # opened, written and closed on the writer thread only
+        self._pending: Future | None = None
         self._seq = self._recover_seq()
         self._capped = self._seq >= MAX_EVENTS_PER_RUN
         self._cap_marked = self._capped
@@ -133,39 +202,83 @@ class FileRunJournal:
         return 0
 
     def append(self, event: dict) -> int:
-        """Append one event; returns its journal id (0 = skipped by the cap)."""
+        """Append one event; returns its journal id (0 = skipped by the cap).
+
+        The id is assigned here, synchronously; the line is queued for the
+        writer thread. `event` is serialised before this returns, so a caller
+        that mutates it afterwards changes nothing in the journal.
+        """
         etype = event.get("type", "")
         if self._capped and etype not in STRUCTURAL_EVENT_TYPES:
             return 0
-        _ensure_events_dir()
-        if self._fh is None:
-            self._fh = open(self._path, "a", encoding="utf-8")
         if not self._capped and self._seq >= MAX_EVENTS_PER_RUN:
             self._capped = True
             if not self._cap_marked:
                 self._cap_marked = True
                 self._seq += 1
-                self._fh.write(json.dumps({
+                self._submit(self._write_line, json.dumps({
                     "id": self._seq, "ts": time.time(),
                     "event": {"type": "journal_truncated",
                               "message": "event cap reached; only structural events are journaled from here"},
-                }) + "\n")
+                }))
             if etype not in STRUCTURAL_EVENT_TYPES:
-                self._fh.flush()
                 return 0
         self._seq += 1
-        line = json.dumps(
-            {"id": self._seq, "ts": time.time(), "event": _shrink(event)},
-            default=str,
-        )
-        self._fh.write(line + "\n")
-        self._fh.flush()
+        self._submit(self._write_line, _serialise(self._seq, time.time(), event))
         return self._seq
 
-    def read(self, after_id: int = 0, limit: int = 5000) -> list[dict]:
-        """Return entries with id > after_id, oldest first, skipping torn lines."""
+    # ── writer thread ────────────────────────────────────────────────
+
+    def _submit(self, fn, *args) -> Future:
+        def guarded():
+            try:
+                fn(*args)
+            except Exception as e:  # noqa: BLE001 — never raise on the writer thread
+                _log.warning(f"journal write failed for '{self.run_id}': {e}")
+        self._pending = _executor().submit(guarded)
+        return self._pending
+
+    def _write_line(self, line: str) -> None:
+        if self._fh is None:
+            self._fh = open(self._path, "a", encoding="utf-8")
+        self._fh.write(line + "\n")
+        self._fh.flush()
+
+    def _flush_fh(self) -> None:
         if self._fh is not None:
             self._fh.flush()
+
+    def _close_fh(self) -> None:
+        if self._fh is not None:
+            try:
+                self._fh.close()
+            except OSError:
+                pass
+            self._fh = None
+
+    async def drain(self) -> None:
+        """Wait until every line appended so far is on disk.
+
+        A barrier on the single writer thread: when it runs, everything
+        submitted before it has run too.
+        """
+        if self._pending is None:
+            return
+        await asyncio.get_running_loop().run_in_executor(_executor(), self._flush_fh)
+
+    def _drain_sync(self) -> None:
+        if self._pending is not None:
+            _executor().submit(self._flush_fh).result()
+
+    def read(self, after_id: int = 0, limit: int = 5000) -> list[dict]:
+        """Return entries with id > after_id, oldest first, skipping torn lines.
+
+        Synchronous, for the throwaway readers the routes build and for tests.
+        On an instance that has appended, it waits for those appends first —
+        a route reading a live run's registry instance should `await drain()`
+        instead (see routes/orchestrations.py).
+        """
+        self._drain_sync()
         if not self._path.exists():
             return []
         entries = []
@@ -188,21 +301,29 @@ class FileRunJournal:
         return self._seq
 
     def close(self):
-        if self._fh is not None:
-            try:
-                self._fh.close()
-            except OSError:
-                pass
-            self._fh = None
+        """Close the file after every queued write has landed. Blocks the
+        caller for that long — microseconds at a run's end — so the pump uses
+        `aclose`; this is for synchronous callers (delete, the startup sweep,
+        tests)."""
+        if self._pending is None and self._fh is None:
+            return
+        _executor().submit(self._close_fh).result()
+        self._pending = None
+
+    async def aclose(self) -> None:
+        if self._pending is None and self._fh is None:
+            return
+        await asyncio.get_running_loop().run_in_executor(_executor(), self._close_fh)
+        self._pending = None
 
     @classmethod
     def exists(cls, run_id: str) -> bool:
-        return (EVENTS_DIR / f"{run_id}.jsonl").exists()
+        return run_file(_events_dir(), run_id, ".jsonl").exists()
 
     @classmethod
     def delete(cls, run_id: str) -> bool:
         close_journal(run_id)
-        path = EVENTS_DIR / f"{run_id}.jsonl"
+        path = run_file(_events_dir(), run_id, ".jsonl")
         try:
             path.unlink()
             return True
@@ -225,10 +346,23 @@ def get_journal(run_id: str) -> FileRunJournal:
     return journal
 
 
+def open_journal(run_id: str) -> "FileRunJournal | None":
+    """The registry instance for a run still being pumped, or None. A reader
+    that finds one should `await drain()` on it before opening its own."""
+    return _journals.get(run_id)
+
+
 def close_journal(run_id: str):
     journal = _journals.pop(run_id, None)
     if journal is not None:
         journal.close()
+
+
+async def aclose_journal(run_id: str) -> None:
+    """`close_journal` for the pump: waits for the writer without blocking the loop."""
+    journal = _journals.pop(run_id, None)
+    if journal is not None:
+        await journal.aclose()
 
 
 class RunEventBroker:

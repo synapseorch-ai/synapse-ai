@@ -11,37 +11,40 @@ Two independent layers of the fix are covered:
    runs *before* the manager, so no subprocess is ever spawned.
 """
 import json
-import os
 
 import pytest
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-import core.config as config
+from core import settings_runtime
+from core.config import default_settings
 from core.internal_auth import InternalTokenMiddleware, _is_loopback
 
 
 # ── settings isolation ───────────────────────────────────────────────────────
-# The suite shares one DATA_DIR, and the root autouse fixture does not reset
-# settings.json — so restore it ourselves to avoid leaking allow_stdio_mcp=False
-# (etc.) into other tests.
+# These tests drive the gate by binding settings directly rather than by writing
+# a file. Settings come from the store now, so a file write would be ignored —
+# and binding is what the request path itself does, so the gate is exercised
+# through the same mechanism it uses in production.
 @pytest.fixture(autouse=True)
 def _restore_settings():
-    original = None
-    if os.path.exists(config.SETTINGS_FILE):
-        with open(config.SETTINGS_FILE) as f:
-            original = f.read()
     yield
-    if original is not None:
-        with open(config.SETTINGS_FILE, "w") as f:
-            f.write(original)
-    elif os.path.exists(config.SETTINGS_FILE):
-        os.remove(config.SETTINGS_FILE)
+    settings_runtime.reset_state()
 
 
-def _write_settings(**overrides):
-    with open(config.SETTINGS_FILE, "w") as f:
-        json.dump(overrides, f)
+async def _write_settings(**overrides):
+    """Persist settings and make them live.
+
+    Writes to the store rather than to a file, and refreshes, because the
+    request path re-binds from the store on the way in — a snapshot bound only
+    in the test's own context would be replaced before the route ran.
+    """
+    from core.store.settings import save_many
+
+    settings = default_settings()
+    settings.update(overrides)
+    await save_many(settings)
+    await settings_runtime.refresh()
 
 
 def _make_request(path="/api/mcp/servers", headers=None, client=("203.0.113.9", 4444)):
@@ -126,7 +129,7 @@ async def test_stdio_registration_blocked_when_disabled(client, monkeypatch):
             return {"config": {}, "connected": False, "status": "disconnected"}
 
     monkeypatch.setattr(server, "mcp_manager", _FakeManager(), raising=False)
-    _write_settings(allow_stdio_mcp=False)
+    await _write_settings(allow_stdio_mcp=False)
 
     resp = await client.post(
         "/api/mcp/servers",
@@ -145,7 +148,7 @@ async def test_stdio_registration_blocked_in_scale_mode(client, monkeypatch):
     import core.server as server
 
     monkeypatch.setattr(server, "mcp_manager", object(), raising=False)
-    _write_settings(scale_mode_enabled=True, allow_stdio_mcp=True)
+    await _write_settings(scale_mode_enabled=True, allow_stdio_mcp=True)
 
     resp = await client.post(
         "/api/mcp/servers",
@@ -166,7 +169,7 @@ async def test_remote_registration_not_blocked_by_stdio_gate(client, monkeypatch
             return {"config": {"name": kwargs["name"]}, "connected": False, "status": "disconnected"}
 
     monkeypatch.setattr(server, "mcp_manager", _FakeManager(), raising=False)
-    _write_settings(allow_stdio_mcp=False)
+    await _write_settings(allow_stdio_mcp=False)
 
     resp = await client.post(
         "/api/mcp/servers",

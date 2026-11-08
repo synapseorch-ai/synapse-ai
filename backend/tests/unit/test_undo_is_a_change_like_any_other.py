@@ -1,0 +1,404 @@
+"""
+"Undo that" is a change like any other: code builds its inverse from the card the change left, and it goes through
+the same check, review, yes and apply (F797, SAI2-P2, D308; BWA1's review point 5).
+
+The model says only which change (`submit_change(undo_of=<its card>)`); it never writes the inverse ops. A value the
+card never kept (it held a credential) is not restored and the review says so; a deleted thing comes back only as a
+new copy, with what does not come back said on the review (Naveen, 10-22); a name something took since stops the
+re-create; and the person can undo only their own change.
+"""
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from core import builder_access
+from core.builder_tools import execute_builder_tool_with_events
+from core.models_orchestration import OrchestrationRun
+from core.orchestration.engine import live
+from core.orchestration.state import SharedState
+from core.product_tools import confirm, hooks
+from core.product_tools.roles import Role
+
+
+class _Server:
+    agent_sessions: dict = {}
+    tool_router: dict = {}
+
+
+@pytest.fixture(autouse=True)
+def fresh():
+    confirm.set_claim_store(None)
+    builder_access.forget_runs()
+
+    async def owner(user_id):
+        return Role.OWNER
+
+    hooks.set_role_source(owner)
+    yield
+    hooks.set_role_source(None)
+    builder_access.forget_runs()
+
+
+_N = {"n": 0}
+
+
+async def _run(user_id="u1"):
+    _N["n"] += 1
+    run = OrchestrationRun(run_id=f"builder_undo_{_N['n']}", orchestration_id="orch_native_builder",
+                           shared_state={builder_access.CALLER_KEY: {"user_id": user_id}})
+    await SharedState(run).checkpoint()
+    return run
+
+
+def _asked_for(run, ops) -> None:
+    """The person asked for the renames the test proposes (F960: a new name must be their words), unless the test says
+    what they asked itself."""
+    names = [o["fields"]["name"] for o in ops or []
+             if o.get("op", "").startswith("rename_") and (o.get("fields") or {}).get("name")]
+    if names and "user_message" not in run.shared_state:
+        run.shared_state["user_message"] = " and ".join(f'rename it to "{n}"' for n in names)
+
+
+async def _call(tool, args, run):
+    with live(run):
+        raw, events = await execute_builder_tool_with_events(tool, args, _Server(), run_id=run.run_id)
+    return json.loads(raw)
+
+
+async def _change(draft, user_id="u1", answer="approve"):
+    """One whole change: check, review answered, approve, apply. Returns (run, check, apply)."""
+    run = await _run(user_id)
+    _asked_for(run, draft.get("ops"))
+    checked = await _call("check_change", {"draft": {"finish": "submit_change", **draft}}, run)
+    if checked["outcome"] != "review":
+        return run, checked, None
+    run.shared_state["change_checked"] = json.dumps(checked)
+    run.shared_state["manage_review"] = {"feedback": answer}
+    await _call("approve_change", {}, run)
+    return run, checked, await _call("apply_change", {}, run)
+
+
+async def _agent(**kw):
+    from core.store.resources import save_agent
+    from tests._fakes.seed import make_agent
+
+    agent = make_agent(**kw)
+    await save_agent(agent)
+    return agent
+
+
+async def _tools(*names):
+    """Tools that exist here, so F489 lets an agent hold them."""
+    from core.store.resources import save_tool
+
+    for name in names:
+        await save_tool({"name": name, "description": name, "tool_type": "http", "method": "GET",
+                         "url": f"https://api.example.com/{name}", "headers": {}, "inputSchema": {"type": "object"}})
+
+
+async def _get(agent_id):
+    from core.store.resources import get_agent
+
+    return await get_agent(agent_id)
+
+
+async def test_a_rename_is_undone_through_its_own_review(client):
+    agent = await _agent(name="Front desk")
+    first, _, done = await _change({"ops": [{"op": "rename_agent", "target": {"kind": "agent", "id": agent["id"]},
+                                             "fields": {"name": "Harbor desk"}}]})
+    assert done["applied"] == ["rename_agent"]
+    _, checked, undone = await _change({"undo_of": first.run_id})
+    assert checked["review"] == '- Rename the agent "Harbor desk" — to "Front desk"; undo: its old name'
+    assert undone["applied"] == ["rename_agent"] and (await _get(agent["id"]))["name"] == "Front desk"
+
+
+async def test_the_person_is_told_which_change_the_context_holds(client):
+    agent = await _agent(name="Front desk")
+    first, _, _ = await _change({"ops": [{"op": "set_agent_model", "target": {"kind": "agent", "id": agent["id"]},
+                                          "fields": {"model": "claude-haiku-4-5"}, "says": "use haiku"}]})
+    context = await _call("read_change_context", {}, await _run())
+    assert context["last_change"]["key"] == first.run_id
+    assert context["last_change"]["ops"] == [{"op": "set_agent_model", "target": "Front desk", "says": "use haiku"}]
+    assert await _call("read_change_context", {}, await _run(user_id="u2")) == {"last_change": None,
+                                                                                "waiting_pick": None}
+
+
+async def test_a_schedule_s_time_goes_back(client):
+    from core.store import schedules
+
+    await schedules.save({"id": "sched_n", "name": "Every night at 2", "enabled": True, "target_type":
+                          "orchestration", "target_id": "orch_x", "prompt": "Go", "schedule_type": "cron",
+                          "cron_expression": "0 2 * * *"})
+    first, _, _ = await _change({"ops": [{"op": "set_schedule", "target": {"kind": "schedule", "id": "sched_n"},
+                                          "fields": {"cron_expression": "0 3 * * *"}}]})
+    assert (await schedules.get("sched_n"))["cron_expression"] == "0 3 * * *"
+    await _change({"undo_of": first.run_id})
+    assert (await schedules.get("sched_n"))["cron_expression"] == "0 2 * * *"
+
+
+async def test_tools_and_a_tool_policy_go_back_exactly(client):
+    await _tools("read_file", "web_search", "search_help")
+    agent = await _agent(name="Front desk", tools=["read_file", "web_search"], tool_policy={"destructive": "confirm"})
+    first, _, done = await _change({"ops": [
+        {"op": "set_agent_tools", "target": {"kind": "agent", "id": agent["id"]},
+         "fields": {"add": ["search_help"], "remove": ["read_file"]}},
+        {"op": "set_tool_policy", "target": {"kind": "agent", "id": agent["id"]},
+         "fields": {"open_world": "confirm", "destructive": "inherit"}}]})
+    assert done["applied"] == ["set_agent_tools", "set_tool_policy"], done
+    changed = await _get(agent["id"])
+    assert changed["tools"] == ["web_search", "search_help"] and changed["tool_policy"] == {"open_world": "confirm"}
+    await _change({"undo_of": first.run_id})
+    back = await _get(agent["id"])
+    assert sorted(back["tools"]) == ["read_file", "web_search"]
+    assert back["tool_policy"] == {"destructive": "confirm"}
+
+
+async def test_a_deleted_agent_comes_back_as_a_new_copy_and_the_review_says_so(client):
+    from core.store.resources import load_agents
+
+    await _tools("web_search")
+    agent = await _agent(name="Support bot", tools=["web_search"])
+    first, _, done = await _change({"ops": [{"op": "delete_agent", "target": {"kind": "agent", "id": agent["id"]}}]})
+    assert done["applied"] == ["delete_agent"] and await _get(agent["id"]) is None
+    _, checked, undone = await _change({"undo_of": first.run_id})
+    assert 'Bring back the agent "Support bot"' in checked["review"] and "without its memory" in checked["review"]
+    assert undone["applied"] == ["restore_agent"], undone
+    [back] = [a for a in await load_agents() if a.get("name") == "Support bot"]
+    assert back["id"] != agent["id"] and back["tools"] == ["web_search"]
+
+
+async def test_a_deleted_schedule_comes_back_paused(client):
+    from core.store import schedules
+    from core.store.resources import save_orchestration
+    from tests._fakes.seed import make_orchestration
+
+    flow = make_orchestration(name="Nightly digest")
+    await save_orchestration(flow)
+    await schedules.save({"id": "sched_n", "name": "Every night at 2", "enabled": True, "target_type":
+                          "orchestration", "target_id": flow["id"], "prompt": "Go", "schedule_type": "cron",
+                          "cron_expression": "0 2 * * *"})
+    first, _, _ = await _change({"ops": [{"op": "delete_schedule", "target": {"kind": "schedule", "id": "sched_n"}}]})
+    _, checked, undone = await _change({"undo_of": first.run_id})
+    assert "paused" in checked["review"] and undone["applied"] == ["create_schedule"]
+    [back] = [s for s in await schedules.load() if s["name"] == "Every night at 2"]
+    assert back["enabled"] is False and back["cron_expression"] == "0 2 * * *" and back["id"] != "sched_n"
+
+
+
+async def test_a_deleted_schedule_comes_back_on_its_own_clock(client):
+    """F948 (SAI2-P3): a schedule keeps its person's local time (`timezone`). Its undo re-creates it from the card's
+    before-image, and the time it comes back with is on that same clock, not UTC."""
+    from core.store import schedules
+    from core.store.resources import save_orchestration
+    from tests._fakes.seed import make_orchestration
+
+    flow = make_orchestration(name="Nightly digest")
+    await save_orchestration(flow)
+    await schedules.save({"id": "sched_tz", "name": "Every night at 2", "enabled": True, "target_type":
+                          "orchestration", "target_id": flow["id"], "prompt": "Go", "schedule_type": "cron",
+                          "cron_expression": "0 2 * * *", "timezone": "Europe/Amsterdam"})
+    first, _, _ = await _change({"ops": [{"op": "delete_schedule", "target": {"kind": "schedule", "id": "sched_tz"}}]})
+    _, checked, undone = await _change({"undo_of": first.run_id})
+    assert undone["applied"] == ["create_schedule"], undone
+    [back] = [s for s in await schedules.load() if s["name"] == "Every night at 2"]
+    assert back["cron_expression"] == "0 2 * * *" and back["timezone"] == "Europe/Amsterdam"
+
+async def test_a_name_taken_since_stops_the_re_create(client):
+    agent = await _agent(name="Support bot")
+    first, _, _ = await _change({"ops": [{"op": "delete_agent", "target": {"kind": "agent", "id": agent["id"]}}]})
+    await _agent(name="Support bot")
+    _, checked, _ = await _change({"undo_of": first.run_id})
+    assert checked["outcome"] == "said" and "can't bring the old one back under its name" in checked["say"]
+
+
+async def test_instructions_that_held_a_key_are_not_put_back_and_that_is_said(client):
+    agent = await _agent(name="Front desk", system_prompt="Use key sk-live-abcdefghijklmnopqrstuvwx1234 for calls.")
+    first, _, _ = await _change({"ops": [{"op": "set_agent_instructions", "target": {"kind": "agent",
+                                                                                     "id": agent["id"]},
+                                          "fields": {"system_prompt": "Be brief."}}]})
+    _, checked, _ = await _change({"undo_of": first.run_id})
+    assert checked["outcome"] == "said" and "held a key" in checked["say"]
+    assert (await _get(agent["id"]))["system_prompt"] == "Be brief."
+
+
+async def test_only_the_person_s_own_change_can_be_undone(client):
+    agent = await _agent(name="Front desk")
+    first, _, _ = await _change({"ops": [{"op": "rename_agent", "target": {"kind": "agent", "id": agent["id"]},
+                                          "fields": {"name": "Desk"}}]})
+    _, checked, _ = await _change({"undo_of": first.run_id}, user_id="u2")
+    assert checked["outcome"] == "said" and "can't find a change of yours" in checked["say"]
+    assert (await _get(agent["id"]))["name"] == "Desk"
+
+
+async def test_an_undo_waits_for_its_own_yes(client):
+    agent = await _agent(name="Front desk")
+    first, _, _ = await _change({"ops": [{"op": "rename_agent", "target": {"kind": "agent", "id": agent["id"]},
+                                          "fields": {"name": "Desk"}}]})
+    _, checked, undone = await _change({"undo_of": first.run_id}, answer="hmm, not yet")
+    assert checked["outcome"] == "review" and undone["applied"] == []
+    assert (await _get(agent["id"]))["name"] == "Desk"
+
+
+async def test_a_deleted_workflow_comes_back_as_a_new_copy(client):
+    from core.store.resources import load_orchestrations, save_orchestration
+    from tests._fakes.seed import make_orchestration
+
+    flow = make_orchestration(name="Nightly digest", max_run_credits=3)
+    await save_orchestration(flow)
+    first, _, done = await _change({"ops": [{"op": "delete_workflow", "target": {"kind": "workflow",
+                                                                                 "id": flow["id"]}}]})
+    assert done["applied"] == ["delete_workflow"]
+    _, checked, undone = await _change({"undo_of": first.run_id})
+    assert "without its run history" in checked["review"] and undone["applied"] == ["restore_workflow"], undone
+    [back] = [o for o in await load_orchestrations() if o.get("name") == "Nightly digest"]
+    assert back["id"] != flow["id"] and [s["id"] for s in back["steps"]] == ["step_1"]
+    assert back["max_run_credits"] == 3
+
+
+async def test_a_workflow_no_door_would_save_now_is_not_promised_back(client):
+    """A workflow saved before F850 by a door that checked nothing (the editor, an import) holds an expression the
+    engine refuses. Deleted, its undo was reviewed as "Bring back", approved, then refused by the save. Each door asks
+    `save_rules.refusal` now, and so does undo, before any review: said in the door's own words, nothing to approve."""
+    from core.store.resources import load_orchestrations, save_orchestration
+    from tests._fakes.seed import make_orchestration
+
+    flow = make_orchestration(name="Router", steps=[
+        {"id": "step_1", "name": "Pick", "type": "switch", "switch_expression": "state.__class__", "cases": {},
+         "default_step_id": None}], entry_step_id="step_1")
+    await save_orchestration(flow)  # as a door before F850 saved it: unchecked
+    first, _, done = await _change({"ops": [{"op": "delete_workflow", "target": {"kind": "workflow",
+                                                                                 "id": flow["id"]}}]})
+    assert done["applied"] == ["delete_workflow"]
+    _, checked, undone = await _change({"undo_of": first.run_id})
+    assert checked["outcome"] == "said" and undone is None, checked
+    assert checked["say"].startswith('the workflow "Router" can\'t be brought back as it was: '), checked["say"]
+    assert "An expression uses something this engine will not run" in checked["say"]
+    assert "Refusing to save" not in checked["say"]
+    assert not [o for o in await load_orchestrations() if o.get("name") == "Router"]
+
+
+async def test_a_deleted_http_tool_comes_back_without_its_headers(client, monkeypatch):
+    from core import egress_guard
+    from core.store.resources import load_tools, save_tool
+
+    async def resolve(host):  # a public address, never the network's DNS (F1238)
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(egress_guard, "resolve", resolve)
+
+    await save_tool({"name": "mailchimp_lists", "description": "Lists", "tool_type": "http", "method": "GET",
+                     "url": "https://us1.api.mailchimp.com/3.0/lists",
+                     "headers": {"Authorization": "Bearer sk-live-abcdefghijklmnopqrstuvwx1234"},
+                     "inputSchema": {"type": "object", "properties": {}}})
+    first, _, done = await _change({"ops": [{"op": "delete_tool", "target": {"kind": "tool",
+                                                                             "name": "mailchimp_lists"}}]})
+    assert done["applied"] == ["delete_tool"]
+    _, checked, undone = await _change({"undo_of": first.run_id})
+    assert "enter its key again" in checked["review"] and undone["applied"] == ["restore_tool"], undone
+    [back] = [t for t in await load_tools() if t["name"] == "mailchimp_lists"]
+    assert back["url"] == "https://us1.api.mailchimp.com/3.0/lists" and not back.get("headers")
+
+
+async def test_a_deleted_python_tool_comes_back_with_its_code(client):
+    """F1198: a Python tool's undo made nothing ("was not an HTTP tool"). It comes back through `create_python_tool`
+    with its code and schema; the variables a person gave it to read are theirs to give again, and the review says so."""
+    from core.store.resources import load_tools, save_tool
+
+    code = "import json\nprint(json.dumps({'ok': True}))\n"
+    await save_tool({"name": "region_totals", "description": "Totals", "tool_type": "python", "code": code,
+                     "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}},
+                     "globals": ["SHEET_KEY"]})
+    first, _, done = await _change({"ops": [{"op": "delete_tool", "target": {"kind": "tool", "name": "region_totals"}}]})
+    assert done["applied"] == ["delete_tool"]
+    _, checked, undone = await _change({"undo_of": first.run_id})
+    assert "add them again in its editor" in checked["review"] and undone["applied"] == ["restore_python_tool"], undone
+    [back] = [t for t in await load_tools() if t["name"] == "region_totals"]
+    assert back["tool_type"] == "python" and back["code"] == code and back["globals"] == []
+    assert back["inputSchema"]["properties"] == {"path": {"type": "string"}}
+
+
+async def test_a_deleted_tool_comes_back_in_its_own_group(client):
+    """A tool's `group` is its group's id (`grp_support`); `create_http_tool` takes a group's name. The undo brings it
+    back into the group it was in, not a new one named after the old id (the branch review's finding 8)."""
+    from core.routes.tools import _load_groups, _upsert_group
+    from core.store.resources import load_tools, save_tool
+
+    await _upsert_group({"id": "grp_support", "name": "Support", "description": ""})
+    await save_tool({"name": "ticket_lookup", "description": "Tickets", "tool_type": "http", "method": "GET",
+                     "url": "https://api.example.com/tickets", "headers": {}, "group": "grp_support",
+                     "inputSchema": {"type": "object", "properties": {}}})
+    first, _, _ = await _change({"ops": [{"op": "delete_tool", "target": {"kind": "tool", "name": "ticket_lookup"}}]})
+    _, _, undone = await _change({"undo_of": first.run_id})
+    assert undone["applied"] == ["restore_tool"], undone
+    [back] = [t for t in await load_tools() if t["name"] == "ticket_lookup"]
+    assert back["group"] == "grp_support"
+    assert [g["id"] for g in await _load_groups()] == ["grp_support"]
+
+
+async def test_a_tool_whose_address_held_a_key_is_said_to_be_so(client):
+    from core.store.resources import save_tool
+
+    await save_tool({"name": "leaky", "description": "Leaky", "tool_type": "http", "method": "GET",
+                     "url": "https://api.example.com/x?api_key=sk-live-abcdefghijklmnopqrstuvwx1234", "headers": {},
+                     "inputSchema": {"type": "object", "properties": {}}})
+    first, _, _ = await _change({"ops": [{"op": "delete_tool", "target": {"kind": "tool", "name": "leaky"}}]})
+    _, checked, _ = await _change({"undo_of": first.run_id})
+    assert checked["outcome"] == "said" and "address held a key" in checked["say"]
+
+
+async def test_an_undo_s_ops_are_checked_like_any_and_said_once(client):
+    """The inverse ops go through the table's own field check (the branch review's finding 9): a value the card never
+    kept is not "put back" as the word None, a re-create that lacks what it needs is not shown for a yes it would
+    fail after, a re-create's line is not its whole record, and what can't be undone is said once."""
+    import json as _json
+
+    from core.boards import assistant
+
+    agent = await _agent(name="Front desk")
+    first, _, _ = await _change({"ops": [{"op": "rename_agent", "target": {"kind": "agent", "id": agent["id"]},
+                                          "fields": {"name": "Desk"}}]})
+    card = await assistant.card(first.run_id)
+    data = _json.loads(_json.dumps(card.data))
+    data["applied"][0]["before"] = {"name": None, "_not_kept": ["name"]}
+    await assistant.put(first.run_id, title=card.title, stage="changed", owner_id="u1", data=data)
+    _, checked, _ = await _change({"undo_of": first.run_id})
+    assert checked["outcome"] == "said" and checked["calls"] == []
+    assert (await _get(agent["id"]))["name"] == "Desk"
+
+    gone = await _agent(name="Support bot", system_prompt="Use sk-live-abcdefghijklmnopqrstuvwx1234 here.")
+    second, _, _ = await _change({"ops": [{"op": "delete_agent", "target": {"kind": "agent", "id": gone["id"]}}]})
+    _, back, _ = await _change({"undo_of": second.run_id})
+    assert back["outcome"] == "said" and back["calls"] == [], back
+    assert back["say"].count("Support bot") == 1
+
+    flow_text = "{\"id\": \"step_1\""
+    from core.store.resources import save_orchestration
+    from tests._fakes.seed import make_orchestration
+
+    flow = make_orchestration(name="Nightly digest")
+    await save_orchestration(flow)
+    third, _, _ = await _change({"ops": [{"op": "delete_workflow", "target": {"kind": "workflow", "id": flow["id"]}}]})
+    _, review, _ = await _change({"undo_of": third.run_id}, answer="no")
+    assert review["outcome"] == "review" and flow_text not in review["review"] and "null" not in review["review"]
+
+
+async def test_a_half_built_workflow_deleted_comes_back(client):
+    """F1459 (ISS1, #376): the editor's save refuses a workflow that names a step it does not have, but the builder's
+    step tools save one half built (an entry named before its step, a step pointing at the next to be added), and
+    undo brings a workflow back through the builder's `create_orchestration`, which does not refuse it. Undo asks
+    what that door refuses, so such a workflow deleted is still brought back as it was."""
+    from core.store.resources import load_orchestrations, save_orchestration
+    from tests._fakes.seed import make_orchestration
+
+    flow = make_orchestration(name="Half built", entry_step_id="a", steps=[
+        {"id": "a", "name": "A", "type": "print", "print_content": "x", "output_key": "o_a", "next_step_id": "b"}])
+    await save_orchestration(flow)  # as the builder's add_steps leaves it, `b` still to come
+    first, _, done = await _change({"ops": [{"op": "delete_workflow", "target": {"kind": "workflow",
+                                                                                 "id": flow["id"]}}]})
+    assert done["applied"] == ["delete_workflow"]
+    _, checked, undone = await _change({"undo_of": first.run_id})
+    assert undone is not None and undone["applied"] == ["restore_workflow"], checked
+    [back] = [o for o in await load_orchestrations() if o.get("name") == "Half built"]
+    assert [(s["id"], s.get("next_step_id")) for s in back["steps"]] == [("a", "b")]

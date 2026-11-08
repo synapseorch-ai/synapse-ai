@@ -1,8 +1,8 @@
 [
   {
     "id": "simple_orch",
-    "name": "Simple Orchestration Pack",
-    "description": "Simple orchestration that includes a minimal job searching and creating sheets agents",
+    "name": "Simple Workflow Pack",
+    "description": "A simple workflow: three agents research a topic, draft the piece and save it in the Vault",
     "tags": [
       "agents",
       "orchestrations"
@@ -30,28 +30,28 @@
   {
     "id": "developer_pack",
     "name": "Developer Pack",
-    "description": "Built for engineering teams \u2014 includes a Code Review Agent, Software Engineer Agent, QA Engineer, Deployment Monitor, and a complete Dev base and Strict Pipeline orchestration.",
+    "description": "Built for engineering teams \u2014 includes a Code Review Agent, Software Engineer Agent, QA Engineer, Deployment Monitor, and a complete Dev base and Strict Pipeline workflow.",
     "tags": [
       "agents",
       "orchestrations",
       "mcp_servers"
     ],
-    "agent_count": 7,
+    "agent_count": 9,
     "orchestration_count": 3,
-    "mcp_count": 2,
+    "mcp_count": 4,
     "tool_count": 0,
     "file": "developer_pack.bundle.json"
   },
   {
     "id": "productivity_pack",
     "name": "Productivity Pack",
-    "description": "Business and content power-users \u2014 includes a Data Analyst, Content Writer, Jira Analyst, Slack Notifier, and Market Intelligence orchestration.",
+    "description": "Business and content power-users \u2014 includes a Data Analyst, Content Writer, Jira Analyst, Slack Notifier, and a Market Intelligence workflow.",
     "tags": [
       "agents",
       "orchestrations",
       "mcp_servers"
     ],
-    "agent_count": 4,
+    "agent_count": 5,
     "orchestration_count": 1,
     "mcp_count": 3,
     "tool_count": 0,
@@ -59,8 +59,8 @@
   },
   {
     "id": "mcp_pack",
-    "name": "MCP Servers Pack",
-    "description": "Pre-configured MCP server definitions for GitHub, Slack, Notion, Brave Search, and more. Connect your agents to external services instantly.",
+    "name": "Apps Pack",
+    "description": "Ready-made apps for GitHub, Slack, Notion, Brave Search, and more. Connect your agents to outside services instantly.",
     "tags": [
       "mcp_servers"
     ],

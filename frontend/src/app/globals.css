@@ -1,56 +1,183 @@
 @import "tailwindcss";
+@import "./tokens.css";
+@import "./raw-ramps.css";
+@import "./brand-motion.css";
 
+/*
+ * The design tokens' values live in `tokens.css` (M0a, UX2): every colour,
+ * shadow and type token for both themes, keyed off `data-theme` on <html>, and
+ * nothing product-specific, because the cloud app takes that file verbatim and
+ * the site copies it. `raw-ramps.css` maps the raw Tailwind neutrals onto them.
+ *
+ * What stays here is this product's wiring: the fonts (Inter + Geist Mono),
+ * the corner knob, the canvas and scrollbar variables, Tailwind's `@theme`
+ * names for every token, and the light theme's inversion of the other raw hues.
+ */
 :root {
-  --background: #09090b;
-  --foreground: #fafafa;
+  /* ── Fonts ───────────────────────────────────────────────────────────────
+   * `font-mono` and `font-sans` are both aliased to --ui-font so the ~2.6k
+   * indiscriminate utility classes in the tab components follow the UI font
+   * rather than fight it. Content that is genuinely code uses `font-code`,
+   * which never follows.
+   * -------------------------------------------------------------------- */
+  --ui-font: var(--font-inter);
+  --code-font: var(--font-geist-mono);
 
-  /* Scrollbar Default */
-  --sb-track: #09090b;
-  --sb-thumb: #27272a;
-  --sb-thumb-hover: #3f3f46;
+  /* ── Corner radius: one knob ─────────────────────────────────────────────
+   * Set this and the entire app follows — every button, input, card, dialog,
+   * popup and badge — because the whole `rounded-*` scale below is derived
+   * from it and nothing hard-codes a corner.
+   *
+   * 4px, settled after trying 0 and 8. Radius is the weakest carrier of
+   * personality: a product reads as itself through density, type, contrast and
+   * restraint, not its corners. What radius does carry is *register*. 0 was
+   * precise and technical — right for a terminal composer and a log viewer,
+   * but it read as unfinished next to the kit's own primitives. 8 moved the
+   * register toward consumer software. 4 is a hairline: enough to say the
+   * corner was chosen, not enough to soften what the tool is.
+   *
+   * Verifying a change here means MOVING it and re-measuring. "Everything is
+   * Npx" cannot distinguish *follows the token* from *has no radius at all* —
+   * the two are identical until the knob moves. That is how a broken knob
+   * shipped for a commit.
+   *
+   * `rounded-full` deliberately does NOT follow this. It is reserved for things
+   * that are actually circular — status dots, avatars, count bubbles and switch
+   * tracks — which stay round in either mode.
+   * -------------------------------------------------------------------- */
+  --ui-radius: 6px;
+
+  /* Legacy aliases: `body` and a few older rules still read these. */
+  --background: var(--bg);
+  --foreground: var(--text);
+
+  /* Scrollbar: on the page's own neutrals. */
+  --sb-track: var(--bg);
+  --sb-thumb: var(--border);
+  --sb-thumb-hover: var(--border-strong);
+
+  /* ── Canvas (React Flow) ─────────────────────────────────────────────────
+   * Edge colours live here because React Flow takes them as *props*
+   * (`style.stroke`, `maskColor`), which Tailwind classes cannot reach — a
+   * colour that reaches a library prop needs its own variable (D37a).
+   * -------------------------------------------------------------------- */
+  --minimap-mask: rgba(0, 0, 0, 0.6);
+  --flow-edge: #4d545a;      /* the default link: zinc-600's lightness on the new neutrals (2.45:1, was 2.57) */
+  --flow-parallel: #8b5cf6;  /* parallel fan-out; violet reads on both themes */
+  /* A loop's body and at-limit edges and handles. They were `--warning`, which
+     is a neutral-strong alias now (M0a), and would have become the loudest line
+     on the canvas. A quiet grey until M3 colours the canvas by role. */
+  --flow-loop: var(--text-faint);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+
+  --font-sans: var(--ui-font);
+  --font-mono: var(--ui-font);
+  --font-ui: var(--ui-font);
+  --font-code: var(--code-font);
   --font-inter: var(--font-inter), 'Inter', system-ui, sans-serif;
+
+  /* Tailwind's own scale otherwise — matching the cloud so the two products
+     agree. 11px is the one addition: there is nothing below text-xs, and there
+     are ~467 hard-coded 9/10/11px labels still to land on it. */
+  --text-2xs: 11px;
+
+  /* Derived from --ui-radius, so the scale keeps its proportions at any knob
+     setting and collapses to square at 0. */
+  --radius-xs: calc(var(--ui-radius) * 0.5);
+  --radius-sm: calc(var(--ui-radius) * 0.75);
+  --radius-md: var(--ui-radius);
+  --radius-lg: calc(var(--ui-radius) * 1.5);
+  --radius-xl: calc(var(--ui-radius) * 2);
+  --radius-2xl: calc(var(--ui-radius) * 2.5);
+
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-text-faint: var(--text-faint);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-subtle: var(--accent-subtle);
+  --color-accent-ink: var(--accent-ink);
+  --color-frame: var(--frame);
+  --color-machine: var(--machine);
+  --color-machine-subtle: var(--machine-subtle);
+  --color-person: var(--person);
+  --color-person-fg: var(--person-fg);
+  --color-person-ink: var(--person-ink);
+  --color-person-subtle: var(--person-subtle);
+  --color-danger: var(--danger);
+  --color-danger-fg: var(--danger-fg);
+  --color-danger-subtle: var(--danger-subtle);
+  --color-warning: var(--warning);
+  --color-warning-subtle: var(--warning-subtle);
+  --color-success: var(--success);
+  --color-success-subtle: var(--success-subtle);
+  /*
+   * The scrim, and why it is not `bg-black`.
+   *
+   * A `bg-black/60` overlay compiles to color-mix over `--color-black`, and the
+   * light theme's `raw-ramps.css` sets `--color-black` to the page ground so
+   * that the raw utilities invert with everything else. That is right for
+   * `text-black` and catastrophic for an overlay: every scrim in the app — the kit's own
+   * Modal included — turned into a white wash in light mode, which reads as a
+   * rendering fault rather than a dimmed background.
+   *
+   * A scrim is one of the few things that is genuinely the same colour in both
+   * themes: its job is to darken whatever is behind it. This token is declared
+   * here and deliberately NOT redefined for the light theme.
+   */
+  --color-scrim: #000000;
+
+  --color-surface-header: var(--surface-header);
+  --color-row-hover: var(--row-hover);
+
+  /* `shadow-elevated`: what floats — menus, popovers, dialogs, drawers,
+     tooltips, toasts. One shadow per theme, from `tokens.css`. */
+  --shadow-elevated: var(--shadow);
+
+  /* The title scale (UX1): `text-title` for a page's title, `text-section`
+     for a section head. Inter's optical sizing draws the 28px title from its
+     display cut. `lib/cn.ts` tells tailwind-merge these are sizes. */
+  --text-title: var(--type-title-size);
+  --text-title--line-height: var(--type-title-leading);
+  --text-title--letter-spacing: var(--type-title-tracking);
+  --text-title--font-weight: var(--type-title-weight);
+  --text-section: var(--type-section-size);
+  --text-section--line-height: var(--type-section-leading);
+  --text-section--letter-spacing: var(--type-section-tracking);
+  --text-section--font-weight: var(--type-section-weight);
 }
 
-.light-mode {
-  --background: #ffffff;
-  --foreground: #09090b;
-
-  /* --- ZINC PALETTE INVERSION --- */
-  --color-zinc-950: #fafafa;
-  --color-zinc-900: #f4f4f5;
-  --color-zinc-800: #e4e4e7;
-  --color-zinc-700: #d4d4d8;
-  --color-zinc-600: #a1a1aa;
-  --color-zinc-500: #71717a;
-  --color-zinc-400: #52525b;
-  --color-zinc-300: #3f3f46;
-  --color-zinc-200: #27272a;
-  --color-zinc-100: #18181b;
-  --color-zinc-50: #09090b;
-
-  /* --- SLATE/GRAY/NEUTRAL PALETTE INVERSION (if used) --- */
-  --color-slate-950: #f8fafc;
-  --color-slate-900: #f1f5f9;
-  --color-slate-800: #e2e8f0;
-  --color-slate-700: #cbd5e1;
-  --color-slate-400: #475569;
-  --color-slate-300: #334155;
-  --color-slate-200: #1e293b;
-  --color-slate-100: #0f172a;
-
+/*
+ * The light theme's inversion of the other raw hues.
+ *
+ * The designed light palette is in `tokens.css`, and the raw neutrals (zinc,
+ * slate, black and white) are mapped onto it in `raw-ramps.css`. What is left
+ * here exists only because a few hundred raw colour utilities (red, amber,
+ * blue…) are still spread across the screens: each value below flips a dark
+ * shade to the light one a measured failure asked for. A compatibility layer
+ * with an expiry date: M2 sweeps the screens onto the tokens, and the last
+ * raw utility takes this block with it.
+ *
+ * Scoped to `:root`: the embed widget puts its own `data-theme` on a div and
+ * loads this file, and a bare `[data-theme="light"]` would reach into it.
+ */
+:root[data-theme="light"] {
   /* --- RED PALETTE INVERSION (for errors/warnings) --- */
   --color-red-950: #fef2f2;
   --color-red-900: #fee2e2;
   --color-red-800: #fecaca;
   --color-red-700: #f97316;
-  /* adjust */
+  --color-red-500: #c10007;    /* red-700: white on it 6.4:1, as text on white 6.4:1 */
   --color-red-400: #b91c1c;
   --color-red-200: #7f1d1d;
 
@@ -59,12 +186,14 @@
   --color-sky-900: #e0f2fe;
   --color-sky-800: #bae6fd;
   --color-sky-400: #0369a1;
+  --color-sky-300: #00598a;    /* sky-800. Was pale blue on the inverted sky-950 tint (F8) */
 
   /* --- INDIGO PALETTE INVERSION (for Discord) --- */
   --color-indigo-950: #f5f3ff;
   --color-indigo-900: #ede9fe;
   --color-indigo-800: #ddd6fe;
   --color-indigo-400: #4338ca;
+  --color-indigo-300: #3730a3;  /* indigo-800. Chat's reasoning panel read 1.72-1.98:1 (F101) */
 
   /* --- GREEN/EMERALD PALETTE INVERSION (for Slack/WhatsApp) --- */
   --color-green-950: #f0fdf4;
@@ -83,6 +212,19 @@
   --color-amber-800: #fde68a;
   --color-amber-400: #92400e;
   --color-amber-300: #78350f;
+  --color-amber-200: #973c00;  /* amber-800, 6.8:1 on the inverted amber-950 tint.
+                                  Un-inverted it was #fee685 on #fffbeb — 1.2:1,
+                                  which is not faint text, it is no text (F43) */
+
+  /* --- YELLOW PALETTE INVERSION (run status, toasts, import warnings) --- */
+  /* Yellow had no inversion at all, so "Needs input" kept its dark-mode
+     #ffdf20 on a light ground: 1.25:1 (F223). The same shades amber takes. */
+  --color-yellow-950: #fefce8;
+  --color-yellow-900: #fef9c3;
+  --color-yellow-600: #854d0e;   /* yellow-800 */
+  --color-yellow-500: #a16207;   /* yellow-700 */
+  --color-yellow-400: #854d0e;   /* yellow-800 */
+  --color-yellow-300: #713f12;   /* yellow-900 */
 
   /* --- BLUE PALETTE INVERSION (for badges/links) --- */
   --color-blue-950: #eff6ff;
@@ -90,6 +232,7 @@
   --color-blue-800: #bfdbfe;
   --color-blue-600: #2563eb;
   --color-blue-400: #1d4ed8;
+  --color-blue-300: #1e40af;     /* blue-800. The Active tab's count read #8ec5ff on its own tint, 1.42:1 (F223) */
 
   /* --- PURPLE/VIOLET PALETTE INVERSION (for orchestration) --- */
   --color-purple-950: #faf5ff;
@@ -106,26 +249,72 @@
   --color-violet-400: #4338ca;
   --color-violet-300: #3730a3;
 
-  /* --- CORE COLORS INVERSION --- */
-  --color-black: #ffffff;
-  --color-white: #09090b;
+  /* --- LIME / ORANGE / TEAL (step-kind captions and run-log tokens) --- */
+  /* These three families had no inversion at all, so a step caption kept its
+     dark-mode brightness on a light ground: lime-400 read 1.4:1, which is the
+     colour of the run log's own line labels (F43). Values are Tailwind's own
+     800s, the shade this layer already uses for a 400 (see amber above). */
+  --color-lime-400: oklch(45.3% 0.124 130.933);    /* lime-800 */
+  --color-lime-300: oklch(40.5% 0.101 131.063);    /* lime-900 */
+  --color-orange-400: oklch(47% 0.157 37.304);     /* orange-800 */
+  --color-teal-400: oklch(43.7% 0.078 188.216);    /* teal-800 */
+
+  /* --- The states `contrast` cannot open (F101) --- */
+  /* Measured by ui-smoke `lightstates`, which puts each on screen from stubbed
+     answers: a failed run, a step's JSON, Usage's cache and compaction rows and
+     Bedrock chip, an import preview, a connected integration, a tool's test
+     output, a toast, chat's tip cards. Each value below is a measured failure's
+     own shade taken to Tailwind's darker one (the 400 → 800 rule above); no
+     table was derived. Grounds go the other way: 950 → 50, 900 → 100, 800 → 200. */
+  --color-cyan-950: oklch(98.4% 0.019 200.873);    /* cyan-50: compaction rows, the log's banner */
+  --color-cyan-900: oklch(95.6% 0.045 203.388);    /* cyan-100 */
+  --color-cyan-800: oklch(91.7% 0.08 205.041);     /* cyan-200: the banner's border */
+  --color-cyan-400: oklch(45% 0.085 224.283);      /* cyan-800: Usage's cache tokens read 1.7:1 */
+  --color-cyan-300: oklch(45% 0.085 224.283);      /* cyan-800: the compaction banner, JSON numbers, 1.32:1 */
+  --color-red-300: oklch(44.4% 0.177 26.899);      /* red-800: failed runs, stderr, "Last Error", 1.66-1.87:1 */
+  --color-emerald-500: oklch(50.8% 0.118 165.612); /* emerald-700: Usage's NEW tag read 2.47:1 */
+  --color-emerald-200: oklch(37.8% 0.077 168.94);  /* emerald-900: the Schedules toast read 1.14:1 */
+  --color-green-300: oklch(44.8% 0.119 151.328);   /* green-800: a Python tool's stdout read 1.34:1 */
+  /* Not green-500: its /10 tint is the success toast's ground, which went dark
+     enough to fail (4.35:1). "Authenticated" and Data Lab's "Running" were its
+     only failing text, and they are green-400 now, which inverts above. */
+  --color-orange-950: oklch(98% 0.016 73.684);     /* orange-50: the Bedrock chip's ground was brown, 1.59:1 */
+  --color-orange-900: oklch(95.4% 0.038 75.164);   /* orange-100 */
+  --color-orange-600: oklch(47% 0.157 37.304);     /* orange-800: Import's Google warning read 2.92:1 */
+  --color-orange-300: oklch(47% 0.157 37.304);     /* orange-800: JSON keys read 1.27:1 */
+  --color-rose-950: oklch(96.9% 0.015 12.422);     /* rose-50: chat's Schedules tip card */
+  --color-rose-800: oklch(89.2% 0.058 10.001);     /* rose-200: its border */
+  --color-rose-400: oklch(45.5% 0.188 13.697);     /* rose-800: its tag read 1.64:1 */
+  --color-indigo-100: oklch(35.9% 0.144 278.697);  /* indigo-900: the Thinking panel's hover read 1.18:1 */
+
+  /* The parked-run Answer pill is `bg-amber-500` with `text-zinc-950`, and
+     zinc-950 inverts to near-white — so in light mode it was near-white on a
+     bright amber, ~2:1. Inverting the ground instead keeps one rule for both
+     themes: dark ground, light text (F8). */
+  --color-amber-500: oklch(55.5% 0.163 48.998);    /* amber-700 */
 
   /* --- SCROLLBAR LIGHT --- */
-  --sb-track: #fafafa;
-  --sb-thumb: #e4e4e7;
-  --sb-thumb-hover: #d4d4d8;
+  --sb-track: var(--frame);
+
+  /* --- CANVAS LIGHT --- */
+  --minimap-mask: rgba(255, 255, 255, 0.7);
+  --flow-edge: #9ea3a7;      /* a hairline, but a visible one: today's #a1a1aa lightness, retinted (2.55:1) */
+  --flow-parallel: #7c3aed;
 }
 
 /* Force white text on colorful primary buttons in light mode */
-.light-mode .bg-blue-600,
-.light-mode .bg-purple-600,
-.light-mode .bg-violet-600,
-.light-mode .bg-green-600,
-.light-mode .bg-red-600,
-.light-mode .bg-blue-500,
-.light-mode .bg-purple-500,
-.light-mode .bg-green-500,
-.light-mode .bg-red-500 {
+:root[data-theme="light"] .bg-blue-600,
+:root[data-theme="light"] .bg-purple-600,
+:root[data-theme="light"] .bg-violet-600,
+:root[data-theme="light"] .bg-green-600,
+:root[data-theme="light"] .bg-red-600,
+:root[data-theme="light"] .bg-blue-500,
+:root[data-theme="light"] .bg-purple-500,
+:root[data-theme="light"] .bg-green-500,
+:root[data-theme="light"] .bg-red-500,
+/* The Resume buttons: orange-600 held white at 3.58:1 in dark, so they are
+   orange-700 in both themes, and white stays white on it here (F101). */
+:root[data-theme="light"] .bg-orange-700 {
   color: #ffffff !important;
 }
 
@@ -135,7 +324,7 @@
 }
 
 /* Light Theme: Remove the filter so the icon stays its native black */
-.light-mode .theme-adaptive-icon {
+:root[data-theme="light"] .theme-adaptive-icon {
   filter: none;
 }
 
@@ -146,12 +335,69 @@ body {
   transition: background-color 0.2s, color 0.2s;
 }
 
-button {
-  cursor: pointer;
+/*
+ * Wide content scrolls inside its own container; the page body never does.
+ * The kit's Table has always asked for this class (components/ui/table.tsx),
+ * which is shared with the other product — where this rule already lived. Here
+ * it did not, so a table wider than the screen pushed the whole document
+ * sideways instead of scrolling (F82). Top level on purpose: inside
+ * `@layer utilities` Tailwind tree-shakes a class it cannot see used.
+ */
+.scroll-x {
+  overflow-x: auto;
+  /*
+   * A scroll container must also be a containing block, or it does not contain
+   * what it scrolls. An `sr-only` cell header is `position: absolute`, so with
+   * no positioned ancestor it is placed against the document instead — the kit
+   * Table's "Actions" header sat at x=641 inside a container 278px wide and
+   * took the whole page sideways with it, 1px of invisible text at a time.
+   */
+  position: relative;
 }
 
-button:disabled {
-  cursor: not-allowed;
+/*
+ * A conversation's scrollbar, clear until it is wanted (F1414,
+ * `components/ui/quiet-scroll.ts`): over the pane, with the pane focused, or for
+ * a second after it moves. The bar keeps its 10px, so nothing shifts when it
+ * shows. Top level for the reason `.scroll-x` is, and so it beats the layered
+ * rules below whatever their specificity.
+ *
+ * The three states set `--sb-quiet` on the pane, and the thumb reads it. They
+ * cannot select the thumb themselves: Chromium does not repaint a scrollbar when
+ * only `.pane:hover::-webkit-scrollbar-thumb` starts to match, so a thumb
+ * written that way stayed clear under the pointer. A change to the pane's own
+ * style repaints it.
+ */
+.scroll-quiet {
+  --sb-quiet: transparent;
+}
+
+.scroll-quiet:hover,
+.scroll-quiet:focus-visible,
+.scroll-quiet[data-scrolling] {
+  --sb-quiet: var(--sb-thumb);
+}
+
+.scroll-quiet::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scroll-quiet::-webkit-scrollbar-thumb {
+  background: var(--sb-quiet);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+
+.scroll-quiet::-webkit-scrollbar-thumb:hover {
+  background-color: var(--sb-thumb-hover);
+}
+
+/* Firefox reads no `::-webkit-scrollbar`. Chromium must not see this: a
+   `scrollbar-color` on the pane would take it off the rules above. */
+@supports not selector(::-webkit-scrollbar) {
+  .scroll-quiet {
+    scrollbar-color: var(--sb-quiet) transparent;
+  }
 }
 
 @layer utilities {
@@ -177,27 +423,40 @@ button:disabled {
   }
 }
 
-/* React Flow Light Theme Adjustments */
-.light-mode .react-flow__background {
-  background-color: #ffffff;
+/*
+ * React Flow, themed through its own override hooks.
+ *
+ * Every colour in its stylesheet resolves as
+ * `var(--xy-X-props, var(--xy-X, var(--xy-X-default)))`, and the `-default`
+ * names are declared ON `.react-flow` itself — so declaring `-default` from
+ * `:root` does nothing (the element's own declaration wins; that is how the
+ * minimap shipped white in dark mode). The **un-suffixed** names are the user
+ * hook: React Flow never defines them, so these inherit in from `:root` and
+ * win. Pointing them at the semantic tokens themes the canvas in BOTH modes
+ * with no `!important` and no per-mode duplication.
+ */
+:root {
+  --xy-background-color: var(--bg);
+  --xy-background-pattern-dots-color: var(--border-strong);
+  --xy-edge-stroke: var(--flow-edge);
+  --xy-edge-label-background-color: var(--surface);
+  --xy-edge-label-color: var(--text-muted);
+  --xy-connectionline-stroke: var(--accent);
+  --xy-minimap-background-color: var(--surface);
+  --xy-minimap-mask-background-color: var(--minimap-mask);
+  --xy-selection-background-color: var(--ring);
+  --xy-selection-border: 1px solid var(--accent);
+  --xy-handle-background-color: var(--text-faint);
+  --xy-handle-border-color: var(--bg);
 }
 
-.light-mode .react-flow__edge-path {
-  stroke: #d4d4d8;
-}
-
-.light-mode .react-flow__controls button {
-  background-color: #ffffff !important;
-  border-bottom: 1px solid #e4e4e7 !important;
-  color: #18181b !important;
-}
-
-.light-mode .react-flow__controls button:hover {
-  background-color: #f4f4f5 !important;
-}
-
-.light-mode .react-flow__minimap {
-  background-color: #ffffff !important;
+/* Frame the minimap like the kit's own popovers. Two classes so this outranks
+   React Flow's single-class rule regardless of bundle order. (The `<Controls>`
+   component is gone — zoom lives in the canvas' own top-right cluster.) */
+.react-flow .react-flow__minimap {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
 }
 
 /* Welcome screen tip card fade-in */
@@ -208,4 +467,132 @@ button:disabled {
 
 .tip-card-animate {
   animation: tip-fade-in 0.4s ease forwards;
+}
+
+/*
+ * Focus: the one indicator, on the accent.
+ *
+ * Every element shows this on keyboard focus — the kit included (`lib/cn.ts`
+ * explains why its own ring is gone: a layered `outline-none` never beat this
+ * rule, so kit controls drew both). A control that owns a border shows focus
+ * on the border instead and sets `data-no-focus-ring` (below), as the kit's
+ * fields and the chat composer do.
+ *
+ * Unlayered on purpose: `focus:outline-none` fires on :focus, which also
+ * matches while :focus-visible is active, and as a class selector it
+ * outspecifies a bare `:focus-visible`. Unlayered CSS beats layered CSS in the
+ * cascade regardless of specificity — the same mechanism the theme blocks rely on.
+ *
+ * There is deliberately NO special case for input/textarea/select here. The
+ * previous version tucked a 1px outline inside every field, which drew a second
+ * edge on fields that already move their own border, and drew a box around the
+ * chat composer, which is `bg-transparent` and has no border at all. Fields get
+ * their focus treatment from `controlStyles`, per component.
+ */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/*
+ * Escape hatch for controls whose *container* paints the focus state — the
+ * chat composer is a chrome-less textarea inside a lit box, so a ring on the
+ * field draws a rectangle inside a border that is already showing focus.
+ */
+[data-no-focus-ring]:focus-visible {
+  outline: none;
+}
+
+/*
+ * CodeMirror is the same shape of problem, one level down: `.cm-content` is a
+ * contenteditable, so it matches :focus-visible, and both places that host an
+ * editor already light their wrapper with `focus-within`. CodeMirror sets
+ * `outline: none` itself, but this file is unlayered and would otherwise win.
+ */
+.cm-editor:focus-visible,
+.cm-content:focus-visible {
+  outline: none;
+}
+
+@layer base {
+  /*
+   * Every border is semantic unless a component says otherwise.
+   *
+   * Layered, and the layer is the whole point. Unlayered CSS beats every layer
+   * in the cascade regardless of specificity, and Tailwind v4 puts every
+   * utility in `@layer utilities` — so while this rule sat outside a layer it
+   * outranked all of them and every border-colour utility in the app was
+   * inert. Measured in the running app before the fix: `border-transparent`,
+   * `border-danger` and `border-border-strong` all computed to `--border`.
+   * Nothing looked broken, because every border was the same colour, which is
+   * exactly what a working border looks like.
+   *
+   * Inside `base` it does the job it was written for: a default for markup
+   * that carries no border-colour utility, losing to any markup that does.
+   *
+   * Do NOT lift this back out. The unlayered `:focus-visible` rule above is
+   * deliberate and is NOT the same case — it is load-bearing for 86 legacy
+   * `focus:outline-none` call sites. See its comment.
+   */
+  * {
+    border-color: var(--border);
+  }
+
+  /*
+   * Tailwind v3's Preflight carried `button, [role="button"] { cursor: pointer }`.
+   * v4 dropped it to defer to the browser, whose default for a button is an
+   * arrow — so every button silently stopped looking clickable on the v4 move.
+   * Restored here rather than as a `cursor-pointer` per component, because the
+   * ones that get forgotten are exactly the hand-written ones.
+   */
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  summary,
+  label[for],
+  select:not(:disabled) {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  [aria-disabled="true"],
+  input:disabled,
+  select:disabled,
+  textarea:disabled {
+    cursor: not-allowed;
+  }
+
+  /*
+   * Controls follow --ui-radius by default.
+   *
+   * Most of this app's markup predates the design system and simply never
+   * declared a corner: ~279 `<button>` and ~149 `<input>` carry a border and a
+   * background and no `rounded-*` at all. That is invisible while the knob is
+   * 0px — everything agrees by accident — and the moment it moves, only the
+   * handful of elements that *do* carry a radius class round, which reads as
+   * the app being half-finished.
+   *
+   * A base-layer default fixes all of them at once, and any explicit
+   * `rounded-*` utility still wins, because utilities sort after base.
+   */
+  button,
+  input,
+  textarea,
+  select {
+    border-radius: var(--ui-radius);
+  }
+}
+
+/*
+ * Changing palette is not an animation.
+ *
+ * Almost every control carries `transition-colors` so that *hovering* it is
+ * smooth. Swapping the whole theme then drags every one of those along at once
+ * — a second-long smear where inputs and buttons are somewhere between the two
+ * palettes while the cards, which have no transition, have already switched.
+ * The shell sets this attribute for a frame around the swap.
+ */
+[data-theme-switching] *,
+[data-theme-switching] *::before,
+[data-theme-switching] *::after {
+  transition: none !important;
 }

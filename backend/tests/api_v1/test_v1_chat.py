@@ -11,7 +11,7 @@ def _sse_json(text: str) -> list[dict]:
 
 class TestV1ChatSync:
     async def test_returns_response_and_agent_metadata(self, client, api_key, seed_agent, monkeypatch):
-        agent = seed_agent(name="V1 Agent")
+        agent = await seed_agent(name="V1 Agent")
         import core.react_engine as re
         monkeypatch.setattr(re, "run_react_loop", E.gen_from([E.final("hello world")]))
         resp = await client.post("/api/v1/chat",
@@ -25,7 +25,7 @@ class TestV1ChatSync:
         assert body["session_id"]  # auto-generated
 
     async def test_session_id_is_preserved(self, client, api_key, seed_agent, monkeypatch):
-        seed_agent()
+        await seed_agent()
         import core.react_engine as re
         monkeypatch.setattr(re, "run_react_loop", E.gen_from([E.final("x")]))
         resp = await client.post("/api/v1/chat",
@@ -41,7 +41,7 @@ class TestV1ChatSync:
         assert resp.status_code == 400
 
     async def test_agent_error_is_500(self, client, api_key, seed_agent, monkeypatch):
-        seed_agent()
+        await seed_agent()
         import core.react_engine as re
         monkeypatch.setattr(re, "run_react_loop", E.gen_from([E.error("agent failed")]))
         resp = await client.post("/api/v1/chat", json={"message": "hi"},
@@ -49,7 +49,7 @@ class TestV1ChatSync:
         assert resp.status_code == 500
 
     async def test_no_agent_sessions_is_503(self, client, api_key, seed_agent, monkeypatch):
-        seed_agent()
+        await seed_agent()
         import core.server as server
         monkeypatch.setattr(server, "agent_sessions", {}, raising=False)
         resp = await client.post("/api/v1/chat", json={"message": "hi"},
@@ -59,7 +59,7 @@ class TestV1ChatSync:
 
 class TestV1ChatStream:
     async def test_session_event_first_then_full_sequence(self, client, api_key, seed_agent, monkeypatch):
-        agent = seed_agent(name="Streamer")
+        agent = await seed_agent(name="Streamer")
         import core.react_engine as re
         monkeypatch.setattr(re, "run_react_loop", E.gen_from([
             E.status(), E.thinking("hmm"),
@@ -79,7 +79,7 @@ class TestV1ChatStream:
         assert "response" in types and types[-1] == "done"
 
     async def test_stream_error_is_sanitized(self, client, api_key, seed_agent, monkeypatch):
-        seed_agent()
+        await seed_agent()
         import core.react_engine as re
         monkeypatch.setattr(re, "run_react_loop", E.gen_from([E.error("raw internal detail")]))
         resp = await client.post("/api/v1/chat/stream", json={"message": "hi"},

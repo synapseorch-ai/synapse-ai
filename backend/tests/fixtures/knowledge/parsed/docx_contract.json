@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "source": {
+    "path": "contracts/zurich.docx",
+    "sha256": "811dae26155c1f96fa4be679ba416b5b956c4eb73dc831d69f61692507e30595",
+    "size_bytes": 18230,
+    "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "source": "upload"
+  },
+  "parser": {
+    "name": "docling",
+    "version": "2.x",
+    "options_hash": "fixture"
+  },
+  "text": "Haftpflichtvertrag\n\nDieser Vertrag regelt die Haftpflicht zwischen der Zürich Versicherung und dem Kunden.\n\nKündigung\n\n- dreißig Tage zum Monatsende\n- schriftlich",
+  "blocks": [
+    {
+      "id": "b0000-0000",
+      "char_start": 0,
+      "char_end": 18,
+      "kind": "heading",
+      "level": 1,
+      "text": "Haftpflichtvertrag",
+      "heading_path": [
+        "Haftpflichtvertrag"
+      ]
+    },
+    {
+      "id": "b0000-0001",
+      "char_start": 20,
+      "char_end": 106,
+      "kind": "paragraph",
+      "heading_path": [
+        "Haftpflichtvertrag"
+      ],
+      "text": "Dieser Vertrag regelt die Haftpflicht zwischen der Zürich Versicherung und dem Kunden."
+    },
+    {
+      "id": "b0000-0002",
+      "char_start": 108,
+      "char_end": 117,
+      "kind": "heading",
+      "level": 2,
+      "text": "Kündigung",
+      "heading_path": [
+        "Haftpflichtvertrag",
+        "Kündigung"
+      ]
+    },
+    {
+      "id": "b0000-0003",
+      "char_start": 119,
+      "char_end": 162,
+      "kind": "list",
+      "heading_path": [
+        "Haftpflichtvertrag",
+        "Kündigung"
+      ],
+      "text": "- dreißig Tage zum Monatsende\n- schriftlich",
+      "items": [
+        "dreißig Tage zum Monatsende",
+        "schriftlich"
+      ]
+    }
+  ],
+  "pages": [],
+  "title": "Haftpflichtvertrag",
+  "language": "de",
+  "metadata": {
+    "doc_type": "contract",
+    "region": "CH"
+  },
+  "stats": {
+    "pages": 0,
+    "chars": 162
+  }
+}

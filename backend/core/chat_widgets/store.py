@@ -1,0 +1,177 @@
+"""
+Persistent store for embeddable chat widgets.
+
+One collection, ``chat_widgets``, one document per widget. Modelled on
+``core.messaging.store`` — same ``core.store.collections`` substrate, same
+create-or-update shape — with one deliberate difference.
+
+**A widget carries `agent_id` as a scalar, and there is no join.** Channels need
+the many-to-many (`channel_assignments`) because a Slack workspace can front
+several agents and a visitor there can pick one with `/agent`. A widget visitor
+is anonymous on somebody else's marketing page; there is no picker to offer and
+nothing to pick with. One widget answers as one agent, and a second agent means
+a second widget with its own key and its own allow-list — which is also the
+honest unit for the origin check, since the two agents may belong on different
+sites.
+
+`public_key` is stored in the clear on purpose. It ships in the customer's HTML;
+hashing it would protect nothing and cost a lookup index. What authorises a
+conversation is `allowed_origins` — see `core.chat_widgets.origins`.
+"""
+from __future__ import annotations
+
+import time
+from typing import Optional
+
+from core.chat_widgets import branding as _branding
+from core.chat_widgets import origins as _origins
+from core import visitor as _visitor
+from core.widget_token import new_public_key
+
+_COLLECTION = "chat_widgets"
+
+#: Fallbacks for a widget the customer has not themed. Kept here rather than in
+#: the UI so the embed page and the settings screen cannot disagree.
+DEFAULTS: dict[str, object] = {
+    "enabled": True,
+    "greeting": "Hi! How can I help?",
+    "accent": _branding.PRESET_ACCENTS[0],
+    "position": "right",
+    "launcher_label": "Chat",
+    "title": "",
+    "daily_message_cap": 500,
+    # Branding. `auto` follows the visitor's own OS setting, which is the right
+    # default: a widget that ignores dark mode on a dark site is the complaint
+    # the theme option answers.
+    "font": "system",
+    "theme": "auto",
+    "header_style": "accent",
+    "launcher": "bubble",
+    #: The logo, already a `data:` URI. Inlined by the embed page rather than
+    #: served from a route of its own — see `branding.MAX_LOGO_BYTES`.
+    "logo": "",
+}
+
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+async def _load_raw() -> list[dict]:
+    from core.store import collections
+    return await collections.load(_COLLECTION)
+
+
+async def _save_raw(data: list[dict]) -> None:
+    from core.store import collections
+    await collections.save(_COLLECTION, data)
+
+
+def public_view(widget: dict) -> dict:
+    """What the browser inside the iframe may see.
+
+    The allow-list is **not** in here. It is configuration the owner reads on the
+    settings screen, and telling a visitor which other sites run this widget
+    answers a question nobody asked them to ask.
+    """
+    return {
+        "id": widget.get("id"),
+        "agent_id": widget.get("agent_id"),
+        **_branding.public_theme({**DEFAULTS, **widget}),
+    }
+
+
+async def list_widgets() -> list[dict]:
+    return await _load_raw()
+
+
+async def get_widget(widget_id: str) -> Optional[dict]:
+    data = await _load_raw()
+    return next((w for w in data if w.get("id") == widget_id), None)
+
+
+async def get_by_public_key(public_key: str) -> Optional[dict]:
+    """The one lookup the embed page makes, before anyone is authenticated.
+
+    Returns the row whatever its `enabled` flag says — the caller needs to tell
+    "no such widget" from "switched off" so it can say which, and both answers
+    are already known to whoever holds the key.
+    """
+    if not public_key:
+        return None
+    data = await _load_raw()
+    return next((w for w in data if w.get("public_key") == public_key), None)
+
+
+async def save_widget(widget: dict) -> dict:
+    """Create or update. Mints the id and the public key on create."""
+    data = await _load_raw()
+    now = _now()
+
+    if not widget.get("id"):
+        widget["id"] = f"wgt_{new_public_key()[3:11]}"
+        widget["created_at"] = now
+    if not widget.get("public_key"):
+        widget["public_key"] = new_public_key()
+
+    widget["updated_at"] = now
+    # `setdefault` is not enough: the API model supplies `""` for every unset
+    # string, so the key is present and the default never lands. An empty theme
+    # field means "you did not choose one", not "you chose blank".
+    for field, value in DEFAULTS.items():
+        if widget.get(field) in (None, ""):
+            widget[field] = value
+    widget["allowed_origins"] = _origins.clean_list(widget.get("allowed_origins"))
+    # The tools a visitor's turn may hold — nothing unless the owner ticks it
+    # (F280, `core.visitor`). Never in `public_view`: it tells a stranger what
+    # the agent can reach.
+    widget["visitor_tools"] = _visitor.clean_tools(widget.get("visitor_tools"))
+    # Validated here, once, so the embed page never has to defend itself against
+    # a value the API let through — the accent in particular is interpolated
+    # into a CSS custom property.
+    _branding.clean(widget)
+
+    idx = next((i for i, w in enumerate(data) if w.get("id") == widget["id"]), None)
+    if idx is not None:
+        existing = data[idx]
+        widget["created_at"] = existing.get("created_at", now)
+        # The key is the customer's published address. A save that omitted it —
+        # renaming the widget, say — must never rotate it and break every page
+        # that already carries the snippet.
+        widget["public_key"] = existing.get("public_key") or widget["public_key"]
+        data[idx] = widget
+    else:
+        data.append(widget)
+
+    await _save_raw(data)
+    return widget
+
+
+async def delete_widget(widget_id: str) -> bool:
+    data = await _load_raw()
+    remaining = [w for w in data if w.get("id") != widget_id]
+    if len(remaining) == len(data):
+        return False
+    await _save_raw(remaining)
+    return True
+
+
+async def rotate_public_key(widget_id: str) -> Optional[dict]:
+    """A new key, for when the old one is being abused.
+
+    The only revocation this feature has that is faster than the token TTL: the
+    old key stops resolving immediately, so no new conversation starts on it.
+    Conversations already holding a visitor token run to its expiry.
+    """
+    data = await _load_raw()
+    idx = next((i for i, w in enumerate(data) if w.get("id") == widget_id), None)
+    if idx is None:
+        return None
+    # Written here rather than through `save_widget`, which deliberately refuses
+    # to change a key: an ordinary save must never rotate the customer's
+    # published address, so rotation cannot go through the path that enforces
+    # that. Two callers, two rules, and neither can be mistaken for the other.
+    data[idx]["public_key"] = new_public_key()
+    data[idx]["updated_at"] = _now()
+    await _save_raw(data)
+    return data[idx]

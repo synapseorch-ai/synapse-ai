@@ -7,69 +7,196 @@ and orchestrations. All routes are protected by API key auth (Bearer token).
 Endpoints:
   POST /chat              — Sync chat (returns only final response)
   POST /chat/stream       — SSE chat (all events)
+  POST /chat/{session_id}/cancel             — Stop the turn a conversation is running
   POST /orchestrations/{orch_id}/run         — Start orchestration (sync)
   POST /orchestrations/{orch_id}/run/stream  — Start orchestration (SSE)
+  GET  /orchestrations/runs/{run_id}         — A run's state, and its result once it has ended
   POST /orchestrations/runs/{run_id}/resume         — Resume after human input (sync)
   POST /orchestrations/runs/{run_id}/resume/stream  — Resume after human input (SSE)
+  POST /orchestrations/runs/{run_id}/cancel         — Stop a run
+  GET  /orchestrations/runs                         — Recent runs (D126)
+  GET  /orchestrations/runs/{run_id}/events         — A run's events from a cursor (D126)
+  GET  /orchestrations/runs/{run_id}/events/stream  — The same, then followed live (D126)
+  POST /chat/{session_id}/approve                   — Answer a turn's tool approval (D126)
+  GET/POST /schedules, GET/PATCH/DELETE /schedules/{id}, POST /schedules/{id}/run  (D126)
+  GET  /agents, /agents/{agent_id}                  — Discovery
+  GET  /orchestrations, /orchestrations/{orch_id}   — Discovery
+  /knowledge/…  — knowledge bases, uploads, records, web pages, documents, search, traces, costs
+                  (D176; `core/routes/api_v1_knowledge.py`, the frozen table's v1 rows)
+
+A run's stream carries its Knowledge steps' `knowledge_retrieve` / `knowledge_ingest` events like any other.
 """
 import asyncio
 import json
 import logging
-import time
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from core.api_key_middleware import require_api_key
+from core.events_public import public_event, public_state
+from core.images import checked_images
+from core.models_schedule import ScheduleCreate, ScheduleUpdate
+from core.run_ids import new_run_id
 
 router = APIRouter()
 log = logging.getLogger("api_v1")
 
 
 # ── Request / Response Models ────────────────────────────────────────────────
+# Every body refuses a field it does not know (422 naming it), as cloud's v1
+# does: a misspelt field used to be dropped, so `{"human_response": …}` answered
+# a person's question with the default `{}` (F232), and `{"input": …}` started a
+# run with no message.
 
 class V1ChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     message: str
     agent: str | None = None          # agent name or ID (optional — first agent if omitted)
     session_id: str | None = None     # for conversation continuity (auto-generated if omitted)
     images: list[str] = []            # optional base64 images
 
+    # A malformed image is the caller's 422, not a 500 raised building the request (F69).
+    _check_images = checked_images()
+
+
+def refuse_engine_keys(value: dict) -> dict:
+    """A run's `initial_state`, refused when it sets the engine's own keys.
+
+    A leading underscore is the engine's bookkeeping (`_model_override`, …), so a
+    caller setting one would steer the engine, not give the run an input (D126).
+    v1 and v2 both take `initial_state` (F434), by this one rule.
+    """
+    engine_keys = sorted(k for k in value if str(k).startswith("_"))
+    if engine_keys:
+        raise ValueError(f"these keys are the engine's own and cannot be set: {', '.join(engine_keys)}")
+    return value
+
 
 class V1OrchestrationRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     message: str = ""
+    # The run's inputs, merged into its shared state (cloud's `RunRequest` has
+    # the same field). A leading underscore is the engine's own bookkeeping
+    # (`_model_override`, …), so a caller cannot set one (D126).
+    initial_state: dict = {}
+
+    @field_validator("initial_state")
+    @classmethod
+    def _no_engine_keys(cls, value: dict) -> dict:
+        return refuse_engine_keys(value)
 
 
 class V1ResumeRequest(BaseModel):
-    response: dict | str = {}         # human input fields
+    model_config = ConfigDict(extra="forbid")
+
+    # Required, and never empty (`refuse_empty`): text, or the question's fields.
+    response: dict | str
+    # Which of a team step's questions (TEAM1e): `human_input_required.questions` names each one's id.
+    question_id: str | None = None
+
+
+class V1ApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    approve: bool
+    reason: str = ""
+    # The call this answers, as `awaiting_approval` named it. When given and it
+    # is not the call the conversation is waiting on, the answer is refused.
+    approval_id: str | None = None
+    agent: str | None = None          # the conversation's agent (the one waiting, if omitted)
+    # Which of a team's questions (TEAM1c): `awaiting_approval.questions` names each one's id.
+    question_id: str | None = None
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def _resolve_agent_for_api(agent_identifier: str | None) -> dict | None:
-    """Find agent by name (case-insensitive) or ID. Falls back to first agent."""
+def _is_system_agent(agent: dict) -> bool:
+    """The AI builder's own agents — seeded, not the workspace's to call."""
+    return bool(agent.get("system")) or agent.get("type") == "builder"
+
+
+async def _api_agents() -> list[dict]:
     from core.routes.agents import load_user_agents
-    agents = load_user_agents()
-    if not agents:
-        return None
+    return [a for a in await load_user_agents() if not _is_system_agent(a)]
+
+
+async def _resolve_agent_for_api(agent_identifier: str | None) -> dict | None:
+    """The agent an API call names: an exact id, else an exact name in any case.
+
+    With no identifier, the workspace's first agent. None when there is no such
+    agent. It used to fall back to a partial name match and then to the first
+    agent — so a misspelled name ran a different agent, and on a fresh install
+    the first agent was one of the AI builder's own (F69).
+    """
+    agents = await _api_agents()
     if not agent_identifier:
-        return agents[0]
-    # Exact ID match
+        return agents[0] if agents else None
     by_id = next((a for a in agents if a["id"] == agent_identifier), None)
     if by_id:
         return by_id
-    # Case-insensitive name match
     lower = agent_identifier.lower()
-    by_name = next((a for a in agents if a["name"].lower() == lower), None)
-    if by_name:
-        return by_name
-    # Partial name match
-    partial = next((a for a in agents if lower in a["name"].lower()), None)
-    if partial:
-        return partial
-    # Fallback to first agent
-    return agents[0]
+    return next((a for a in agents if (a.get("name") or "").lower() == lower), None)
+
+
+async def _agent_or_error(agent_identifier: str | None) -> dict:
+    agent = await _resolve_agent_for_api(agent_identifier)
+    if agent is not None:
+        return agent
+    if agent_identifier:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_identifier}' not found")
+    raise HTTPException(status_code=400, detail="No agents configured")
+
+
+async def _waiting_agent(session_id: str, approval_id: str | None, question_id: str | None = None) -> dict:
+    """The agent whose tool call this conversation is waiting on (F211).
+
+    The approve used to fall back to the workspace's first agent when none was
+    named, so a conversation with any other agent answered "not waiting on an
+    approval". The conversation already names it, as cloud's approve reads it.
+    `approval_id` picks one when two agents in one conversation both wait.
+    """
+    from core.store import sessions as _sessions
+
+    agents = {a["id"]: a for a in await _api_agents()}
+    from core.chat_approval import find_question
+
+    waiting = [(agent_id, pending) for agent_id, pending in await _sessions.pending_approvals(session_id)
+               if agent_id in agents]
+    if (approval_id is not None or question_id is not None) and len(waiting) > 1:
+        waiting = [(agent_id, pending) for agent_id, pending in waiting
+                   if find_question(pending, question=question_id, approval_id=approval_id) is not None]
+        if not waiting:
+            raise HTTPException(status_code=409, detail="That approval is not the one this conversation is waiting on.")
+    if not waiting:
+        raise HTTPException(status_code=409, detail="This conversation is not waiting on an approval.")
+    if len(waiting) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail="This conversation is waiting on more than one agent's approval. "
+                   "Name the agent, or the approval_id.",
+        )
+    return agents[waiting[0][0]]
+
+
+async def refuse_unread_images(agent: dict, images: list[str] | None) -> None:
+    """422 for images this agent would not read (F396), as cloud's `start_turn` refuses them.
+
+    Before a turn is claimed or a job queued; v2 calls it too."""
+    if not images:
+        return
+    from core.config import load_settings
+    from core.images import refusal_for
+
+    said = await refusal_for(agent, load_settings().get("model", "mistral"))
+    if said:
+        raise HTTPException(status_code=422, detail=said)
 
 
 def _build_chat_request(body: V1ChatRequest, agent: dict) -> "ChatRequest":
@@ -84,6 +211,61 @@ def _build_chat_request(body: V1ChatRequest, agent: dict) -> "ChatRequest":
     )
 
 
+def _pause_of(event: dict) -> dict | None:
+    """What a chat turn that stopped for a person reports, or None (F68).
+
+    A `human_input_required` ends the turn with nothing after it: either a tool
+    call whose policy is `confirm` (the call has not run) or an orchestrator
+    agent's orchestration pausing on a human step. The first is answered at
+    `/chat/{session_id}/approve`, the second at the run's `resume` (D126).
+    """
+    if event.get("type") != "human_input_required":
+        return None
+    if event.get("kind") == "tool_approval":
+        pause = {
+            "status": "awaiting_approval",
+            "prompt": event.get("prompt") or "",
+            "pending_call": {
+                "tool_name": event.get("tool_name"),
+                "tool_args": event.get("tool_args") or {},
+                "category": event.get("category") or "",
+                "approval_id": event.get("approval_id") or "",
+            },
+        }
+        if event.get("questions"):
+            # A team's members each asked (TEAM1c): every question, each answered by its `question_id`.
+            pause["questions"] = [{k: q.get(k) for k in ("question_id", "approval_id", "member_name", "tool_name",
+                                                           "tool_args", "category")} for q in event["questions"]]
+        return pause
+    return {"status": "paused", "prompt": event.get("prompt") or "", "run_id": event.get("run_id")}
+
+
+def _contract_fields(typed: type) -> frozenset[str]:
+    return frozenset(typed.__required_keys__ | typed.__optional_keys__)
+
+
+def _knowledge_frame(event: dict) -> dict | None:
+    """A Knowledge event as v1 sends it (D176), or None.
+
+    Only the turn's own: a delegate's labels are its own turn's, not the answer's. Only the contract's
+    fields (`core.knowledge.events`): ids, labels, counts, a path, a short query — the passages
+    themselves stay in the workspace, bar each citation's short snippet. The citations' `unresolved`
+    is `unresolved_citations`, the name the sync answer gives it."""
+    from core.knowledge import events as kn
+
+    if event.get("delegate_from"):
+        return None
+    kind = event.get("type")
+    if kind == kn.KNOWLEDGE_CITATIONS:
+        return {"type": kind, "citations": event.get("citations") or [],
+                "unresolved_citations": event.get("unresolved") or []}
+    typed = {kn.KNOWLEDGE_SEARCH: kn.KnowledgeSearchEvent, kn.KNOWLEDGE_READ: kn.KnowledgeReadEvent}[kind]
+    return {k: v for k, v in event.items() if k in _contract_fields(typed)}
+
+
+_KNOWLEDGE_FRAMES = ("knowledge_search", "knowledge_read", "knowledge_citations")
+
+
 def _format_sse_event(event: dict) -> str:
     """Format an event dict as an SSE data line."""
     return f"data: {json.dumps(event, default=str)}\n\n"
@@ -91,131 +273,243 @@ def _format_sse_event(event: dict) -> str:
 
 # ── Chat Endpoints ──────────────────────────────────────────────────────────
 
+async def _v1_turn_events(chat_request, agent: dict, _server, resume_state: dict | None = None):
+    """One v1 chat turn's events, in v1's vocabulary — what its turn's task drives.
+
+    Started by the handler through `core.chat_turns`, never inside a response:
+    an API caller that stops reading has not asked the turn to stop, and
+    `POST /api/v1/chat/{session_id}/cancel` is how it does (F49).
+
+    A tool approval parks the call and the turn's last snapshot, as the app's
+    chat does (`routes/chat.py::_event_stream`), so `/chat/{id}/approve` picks
+    the turn up where it stopped instead of re-running what already ran.
+    `resume_state` is that snapshot, on the way back in (D126).
+    """
+    from core import chat_turns
+    from core.llm_providers import LLMError
+    from core.react_engine import RunFailed, run_react_loop
+
+    turn = chat_turns.current_turn.get()
+
+    async def _stopped() -> bool:
+        return bool(turn is not None and turn.stop_requested)
+
+    # Session info first so the consumer can capture the session_id.
+    yield {
+        "type": "session",
+        "session_id": chat_request.session_id,
+        "agent_id": agent["id"],
+        "agent_name": agent["name"],
+    }
+    latest_progress: dict | None = None
+    if resume_state is None:
+        # A new message refuses the call this conversation waits on, as the
+        # app's chat does (F247): an approve sent after it is a 409.
+        from core.chat_approval import settle_moved_past
+        await settle_moved_past(chat_request.session_id, chat_request.agent_id or "default",
+                                save_as=agent["id"], redis=getattr(_server, "redis_client", None))
+    try:
+        async for event in run_react_loop(chat_request, _server, should_stop=_stopped,
+                                          progress_events=True, resume_state=resume_state,
+                                          expand_mentions=True, stream_answer=True):
+            etype = event.get("type", "")
+
+            if etype == "_step_progress":
+                # Engine state for a resume, never an event.
+                latest_progress = {k: v for k, v in event.items() if k != "type"}
+
+            elif etype == "status":
+                yield {"type": "status", "message": event["message"]}
+
+            elif etype == "thinking":
+                yield {"type": "thinking", "message": event.get("message", "")}
+
+            elif etype == "tool_execution":
+                yield {"type": "tool_execution", "tool_name": event["tool_name"], "args": event["args"]}
+
+            elif etype == "tool_result":
+                frame = {"type": "tool_result", "tool_name": event["tool_name"], "preview": event["preview"]}
+                if event.get("refused"):
+                    # Not run (U68): the answer may still say it was done.
+                    frame.update(refused=True, reason=event.get("reason"), category=event.get("category"))
+                yield frame
+
+            elif etype == "llm_thought":
+                yield {"type": "llm_thought", "thought": event["thought"], "turn": event.get("turn", 1)}
+
+            elif etype == "answer_delta":
+                # The answer as it is written (U72); `response` is still the answer of record.
+                yield {"type": "answer_delta", "text": event["text"], "turn": event.get("turn", 1)}
+
+            elif etype == "answer_reset":
+                # What streamed since the last reset was not the answer.
+                yield {"type": "answer_reset", "reason": event.get("reason"), "turn": event.get("turn", 1)}
+
+            elif etype in _KNOWLEDGE_FRAMES:
+                frame = _knowledge_frame(event)
+                if frame is not None:
+                    yield frame
+
+            elif etype == "final" and event.get("orch_step_id"):
+                # An orchestrator agent's step finishing, not the turn: it used
+                # to be sent as the turn's `response` and `done`, so a caller
+                # stopped reading after the first step.
+                yield {"type": "agent_step_result", "orch_step_id": event.get("orch_step_id"),
+                       "step_name": event.get("step_name", ""), "content": event.get("response", "")}
+
+            elif etype == "final":
+                yield {
+                    "type": "response",
+                    "content": event.get("response", ""),
+                    "intent": event.get("intent", "chat"),
+                    "session_id": chat_request.session_id,
+                }
+                yield {"type": "done"}
+
+            elif _pause_of(event):
+                if event.get("kind") == "tool_approval":
+                    from core.chat_approval import parked_payload
+                    from core.store import sessions as _sessions
+                    await _sessions.set_pending_approval(
+                        chat_request.session_id, chat_request.agent_id,
+                        parked_payload(event, message=chat_request.message, progress=latest_progress),
+                    )
+                pause = _pause_of(event)
+                yield {"type": pause.pop("status"), **pause, "session_id": chat_request.session_id}
+                yield {"type": "done"}
+
+            elif etype in ("error", "orchestration_error"):
+                # orchestration_error is what an orchestrator agent fails with.
+                log.error("[v1/chat] Agent error session=%s: %s", chat_request.session_id,
+                          event.get("message") or event.get("error"))
+                yield {"type": "error", "message": "The agent encountered an error processing your request."}
+
+            await asyncio.sleep(0)
+
+    except RunFailed as exc:
+        # An orchestrator agent's workflow failed (F231). Its words are the
+        # workspace's, read in the app; an API caller is told which run it was,
+        # which it may read back (`GET /orchestrations/runs/{id}`, F117).
+        log.error("[v1/chat] Workflow failed session=%s run=%s: %s",
+                  chat_request.session_id, exc.run_id, exc)
+        yield {"type": "error", "message": _failed_workflow(exc.run_id), "run_id": exc.run_id}
+    except LLMError as exc:
+        # The model failed (F133): the turn raises rather than answering with the
+        # provider's words, and an API caller hears what it hears of any agent
+        # error — not those words, which are the workspace's to read (D118). What
+        # it does hear is what kind of failure it was (F275), so an integration
+        # can tell "top up" from "try again".
+        log.error("[v1/chat] Model error session=%s: %s", chat_request.session_id, exc)
+        yield {"type": "error", "message": _model_failure(exc.code),
+               "code": exc.code, "retryable": exc.retryable}
+    except Exception:
+        log.exception("[v1/chat] Unhandled error session=%s", chat_request.session_id)
+        yield {"type": "error", "message": "An internal error occurred. Check server logs for details."}
+
+
+def _model_failure(code: str | None) -> str:
+    """What v1 says for a model failure (F275): the first sentence every v1 error has said, then its kind's."""
+    from core.model_failures import MODEL_FAILURE
+
+    said = "The agent encountered an error processing your request."
+    if code in MODEL_FAILURE:
+        said += " " + MODEL_FAILURE[code]
+    return said
+
+
+def _failed_workflow(run_id: str | None) -> str:
+    said = "The agent's workflow failed before answering."
+    if run_id:
+        said += f" Read run {run_id} at /api/v1/orchestrations/runs/{run_id}."
+    return said
+
+
+def _v1_start(body: V1ChatRequest, agent: dict, _server):
+    """Start a v1 turn from the handler; 409 while the conversation has one running."""
+    from core import chat_turns
+    from core.routes.chat import TURN_RUNNING
+
+    chat_request = _build_chat_request(body, agent)
+    try:
+        with chat_turns.claim(chat_request.session_id, message=chat_request.message,
+                              agent_key=agent["id"]) as turn:
+            turn.start(_v1_turn_events(chat_request, agent, _server))
+    except chat_turns.TurnAlreadyRunning:
+        raise HTTPException(status_code=409, detail=TURN_RUNNING)
+    return chat_request, turn
+
+
 @router.post("/chat")
 async def v1_chat(body: V1ChatRequest, key_record: dict = Depends(require_api_key)):
     """Synchronous chat — returns only the final response."""
-    agent = _resolve_agent_for_api(body.agent)
-    if not agent:
-        raise HTTPException(status_code=400, detail="No agents configured")
+    agent = await _agent_or_error(body.agent)
 
     import core.server as _server
     if not _server.agent_sessions:
         raise HTTPException(status_code=503, detail="No agent sessions available. Server may still be starting.")
 
-    chat_request = _build_chat_request(body, agent)
-    from core.react_engine import run_react_loop
+    await refuse_unread_images(agent, body.images)
+    chat_request, turn = _v1_start(body, agent, _server)
+    # Waiting is not owning: this request going away leaves the turn running.
+    await turn.wait()
 
-    final_event = None
-    error_msg = None
-
-    try:
-        async for event in run_react_loop(chat_request, _server):
-            etype = event.get("type", "")
-            if etype == "final":
-                final_event = event
-            elif etype in ("error", "orchestration_error"):
-                # orchestration_error is what an orchestrator agent fails with.
-                error_msg = event.get("message") or event.get("error") or "Unknown error"
-    except Exception as exc:
-        log.exception("[v1/chat] Unhandled error for session=%s", chat_request.session_id)
-        raise HTTPException(status_code=500, detail="An internal error occurred. Check server logs for details.")
-
-    if error_msg:
-        log.error("[v1/chat] Agent error for session=%s: %s", chat_request.session_id, error_msg)
-        raise HTTPException(status_code=500, detail="The agent encountered an error processing your request.")
-
-    response_text = "I completed the requested actions."
-    if final_event:
-        response_text = final_event.get("response", response_text)
-
-    return {
-        "response": response_text,
+    # The answer's `[K#]` labels resolved (D176): the turn's own, sent just before its answer.
+    cited = next((e.event for e in reversed(turn.entries) if e.event.get("type") == "knowledge_citations"), {})
+    identity = {
         "agent_id": agent["id"],
         "agent_name": agent["name"],
         "session_id": chat_request.session_id,
+        # The calls this turn did not run, and why (U68). The answer is the
+        # model's words, and one said "done" with its only call refused.
+        "refused_calls": [
+            {"tool_name": e.event.get("tool_name"), "category": e.event.get("category"),
+             "reason": e.event.get("reason")}
+            for e in turn.entries if e.event.get("type") == "tool_result" and e.event.get("refused")
+        ],
+        "citations": cited.get("citations", []),
+        "unresolved_citations": cited.get("unresolved_citations", []),
     }
+    for entry in turn.entries:
+        event = entry.event
+        kind = event.get("type")
+        if kind == "error":
+            detail = event.get("message") or "The agent encountered an error."
+            if event.get("code"):
+                # A model failure says which kind (F275); the status stays 500.
+                return JSONResponse(status_code=500, content={
+                    "detail": detail, "code": event["code"], "retryable": bool(event.get("retryable")),
+                })
+            raise HTTPException(status_code=500, detail=detail)
+        if kind == "cancelled":
+            return {"response": event.get("message") or "Stopped.", "status": "cancelled", **identity}
+        if kind in ("awaiting_approval", "paused"):
+            pause = {k: v for k, v in event.items() if k not in ("type", "session_id")}
+            prompt = pause.pop("prompt", "")
+            return {"response": prompt, "status": kind, **pause, **identity}
+        if kind == "response":
+            return {"response": event.get("content", ""), "status": "completed", **identity}
+
+    return {"response": "I completed the requested actions.", "status": "completed", **identity}
 
 
 @router.post("/chat/stream")
 async def v1_chat_stream(body: V1ChatRequest, key_record: dict = Depends(require_api_key)):
     """SSE streaming chat — returns all events."""
-    agent = _resolve_agent_for_api(body.agent)
-    if not agent:
-        raise HTTPException(status_code=400, detail="No agents configured")
+    from core import chat_turns
+
+    agent = await _agent_or_error(body.agent)
 
     import core.server as _server
     if not _server.agent_sessions:
         raise HTTPException(status_code=503, detail="No agent sessions available. Server may still be starting.")
 
-    chat_request = _build_chat_request(body, agent)
+    await refuse_unread_images(agent, body.images)
+    _chat_request, turn = _v1_start(body, agent, _server)
 
     async def event_generator():
-        from core.react_engine import run_react_loop, iter_with_heartbeat
-        try:
-            # Emit session info first so the consumer can capture the session_id
-            yield _format_sse_event({
-                "type": "session",
-                "session_id": chat_request.session_id,
-                "agent_id": agent["id"],
-                "agent_name": agent["name"],
-            })
-            async for event in iter_with_heartbeat(run_react_loop(chat_request, _server)):
-                # Heartbeat comments are yielded as raw SSE strings — pass through.
-                if isinstance(event, str):
-                    yield event
-                    continue
-                etype = event.get("type", "")
-
-                if etype == "status":
-                    yield _format_sse_event({"type": "status", "message": event["message"]})
-
-                elif etype == "thinking":
-                    yield _format_sse_event({
-                        "type": "thinking",
-                        "message": event.get("message", ""),
-                    })
-
-                elif etype == "tool_execution":
-                    yield _format_sse_event({
-                        "type": "tool_execution",
-                        "tool_name": event["tool_name"],
-                        "args": event["args"],
-                    })
-
-                elif etype == "tool_result":
-                    yield _format_sse_event({
-                        "type": "tool_result",
-                        "tool_name": event["tool_name"],
-                        "preview": event["preview"],
-                    })
-
-                elif etype == "llm_thought":
-                    yield _format_sse_event({
-                        "type": "llm_thought",
-                        "thought": event["thought"],
-                        "turn": event.get("turn", 1),
-                    })
-
-                elif etype == "final":
-                    yield _format_sse_event({
-                        "type": "response",
-                        "content": event.get("response", ""),
-                        "intent": event.get("intent", "chat"),
-                        "session_id": chat_request.session_id,
-                    })
-                    yield _format_sse_event({"type": "done"})
-
-                elif etype in ("error", "orchestration_error"):
-                    # orchestration_error is what an orchestrator agent fails with.
-                    log.error("[v1/chat/stream] Agent error session=%s: %s", chat_request.session_id,
-                              event.get("message") or event.get("error"))
-                    yield _format_sse_event({"type": "error", "message": "The agent encountered an error processing your request."})
-
-                await asyncio.sleep(0)
-
-        except Exception as e:
-            log.exception("[v1/chat/stream] Unhandled error session=%s", chat_request.session_id)
-            yield _format_sse_event({"type": "error", "message": "An internal error occurred. Check server logs for details."})
+        # The turn's frames exactly as v1 has always sent them — no cursor.
+        async for item in chat_turns.read(turn):
+            yield item if isinstance(item, str) else item.data
 
     return StreamingResponse(
         event_generator(),
@@ -228,7 +522,195 @@ async def v1_chat_stream(body: V1ChatRequest, key_record: dict = Depends(require
     )
 
 
+@router.post("/chat/{session_id}/cancel")
+async def v1_cancel_chat(session_id: str, key_record: dict = Depends(require_api_key)):
+    """Stop the turn running in this conversation.
+
+    A v1 turn carries on when its caller stops reading, so stopping it is its own
+    call — the shape `/api/v2/chat/{session_id}/cancel` has. `stopped` is false
+    when nothing was running: not an error, the turn may simply have finished.
+    """
+    from core.routes.chat import cancel_chat
+    result = await cancel_chat(session_id)
+    return {"status": "cancellation_requested", "session_id": session_id, "stopped": result["stopped"]}
+
+
+@router.post("/chat/{session_id}/approve")
+async def v1_approve_chat_tool(session_id: str, body: V1ApprovalRequest,
+                               key_record: dict = Depends(require_api_key)):
+    """Answer the tool call this conversation stopped on, and carry the turn on (SSE).
+
+    The app's `/chat/{id}/approve`, in v1's frames. The question is claimed
+    before it is spent, so an answer while another turn runs here is a 409 with
+    the question still open. Naming the call (`approval_id`) makes an answer to
+    an older question a 409 rather than an answer to this one.
+    """
+    from core import chat_turns
+
+    turn = await answer_v1_question(session_id, approve=body.approve, reason=body.reason,
+                                    approval_id=body.approval_id, question_id=body.question_id, agent=body.agent)
+    if turn is None:
+        return {"status": "allowed" if body.approve else "refused", "live": True,
+                "session_id": session_id, "question_id": body.question_id}
+
+    async def event_generator():
+        async for item in chat_turns.read(turn):
+            yield item if isinstance(item, str) else item.data
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
+async def answer_v1_question(session_id: str, *, approve: bool, reason: str = "", approval_id: str | None = None,
+                             question_id: str | None = None, agent: str | None = None):
+    """Answer the tool call a v1 conversation stopped on and carry its turn on, server-owned: the turn, or None
+    when a working team's member took the answer now. The MCP server's `answer_tool_approval` answers through
+    here too (MCP2, D292). Raises 409 when nothing here waits on it or a turn holds the conversation."""
+    from core import chat_turns, team
+    from core.chat_approval import find_question, resume_state_for, take_answers
+    from core.models import ChatRequest
+    from core.routes.chat import TURN_RUNNING
+    from core.store import sessions as _sessions
+    import core.server as _server
+
+    body = V1ApprovalRequest(approve=approve, reason=reason, approval_id=approval_id, question_id=question_id,
+                             agent=agent)
+    if body.question_id:
+        # A team at work here whose member waits on it (TEAM1c): that member carries on now.
+        working = team.find(session_id)
+        if working is not None and working.answer(body.question_id, approve=body.approve, reason=body.reason):
+            return None
+    agent = (await _agent_or_error(body.agent) if body.agent is not None
+             else await _waiting_agent(session_id, body.approval_id, body.question_id))
+    try:
+        with chat_turns.claim(session_id, agent_key=agent["id"]) as turn:
+            pending = await _sessions.get_pending_approval(session_id, agent["id"])
+            if not pending:
+                raise HTTPException(status_code=409, detail="This conversation is not waiting on an approval.")
+            asked = find_question(pending, question=body.question_id, approval_id=body.approval_id)
+            if asked is None:
+                raise HTTPException(status_code=409, detail="That approval is not the one this conversation is waiting on.")
+            await _sessions.set_pending_approval(session_id, agent["id"], None)
+            others = [q["question_id"] for q in pending.get("questions") or []
+                      if q["question_id"] != asked["question_id"]]
+            verdicts = [{"question_id": asked["question_id"], "approve": body.approve, "reason": body.reason},
+                        *take_answers(session_id, agent["id"], others)]
+
+            resumed = ChatRequest(message=pending.get("message") or "", session_id=session_id,
+                                  agent_id=agent["id"])
+            turn.message = resumed.message
+            turn.start(_v1_turn_events(resumed, agent, _server,
+                                       resume_state_for(pending, approve=body.approve, reason=body.reason,
+                                                        verdicts=verdicts)))
+    except chat_turns.TurnAlreadyRunning:
+        raise HTTPException(status_code=409, detail=TURN_RUNNING)
+    return turn
+
+
+def _v1_drain(queue):
+    """A run's queued events as v1 SSE: only what a client sees (F854), `done` after a pause or the end.
+
+    The run itself is spawned by the handler (`spawn_engine_run`); this only
+    reads its queue, so a caller that stops reading leaves the run running (F49).
+    """
+    async def body():
+        from core.orchestration.runner import SENTINEL
+        from core.react_engine import SSE_HEARTBEAT
+
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=10.0)
+            except asyncio.TimeoutError:
+                yield SSE_HEARTBEAT
+                continue
+            if event is SENTINEL:
+                break
+            etype = event.get("type", "")
+            event = public_event(event)  # the queue's events are already a client's; said here too (F854)
+            if event is None:
+                continue
+            yield _format_sse_event(event)
+            if etype == "human_input_required":
+                break
+        yield _format_sse_event({"type": "done"})
+    return body()
+
+
+async def _workspace_orchestration(orch_id: str) -> dict:
+    """An orchestration v1 may run or read: the workspace's, never the AI builder's own (F96).
+
+    F162 left it out of the list; by id it was still run, streamed and served.
+    MCP's point-load (`builder_tools._visible_orchestration`), so the two agree.
+    """
+    from core.builder_tools import _visible_orchestration
+
+    orch = await _visible_orchestration(orch_id)
+    if orch is None:
+        raise HTTPException(status_code=404, detail=f"Orchestration '{orch_id}' not found")
+    return orch
+
+
+async def _refuse_builder_run(run_id: str) -> None:
+    """404 a run of the AI builder's own orchestration (F96), as MCP's `_served_run` does.
+
+    Narrower than MCP's check on purpose: a run whose orchestration has since
+    been deleted is still read back here, as v1 and the CLI always have.
+    """
+    from core.builder_tools import _is_visible
+    from core.orchestration.run_view import run_orchestration_id
+    from core.store.resources import get_orchestration
+
+    orch_id = await run_orchestration_id(run_id)
+    orch = await get_orchestration(orch_id) if orch_id else None
+    if orch is not None and not _is_visible(orch):
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+
+
+async def _answer(request: Request, run_id: str, human_response, question_id: str | None = None):
+    """Resume a paused run once — the helper the app and a channel reply use."""
+    from core.orchestration.answers import (
+        BadAnswer, EmptyAnswer, QuestionNotAsked, RunAlreadyActive, RunNotWaiting, answer_paused_run,
+        refuse_empty,
+    )
+    try:
+        refuse_empty(human_response)
+    except EmptyAnswer as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    await _refuse_builder_run(run_id)
+    try:
+        return await answer_paused_run(request.app.state, run_id, human_response, question_id=question_id,
+                                       door="api")
+    except BadAnswer as exc:
+        # An email, date, phone or dropdown answer that is not one (F455).
+        raise HTTPException(status_code=422, detail=str(exc))
+    except QuestionNotAsked as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except RunAlreadyActive:
+        raise HTTPException(status_code=409, detail="Run is already active")
+    except RunNotWaiting as exc:
+        if exc.status is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+        raise HTTPException(status_code=409, detail=f"The run is {exc.status} and is not waiting for an answer.")
+
+
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
+
+
 # ── Orchestration Endpoints ─────────────────────────────────────────────────
+
+def _runnable(orch_data: dict, *, to_start: bool = True):
+    """The workflow as the engine reads it, or a 422 saying what to mend in it (F1235), never a server error. A run
+    about to start is also refused when a field names a step the workflow does not have (F1459); a read of it is not."""
+    from core.orchestration.read_shapes import Unreadable, load_to_run, load_to_start
+
+    try:
+        return (load_to_start if to_start else load_to_run)(orch_data)
+    except Unreadable as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
 
 @router.post("/orchestrations/{orch_id}/run")
 async def v1_orchestration_run(
@@ -238,18 +720,11 @@ async def v1_orchestration_run(
 ):
     """Start an orchestration (sync). Returns final result or human_input_required."""
     import core.server as _server
-    from core.routes.orchestrations import load_orchestrations
-    from core.models_orchestration import Orchestration
     from core.orchestration.engine import OrchestrationEngine
     from core.orchestration.runner import stream_engine_events
 
-    orchs = load_orchestrations()
-    orch_data = next((o for o in orchs if o["id"] == orch_id), None)
-    if not orch_data:
-        raise HTTPException(status_code=404, detail=f"Orchestration '{orch_id}' not found")
-
-    run_id = f"run_{orch_id}_{int(time.time() * 1000)}"
-    orch = Orchestration.model_validate(orch_data)
+    orch = _runnable(await _workspace_orchestration(orch_id))
+    run_id = new_run_id(orch_id)
     engine = OrchestrationEngine(orch, _server)
 
     final_response = None
@@ -261,7 +736,8 @@ async def v1_orchestration_run(
     # Through the runner pump so the run is journaled, registered for
     # cancellation, and survives a dropped client (the engine itself is
     # advanced by the pump's task — issue #356).
-    async for event in stream_engine_events(engine.run(body.message, run_id), run_id):
+    async for event in stream_engine_events(
+            engine.run(body.message, run_id, initial_state=body.initial_state or None), run_id):
         etype = event.get("type", "")
 
         if etype == "human_input_required":
@@ -276,7 +752,7 @@ async def v1_orchestration_run(
 
         if etype == "orchestration_complete":
             status = event.get("status", "completed")
-            shared_state = event.get("final_state", {})
+            shared_state = public_state(event.get("final_state", {}))  # the engine\'s own keys stay in (F1205)
 
         if etype == "final":
             final_response = event.get("response", "")
@@ -291,6 +767,8 @@ async def v1_orchestration_run(
                 "prompt": human_input_event.get("prompt"),
                 "fields": human_input_event.get("fields", []),
                 "agent_context": human_input_event.get("agent_context"),
+                # A team step's questions, each answered by its `question_id` (TEAM1e).
+                **({"questions": human_input_event["questions"]} if human_input_event.get("questions") else {}),
             },
         }
 
@@ -311,58 +789,17 @@ async def v1_orchestration_run_stream(
 ):
     """Start an orchestration (SSE stream)."""
     import core.server as _server
-    from core.routes.orchestrations import load_orchestrations
-    from core.models_orchestration import Orchestration
     from core.orchestration.engine import OrchestrationEngine
 
-    orchs = load_orchestrations()
-    orch_data = next((o for o in orchs if o["id"] == orch_id), None)
-    if not orch_data:
-        raise HTTPException(status_code=404, detail=f"Orchestration '{orch_id}' not found")
-
-    run_id = f"run_{orch_id}_{int(time.time() * 1000)}"
-    orch = Orchestration.model_validate(orch_data)
+    orch = _runnable(await _workspace_orchestration(orch_id))
+    run_id = new_run_id(orch_id)
     engine = OrchestrationEngine(orch, _server)
 
-    async def event_stream():
-        from core.react_engine import iter_with_heartbeat
-        from core.orchestration.runner import stream_engine_events
-        try:
-            async for event in iter_with_heartbeat(
-                stream_engine_events(engine.run(body.message, run_id), run_id)
-            ):
-                # Heartbeat comments are yielded as raw SSE strings — pass through.
-                if isinstance(event, str):
-                    yield event
-                    continue
-                etype = event.get("type", "")
-
-                # Skip internal log events
-                if etype.startswith("_log_"):
-                    continue
-
-                yield _format_sse_event(event)
-
-                if etype == "human_input_required":
-                    yield _format_sse_event({"type": "done"})
-                    return
-
-                await asyncio.sleep(0)
-        except Exception as e:
-            log.exception("[v1/orch/stream] Unhandled error run_id=%s", run_id)
-            yield _format_sse_event({"type": "orchestration_error", "error": "An internal error occurred. Check server logs for details."})
-
-        yield _format_sse_event({"type": "done"})
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    # Spawned here, not inside the response: the run belongs to no reader.
+    from core.orchestration.runner import spawn_engine_run
+    _task, queue = spawn_engine_run(
+        engine.run(body.message, run_id, initial_state=body.initial_state or None), run_id)
+    return StreamingResponse(_v1_drain(queue), media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 # ── Orchestration Resume Endpoints ──────────────────────────────────────────
@@ -371,12 +808,10 @@ async def v1_orchestration_run_stream(
 async def v1_orchestration_resume(
     run_id: str,
     body: V1ResumeRequest,
+    request: Request,
     key_record: dict = Depends(require_api_key),
 ):
     """Submit human input and resume orchestration (sync)."""
-    import core.server as _server
-    from core.orchestration.engine import OrchestrationEngine
-
     # Normalize response to dict
     human_response = body.response
     if isinstance(human_response, str):
@@ -387,15 +822,25 @@ async def v1_orchestration_resume(
     step_history = []
     shared_state = {}
     status = "running"
-    _allowed_statuses = {"running", "paused", "completed", "failed"}
+    _allowed_statuses = {"running", "paused", "completed", "failed", "cancelled"}
+
+    # Answered once, through the helper the app and a channel reply use: a run
+    # not waiting is a 404/409, a second answer while it runs a 409, and a run
+    # a worker ran goes back to the fleet.
+    answered = await _answer(request, run_id, human_response, body.question_id)
+    if answered.live:
+        # A team's question answered while its step works: that member carries on (TEAM1e).
+        return {"status": "answered", "run_id": run_id, "delivered": answered.live}
+    if answered.on_fleet:
+        return {"status": "resuming", "run_id": run_id}
+
+    async def _events():
+        from core.orchestration.runner import SENTINEL
+        while (event := await answered.queue.get()) is not SENTINEL:
+            yield event
 
     try:
-        # Through the runner pump so the resumed run is journaled and
-        # registered for cancellation (single-task discipline, issue #356).
-        from core.orchestration.runner import stream_engine_events
-        async for event in stream_engine_events(
-            OrchestrationEngine.resume(run_id, human_response, _server), run_id
-        ):
+        async for event in _events():
             etype = event.get("type", "")
 
             if etype == "human_input_required":
@@ -414,7 +859,7 @@ async def v1_orchestration_resume(
             if etype == "orchestration_complete":
                 _raw_status = event.get("status", "completed")
                 status = _raw_status if _raw_status in _allowed_statuses else "completed"
-                shared_state = event.get("final_state", {})
+                shared_state = public_state(event.get("final_state", {}))  # the engine\'s own keys stay in (F1205)
 
             if etype == "final":
                 final_response = event.get("response", "")
@@ -437,6 +882,8 @@ async def v1_orchestration_resume(
                 "prompt": human_input_event.get("prompt"),
                 "fields": human_input_event.get("fields", []),
                 "agent_context": human_input_event.get("agent_context"),
+                # A team step's questions, each answered by its `question_id` (TEAM1e).
+                **({"questions": human_input_event["questions"]} if human_input_event.get("questions") else {}),
             },
         }
 
@@ -453,59 +900,151 @@ async def v1_orchestration_resume(
 async def v1_orchestration_resume_stream(
     run_id: str,
     body: V1ResumeRequest,
+    request: Request,
     key_record: dict = Depends(require_api_key),
 ):
     """Submit human input and resume orchestration (SSE stream)."""
-    import core.server as _server
-    from core.orchestration.engine import OrchestrationEngine
-
     # Normalize response to dict
     human_response = body.response
     if isinstance(human_response, str):
         human_response = {"response": human_response}
 
-    async def event_stream():
-        from core.react_engine import iter_with_heartbeat
-        from core.orchestration.runner import stream_engine_events
-        try:
-            async for event in iter_with_heartbeat(
-                stream_engine_events(
-                    OrchestrationEngine.resume(run_id, human_response, _server), run_id
-                )
-            ):
-                # Heartbeat comments are yielded as raw SSE strings — pass through.
-                if isinstance(event, str):
-                    yield event
-                    continue
-                etype = event.get("type", "")
+    answered = await _answer(request, run_id, human_response, body.question_id)
+    if answered.live:
+        return JSONResponse({"status": "answered", "run_id": run_id, "delivered": answered.live})
+    if answered.on_fleet:
+        from core.scale import event_bridge
+        return StreamingResponse(
+            event_bridge.stream_run_events(request.app.state.redis, run_id, "0"),
+            media_type="text/event-stream", headers=_SSE_HEADERS,
+        )
+    return StreamingResponse(_v1_drain(answered.queue), media_type="text/event-stream",
+                             headers=_SSE_HEADERS)
 
-                if etype.startswith("_log_"):
-                    continue
 
-                yield _format_sse_event(event)
+# Declared before `/orchestrations/{orch_id}`, which would read `runs` as an id.
+@router.get("/orchestrations/runs")
+async def v1_list_runs(
+    limit: int = Query(20, ge=1, le=200),
+    status: Literal["running", "paused", "completed", "failed", "cancelled"] | None = None,
+    orchestration_id: str | None = None,
+    key_record: dict = Depends(require_api_key),
+):
+    """Recent runs of the workspace's orchestrations, newest first (D126).
 
-                if etype == "human_input_required":
-                    yield _format_sse_event({"type": "done"})
-                    return
+    The list MCP's `list_runs` reads too (`core/orchestration/run_view.py`), so
+    the two cannot drift. The filters are cloud's `GET /orchestrations/runs`'.
+    """
+    from core.orchestration.run_view import list_runs
+    return await list_runs(limit=limit, status=status, orchestration_id=orchestration_id)
 
-                await asyncio.sleep(0)
-        except FileNotFoundError:
-            yield _format_sse_event({"type": "orchestration_error", "error": f"Run '{run_id}' not found"})
-        except Exception as e:
-            log.exception("[v1/resume/stream] Unhandled error run_id=%s", run_id)
-            yield _format_sse_event({"type": "orchestration_error", "error": "An internal error occurred. Check server logs for details."})
 
-        yield _format_sse_event({"type": "done"})
+@router.get("/orchestrations/runs/{run_id}/events")
+async def v1_run_events(run_id: str, request: Request, after: int = Query(0, ge=0),
+                        limit: int = Query(5000, ge=1, le=5000),
+                        key_record: dict = Depends(require_api_key)):
+    """A run's events after `after`, oldest first, with `last_id` to read on from (D126).
 
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    The app's run log (`GET /api/orchestrations/runs/{id}/events`), unchanged.
+    """
+    from core.routes.orchestrations import get_run_events
+    await _refuse_builder_run(run_id)
+    return await get_run_events(run_id, request, after=after, limit=limit)
+
+
+@router.get("/orchestrations/runs/{run_id}/events/stream")
+async def v1_run_events_stream(run_id: str, request: Request, after: int = Query(0, ge=0),
+                               key_record: dict = Depends(require_api_key)):
+    """SSE: the run's events after `after` (or `Last-Event-ID`), then followed live (D126).
+
+    Frames carry `id:` lines to reconnect from; `stream_complete` ends the
+    stream once the run has ended. The app's reattach stream, unchanged.
+    """
+    from core.routes.orchestrations import stream_run_events_sse
+    await _refuse_builder_run(run_id)
+    return await stream_run_events_sse(run_id, request, after=after)
+
+
+@router.get("/orchestrations/runs/{run_id}")
+async def v1_get_run(run_id: str, key_record: dict = Depends(require_api_key)):
+    """A run's state and, once it has ended, its result (F117).
+
+    A run carries on when its caller stops reading (F49), so a caller that
+    dropped `run/stream` or `resume/stream` needs a way back to what it would
+    have been sent — and v2's status route is scale-mode only and carries no
+    result. The shapes are the sync routes': a paused run names its question,
+    an ended one carries `response`, `shared_state` and `step_history`. Engine
+    bookkeeping is left out of `shared_state`, as the app's own read leaves it.
+    MCP's `get_run` reads the same view (`core/orchestration/run_view.py`).
+    """
+    from core.orchestration.run_view import read_run
+
+    await _refuse_builder_run(run_id)
+    view = await read_run(run_id)
+    if view is None:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    return view
+
+
+@router.post("/orchestrations/runs/{run_id}/cancel")
+async def v1_cancel_run(run_id: str, request: Request, key_record: dict = Depends(require_api_key)):
+    """Stop a run. A run carries on when its caller stops reading, so this is how it stops.
+
+    v2's shape, plus `stopped`: false for a run that had already finished, which
+    keeps the status it finished with.
+    """
+    from core.orchestration.cancel import cancel_run
+
+    await _refuse_builder_run(run_id)
+    result = await cancel_run(run_id, redis=getattr(request.app.state, "redis", None))
+    if not result.found:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    return {"status": "cancellation_requested", "run_id": run_id, "stopped": result.stopped}
+
+
+# ── Schedules (D126) ────────────────────────────────────────────────────────
+# The app's schedule routes (`core/routes/schedules.py`), behind an API key.
+
+
+@router.get("/schedules")
+async def v1_list_schedules(key_record: dict = Depends(require_api_key)):
+    from core.routes.schedules import list_schedules
+    return await list_schedules()
+
+
+@router.post("/schedules")
+async def v1_create_schedule(body: ScheduleCreate, request: Request,
+                             key_record: dict = Depends(require_api_key)):
+    from core.routes.schedules import create_schedule
+    return await create_schedule(body, request)
+
+
+@router.get("/schedules/{schedule_id}")
+async def v1_get_schedule(schedule_id: str, key_record: dict = Depends(require_api_key)):
+    from core.routes.schedules import get_schedule
+    return await get_schedule(schedule_id)
+
+
+@router.patch("/schedules/{schedule_id}")
+async def v1_patch_schedule(schedule_id: str, body: ScheduleUpdate, request: Request,
+                            key_record: dict = Depends(require_api_key)):
+    """A partial update; `{"enabled": false}` pauses, `{"enabled": true}` resumes."""
+    from core.routes.schedules import patch_schedule
+    return await patch_schedule(schedule_id, body, request)
+
+
+@router.delete("/schedules/{schedule_id}")
+async def v1_delete_schedule(schedule_id: str, key_record: dict = Depends(require_api_key)):
+    from core.routes.schedules import delete_schedule
+    return await delete_schedule(schedule_id)
+
+
+@router.post("/schedules/{schedule_id}/run")
+async def v1_run_schedule_now(schedule_id: str, request: Request,
+                              key_record: dict = Depends(require_api_key)):
+    """Run it now, as a test: a paused one too, and its next run does not move (F72)."""
+    from core.routes.schedules import run_schedule_now
+    return await run_schedule_now(schedule_id, request)
 
 
 # ── Read-Only Discovery Endpoints ──────────────────────────────────────────
@@ -513,8 +1052,7 @@ async def v1_orchestration_resume_stream(
 @router.get("/agents")
 async def v1_list_agents(key_record: dict = Depends(require_api_key)):
     """List all configured agents (id, name, type, capabilities)."""
-    from core.routes.agents import load_user_agents
-    agents = load_user_agents()
+    agents = await _api_agents()
     return [
         {
             "id": a["id"],
@@ -530,8 +1068,7 @@ async def v1_list_agents(key_record: dict = Depends(require_api_key)):
 @router.get("/agents/{agent_id}")
 async def v1_get_agent(agent_id: str, key_record: dict = Depends(require_api_key)):
     """Get details for a specific agent."""
-    from core.routes.agents import load_user_agents
-    agents = load_user_agents()
+    agents = await _api_agents()
     agent = next((a for a in agents if a["id"] == agent_id), None)
     if not agent:
         raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
@@ -547,9 +1084,13 @@ async def v1_get_agent(agent_id: str, key_record: dict = Depends(require_api_key
 
 @router.get("/orchestrations")
 async def v1_list_orchestrations(key_record: dict = Depends(require_api_key)):
-    """List all configured orchestrations (id, name, steps summary)."""
-    from core.routes.orchestrations import load_orchestrations
-    orchs = load_orchestrations()
+    """List the workspace's orchestrations (id, name, steps summary).
+
+    The AI builder's own seeded orchestration is left out, as the app's list
+    and v1's agent list (F69) leave it out (F162).
+    """
+    from core.routes.orchestrations import list_orchestrations
+    orchs = await list_orchestrations()
     return [
         {
             "id": o["id"],
@@ -563,26 +1104,12 @@ async def v1_list_orchestrations(key_record: dict = Depends(require_api_key)):
 
 @router.get("/orchestrations/{orch_id}")
 async def v1_get_orchestration(orch_id: str, key_record: dict = Depends(require_api_key)):
-    """Get details for a specific orchestration including step definitions."""
-    from core.routes.orchestrations import load_orchestrations
-    orchs = load_orchestrations()
-    orch = next((o for o in orchs if o["id"] == orch_id), None)
-    if not orch:
-        raise HTTPException(status_code=404, detail=f"Orchestration '{orch_id}' not found")
-    return {
-        "id": orch["id"],
-        "name": orch.get("name", ""),
-        "description": orch.get("description", ""),
-        "steps": [
-            {
-                "id": s.get("id", ""),
-                "label": s.get("label", ""),
-                "type": s.get("type", ""),
-                "agent_id": s.get("agent_id", ""),
-                "depends_on": s.get("depends_on", []),
-            }
-            for s in orch.get("steps", [])
-        ],
-        "edges": orch.get("edges", []),
-    }
+    """The orchestration's definition — its steps and how they connect.
+
+    It used to answer in a shape the definitions stopped having (`label`,
+    `depends_on`, `edges`), so every step came back unlabelled and unconnected
+    (F69). Validated, so what comes back is the model's current fields and
+    not whatever older keys a stored document still carries.
+    """
+    return _runnable(await _workspace_orchestration(orch_id), to_start=False).model_dump(mode="json")
 

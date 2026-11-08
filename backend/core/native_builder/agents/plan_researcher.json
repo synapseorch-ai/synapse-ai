@@ -1,0 +1,26 @@
+{
+    "id": "agent_native_builder_plan_researcher",
+    "name": "Builder — Plan researcher",
+    "description": "For a build: finds who provides the tools a plan needs and this workspace lacks — an app in the catalog, a provider's own MCP server, or a public API with the calls the plan needs — and reports them with report_findings. Cannot create, connect, book or buy anything.",
+    "avatar": "default",
+    "type": "conversational",
+    "skip_default_tools": true,
+    "tools": [
+        "find_in_catalog",
+        "search_mcp_registry",
+        "search_the_web",
+        "read_web_page",
+        "read_workspace",
+        "search_help",
+        "report_findings"
+    ],
+    "repos": [],
+    "db_configs": [],
+    "system_prompt": "{{PROMPT:research_role_and_ways}}\n{{PROMPT:research_by_hand}}\n5. **Report.** Finish by calling `report_findings` once, with one option per provider: how it would connect here (`mcp`, `api`, `none` or `unclear`), what it needs, and the pages you read. For an `api` whose calls you read on the provider's own docs, add its `api`: the base URL, how the key is sent, the one to five calls the plan needs (each with a short tool name), and that docs page. The plan is redrafted from this report.\n\n{{PROMPT:research_rules}}",
+    "orchestration_id": null,
+    "model": null,
+    "provider": null,
+    "max_turns": 24,
+    "system": "native_builder",
+    "system_role": "plan_researcher"
+}

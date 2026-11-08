@@ -16,14 +16,16 @@ OAuth flow (remote, no token):
   6. callback_handler() returns (code, state), token exchange completes, MCP
      session is established and persisted in self.sessions.
 
-Tokens are stored on disk (FileTokenStorage) so OAuth servers auto-reconnect
+Tokens are stored per tenant in the database (StoreTokenStorage) so OAuth servers auto-reconnect
 on backend restart without re-authenticating (the provider handles refresh).
 """
 
 import asyncio
 import json
 import os
+import re
 import secrets
+import time
 from contextlib import AsyncExitStack
 from datetime import timedelta
 from typing import Any, Dict, List, Optional
@@ -39,15 +41,64 @@ from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
 
-from core.config import DATA_DIR, MCP_SESSION_READ_TIMEOUT, load_settings
+from core.config import MCP_SESSION_READ_TIMEOUT, load_settings
 import core.mcp_oauth_state as oauth_state
+
+from core.log import get_logger
+
+_log = get_logger(__name__)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 _SESSION_READ_TIMEOUT = timedelta(seconds=MCP_SESSION_READ_TIMEOUT)
 
 
+def _same_server_url(a: object, b: object) -> bool:
+    """One remote server's URL, however it was written: the scheme and host in any case, a trailing slash or none."""
+    def norm(u: object) -> str:
+        got = urlparse(str(u or "").strip())
+        return f"{got.scheme.lower()}://{(got.netloc or '').lower()}{got.path.rstrip('/')}"
+
+    return bool(a) and bool(b) and norm(a) == norm(b)
+
+
 # ── stdio MCP registration policy (security) ────────────────────────────────────
+def remote_url_problem(url: str) -> str | None:
+    """Why `url` is not a remote MCP server's address, or None (F1201). One rule for every door that adds one: the
+    Apps screen (through `add_server`) and the builder's Connect card. http or https, with a host: a server on this
+    machine or this network is a person's to add, so neither scheme nor host is refused here."""
+    if not url:
+        return "URL is required for remote servers."
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return "A remote MCP server's URL starts with http:// or https:// and names its host."
+    return None
+
+
+#: The host's own rule for a remote server's address: async `rule(url) -> reason | None`, after the shape check. Cloud
+#: plugs in its egress check, so a private host is refused at every door that adds one (SSRF). None: the shape alone.
+_url_rule: Any = None
+
+
+def set_url_rule(rule: Any) -> None:
+    """Install the host's rule for a remote MCP server's URL. ``None`` removes it."""
+    global _url_rule
+    _url_rule = rule
+
+
+async def remote_url_refusal(url: str) -> str | None:
+    """`remote_url_problem`, then the host's rule: what every door that adds a remote server asks (F1201)."""
+    if (problem := remote_url_problem(url)) is not None:
+        return problem
+    return await host_url_refusal(url)
+
+
+async def host_url_refusal(url: str) -> str | None:
+    """The host's rule alone, for another address a model wrote that the product reaches out to: an API spec's URL
+    (F1225). None where the host has no rule."""
+    return await _url_rule(url) if _url_rule is not None else None
+
+
 # stdio MCP servers launch arbitrary local OS processes (npx/uvx/python -c/…),
 # which is the whole point of the transport but also an RCE-shaped capability.
 # These helpers gate every path that can spawn one. See GHSA-3j67-x3j8-r32x.
@@ -58,7 +109,16 @@ def stdio_mcp_allowed() -> bool:
     Disabled in scale mode (multi-tenant / network-exposed) and toggleable via
     the ``allow_stdio_mcp`` setting. Fails open only if settings are unreadable,
     to preserve local behaviour when config is unavailable.
+
+    "Unreadable" deliberately includes *not yet read*. ``allow_stdio_mcp``
+    defaults to True, so a settings provider that has nothing bound returns a
+    dict saying "allowed" — indistinguishable, at this call site, from the user
+    having chosen it. That is not a default worth failing open on.
     """
+    from core import settings_runtime
+
+    if not settings_runtime.is_loaded():
+        return False
     try:
         s = load_settings()
     except Exception:
@@ -77,57 +137,194 @@ def check_stdio_command_allowed(command: str) -> None:
     if allowlist and os.path.basename(command) not in allowlist:
         raise ValueError(f"Command '{command}' is not in the allowed MCP command list.")
 
-MCP_SERVERS_FILE = os.path.join(DATA_DIR, "mcp_servers.json")
-MCP_TOKENS_DIR   = os.path.join(DATA_DIR, "mcp_tokens")
-
 # Redirect URI registered with OAuth servers.
 # Reads SYNAPSE_BACKEND_PORT from env so it matches the running port.
 _BACKEND_PORT = int(os.getenv("SYNAPSE_BACKEND_PORT", "8765"))
 OAUTH_CALLBACK_URL = f"http://localhost:{_BACKEND_PORT}/api/mcp/oauth/callback"
 
+#: Collection holding MCP OAuth material, one document per server.
+#:
+#: The database rather than the blob store, matching where the Google OAuth
+#: credentials live: an access token, a refresh token and a dynamic client
+#: registration are tenant *secrets*, and in a hosted deployment the database
+#: is what carries KMS envelope encryption and row-level security. The blob
+#: store is for tenant content. They were files in a shared folder with no
+#: tenant dimension at all, so two tenants with a server called `github` had
+#: one credential between them.
+#:
+#: A slot in `collections` rather than a table of its own, per the rule in
+#: core/store/models.py: nothing queries these, they are only ever fetched by
+#: the name of the server they belong to.
+_TOKENS_COLLECTION = "mcp_tokens"
+
+#: Renew this many seconds before the access token actually dies.
+#:
+#: A token that expires during the handshake fails the connect just as surely as
+#: one that expired an hour ago, and the round trip to renew costs far less than
+#: the re-authorisation prompt that failure produces. Sixty seconds also covers
+#: ordinary clock drift between this host and the provider.
+_EXPIRY_SKEW_SECONDS = 60
+
+#: Where an authorization server publishes its metadata. RFC 8414 first, then
+#: the OpenID Connect location that some providers serve instead.
+_METADATA_PATHS = (
+    "/.well-known/oauth-authorization-server",
+    "/.well-known/openid-configuration",
+)
+
+
+async def _discover_token_endpoint(server_url: str) -> Optional[str]:
+    """Find a server's token endpoint, for one authorised before we stored it.
+
+    Only reached when nothing is on file. A server authorised from now on has
+    its endpoint recorded at authorise time, from the metadata the SDK already
+    discovered — which is the value to trust, because it was fetched when the
+    person actually granted access rather than at some later moment of the
+    server's choosing.
+
+    Failure is None and a fall-through to the existing behaviour, never an
+    exception: not being able to renew is worse than today only if it also
+    breaks the connect that would have worked.
+    """
+    parsed = urlparse(server_url)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            for path in _METADATA_PATHS:
+                try:
+                    response = await client.get(origin + path)
+                except Exception:
+                    continue
+                if response.status_code != 200:
+                    continue
+                try:
+                    endpoint = response.json().get("token_endpoint")
+                except ValueError:
+                    continue
+                if endpoint:
+                    return str(endpoint)
+    except Exception:
+        return None
+    return None
+
 
 # ── Token Storage ──────────────────────────────────────────────────────────────
 
-class FileTokenStorage(TokenStorage):
-    """Persists OAuth tokens and client registration to disk per server."""
+class StoreTokenStorage(TokenStorage):
+    """Persists OAuth tokens and client registration per server, per tenant.
+
+    The four ``TokenStorage`` methods are ``async`` because the MCP SDK
+    requires it — which is what makes this cheap, since the store is async too.
+    """
 
     def __init__(self, server_name: str):
-        safe = server_name.replace("/", "_").replace(" ", "_")
-        self._tok  = os.path.join(MCP_TOKENS_DIR, f"{safe}.json")
-        self._cli  = os.path.join(MCP_TOKENS_DIR, f"{safe}_client.json")
+        self._key = _safe_server_name(server_name)
 
-    def _read(self, path: str) -> Optional[dict]:
-        if not os.path.exists(path):
-            return None
-        try:
-            with open(path, encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return None
+    async def _document(self) -> dict:
+        from core.store import collections
 
-    def _write(self, path: str, data: dict):
-        os.makedirs(MCP_TOKENS_DIR, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        for item in await collections.load(_TOKENS_COLLECTION):
+            if item.get("id") == self._key:
+                return item
+        return {}
+
+    async def _merge(self, **fields) -> None:
+        from core.store import collections
+
+        items = await collections.load(_TOKENS_COLLECTION)
+        for item in items:
+            if item.get("id") == self._key:
+                item.update(fields)
+                break
+        else:
+            items.append({"id": self._key, **fields})
+        await collections.save(_TOKENS_COLLECTION, items)
 
     async def get_tokens(self) -> Optional[OAuthToken]:
-        d = self._read(self._tok)
+        d = (await self._document()).get("tokens")
         return OAuthToken(**d) if d else None
 
     async def set_tokens(self, tokens: OAuthToken) -> None:
-        self._write(self._tok, tokens.model_dump(mode="json"))
+        """Store the tokens, and an **absolute** expiry beside them.
+
+        The absolute part is the whole point. `OAuthToken` carries `expires_in`,
+        which is a duration from the moment it was issued — so a token stored at
+        09:00 with `expires_in=3600` is dead at 10:00, and recomputing
+        `now + expires_in` when it is loaded at 14:00 would call it fresh until
+        15:00. The SDK's own `update_token_expiry()` does exactly that, in
+        memory, at exchange time; nothing writes the result down.
+
+        That omission is what made every restart ask the person to authorise
+        again. `OAuthClientProvider._initialize()` restores the tokens and
+        **not** `token_expiry_time`, and `is_token_valid()` reads
+        `not self.token_expiry_time or ...` — so a `None` expiry counts as
+        *valid*, the proactive refresh is skipped, the expired token goes out,
+        and the `401` that comes back triggers a full re-authorisation rather
+        than a refresh. The refresh token sat there unused the entire time.
+        """
+        import time
+
+        fields: dict = {"tokens": tokens.model_dump(mode="json")}
+        if tokens.expires_in:
+            fields["expires_at"] = time.time() + float(tokens.expires_in)
+        await self._merge(**fields)
+
+    async def get_expires_at(self) -> Optional[float]:
+        """When the stored access token dies, in absolute epoch seconds.
+
+        None means unknown — a token stored before this was recorded. Treated as
+        "assume it needs refreshing" by the caller rather than "assume it is
+        fine", because the second is the assumption that produced the bug.
+        """
+        v = (await self._document()).get("expires_at")
+        return float(v) if v is not None else None
+
+    async def get_token_endpoint(self) -> Optional[str]:
+        return (await self._document()).get("token_endpoint")
+
+    async def set_token_endpoint(self, endpoint: str) -> None:
+        """Remember where a refresh is sent, recorded when the person authorised.
+
+        Stored rather than re-derived on each refresh for the reason
+        `core/mcp_oauth.py` gives: a server that later advertises a *different*
+        token endpoint would otherwise be handed this tenant's refresh token on
+        its own say-so.
+
+        It also has to be stored because the SDK cannot supply it cold. Its
+        `_refresh_token()` reads `context.oauth_metadata`, which is populated by
+        discovery during an interactive flow and is `None` in a fresh process —
+        so it falls back to `urljoin(server_url, "/token")`. For Vercel the real
+        endpoint is `https://vercel.com/api/login/oauth/token`, nothing like
+        `https://mcp.vercel.com/token`, and the same is true of most providers.
+        """
+        await self._merge(token_endpoint=endpoint)
 
     async def get_client_info(self) -> Optional[OAuthClientInformationFull]:
-        d = self._read(self._cli)
+        d = (await self._document()).get("client")
         return OAuthClientInformationFull(**d) if d else None
 
     async def set_client_info(self, info: OAuthClientInformationFull) -> None:
-        self._write(self._cli, info.model_dump(mode="json"))
+        await self._merge(client=info.model_dump(mode="json"))
 
-    def delete_all(self):
-        for p in (self._tok, self._cli):
-            if os.path.exists(p):
-                os.remove(p)
+    async def delete_all(self) -> None:
+        from core.store import collections
+
+        items = [
+            i for i in await collections.load(_TOKENS_COLLECTION)
+            if i.get("id") != self._key
+        ]
+        await collections.save(_TOKENS_COLLECTION, items)
+
+
+def _safe_server_name(server_name: str) -> str:
+    """A server name as a storage key.
+
+    Stricter than the old filename sanitiser, which replaced only ``/`` and
+    spaces — a server called ``../x`` produced a traversal-shaped path when
+    these were files. Keeping every unexpected character out costs nothing and
+    means a badly-named server is never a question about path handling.
+    """
+    return "".join(c if c.isalnum() or c in "-_." else "_" for c in server_name).strip(".") or "_"
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -141,12 +338,12 @@ def _make_oauth_provider(
     return OAuthClientProvider(
         server_url=url,
         client_metadata=OAuthClientMetadata(
-            client_name="Synapse AI",
+            client_name="SynapseOrch",
             redirect_uris=[AnyUrl(OAUTH_CALLBACK_URL)],
             grant_types=["authorization_code", "refresh_token"],
             response_types=["code"],
         ),
-        storage=FileTokenStorage(name),
+        storage=StoreTokenStorage(name),
         redirect_handler=redirect_handler,
         callback_handler=callback_handler,
     )
@@ -175,7 +372,7 @@ async def _open_http_session(
         return read, write
     except BaseException as e:
         err_http = e
-        print(f"[MCP] Streamable HTTP failed for {url}: {type(e).__name__}: {e}. Trying SSE…")
+        _log.debug(f"[MCP] Streamable HTTP failed for {url}: {type(e).__name__}: {e}. Trying SSE…")
 
     # ── SSE fallback ───────────────────────────────────────────────────────────
     # Pass only the headers we explicitly set (auth bearer etc.), NOT httpx
@@ -197,38 +394,245 @@ async def _open_http_session(
         ) from None
 
 
+def _http_opener(url: str, http_client: httpx.AsyncClient):
+    """An opener for `MCPClientManager._hold`: this client, the transport, the session."""
+    async def opener(stack: AsyncExitStack) -> ClientSession:
+        client = await stack.enter_async_context(http_client)
+        read, write = await _open_http_session(stack, url, client)
+        session = await stack.enter_async_context(
+            ClientSession(read, write, read_timeout_seconds=_SESSION_READ_TIMEOUT)
+        )
+        await session.initialize()
+        return session
+    return opener
+
+
 # ── Manager ────────────────────────────────────────────────────────────────────
+
+#: An address's own credentials (`scheme://user:secret@host`) and the values of its query (`?api_key=…`).
+_USERINFO = re.compile(r"(\b[A-Za-z][A-Za-z0-9+.-]*://)[^\s/@'\"]+@")
+_QUERY_VALUE = re.compile(r"([?&][^=\s&#'\"]+=)[^&\s#'\"]+")
+
+
+def connect_failure(exc: BaseException, config: Optional[Dict] = None) -> str:
+    """Why a server did not connect, as anyone may read it (F1306): the first real error inside the transport's task
+    group, which is what it raises ("unhandled errors in a TaskGroup (1 sub-exception)" said nothing), scrubbed as a
+    stored error is (`run_error.clean`), and without the server's own token, the credentials in an address or its
+    query's values. The one wording: the add's answer, Retry's, the server list and Synapse AI's
+    reconnect all read it, through `MCPClientManager.last_error`."""
+    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        exc = exc.exceptions[0]
+    return said_safely(_own_text(exc), config)
+
+
+def _own_text(exc: BaseException) -> str:
+    """An error's own words. An OSError's (an SSL error's among them) are its `strerror` once one is set, else an SSL
+    error's `verify_message`; `str()` of one built with a single argument is that argument's tuple on some Pythons
+    (3.14 with OpenSSL 3.5: "('…',)"), so a single text argument is read as itself (F1306, CI2)."""
+    if isinstance(exc, OSError):
+        for said in (exc.strerror, getattr(exc, "verify_message", None)):
+            if isinstance(said, str) and said.strip():
+                return said.strip()
+    if len(exc.args) == 1 and isinstance(exc.args[0], str) and exc.args[0].strip():
+        return exc.args[0].strip()
+    return str(exc).strip() or type(exc).__name__
+
+
+def said_safely(text: str, config: Optional[Dict] = None) -> str:
+    """`text` about a server with no credential in it: the server's own token, an address's credentials, a query's
+    values, and anything `run_error.clean` takes out of a stored error. Every view of a server's reason reads it so."""
+    from core.orchestration.run_error import clean
+    from core.secret_scrub import CREDENTIAL_MARK
+
+    token = str((config or {}).get("token") or "").strip()
+    if token:
+        text = text.replace(token, CREDENTIAL_MARK)
+    # A local server's own env holds its keys, and the line it wrote as it exited may quote one (F1461). Values too
+    # short to be a key ("1", "true") are left, so the reason still reads.
+    for value in sorted(((config or {}).get("env") or {}).values(), key=lambda v: -len(str(v))):
+        if len(str(value).strip()) >= 6:
+            text = text.replace(str(value).strip(), CREDENTIAL_MARK)
+    text = _QUERY_VALUE.sub(lambda m: m.group(1) + CREDENTIAL_MARK, _USERINFO.sub(rf"\1{CREDENTIAL_MARK}@", text))
+    return clean(text)[:300]
+
+
+class _StderrTail:
+    """A local server's stderr (F1461, ISS1 — GitHub #377): passed on to the backend's own stderr, where it went before,
+    with its last lines kept, so a server that exits as it starts says why ("bad config: GITHUB_TOKEN is not set")
+    rather than "Connection closed". A pipe drained by a thread: nothing on disk, and a server that writes a lot
+    never waits on a full pipe."""
+
+    KEEP = 20
+
+    def __init__(self, name: str):
+        import collections
+        import threading
+
+        read_fd, write_fd = os.pipe()
+        #: Handed to the child as its stderr; the parent's copy is closed once the child holds its own (`spawned`).
+        self.writer = os.fdopen(write_fd, "w", encoding="utf-8", errors="replace")
+        self._reader = os.fdopen(read_fd, "r", encoding="utf-8", errors="replace")
+        self.lines: "collections.deque[str]" = collections.deque(maxlen=self.KEEP)
+        self._thread = threading.Thread(target=self._drain, name=f"mcp-stderr:{name}", daemon=True)
+        self._thread.start()
+
+    def _drain(self) -> None:
+        import sys
+
+        try:
+            for line in self._reader:
+                try:
+                    sys.stderr.write(line)
+                except Exception:  # noqa: BLE001 — a closed or odd stderr never stops the drain
+                    pass
+                if line.strip():
+                    self.lines.append(line.rstrip("\n"))
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                self._reader.close()
+            except OSError:
+                pass
+
+    def spawned(self) -> None:
+        """The child has its own copy now; ours would keep the pipe open after it exits."""
+        try:
+            self.writer.close()
+        except OSError:
+            pass
+
+    def last_line(self, wait: float = 1.0) -> Optional[str]:
+        """The last non-empty line it wrote; waits up to `wait` seconds for an exited child's last write to arrive."""
+        self._thread.join(wait)
+        return self.lines[-1] if self.lines else None
+
 
 class MCPClientManager:
 
     def __init__(self, exit_stack: AsyncExitStack):
         self.exit_stack = exit_stack
         self.sessions: Dict[str, ClientSession] = {}
-        self.servers_config: List[Dict[str, Any]] = self._load_servers()
+        # Populated by `load()`, not here: __init__ cannot await, and the
+        # registrations live in the store now. The one construction site awaits
+        # connect_all() on the next line, which loads first.
+        self.servers_config: List[Dict[str, Any]] = []
+        # name → (the task that holds the session open, the event that closes it)
+        self._owners: Dict[str, tuple[asyncio.Task, asyncio.Event]] = {}
+        # Closed with the app: a callback, not an entered context, so pushing
+        # it from here touches no task's cancel scopes.
+        exit_stack.push_async_callback(self.close_all)
+
+    # ── Session ownership (F200) ───────────────────────────────────────────────
+
+    async def _hold(self, name: str, opener) -> ClientSession:
+        """Open a session in a task of its own, which holds it until it is closed.
+
+        `opener(stack)` enters the transport and the `ClientSession` on `stack`
+        and initializes. A transport is an anyio task group, which must be
+        entered and left on one task. Opened in the caller's task — a request's,
+        for Add server and Retry — it was entered inside the request's middleware
+        scopes and parked on the lifespan's exit stack; when the request
+        returned, Starlette's middleware left its own scope while the
+        transport's was still open ("Attempted to exit a cancel scope that isn't
+        the current tasks's current cancel scope") and the transport's tasks
+        went with it. The server showed Connected and its tools never appeared
+        (F200). Only a server connected at startup, in the lifespan's task, worked.
+
+        A session opened again under the same name (a Retry) replaces the old
+        one, which is closed rather than left running.
+        """
+        opened: asyncio.Future = asyncio.get_running_loop().create_future()
+        stop = asyncio.Event()
+
+        async def own() -> None:
+            try:
+                async with AsyncExitStack() as stack:
+                    session = await opener(stack)
+                    opened.set_result(session)
+                    await stop.wait()
+            except Exception as exc:  # noqa: BLE001 — reported to the opener, or logged
+                if not opened.done():
+                    opened.set_exception(exc)
+                else:
+                    _log.info(f"[MCP] Session '{name}' closed with an error: {exc!r}")
+            except BaseException as exc:
+                if not opened.done():
+                    opened.set_exception(exc)
+                raise
+
+        # Detached from the request or job that opened it: the session outlives
+        # it, and its traffic would otherwise join that one trace for its life.
+        from core.telemetry import detached_context
+        task = asyncio.create_task(own(), name=f"mcp-session:{name}", context=detached_context())
+        try:
+            session = await opened
+        except BaseException:
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+        await self._close(name)
+        self._owners[name] = (task, stop)
+        return session
+
+    async def _close(self, name: str) -> None:
+        """Close the session held under `name`, on the task that opened it."""
+        owner = self._owners.pop(name, None)
+        if owner is None:
+            return
+        task, stop = owner
+        stop.set()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=10)
+        except asyncio.TimeoutError:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        except Exception:  # noqa: BLE001 — a close that failed is still closed
+            pass
+
+    async def close_all(self) -> None:
+        for name in list(self._owners):
+            await self._close(name)
 
     # ── Persistence ────────────────────────────────────────────────────────────
 
-    def _load_servers(self) -> List[Dict[str, Any]]:
-        if not os.path.exists(MCP_SERVERS_FILE):
-            return []
+    async def load(self) -> List[Dict[str, Any]]:
+        """Read this tenant's MCP server registrations into memory."""
+        from core.store.resources import load_mcp_servers
         try:
-            with open(MCP_SERVERS_FILE, encoding="utf-8") as f:
-                return json.load(f)
+            self.servers_config = await load_mcp_servers()
         except Exception as e:
-            print(f"Error loading MCP servers config: {e}")
-            return []
+            _log.info(f"Error loading MCP servers config: {e}")
+            self.servers_config = []
+        return self.servers_config
 
-    def save_servers(self):
-        os.makedirs(os.path.dirname(MCP_SERVERS_FILE), exist_ok=True)
-        with open(MCP_SERVERS_FILE, "w", encoding="utf-8") as f:
-            json.dump(self.servers_config, f, indent=4)
+    async def save_servers(self):
+        from core.store.resources import replace_mcp_servers
+        await replace_mcp_servers(self.servers_config)
 
-    def _set_status(self, name: str, status: str):
+    def last_error(self, name: str) -> Optional[str]:
+        """Why `name` last failed to connect, in `connect_failure`'s words; None once it connects (F1306)."""
+        return (self.get_server_config(name) or {}).get("last_error")
+
+    async def _failed(self, name: str, exc: BaseException, config: Optional[Dict] = None, *,
+                      stderr: Optional[str] = None) -> str:
+        """Keep why `name` did not connect, beside its status, and return it (F1306). A local server's last stderr
+        line, when it wrote one, is the reason: it says what the transport's "Connection closed" does not (F1461)."""
+        config = config or self.get_server_config(name)
+        said = said_safely(stderr, config) if stderr else connect_failure(exc, config)
+        if (kept := self.get_server_config(name)) is not None:
+            kept["last_error"] = said
+            await self.save_servers()
+        return said
+
+    def _connected(self, name: str) -> None:
+        (self.get_server_config(name) or {}).pop("last_error", None)
+
+    async def _set_status(self, name: str, status: str):
         for s in self.servers_config:
             if s["name"] == name:
                 s["status"] = status
                 break
-        self.save_servers()
+        await self.save_servers()
 
     async def _auto_register(self, name: str):
         """Register a newly connected session into the global agent_sessions and tool_router.
@@ -244,11 +648,13 @@ class MCPClientManager:
             _server.agent_sessions[agent_key] = session
             tools = await session.list_tools()
             for tool in tools.tools:
-                _server.tool_router[f"{name}__{tool.name}"] = (agent_key, tool.name)
-            print(f"[MCP] Registered {len(tools.tools)} tools for '{name}': "
+                _server.tool_router.register(
+                    name, tool.name, session_key=agent_key, alias=False
+                )
+            _log.debug(f"[MCP] Registered {len(tools.tools)} tools for '{name}': "
                   f"{[t.name for t in tools.tools]}")
         except Exception as e:
-            print(f"[MCP] Tool registration failed for '{name}': {e}")
+            _log.debug(f"[MCP] Tool registration failed for '{name}': {e}")
 
     # ── Stdio connection ───────────────────────────────────────────────────────
 
@@ -259,7 +665,7 @@ class MCPClientManager:
         env_vars = config.get("env", {})
 
         if not command:
-            print(f"Skipping '{name}': no command")
+            _log.info(f"Skipping '{name}': no command")
             return None
 
         # Gate at the sink, not only at the callers. Spawning a stdio server is
@@ -269,40 +675,47 @@ class MCPClientManager:
         # bundle's MCP configs to disk and called this method directly, skipping
         # the add_server/reconnect_server/connect_all gates entirely.
         if not stdio_mcp_allowed():
-            print(f"[MCP] Refusing to spawn stdio server '{name}': "
+            _log.debug(f"[MCP] Refusing to spawn stdio server '{name}': "
                   f"stdio MCP servers are disabled on this deployment.")
-            self._set_status(name, "disconnected")
+            await self._set_status(name, "disconnected")
             return None
         try:
             check_stdio_command_allowed(command)
         except ValueError as e:
-            print(f"[MCP] Refusing to spawn stdio server '{name}': {e}")
-            self._set_status(name, "disconnected")
+            _log.debug(f"[MCP] Refusing to spawn stdio server '{name}': {e}")
+            await self._set_status(name, "disconnected")
             return None
 
         env = os.environ.copy()
         env.update(env_vars)
 
-        print(f"Connecting to stdio MCP server '{name}' ({command} {args})...")
-        inner_stack = AsyncExitStack()
-        try:
+        _log.info(f"Connecting to stdio MCP server '{name}' ({command} {args})...")
+
+        tail = _StderrTail(name)
+
+        async def opener(stack: AsyncExitStack) -> ClientSession:
             params = StdioServerParameters(command=command, args=args, env=env)
-            read, write = await inner_stack.enter_async_context(stdio_client(params))
-            session = await inner_stack.enter_async_context(
+            try:
+                read, write = await stack.enter_async_context(stdio_client(params, errlog=tail.writer))
+            finally:
+                tail.spawned()
+            session = await stack.enter_async_context(
                 ClientSession(read, write, read_timeout_seconds=_SESSION_READ_TIMEOUT)
             )
             await session.initialize()
-            await self.exit_stack.enter_async_context(inner_stack)
-            self.sessions[name] = session
-            print(f"Connected to stdio MCP server '{name}'.")
             return session
-        except BaseException as e:
-            print(f"Failed stdio connect '{name}': {e}")
-            try:
-                await inner_stack.aclose()
-            except BaseException:
-                pass
+
+        try:
+            session = await self._hold(name, opener)
+        except Exception as e:
+            tail.spawned()  # closed already when the child started; closed now if it never did
+            said = await self._failed(name, e, config, stderr=tail.last_line())
+            _log.info(f"Failed stdio connect '{name}': {said}")
             return None
+        self._connected(name)
+        self.sessions[name] = session
+        _log.info(f"Connected to stdio MCP server '{name}'.")
+        return session
 
     # ── Remote connection: bearer token ───────────────────────────────────────
 
@@ -313,36 +726,26 @@ class MCPClientManager:
         token = config.get("token", "")
 
         headers = {"Authorization": f"Bearer {token}"} if token else {}
-        print(f"Connecting to remote MCP server '{name}' ({url})...")
-        inner_stack = AsyncExitStack()
+        _log.info(f"Connecting to remote MCP server '{name}' ({url})...")
         try:
-            http_client = await inner_stack.enter_async_context(
-                httpx.AsyncClient(headers=headers, follow_redirects=True)
-            )
-            read, write = await _open_http_session(inner_stack, url, http_client)
-            session = await inner_stack.enter_async_context(
-                ClientSession(read, write, read_timeout_seconds=_SESSION_READ_TIMEOUT)
-            )
-            await session.initialize()
-            await self.exit_stack.enter_async_context(inner_stack)
-            self.sessions[name] = session
-            print(f"Connected to remote MCP server '{name}'.")
-            return session
-        except BaseException as e:
-            print(f"Failed remote connect '{name}': {e}")
-            try:
-                await inner_stack.aclose()
-            except BaseException:
-                pass
+            session = await self._hold(name, _http_opener(url, httpx.AsyncClient(headers=headers, follow_redirects=True)))
+        except Exception as e:
+            _log.info(f"Failed remote connect '{name}': {await self._failed(name, e, config)}")
             return None
+        self._connected(name)
+        self.sessions[name] = session
+        _log.info(f"Connected to remote MCP server '{name}'.")
+        return session
 
     # ── Remote connection: OAuth (background task) ─────────────────────────────
 
-    async def start_oauth_connect(self, config: Dict, auth_url_future: "asyncio.Future[str]"):
+    async def start_oauth_connect(self, config: Dict, auth_url_future: "asyncio.Future[str | None]"):
         """
         Background coroutine for the OAuth flow.
         Resolves auth_url_future as soon as the auth URL is known so the API
-        route can return it to the frontend immediately.
+        route can return it to the frontend immediately — with None if the
+        server connected without asking (it never answered 401), and with the
+        error if it failed first (U61). See `connect_or_authorise`.
         """
         name = config["name"]
         url  = config["url"]
@@ -376,23 +779,138 @@ class MCPClientManager:
         )
 
         try:
-            http_client = await self.exit_stack.enter_async_context(
-                httpx.AsyncClient(auth=oauth_provider, follow_redirects=True)
-            )
-            read, write = await _open_http_session(self.exit_stack, url, http_client)
-            session = await self.exit_stack.enter_async_context(
-                ClientSession(read, write, read_timeout_seconds=_SESSION_READ_TIMEOUT)
-            )
-            await session.initialize()
+            session = await self._hold(
+                name, _http_opener(url, httpx.AsyncClient(auth=oauth_provider, follow_redirects=True)))
+            self._connected(name)
             self.sessions[name] = session
-            self._set_status(name, "connected")
+
+            # Record where a refresh goes, now, while the provider still holds
+            # the metadata it discovered during this flow. It is thrown away
+            # with the process otherwise, and a refresh in a later process has
+            # no way to find it again — which is what `_discover_token_endpoint`
+            # exists to paper over for servers authorised before this line.
+            try:
+                metadata = getattr(oauth_provider.context, "oauth_metadata", None)
+                endpoint = getattr(metadata, "token_endpoint", None)
+                if endpoint:
+                    await StoreTokenStorage(name).set_token_endpoint(str(endpoint))
+            except Exception as e:
+                _log.debug(f"[MCP] Could not record the token endpoint for '{name}': {e}")
+
+            await self._set_status(name, "connected")
             await self._auto_register(name)    # ← register tools into agent_sessions
-            print(f"OAuth complete — connected to '{name}'.")
+            _log.info(f"OAuth complete — connected to '{name}'.")
+            if not auth_url_future.done():
+                # Connected without being asked to authorise: a public server.
+                auth_url_future.set_result(None)
         except Exception as e:
-            print(f"OAuth connection failed for '{name}': {e}")
-            self._set_status(name, "disconnected")
+            _log.info(f"OAuth connection failed for '{name}': {await self._failed(name, e, config)}")
+            await self._set_status(name, "disconnected")
             if not auth_url_future.done():
                 auth_url_future.set_exception(e)
+
+    async def connect_or_authorise(self, config: Dict, wait: float = 15.0) -> Dict[str, Any]:
+        """Connect a remote server that has no token, or learn where to authorise it.
+
+        One flow for both: the SDK asks for OAuth only when the server answers
+        401. A public server (DeepWiki, Context7) never does, so the flow just
+        connected — and never told the caller, which waited out `wait` for an
+        authorisation URL that was not coming and answered "Use Retry" while the
+        server was already connected (U61). The flow now reports how it ended.
+
+        Returns `connected`, `status` (`connected`, `oauth_pending`, `connecting`
+        when it is still going after `wait`, or `disconnected`), `auth_url`, and
+        `error` — why it did not connect, in words.
+        """
+        from core.background import spawn_background
+        outcome: asyncio.Future = asyncio.get_running_loop().create_future()
+        spawn_background(self.start_oauth_connect(config, outcome), name="mcp-oauth-connect")
+        try:
+            # Shielded: the flow carries on in the background past `wait`.
+            auth_url = await asyncio.wait_for(asyncio.shield(outcome), timeout=wait)
+        except asyncio.TimeoutError:
+            return {"connected": False, "status": "connecting", "auth_url": None, "error": None}
+        except Exception as e:
+            return {"connected": False, "status": "disconnected", "auth_url": None,
+                    "error": self.last_error(config["name"]) or connect_failure(e, config)}
+        if auth_url is None:
+            return {"connected": True, "status": "connected", "auth_url": None, "error": None}
+        return {"connected": False, "status": "oauth_pending", "auth_url": auth_url, "error": None}
+
+    # ── Silent renewal, before a reconnect ────────────────────────────────────
+
+    async def _renew_if_expired(self, name: str, url: str) -> bool:
+        """Refresh this server's access token if it has expired. True if renewed.
+
+        **Why this exists rather than leaning on the SDK.** `OAuthClientProvider`
+        has a refresh path and it never runs: `_initialize()` restores the tokens
+        but not `token_expiry_time`, `is_token_valid()` treats a `None` expiry as
+        valid, so the proactive refresh is skipped and the dead token is sent.
+        The `401` that comes back does not trigger a refresh either — it starts a
+        *full* re-authorisation, straight into the `noop_callback` that
+        `_connect_remote_cached` deliberately installs, which raises. The server
+        then falls through to a no-auth connect, which an authenticated server
+        refuses, and the person is asked to click Authorize again. Every restart.
+
+        Even with the expiry restored the SDK could not finish the job cold: its
+        `_refresh_token()` takes the endpoint from `context.oauth_metadata`,
+        which discovery fills in during an interactive flow and which is `None`
+        in a fresh process, so it would POST to `urljoin(server_url, "/token")`.
+        Those lines are marked `# pragma: no cover` upstream, which is a fair
+        warning about how much weight to put on them.
+
+        So the renewal is explicit and reuses `core/mcp_oauth.py` — the same
+        exchange the worker performs, in one place, with the failure visible in
+        a log rather than inferred from a re-auth prompt.
+        """
+        from core import mcp_oauth
+
+        storage = StoreTokenStorage(name)
+        tokens = await storage.get_tokens()
+        if not tokens or not tokens.refresh_token:
+            return False
+
+        # An unknown expiry means "stored before this was recorded", and is
+        # treated as expired. Assuming the other way is the bug this fixes; the
+        # cost of being wrong here is one refresh nobody needed.
+        expires_at = await storage.get_expires_at()
+        if expires_at is not None and time.time() < expires_at - _EXPIRY_SKEW_SECONDS:
+            return False
+
+        client_info = await storage.get_client_info()
+        if not client_info or not client_info.client_id:
+            return False
+
+        endpoint = await storage.get_token_endpoint()
+        if not endpoint:
+            endpoint = await _discover_token_endpoint(url)
+            if endpoint:
+                await storage.set_token_endpoint(endpoint)
+        if not endpoint:
+            _log.debug(f"[MCP] No token endpoint known for '{name}' — cannot refresh.")
+            return False
+
+        cfg = {
+            "name": name,
+            "refresh_token": tokens.refresh_token,
+            "token_endpoint": endpoint,
+            "client_id": client_info.client_id,
+            "client_secret": client_info.client_secret or "",
+        }
+        fresh = await mcp_oauth.refresh_access_token(cfg)
+        if not fresh:
+            return False
+
+        # `set_tokens` writes the new absolute expiry, and a rotated refresh
+        # token is carried across — several providers issue a new one every time
+        # and invalidate the old, so keeping only the access token works exactly
+        # once and fails forever after.
+        renewed = OAuthToken(**fresh)
+        if not renewed.refresh_token:
+            renewed.refresh_token = tokens.refresh_token
+        await storage.set_tokens(renewed)
+        _log.debug(f"[MCP] Renewed the access token for '{name}'.")
+        return True
 
     # ── Remote reconnect: use cached tokens (startup / manual retry) ───────────
 
@@ -410,13 +928,23 @@ class MCPClientManager:
         name = config["name"]
         url  = config["url"]
 
-        storage = FileTokenStorage(name)
+        storage = StoreTokenStorage(name)
         has_tokens = bool(await storage.get_tokens())
 
         if has_tokens:
+            # Renew first, so the provider below is handed a token that works.
+            # Once storage holds a live token the SDK's own path is correct
+            # again — it is only the *expired* case it cannot get right.
+            try:
+                await self._renew_if_expired(name, url)
+            except Exception as e:
+                # A renewal that blew up must not cost us the connect attempt
+                # the old token might still satisfy.
+                _log.debug(f"[MCP] Token renewal for '{name}' failed: {e}")
+
             # ── OAuth path: try cached tokens, allow silent refresh ────────────
             async def noop_redirect(auth_url: str) -> None:
-                print(f"[MCP] Token refresh failed for '{name}' — re-auth needed.")
+                _log.debug(f"[MCP] Token refresh failed for '{name}' — re-auth needed.")
 
             async def noop_callback() -> tuple[str, Optional[str]]:
                 raise RuntimeError("Interactive OAuth not available at startup")
@@ -426,54 +954,34 @@ class MCPClientManager:
                 redirect_handler=noop_redirect,
                 callback_handler=noop_callback,
             )
-            inner_stack = AsyncExitStack()
             try:
-                http_client = await inner_stack.enter_async_context(
-                    httpx.AsyncClient(auth=oauth_provider, follow_redirects=True)
-                )
-                read, write = await _open_http_session(inner_stack, url, http_client)
-                session = await inner_stack.enter_async_context(
-                    ClientSession(read, write, read_timeout_seconds=_SESSION_READ_TIMEOUT)
-                )
-                await session.initialize()
-                await self.exit_stack.enter_async_context(inner_stack)
+                session = await self._hold(
+                    name, _http_opener(url, httpx.AsyncClient(auth=oauth_provider, follow_redirects=True)))
+                self._connected(name)
                 self.sessions[name] = session
-                print(f"[MCP] Reconnected '{name}' with cached OAuth tokens.")
+                _log.debug(f"[MCP] Reconnected '{name}' with cached OAuth tokens.")
                 return session
-            except BaseException as e:
-                print(f"[MCP] Cached OAuth reconnect failed for '{name}': {e}. Falling back to direct connect.")
-                try:
-                    await inner_stack.aclose()
-                except BaseException:
-                    pass
+            except Exception as e:
+                _log.debug(f"[MCP] Cached OAuth reconnect failed for '{name}': {connect_failure(e, config)}. "
+                       "Falling back to direct connect.")
 
         # ── Direct path: no token, no OAuth — server may not need auth ───────
-        print(f"[MCP] Attempting direct (no-auth) connection to '{name}' ({url})...")
-        inner_stack = AsyncExitStack()
+        _log.debug(f"[MCP] Attempting direct (no-auth) connection to '{name}' ({url})...")
         try:
-            http_client = await inner_stack.enter_async_context(
-                httpx.AsyncClient(follow_redirects=True)
-            )
-            read, write = await _open_http_session(inner_stack, url, http_client)
-            session = await inner_stack.enter_async_context(
-                ClientSession(read, write, read_timeout_seconds=_SESSION_READ_TIMEOUT)
-            )
-            await session.initialize()
-            await self.exit_stack.enter_async_context(inner_stack)
-            self.sessions[name] = session
-            print(f"[MCP] Connected '{name}' via direct (no-auth) connection.")
-            return session
-        except BaseException as e:
-            print(f"[MCP] Direct connect also failed for '{name}': {e}")
-            try:
-                await inner_stack.aclose()
-            except BaseException:
-                pass
+            session = await self._hold(name, _http_opener(url, httpx.AsyncClient(follow_redirects=True)))
+        except Exception as e:
+            _log.debug(f"[MCP] Direct connect also failed for '{name}': {await self._failed(name, e, config)}")
             return None
+        self._connected(name)
+        self.sessions[name] = session
+        _log.debug(f"[MCP] Connected '{name}' via direct (no-auth) connection.")
+        return session
 
     # ── connect_all (startup) ──────────────────────────────────────────────────
 
     async def connect_all(self):
+        await self.load()
+
         for config in self.servers_config:
             name = config.get("name")
             if not name or name in self.sessions:
@@ -485,8 +993,8 @@ class MCPClientManager:
                 # disabled — otherwise a saved (possibly malicious) config would
                 # execute on every boot. See GHSA-3j67-x3j8-r32x.
                 if not stdio_mcp_allowed():
-                    print(f"[MCP] Skipping stdio server '{name}': stdio MCP disabled on this deployment.")
-                    self._set_status(name, "disabled")
+                    _log.debug(f"[MCP] Skipping stdio server '{name}': stdio MCP disabled on this deployment.")
+                    await self._set_status(name, "disabled")
                     continue
                 session = await self.connect_stdio_server(config)
             elif config.get("token"):
@@ -495,15 +1003,15 @@ class MCPClientManager:
                 session = await self._connect_remote_cached(config)
 
             if session:
-                self._set_status(name, "connected")
+                await self._set_status(name, "connected")
                 await self._auto_register(name)   # ← register on startup
             else:
                 # Remote servers without a bearer token use OAuth — failure likely means re-auth needed.
                 # Stdio and bearer-token servers just go disconnected.
                 if server_type == "remote" and not config.get("token"):
-                    self._set_status(name, "reauth_needed")
+                    await self._set_status(name, "reauth_needed")
                 else:
-                    self._set_status(name, "disconnected")
+                    await self._set_status(name, "disconnected")
         return self.sessions
 
     # ── add_server ─────────────────────────────────────────────────────────────
@@ -521,9 +1029,18 @@ class MCPClientManager:
     ) -> Dict[str, Any]:
         import shutil
 
+        from core.models import mcp_server_id_problem
+
+        # The short id its tools are named after, and the routes take whole (F1460): checked here too, for any door.
+        if (problem := mcp_server_id_problem(name)) is not None:
+            raise ValueError(problem)
         for s in self.servers_config:
             if s["name"] == name:
-                raise ValueError(f"Server '{name}' already exists.")
+                if server_type != "remote" or s.get("server_type") != "remote" or not _same_server_url(s.get("url"), url):
+                    raise ValueError(f"Server '{name}' already exists.")
+                if command or args or env:
+                    raise ValueError(f"Server '{name}' already exists: change its settings on the Apps screen.")
+                return await self._added_again(s, url, token)
 
         new_config: Dict[str, Any] = {"name": name, "label": label or name, "server_type": server_type, "status": "disconnected"}
 
@@ -539,43 +1056,60 @@ class MCPClientManager:
                 raise ValueError(f"'{command}' not found in PATH. {hints.get(command, 'Please install it.')}")
             new_config.update({"command": command, "args": args or [], "env": env or {}})
         else:
-            if not url:
-                raise ValueError("URL is required for remote servers.")
+            if (problem := await remote_url_refusal(url)) is not None:
+                raise ValueError(problem)
             new_config.update({"url": url, "token": token})
 
         # Always save first
         self.servers_config.append(new_config)
-        self.save_servers()
+        await self.save_servers()
 
         if server_type == "stdio":
             session = await self.connect_stdio_server(new_config)
             if session:
-                self._set_status(name, "connected")
+                await self._set_status(name, "connected")
                 new_config["status"] = "connected"
                 await self._auto_register(name)
-            return {"config": new_config, "connected": bool(session), "status": new_config["status"]}
+            # Why it did not connect, as a remote add says it (F1306): its last stderr line, when it wrote one (F1461).
+            return {"config": new_config, "connected": bool(session), "status": new_config["status"],
+                    "error": None if session else self.last_error(name)}
 
         # Remote
         if token:
             session = await self.connect_remote_server(new_config)
             if session:
-                self._set_status(name, "connected")
+                await self._set_status(name, "connected")
                 new_config["status"] = "connected"
                 await self._auto_register(name)
-            return {"config": new_config, "connected": bool(session), "status": new_config["status"]}
+            return {"config": new_config, "connected": bool(session), "status": new_config["status"],
+                    "error": None if session else self.last_error(name)}
 
-        # Remote + OAuth
-        loop = asyncio.get_event_loop()
-        auth_url_future: asyncio.Future = loop.create_future()
-        asyncio.create_task(self.start_oauth_connect(new_config, auth_url_future))
+        # Remote, no token: connected, or a URL to authorise at (U61). The
+        # config is answered as it stands now, so `connected` and its
+        # `status` never disagree — the flow may still change it later.
+        outcome = await self.connect_or_authorise(new_config)
+        return {"config": {**new_config, "status": "connected" if outcome["connected"] else "disconnected"},
+                **outcome}
 
-        try:
-            # Wait up to 15 s for OAuthClientProvider to hand us the auth URL.
-            # Use asyncio.shield so the background task keeps running on timeout.
-            auth_url = await asyncio.wait_for(asyncio.shield(auth_url_future), timeout=15.0)
-            return {"config": new_config, "connected": False, "status": "oauth_pending", "auth_url": auth_url}
-        except asyncio.TimeoutError:
-            return {"config": new_config, "connected": False, "status": "disconnected", "auth_url": None}
+    async def _added_again(self, config: Dict[str, Any], url: str, token: str) -> Dict[str, Any]:
+        """An add of a remote server already saved here at the same URL (F1290): that server, pressed again on its
+        card, never a second. The add's URL rule first; only its token changes, and only when one is given; then it
+        connects as an add connects, and answers as one."""
+        if (problem := await remote_url_refusal(url)) is not None:
+            raise ValueError(problem)
+        if token:
+            config["token"] = token
+            await self.save_servers()
+        if config.get("token"):
+            session = await self.connect_remote_server(config)
+            if session:
+                await self._set_status(config["name"], "connected")
+                config["status"] = "connected"
+                await self._auto_register(config["name"])
+            return {"config": config, "connected": bool(session), "status": config.get("status", "disconnected"),
+                    "error": None if session else self.last_error(config["name"])}
+        outcome = await self.connect_or_authorise(config)
+        return {"config": {**config, "status": "connected" if outcome["connected"] else "disconnected"}, **outcome}
 
     # ── reconnect_server (manual retry) ────────────────────────────────────────
 
@@ -595,7 +1129,7 @@ class MCPClientManager:
             session = await self._connect_remote_cached(config)
 
         if session:
-            self._set_status(name, "connected")
+            await self._set_status(name, "connected")
             await self._auto_register(name)   # ← register on manual retry
             return True
         return False
@@ -604,9 +1138,10 @@ class MCPClientManager:
 
     async def remove_server(self, name: str) -> bool:
         self.servers_config = [s for s in self.servers_config if s["name"] != name]
-        self.save_servers()
+        await self.save_servers()
         self.sessions.pop(name, None)
-        FileTokenStorage(name).delete_all()
+        await self._close(name)
+        await StoreTokenStorage(name).delete_all()
         return True
 
     # ── helpers ────────────────────────────────────────────────────────────────

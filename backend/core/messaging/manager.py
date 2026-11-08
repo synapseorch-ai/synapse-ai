@@ -6,16 +6,22 @@ Responsibilities:
 - Start/stop adapters for enabled channels
 - Provide the adapter registry to HTTP routes (Teams/WhatsApp webhooks)
 - Manage per-chat active agent selection (multi-agent mode)
-- Handle human-step Future resolution (first-response-wins)
+- Answer a paused run from a reply in the channel its human step names
 - Provide agent runner function used by all adapters
 """
-import asyncio
 import logging
 from typing import Any, Optional
 
 from core.messaging import store as channel_store
 
 logger = logging.getLogger(__name__)
+
+#: What a channel hears when an agent's turn fails — cloud's words for the same.
+FAILED_REPLY = "⚠️ Something went wrong answering that. Please try again."
+
+#: What a channel hears when the agent it answers with was deleted (F518) — cloud's words for the same.
+AGENT_GONE_REPLY = ("The agent this chat answers with was deleted. "
+                    "Assign another in Synapse, or pick one with /agent.")
 
 # Map platform → adapter class (lazy import in _build_adapter to avoid
 # ImportError when libraries are not installed)
@@ -25,6 +31,9 @@ PLATFORM_ADAPTER_MAP = {
     "slack": "core.messaging.adapters.slack.SlackAdapter",
     "teams": "core.messaging.adapters.teams.TeamsAdapter",
     "whatsapp": "core.messaging.adapters.whatsapp.WhatsAppAdapter",
+    # A phone number (VOX1a): a channel for the list, status and assignments; its calls go through the
+    # voice routes, not through an adapter's receive / send.
+    "twilio_voice": "core.messaging.voice.adapter.VoiceAdapter",
 }
 
 
@@ -49,11 +58,6 @@ class MessagingManager:
         # channel_id → {chat_id → agent_id}  (active agent per conversation)
         self._active_agents: dict[str, dict[str, str]] = {}
 
-        # Human-step futures: f"{run_id}:{step_id}" → asyncio.Future
-        self._human_futures: dict[str, asyncio.Future] = {}
-        # Reverse map: channel_id → future_key (so adapter can resolve by channel)
-        self._channel_to_future: dict[str, str] = {}
-
         # WebHook-mode adapter registries
         self._teams_adapters: dict[str, Any] = {}       # channel_id → TeamsAdapter
         self._whatsapp_adapters: dict[str, Any] = {}   # channel_id → WhatsAppAdapter
@@ -64,7 +68,7 @@ class MessagingManager:
 
     async def start_all(self) -> None:
         """Start all enabled channels from the store."""
-        channels = channel_store.list_channels()
+        channels = await channel_store.list_channels()
         for ch in channels:
             if ch.get("enabled", True):
                 await self.start_channel(ch["id"])
@@ -76,7 +80,7 @@ class MessagingManager:
 
     async def start_channel(self, channel_id: str) -> None:
         """Load channel config, build adapter, and start it."""
-        ch = channel_store.get_channel(channel_id)
+        ch = await channel_store.get_channel(channel_id)
         if not ch:
             logger.warning("[Manager] Channel %s not found in store", channel_id)
             return
@@ -86,16 +90,62 @@ class MessagingManager:
             await self.stop_channel(channel_id)
 
         platform = ch.get("platform", "")
+        if channel_store.is_whatsapp_web(ch):
+            # WhatsApp Web is removed in 2.0 (F1355). A 1.x channel in that mode is kept as it was, switched off so
+            # no start of everything tries it again, and says how to reconnect it: no adapter, no browser.
+            await channel_store.save_channel({**ch, "enabled": False, "status": "stopped",
+                                              "last_error": channel_store.WHATSAPP_WEB_PAUSED})
+            logger.info("[Manager] Channel %s is WhatsApp Web, removed in 2.0: kept switched off", channel_id)
+            return
+
+        # The adapter's default agent comes from the assignment join, with the
+        # legacy scalar as fallback (core/messaging/store.py). Injected into the
+        # runtime copy only — never saved back — so the adapter keeps its
+        # one-`agent_id` view of the world while the store holds many.
+        default_agent = await channel_store.get_default_agent_id(channel_id)
+        if default_agent:
+            ch["agent_id"] = default_agent
+
         try:
             AdapterClass = _import_adapter(platform)
-            adapter = AdapterClass(ch, self)
+            try:
+                adapter = AdapterClass(ch, self)
+            except KeyError as missing:
+                # Each adapter reads its credentials by name as it is built: one never
+                # saved is said in words, not as the KeyError's own text (F513).
+                raise ValueError(_missing_credential(missing)) from missing
+            # Each adapter checks its credentials inside start() (Telegram's
+            # getMe, Discord's login, Slack's auth.test), so a bad token lands
+            # in the except below as the channel's error (F207).
             await adapter.start()
             self._adapters[channel_id] = adapter
-            channel_store.update_channel_status(channel_id, "running")
+            await channel_store.update_channel_status(channel_id, "running")
+            if adapter.failure is not None:
+                # Its loop died while "running" was being written; say so last.
+                await self.adapter_failed(adapter)
+                return
             logger.info("[Manager] Channel %s (%s) started", channel_id, platform)
         except Exception as e:
-            logger.error("[Manager] Failed to start channel %s: %s", channel_id, e)
-            channel_store.update_channel_status(channel_id, "error", str(e))
+            reason = channel_store.redact_secrets(_reason(e), ch)
+            logger.error("[Manager] Failed to start channel %s: %s", channel_id, reason)
+            await channel_store.update_channel_status(channel_id, "error", reason)
+
+    async def adapter_failed(self, adapter) -> None:
+        """An adapter's background loop died: the channel is an error, not RUNNING.
+
+        Dropped from the running set — `get_status` reports any adapter in it as
+        running — stopped to release what it held, and its reason recorded.
+        """
+        channel_id = adapter.channel_id
+        if self._adapters.get(channel_id) is adapter:
+            self._adapters.pop(channel_id, None)
+        try:
+            await adapter.stop()
+        except Exception as e:
+            logger.warning("[Manager] Error stopping failed channel %s: %s", channel_id, e)
+        await channel_store.update_channel_status(
+            channel_id, "error", channel_store.redact_secrets(_reason(adapter.failure), adapter.channel)
+        )
 
     async def stop_channel(self, channel_id: str) -> None:
         """Stop and remove an adapter."""
@@ -105,20 +155,34 @@ class MessagingManager:
                 await adapter.stop()
             except Exception as e:
                 logger.warning("[Manager] Error stopping channel %s: %s", channel_id, e)
-        channel_store.update_channel_status(channel_id, "stopped")
+        await channel_store.update_channel_status(channel_id, "stopped")
         logger.info("[Manager] Channel %s stopped", channel_id)
 
     async def restart_channel(self, channel_id: str) -> None:
         await self.stop_channel(channel_id)
         await self.start_channel(channel_id)
 
+    def get_adapter(self, channel_id: str, platform: str | None = None):
+        """The running adapter for a channel, or None.
+
+        The generic webhook route uses this instead of the per-platform
+        registries below; `platform` guards against a delivery addressed to
+        the right channel id on the wrong platform's URL.
+        """
+        adapter = self._adapters.get(channel_id)
+        if adapter is None:
+            return None
+        if platform is not None and adapter.platform != platform:
+            return None
+        return adapter
+
     # ------------------------------------------------------------------ #
     # Status
     # ------------------------------------------------------------------ #
 
-    def get_status(self) -> list[dict]:
+    async def get_status(self) -> list[dict]:
         """Return live status for all channels (merges store + runtime info)."""
-        channels = channel_store.list_channels()
+        channels = await channel_store.list_channels()
         running_ids = set(self._adapters.keys())
         for ch in channels:
             if ch["id"] in running_ids:
@@ -140,10 +204,10 @@ class MessagingManager:
 
     async def switch_agent(self, channel_id: str, chat_id: str, agent_name: str) -> bool:
         """
-        Switch the active agent for a chat by name.
-        Returns True if the agent was found, False otherwise.
+        Switch the active agent for a chat by name, within this channel's own
+        agents. Returns True if the agent was found, False otherwise.
         """
-        agents = await self.list_agents()
+        agents = await self.list_agents(channel_id)
         match = next(
             (a for a in agents if a.get("name", "").lower() == agent_name.lower()),
             None,
@@ -155,118 +219,198 @@ class MessagingManager:
         self._active_agents[channel_id][chat_id] = match["id"]
         return True
 
-    async def list_agents(self) -> list[dict]:
-        """Return all configured agents from the agent store."""
+    async def list_agents(self, channel_id: Optional[str] = None) -> list[dict]:
+        """Configured agents — every one, or just this channel's assignments.
+
+        Scoped by channel since D72: the assignment join is what the settings
+        screen shows and what a channel's `/agents` must therefore answer.
+        Before that, `/agent <name>` could switch a channel to any agent in the
+        workspace, so a screen listing three agents fronted a bot that would
+        happily become a fourth.
+
+        The join's order is kept — default first — so `/agents` lists the agent
+        that answers a plain message at the top.
+        """
         try:
             from core.routes.agents import load_user_agents
-            return load_user_agents()
+            agents = await load_user_agents()
         except Exception:
             return []
+        if channel_id is None:
+            return agents
 
-    async def list_agent_names(self) -> list[str]:
-        agents = await self.list_agents()
+        assigned = await channel_store.get_agent_ids_for_channel(channel_id)
+        by_id = {a["id"]: a for a in agents}
+        return [by_id[aid] for aid in assigned if aid in by_id]
+
+    async def list_agent_names(self, channel_id: Optional[str] = None) -> list[str]:
+        agents = await self.list_agents(channel_id)
         return [a.get("name", a.get("id", "")) for a in agents]
 
     # ------------------------------------------------------------------ #
     # Agent Runner
     # ------------------------------------------------------------------ #
 
-    async def run_agent(self, message: str, agent_id: str, session_id: str) -> str:
+    async def run_agent(
+        self, message: str, agent_id: str, session_id: str, channel_id: Optional[str] = None,
+        chat_id: Optional[str] = None,
+    ) -> str:
         """
         Run an agent's ReAct loop and return the final text response.
+
+        An Orchestrator agent runs its orchestration instead (F71): the reply is
+        the orchestration's answer, its error, or where it paused.
+
+        A member's own channel (no visitor in scope, and a chat to answer in) may
+        send a helper to the background (S4, SUB1b): the turn has an inbox, as the
+        app's chat has, and a result that arrives after it answered comes back as
+        one follow-up in the same chat (`follow_up_in_channel`).
         """
-        from core.react_engine import run_agent_step
+        from core.react_engine import AgentGone, resolve_agent_for_run, run_agent_step
+        try:
+            agent = await resolve_agent_for_run(agent_id)
+        except AgentGone:
+            # The channel's agent, or this chat's `/agent` choice, was deleted (F518): said, and nothing
+            # runs in its place. A choice naming it is forgotten, so the next message goes to the channel's own.
+            if channel_id and chat_id is not None and self.get_chat_agent(channel_id, chat_id) == agent_id:
+                self.reset_chat_agent(channel_id, chat_id)
+            return AGENT_GONE_REPLY
+        except Exception:
+            agent = None
+        # A channel shows no Sources, so an answer goes without its [K#] labels (D161).
+        from core.knowledge.citations import strip_labels
+
+        if agent and agent.get("type") == "orchestrator":
+            return strip_labels(await self._run_orchestrator(agent, message, session_id, channel_id))
+
+        from core import helpers, visitor
+        from core.chat_approval import nobody_to_ask
+        from core.tenancy import get_tenant
+
+        inbox = None
+        if channel_id and chat_id and visitor.current() is None:
+            inbox = helpers.Inbox(helpers.Conversation(
+                session_id=session_id, agent_key=agent_id, agent_id=agent_id, tenant=get_tenant() or "",
+                reply_to={"channel_id": channel_id, "chat_id": str(chat_id)})).open()
         final_response = ""
         try:
-            async for event in run_agent_step(
-                message=message,
-                agent_id=agent_id,
-                session_id=session_id,
-                server_module=self.server_module,
-                max_turns=15,
-                allowed_tools_override=None,
-            ):
-                if event.get("type") == "final":
-                    final_response = event.get("response", "")
+            # A channel parks no approval, so nobody can answer one here: a
+            # `remember` that would ask is refused with the reason instead, and
+            # the person gets a reply rather than silence (F279).
+            with nobody_to_ask():
+                async for event in run_agent_step(
+                    message=message,
+                    agent_id=agent_id,
+                    session_id=session_id,
+                    server_module=self.server_module,
+                    max_turns=15,
+                    allowed_tools_override=None,
+                    inbox=inbox,
+                    background=inbox is not None,
+                ):
+                    if event.get("type") == "final":
+                        final_response = event.get("response", "")
         except Exception as e:
+            # Whoever is talking to the bot is told something went wrong, not
+            # what: a model's failure is the provider's words about the
+            # workspace's key or account (F133), and anything else is ours.
             logger.error("[Manager] run_agent error (agent=%s): %s", agent_id, e)
-            final_response = f"⚠️ Error: {e}"
+            final_response = FAILED_REPLY
+        finally:
+            if inbox is not None:
+                # What arrived after its last look, or was read by an answer never saved, goes back as a
+                # follow-up in this chat.
+                helpers.redeliver(inbox.conversation, inbox.close())
+            # A channel turn never parks: what it claimed on a board is open again (BOARD1a).
+            from core.boards import resolve as _board_resolve
+            await _board_resolve.release(f"session:{session_id}", settings=None, why="the channel turn ended")
+        return strip_labels(final_response)
+
+    async def _run_orchestrator(
+        self, agent: dict, message: str, session_id: str, channel_id: Optional[str],
+    ) -> str:
+        from core.react_engine import run_orchestrator_agent
+
+        final_response = ""
+        error: Optional[str] = None
+        failed = False
+        paused: Optional[dict] = None
+        try:
+            async for event in run_orchestrator_agent(
+                agent, message, self.server_module, session_id=session_id, with_history=True,
+            ):
+                etype = event.get("type")
+                if etype == "final":
+                    final_response = event.get("response", "")
+                elif etype == "orchestration_error":
+                    error = str(event.get("error") or "the orchestration failed")
+                elif etype == "error":
+                    error = str(event.get("message") or "the orchestration failed")
+                elif etype == "orchestration_complete" and event.get("status") in ("failed", "cancelled"):
+                    # A step failure ends this way; the reason is in `final`.
+                    failed = True
+                elif etype == "human_input_required":
+                    paused = event
+        except Exception as e:
+            logger.error("[Manager] orchestrator agent %s failed: %s", agent.get("id"), e)
+            error = str(e)
+
+        if error or failed:
+            # The run's own words are the workspace's to read (F231, F133's rule
+            # for a model failure): the person on the channel gets the generic
+            # line, the operator the log.
+            logger.warning("[Manager] orchestrator agent %s: run failed: %s",
+                           agent.get("id"), error or final_response or "failed")
+            return FAILED_REPLY
+        if paused:
+            if channel_id and paused.get("channel_id") == channel_id:
+                # The step asked its question in this channel already, and a
+                # reply here answers it (F54). Saying it twice would be noise.
+                return ""
+            return (
+                f"⏸ {paused.get('prompt') or 'The workflow is waiting for input.'}\n\n"
+                f"Answer it in SynapseOrch (run {paused.get('run_id')})."
+            )
+        # Kept as a chat turn is (F260): the next message's run reads it back.
+        # A channel never saved this turn, so a follow-up had nothing to read.
+        try:
+            from core.session import _save_conversation_turn
+            await _save_conversation_turn(session_id=session_id, agent_id=agent.get("id"),
+                                          user=message, assistant=final_response)
+        except Exception as e:  # noqa: BLE001 — the reply is sent either way
+            logger.warning("[Manager] orchestrator agent %s: turn not saved: %s", agent.get("id"), e)
         return final_response
 
     # ------------------------------------------------------------------ #
-    # Human-Step Integration (first-response-wins)
+    # Human steps: a reply in the channel answers the run waiting on it
     # ------------------------------------------------------------------ #
 
-    async def wait_for_human_input(
-        self,
-        run_id: str,
-        step_id: str,
-        channel_id: str,
-        prompt: str,
-        timeout: int = 3600,
-    ) -> str:
-        """
-        Register a Future for this (run_id, step_id) pair, send the prompt
-        to the messaging channel, and wait for the first response.
-        Raises asyncio.TimeoutError if no response arrives within `timeout` seconds.
-        """
-        key = f"{run_id}:{step_id}"
-        loop = asyncio.get_event_loop()
-        future: asyncio.Future = loop.create_future()
-        self._human_futures[key] = future
-        self._channel_to_future[channel_id] = key
+    async def answer_from_channel(self, channel_id: str, text: str) -> Optional[str]:
+        """Answer the newest run waiting on this channel with `text`.
 
-        # Send the prompt to the channel
-        adapter = self._adapters.get(channel_id)
-        if adapter:
-            try:
-                # Find a chat_id to send to — for now broadcast to the most recent.
-                # In practice, the orchestration should store the initiating chat_id.
-                # Simplification: send to the channel's default agent's last known chat.
-                # For Teams/WhatsApp webhook channels we can't proactively send without
-                # a stored conversation reference; log a warning.
-                logger.info(
-                    "[Manager] Human step paused, waiting for input on channel %s",
-                    channel_id,
-                )
-            except Exception as e:
-                logger.warning("[Manager] Could not notify channel %s: %s", channel_id, e)
+        Returns the run id answered, or None when no run is waiting here (the
+        message is then an ordinary chat message). Resumed the way the app's
+        Answer control resumes it — on the fleet for a run a worker ran. Raises
+        `QuestionExpired` when the question has outlived its window (F93).
+        """
+        run_id = await find_run_waiting_on(channel_id)
+        if run_id is None:
+            return None
+        if await question_expired(run_id):
+            from core.messaging.base import QuestionExpired
+            raise QuestionExpired(run_id)
+        from core.orchestration.answers import EmptyAnswer, RunAlreadyActive, RunNotWaiting, answer_paused_run
 
+        app = getattr(self.server_module, "app", None)
         try:
-            return await asyncio.wait_for(future, timeout=timeout)
-        finally:
-            self._human_futures.pop(key, None)
-            self._channel_to_future.pop(channel_id, None)
-
-    async def try_resolve_human_input(
-        self,
-        channel_id: str,
-        response: str,
-    ) -> bool:
-        """
-        Try to resolve a pending human-step Future for this channel.
-        Returns True if a future was found and resolved (this call wins).
-        Returns False if no future was pending (treat as normal chat message).
-        """
-        key = self._channel_to_future.get(channel_id)
-        if not key:
-            return False
-        return self.resolve_human_input_by_key(key, response)
-
-    def resolve_human_input_by_key(self, key: str, response: str) -> bool:
-        """
-        Resolve a future by its f"{run_id}:{step_id}" key.
-        First call wins — subsequent calls are no-ops.
-        Returns True if this call won the race.
-        """
-        future = self._human_futures.get(key)
-        if future is None or future.done():
-            return False
-        try:
-            future.set_result(response)
-            return True
-        except asyncio.InvalidStateError:
-            return False
+            await answer_paused_run(app.state, run_id, text, door="channel")
+        except (RunNotWaiting, RunAlreadyActive):
+            # Answered a moment ago by someone else, in the app or here.
+            return None
+        except EmptyAnswer:
+            # A reply of nothing but spaces answers nothing (F842): an ordinary message, the run waits on.
+            return None
+        return run_id
 
     # ------------------------------------------------------------------ #
     # Webhook-mode adapter registries (Teams, WhatsApp)
@@ -289,3 +433,219 @@ class MessagingManager:
 
     def get_whatsapp_adapter(self, channel_id: str):
         return self._whatsapp_adapters.get(channel_id)
+
+
+def _missing_credential(missing: KeyError) -> str:
+    """"No bot token is saved for this channel." for an adapter built without `bot_token`."""
+    key = str(missing.args[0]) if missing.args else "credential"
+    return f"No {key.replace('_', ' ')} is saved for this channel."
+
+
+def _reason(exc: BaseException | None) -> str:
+    """An exception as the channel's `last_error`: its message, else its type."""
+    if exc is None:
+        return "stopped"
+    return str(exc) or type(exc).__name__
+
+
+#: How far back a reply looks for a run waiting on its channel.
+WAITING_RUNS_SCANNED = 50
+
+
+async def find_run_waiting_on(channel_id: str) -> Optional[str]:
+    """The newest run paused on a question that is waiting on `channel_id`.
+
+    The engine records the channel in the run's state when a human step pauses
+    (`core/orchestration/human_prompts.py`), on the top-level run for a nested
+    step too — so this reads the store, and works whichever process ran the
+    run and across a restart. Sub-runs are skipped: the top-level run is the
+    one an answer resumes.
+    """
+    from sqlalchemy import select
+
+    from core.orchestration.human_prompts import HUMAN_CHANNEL_KEY
+    from core.orchestration.state_store import _is_structural
+    from core.store import session
+    from core.store.models import OrchestrationRunDB
+    from core.tenancy import get_tenant
+
+    async with session() as s:
+        rows = (await s.execute(
+            select(OrchestrationRunDB.run_id, OrchestrationRunDB.shared_state)
+            .where(OrchestrationRunDB.tenant_id == get_tenant())
+            .where(OrchestrationRunDB.status == "paused")
+            .where(OrchestrationRunDB.waiting_for_human.is_(True))
+            .order_by(OrchestrationRunDB.created_at.desc())
+            .limit(WAITING_RUNS_SCANNED)
+        )).all()
+    for run_id, state in rows:
+        if _is_structural(run_id or ""):
+            continue
+        if (state or {}).get(HUMAN_CHANNEL_KEY) == channel_id:
+            return run_id
+    return None
+
+
+async def send_human_prompt(
+    channel_id: str,
+    prompt: str,
+    run_id: str,
+    manager: Optional["MessagingManager"] = None,
+) -> None:
+    """Post a paused human step's question into its channel.
+
+    Installed as the engine's prompt sender by the API server and by the
+    worker's startup (`set_human_prompt_sender`). Goes to the conversation run
+    notifications use — the channel's `notify_chat_id`, else the last one
+    spoken in — over the platform's REST API, so a worker with no adapter can
+    send it. Teams and WhatsApp have no REST sender; they are reached through
+    the running adapter when this is the API process, and not otherwise.
+    """
+    from core.config import load_settings
+    from core.messaging import senders
+
+    if not (load_settings() or {}).get("messaging_enabled", False):
+        return
+    channel = await channel_store.get_channel(channel_id)
+    if not channel or not channel.get("enabled", True):
+        logger.warning("[Manager] run %s: channel %s is missing or disabled; question not sent", run_id, channel_id)
+        return
+    adapter = manager.get_adapter(channel_id) if manager else None
+    conversation = (
+        channel.get("notify_chat_id")
+        or channel.get("default_conversation_id")
+        or getattr(adapter, "_last_chat_id", None)
+    )
+    if not conversation:
+        logger.warning(
+            "[Manager] run %s: nobody has written in channel %s yet, so there is no conversation "
+            "to ask in; question not sent", run_id, channel_id,
+        )
+        return
+    text = f"⏸ {prompt}\n\nReply here to answer."
+    platform = channel.get("platform", "")
+    if senders.supports_rest_send(platform):
+        await senders.send(platform, channel.get("credentials") or {}, conversation, text)
+    elif adapter is not None:
+        await adapter.send_message(conversation, text)
+    else:
+        logger.warning("[Manager] run %s: %s has no sender in this process; question not sent", run_id, platform)
+
+
+async def follow_up_in_channel(conversation, text: str, mark: dict) -> None:
+    """A helper's result in a member's messaging channel (SUB1b): one turn of the agent that sent it, whose
+    question is the result — read as automated and untrusted, saved with its mark, nobody to ask — and its
+    answer sent to the chat the helper was sent from."""
+    import core.server as _server
+    from core.chat_approval import nobody_to_ask
+    from core.knowledge.citations import strip_labels
+    from core.react_engine import run_agent_step
+
+    target = conversation.reply_to or {}
+    final_response = ""
+    try:
+        with nobody_to_ask():
+            async for event in run_agent_step(
+                message=text,
+                agent_id=conversation.agent_id,
+                session_id=conversation.session_id,
+                server_module=_server,
+                max_turns=15,
+                untrusted_message=True,
+                automated=mark,
+            ):
+                if event.get("type") == "final":
+                    final_response = event.get("response", "")
+    except Exception as e:  # noqa: BLE001 — the chat is told, as a turn's failure is (F133)
+        logger.error("[Manager] helper follow-up error (agent=%s): %s", conversation.agent_id, e)
+        final_response = FAILED_REPLY
+    reply = strip_labels(final_response)
+    if reply:
+        await send_to_chat(str(target.get("channel_id") or ""), str(target.get("chat_id") or ""), reply)
+
+
+async def send_to_chat(channel_id: str, chat_id: str, text: str) -> None:
+    """Send `text` to one chat of a channel from anywhere in this process: the platform's REST API, else the
+    running adapter (as `send_human_prompt` does). Says why in the log when it cannot."""
+    import core.server as _server
+    from core.messaging import senders
+
+    channel = await channel_store.get_channel(channel_id) if channel_id else None
+    if not channel or not channel.get("enabled", True) or not chat_id:
+        logger.warning("[Manager] channel %s is missing or disabled, or has no chat; message not sent", channel_id)
+        return
+    platform = channel.get("platform", "")
+    manager = getattr(_server, "messaging_manager", None)
+    adapter = manager.get_adapter(channel_id) if manager else None
+    if senders.supports_rest_send(platform):
+        await senders.send(platform, channel.get("credentials") or {}, chat_id, text)
+    elif adapter is not None:
+        await adapter.send_message(chat_id, text)
+    else:
+        logger.warning("[Manager] %s has no sender in this process; message not sent", platform)
+
+
+async def question_expired(run_id: str, *, now: Optional[float] = None) -> bool:
+    """Whether the question `run_id` waits on has outlived its step's `human_timeout_seconds`.
+
+    Cloud's rule (F93, D109): past the window a channel stops taking the
+    answer, and the run keeps waiting for one in the app. The window runs from
+    the pause — the `paused` entry the engine writes to `step_history` — and is
+    measured on the run whose human step asked: a parent paused on a nested
+    orchestration hands over to that sub-run, whose pause is its own. The
+    entry, not the run's position, names the step: inside a Loop or a Parallel
+    branch the position is the container.
+
+    A question whose pause or step cannot be read is not expired: the reply is
+    answered, as it was before there was a window at all.
+    """
+    import calendar
+    import time
+
+    from sqlalchemy import select
+
+    from core.config import ORCH_HUMAN_TIMEOUT
+    from core.orchestration.pauses import asking_step_id
+    from core.orchestration.engine import definition_of
+    from core.store import session
+    from core.store.models import OrchestrationRunDB
+    from core.tenancy import get_tenant
+
+    async def load(rid: str):
+        async with session() as s:
+            return (await s.execute(
+                select(OrchestrationRunDB)
+                .where(OrchestrationRunDB.tenant_id == get_tenant())
+                .where(OrchestrationRunDB.run_id == rid)
+            )).scalar_one_or_none()
+
+    row = await load(run_id)
+    for _ in range(8):  # nesting is bounded; a cycle must not spin
+        if row is None or not row.nested_run_id:
+            break
+        row = await load(row.nested_run_id)
+    if row is None or not row.current_step_id:
+        return False
+
+    # The step that asked, which inside a Loop or a Parallel branch is not the
+    # run's position — that is the container (F109).
+    asked_by = asking_step_id(row.step_history, row.current_step_id)
+    paused_at = None
+    for entry in reversed(row.step_history or []):
+        if entry.get("step_id") == asked_by and entry.get("status") == "paused":
+            try:
+                paused_at = calendar.timegm(time.strptime(entry.get("started_at") or "", "%Y-%m-%dT%H:%M:%SZ"))
+            except ValueError:
+                paused_at = None
+            break
+    if paused_at is None:
+        return False
+
+    # The step as the run has it (F443): an edit made while it waits does not
+    # move the window the question was asked with.
+    orch = await definition_of(row) or {}
+    step = next((st for st in orch.get("steps") or [] if st.get("id") == asked_by), None)
+    if step is None:
+        return False
+    window = float(step.get("human_timeout_seconds") or ORCH_HUMAN_TIMEOUT)
+    return (time.time() if now is None else now) > paused_at + window

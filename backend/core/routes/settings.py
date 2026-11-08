@@ -10,15 +10,13 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from core.config import load_settings, SETTINGS_FILE, DATA_DIR, CREDENTIALS_FILE, TOKEN_FILE, sanitize_db_url
+from core.config import SECRET_SETTINGS, load_settings, sanitize_db_url
+from core.default_agent import SEEDED_MARKER
 from core.models import Settings, PersonalDetails
 from core.personal_details import load_personal_details, save_personal_details
 from core.llm_providers import _make_aws_client, OLLAMA_MODEL
-from core.json_store import JsonStore
 
 router = APIRouter()
-
-_settings_store = JsonStore(SETTINGS_FILE, default_factory=dict, cache_ttl=2.0)
 
 
 class EmbedSetupRequest(BaseModel):
@@ -38,63 +36,181 @@ class LoginConfigRequest(BaseModel):
 _EXAMPLES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "examples")
 
 
-def save_settings(settings: dict):
-    _settings_store.save(settings)
+async def save_settings(settings: dict):
+    """Persist settings for the current tenant and refresh the live snapshot.
+
+    Refreshes rather than merely invalidating, because the rest of this request
+    must see the write: update_settings restarts the Filesystem MCP server from
+    the new bash_allowed_dirs immediately after saving.
+    """
+    from core import settings_runtime
+    from core.store.settings import save_many
+
+    await save_many(settings)
+    await settings_runtime.refresh()
 
 
 def _init_memory_store(settings: dict):
-    """Initialize the long-term memory store.
+    """The Chroma client the step semantic cache keeps its collections on.
 
-    Chat memory always uses Ollama with nomic-embed-text (384d) — a small, fast,
-    local model that stays consistent regardless of the LLM provider mode.
-    Code embeddings use provider models separately (see services/code_indexer.py).
+    It embeds nothing itself: the cache embeds with Settings → Models'
+    Embedding Model (`core/cache/response_cache.py`, F327). Code search and
+    Knowledge embed on their own paths.
     """
     try:
         from core.memory import MemoryStore as _MemoryStore
     except ImportError:
         return None
 
-    return _MemoryStore(model="nomic-embed-text", embed_fn=None)
+    return _MemoryStore()
 
 
 # --- Status & Settings ---
 
 @router.get("/api/status")
 async def get_status():
-    from core.routes.agents import load_user_agents, active_agent_id
+    from core.routes.agents import load_workspace_agents, active_agent_id
+    from core.images import model_can_see_images
     from core.llm_providers import detect_provider_from_model
+    from core.model_readiness import model_problem, model_problems
+    from core.orchestration.step_models import attach_verdict, model_or_none, readiness_problem, walk_agent
+    from core.scale.context import resolve_agent, resolve_orchestration
 
-    user_agents = load_user_agents()
-    agents_status = {}
-    for a in user_agents:
-        agents_status[a["id"]] = {"name": a["name"], "status": "online"}
-
+    # The builder's own sub-agents are not the workspace's to chat with (F186).
+    user_agents = await load_workspace_agents()
     current_settings = load_settings()
     default_model = current_settings.get("model", "mistral")
 
-    # Resolve active agent's model
-    active_agent = next((a for a in user_agents if a["id"] == active_agent_id), None)
-    resolved_model = default_model
-    if active_agent and active_agent.get("model"):
-        resolved_model = active_agent["model"]
+    agents_status = {}
+    walks: dict = {}
+    for a in user_agents:
+        # Whether attaching an image to this agent does anything. DeepSeek and
+        # HuggingFace log a warning and discard; the CLI providers discard in
+        # silence. Answered here rather than in the browser so the list of
+        # providers that cannot see does not need a second copy in TypeScript.
+        agents_status[a["id"]] = {
+            "name": a["name"],
+            "status": "online",
+            # "default" is the workspace model, as the engine reads it (F397).
+            "can_see_images": model_can_see_images(model_or_none(a.get("model")) or default_model),
+            # A workflow agent has no model of its own (each step has one), so
+            # the model resolved below is not what it runs on; chat's header
+            # says "Workflow · N steps" from these instead (U64).
+            "type": a.get("type") or "conversational",
+            "orchestration_id": a.get("orchestration_id"),
+        }
+        if a.get("type") == "orchestrator":
+            # Its steps decide (F313): Attach when a step takes attachments and
+            # every one that does can read them, and the reason when not.
+            walked = walks[a["id"]] = await walk_agent(
+                a, load_agent=resolve_agent, load_orchestration=resolve_orchestration,
+                workspace_model=default_model)
+            verdict = attach_verdict(walked, {s.model: model_can_see_images(s.model) for s in walked.attaching()})
+            agents_status[a["id"]]["can_see_images"] = verdict is None
+            agents_status[a["id"]]["attach_problem"] = verdict
+
+    # The agent chat answers with (`agents.get_active_agent_data`): the one picked, else the workspace's first — the
+    # default agent, Synapse AI, on a new install (ASSIST1). Said, not left null, so the page knows which it is.
+    active_agent = (next((a for a in user_agents if a["id"] == active_agent_id), None)
+                    or (user_agents[0] if user_agents else None))
+    resolved_model = (model_or_none(active_agent.get("model")) if active_agent else None) or default_model
 
     provider = detect_provider_from_model(resolved_model)
+    # Whether that model can answer at all, so the page stops saying "Ready"
+    # when nothing can (F182). Free: no model call, no key tried. A workflow
+    # agent answers through its steps' models, each checked (F313).
+    walked = walks.get(active_agent["id"]) if active_agent else None
+    if walked is not None:
+        problem = readiness_problem(walked, await model_problems(current_settings, walked.models()))
+    else:
+        problem = await model_problem(current_settings, resolved_model)
 
     return {
         "agents": agents_status,
-        "active_agent_id": active_agent_id,
+        "active_agent_id": active_agent["id"] if active_agent else None,
         "overall": "operational",
         "model": resolved_model,
         "mode": current_settings.get("mode", "local"),
         "provider": provider,
+        "model_ready": problem is None,
+        "model_problem": problem,
     }
+
+
+@router.get("/api/onboarding/models")
+async def get_onboarding_models():
+    """Whether the workspace's everyday model can answer, for the first-run model step (ONB2, F728, D303).
+
+    The workspace `model`, not the active agent's (that is `/api/status`'s): the
+    step is about what Synapse runs on when nothing names its own model. Free,
+    like `/api/status`: no model call, no key tried, no CLI run.
+    """
+    from core.model_readiness import model_problem
+
+    current = load_settings()
+    model = current.get("model") or "ollama.mistral"
+    problem = await model_problem(current, model)
+    return {
+        "model": model,
+        "ready": problem is None,
+        "problem": problem,
+        "closed": bool(current.get("first_run_models_closed")),
+    }
+
+
+#: Why `transform_runtime: "host"` is refused here (F968): the operator starts the server with it.
+HOST_RUNTIME_REFUSED = (
+    "transform_runtime 'host' isn't set here: start the server with SYNAPSE_TRANSFORM_RUNTIME=host to run "
+    "transform steps outside the sandbox. It runs them as the server, able to read everything the server can, "
+    "including stored keys: only for a single-user machine you trust every workflow on."
+)
+
+
+def transform_runtime() -> str:
+    """Where this server runs transform steps: "host" only when its operator started it so, else the sandbox."""
+    return "host" if os.environ.get("SYNAPSE_TRANSFORM_RUNTIME", "").strip().lower() == "host" else "docker"
+
+
+def transform_runtime_notice(settings: dict) -> Optional[str]:
+    """What the server says once at start about where transforms run (F968), or None for the sandbox as chosen.
+
+    The operator's host runtime is warned of what it is. An install whose settings chose "host" before 2.0, with no
+    env var, is told the setting no longer applies (REL2): its transforms now run in the sandbox, with no network.
+    """
+    if transform_runtime() == "host":
+        return ("Warning: SYNAPSE_TRANSFORM_RUNTIME=host — transform steps run outside the sandbox, as the server, "
+                "able to read everything the server can, including stored keys, with the network. Only for a "
+                "single-user machine you trust every workflow on.")
+    if str((settings or {}).get("transform_runtime") or "").strip().lower() == "host":
+        return ("Notice: your settings chose the host runtime for transforms; since 2.0 only "
+                "SYNAPSE_TRANSFORM_RUNTIME=host does, so transforms now run in the sandbox, with no network.")
+    return None
+
+
+def public_settings(settings: dict) -> dict:
+    """The settings as the browser may see them: no secret (F201).
+
+    Each of `SECRET_SETTINGS` is served as "" beside `<name>_set` and
+    `<name>_hint` (the last four characters of a long one, to tell two keys
+    apart). The login hash is left out. A copy: the hash is left out of the
+    answer, never out of the settings (S10).
+    """
+    view = dict(settings)
+    view.pop("login_password_hash", None)
+    view.pop(SEEDED_MARKER, None)  # the server's own record of a first start (F1412), not a setting
+    # Where transforms run is the server operator's (F968): what this server runs, not a stored choice.
+    view["transform_runtime"] = transform_runtime()
+    for name in SECRET_SETTINGS:
+        value = str(view.get(name) or "")
+        view[name] = ""
+        view[f"{name}_set"] = bool(value)
+        view[f"{name}_hint"] = value[-4:] if len(value) >= 12 else ""
+    return view
 
 
 @router.get("/api/settings")
 async def get_settings():
-    settings = load_settings()
-    settings.pop("login_password_hash", None)
-    return settings
+    return public_settings(load_settings())
 
 
 @router.post("/api/settings/login")
@@ -110,7 +226,7 @@ async def update_login_settings(body: LoginConfigRequest):
             existing["login_password_hash"] = hash_password(body.login_password)
         elif not existing.get("login_password_hash"):
             raise HTTPException(status_code=400, detail="Password is required for first-time login setup")
-    save_settings(existing)
+    await save_settings(existing)
     return {"status": "ok", "login_enabled": body.login_enabled}
 
 
@@ -124,16 +240,40 @@ async def update_settings(settings: Settings):
     except Exception:
         data = settings.dict()
 
+    # A secret is never served back, so the page posts it blank: blank keeps
+    # what is stored, and removing one is asked for by name (F201).
+    clear = data.pop("clear_secrets", None) or []
+    not_secrets = [n for n in clear if n not in SECRET_SETTINGS]
+    if not_secrets:
+        raise HTTPException(status_code=422, detail=f"Not a secret setting: {', '.join(not_secrets)}")
+    for name in SECRET_SETTINGS:
+        if name in data and not str(data[name] or "").strip():
+            data.pop(name)
+    for name in clear:
+        data[name] = ""
+
+    # The host runtime runs a transform as the server: its operator's choice alone, refused by name (F968).
+    if str(data.get("transform_runtime") or "").strip().lower() == "host":
+        raise HTTPException(status_code=422, detail=HOST_RUNTIME_REFUSED)
+    data.pop("transform_runtime", None)
+
     existing = load_settings()
     # Never overwrite the bcrypt hash via the general settings endpoint
     data.pop("login_password_hash", None)
+    if "tool_policy_defaults" in data:
+        from core.tool_policy import clean_policy
+
+        data["tool_policy_defaults"] = clean_policy(data["tool_policy_defaults"])
     prev_bash_dirs = list(existing.get("bash_allowed_dirs", []))
     existing.update(data)
     data = existing
 
-    save_settings(data)
+    await save_settings(data)
 
-    # Reinitialize memory so embeddings provider matches the new mode.
+    # The semantic cache reads the Embedding Model afresh on its next call.
+    from core.cache import response_cache as _response_cache
+    _response_cache.forget_local_state()
+
     import core.server as _server
 
     # If the user's allowed directories changed, restart the Filesystem MCP
@@ -143,17 +283,7 @@ async def update_settings(settings: Settings):
             await _server.restart_filesystem_mcp()
         except Exception as e:
             print(f"Warning: Failed to restart filesystem MCP after settings update: {e}")
-    try:
-        from core.memory import MemoryStore as _MemoryStore
-    except ImportError:
-        _MemoryStore = None
-    
-    if _MemoryStore:
-        try:
-            _server.memory_store = _init_memory_store(data)
-        except Exception as e:
-            print(f"Warning: failed to reinitialize MemoryStore after settings update: {e}")
-    return data
+    return public_settings(data)
 
 
 # --- Code Embedding Setup ---
@@ -235,7 +365,7 @@ async def setup_embed(body: EmbedSetupRequest):
         # Persist the connection string
         existing = load_settings()
         existing["sql_connection_string"] = db_url
-        save_settings(existing)
+        await save_settings(existing)
 
         return {"status": "ok", "connection_string": db_url}
     except ImportError:
@@ -248,16 +378,43 @@ async def setup_embed(body: EmbedSetupRequest):
 
 @router.get("/api/personal-details")
 async def get_personal_details_api():
-    return load_personal_details()
+    return await load_personal_details()
 
 
 @router.post("/api/personal-details")
 async def update_personal_details_api(details: PersonalDetails):
     data = details.dict()
-    return save_personal_details(data)
+    return await save_personal_details(data)
 
 
 # --- Google Credentials & Config ---
+
+# ── Global variables ──────────────────────────────────────────────────────────
+#
+# `{{ global.key }}` in tool URLs, headers and bodies, in agent system prompts
+# and in orchestration prompt templates — core/variables.py for the store,
+# core/templating.py for the syntax.
+
+
+@router.get("/api/settings/variables")
+async def get_global_variables():
+    from core import variables
+    return {"values": await variables.load()}
+
+
+@router.post("/api/settings/variables")
+async def set_global_variables(payload: dict):
+    """Replace the whole document. Body: {"values": {key: value}}."""
+    from core import variables
+    values = payload.get("values")
+    if not isinstance(values, dict):
+        raise HTTPException(status_code=400, detail="Body must include a 'values' object.")
+    bad = [k for k in values if not isinstance(k, str) or not variables.valid_key(k)]
+    if bad:
+        raise HTTPException(status_code=400, detail=f"Variable names must be letters, numbers, hyphens or underscores, and not start with a digit: {bad}")
+    await variables.save({k: v for k, v in values.items()})
+    return {"values": await variables.load()}
+
 
 @router.post("/api/setup/google-credentials")
 async def upload_google_creds(request: Request):
@@ -270,8 +427,8 @@ async def upload_google_creds(request: Request):
         else:
             parsed = data
 
-        with open(CREDENTIALS_FILE, 'w', encoding="utf-8") as f:
-            json.dump(parsed, f, indent=4)
+        from services.google import save_client_config
+        await save_client_config(parsed)
 
         return {"status": "success", "message": "Credentials saved successfully."}
     except Exception as e:
@@ -290,8 +447,8 @@ async def upload_google_token(request: Request):
         else:
             parsed = data
 
-        with open(TOKEN_FILE, 'w', encoding="utf-8") as f:
-            json.dump(parsed, f, indent=4)
+        from services.google import save_token
+        await save_token(parsed)
 
         return {"status": "success", "message": "Token saved successfully."}
     except Exception as e:
@@ -301,53 +458,39 @@ async def upload_google_token(request: Request):
 
 @router.get("/api/config")
 async def get_config():
-    has_credentials = os.path.exists(CREDENTIALS_FILE)
-    has_token = os.path.exists(TOKEN_FILE)
+    # Where Google sends a person back, for the setup guide: the backend's own
+    # port, which the UI no longer knows from its build (F309).
+    from core.routes.auth import REDIRECT_URI
+    return {**await _google_config(), "redirect_uri": REDIRECT_URI}
 
-    if not has_credentials:
+
+async def _google_config() -> dict:
+    from services import google as google_svc
+
+    client_config = await google_svc.load_client_config()
+    if not client_config:
         return {"has_credentials": False, "is_connected": False}
 
     try:
-        with open(CREDENTIALS_FILE, 'r', encoding="utf-8") as f:
-            creds = json.load(f)
-            app_info = creds.get("web") or creds.get("installed", {})
+        app_info = client_config.get("web") or client_config.get("installed", {})
 
         client_id_full = app_info.get("client_id", "")
         # Mask: show only last 4 chars, e.g. ****h453
         masked_client_id = ("****" + client_id_full[-8:]) if len(client_id_full) > 8 else "****"
 
-        # Read user email from token.json if available
-        user_email = None
-        if has_token:
-            try:
-                with open(TOKEN_FILE, 'r', encoding="utf-8") as tf:
-                    token_data = json.load(tf)
-                    user_email = token_data.get("id_token_hint") or token_data.get("email")
-                    # google-auth stores it in the token as a raw JWT — try to decode the id_token
-                    if not user_email and token_data.get("id_token"):
-                        import base64
-                        id_token = token_data["id_token"]
-                        payload_b64 = id_token.split(".")[1]
-                        # Add padding
-                        payload_b64 += "=" * (4 - len(payload_b64) % 4)
-                        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-                        user_email = payload.get("email")
-            except Exception:
-                pass
+        token_data = await google_svc.load_token() or {}
+        user_email = google_svc._email_from_token_data(token_data)
 
-        # Real connectivity check: token must be valid (or refreshable) AND
-        # workspace-mcp must have a token file it can read. get_google_credentials()
-        # validates, auto-refreshes, and syncs to the MCP dir on success.
+        # Whether the stored token is currently usable. Deliberately does NOT
+        # refresh: this is a GET the integrations tab polls, and refreshing
+        # here meant a status read performed a network token exchange and
+        # rewrote three files every time the page was opened. The refresh
+        # happens where it belongs — when workspace-mcp is about to be spawned.
         is_connected = False
         try:
-            from services.google import get_google_credentials
-            if get_google_credentials() is not None:
-                mcp_dir = os.path.join(DATA_DIR, "google-credentials")
-                per_user = user_email and os.path.exists(os.path.join(mcp_dir, f"{user_email}.json"))
-                generic = os.path.exists(os.path.join(mcp_dir, "token.json"))
-                is_connected = bool(per_user or generic)
+            is_connected = await google_svc.get_google_credentials(refresh=False) is not None
         except Exception as e:
-            print(f"Warning: get_google_credentials() check failed: {e}")
+            print(f"Warning: Google credential check failed: {e}")
 
         return {
             "has_credentials": True,
@@ -362,15 +505,22 @@ async def get_config():
 
 @router.get("/api/file")
 async def get_file(path: str):
-    """Serve a local file. Restricted to the user's home directory and data dir."""
-    resolved = os.path.realpath(path)
-    home_dir = os.path.expanduser("~")
-    allowed_bases = [home_dir, DATA_DIR]
-    # `within`, not `startswith`: a sibling that starts with an allowed base's
-    # path is not inside it (S8).
-    from core.file_roots import within
+    """Serve a local file. Restricted to the tenant's vault and configured repos.
 
-    if not within(resolved, allowed_bases):
+    This used to allow the whole home directory alongside the old data
+    directory. Once the vault moved out of it, "home directory" became the only
+    allowance that matched anything — turning a vault-file endpoint into a read
+    primitive over every file the server user owns. The allowance is now the two
+    directories whose contents this endpoint exists to serve.
+    """
+    from core import file_roots
+    from core.vault import _vault_root
+
+    resolved = os.path.realpath(path)
+    allowed_bases = [str(_vault_root())] + await file_roots.repo_paths()
+    # `within`, not `startswith`: a sibling named `vault-old` starts with the
+    # vault's own path (S8).
+    if not file_roots.within(resolved, allowed_bases):
         raise HTTPException(status_code=403, detail="Access denied: path outside allowed directories")
     if not os.path.exists(resolved) or not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")

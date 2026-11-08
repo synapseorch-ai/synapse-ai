@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "source": {
+    "path": "_web/example.com/pricing.md",
+    "sha256": "1e2ea6d9b72e685b53e26f41837abfc797c38cb6a7ad7b750ed3cac269fcc062",
+    "size_bytes": 812,
+    "mime": "text/html",
+    "source": "web",
+    "url": "https://example.com/pricing",
+    "fetched_at": "2026-09-30T00:00:00+00:00",
+    "etag": "\"abc123\""
+  },
+  "parser": {
+    "name": "web",
+    "version": "1"
+  },
+  "text": "Pricing\n\nThe team plan costs twenty dollars a seat.",
+  "blocks": [
+    {
+      "id": "b0000-0000",
+      "char_start": 0,
+      "char_end": 7,
+      "kind": "heading",
+      "level": 1,
+      "text": "Pricing",
+      "heading_path": [
+        "Pricing"
+      ]
+    },
+    {
+      "id": "b0000-0001",
+      "char_start": 9,
+      "char_end": 51,
+      "kind": "paragraph",
+      "heading_path": [
+        "Pricing"
+      ],
+      "text": "The team plan costs twenty dollars a seat."
+    }
+  ],
+  "pages": [],
+  "title": "Pricing",
+  "warnings": [
+    {
+      "code": "html_comments_removed",
+      "message": "2 HTML comments were removed.",
+      "count": 2
+    }
+  ],
+  "stats": {
+    "pages": 0,
+    "chars": 51
+  }
+}

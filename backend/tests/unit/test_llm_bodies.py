@@ -27,7 +27,7 @@ def _openai_ok(text="hello", tool_calls=None):
 class TestOpenAIBody:
     async def test_success_and_cache_accounting(self, monkeypatch):
         install_httpx(monkeypatch, _openai_ok("hi there"))
-        text, it, ot, cr, cw = await llm.call_openai("gpt-4o", [{"role": "user", "content": "q"}], "key")
+        text, it, ot, cr, cw, *_ = await llm.call_openai("gpt-4o", [{"role": "user", "content": "q"}], "key")
         assert text == "hi there"
         assert cr == 4              # cached tokens surfaced
         assert it == 6             # prompt_tokens (10) minus cached (4)
@@ -108,7 +108,7 @@ class TestAnthropicBody:
         import anthropic
         blocks = [SimpleNamespace(type="text", text="claude here", name=None, input=None)]
         monkeypatch.setattr(anthropic, "AsyncAnthropic", self._fake_anthropic(blocks))
-        text, it, ot, cr, cw = await llm.call_anthropic(
+        text, it, ot, cr, cw, *_ = await llm.call_anthropic(
             "claude-x", [{"role": "user", "content": "q"}], "sys", "key")
         assert text == "claude here"
         assert it == 12 and ot == 7
@@ -120,9 +120,80 @@ class TestAnthropicBody:
             SimpleNamespace(type="tool_use", text=None, name="lookup", input={"q": "x"}),
         ]
         monkeypatch.setattr(anthropic, "AsyncAnthropic", self._fake_anthropic(blocks))
-        text, *_ = await llm.call_anthropic("claude-x", [{"role": "user", "content": "q"}], "sys", "key")
-        assert '"tool": "lookup"' in text
-        assert "REASONING" in text  # preceding text preserved as reasoning
+        result = await llm.call_anthropic("claude-x", [{"role": "user", "content": "q"}], "sys", "key")
+        assert '"tool": "lookup"' in result.text
+        # Narration beside a call is still kept — but as its own field now,
+        # not spliced back into the text behind `[REASONING]` markers. The
+        # answer must not carry it: `text` is what the loop parses for calls.
+        assert result.reasoning == "let me think"
+        assert "let me think" not in result.text
+
+    async def test_thinking_block_becomes_reasoning(self, monkeypatch):
+        """Extended thinking reaches `reasoning`, and never the answer."""
+        import anthropic
+        blocks = [
+            SimpleNamespace(type="thinking", thinking="the real scratchpad", text=None, name=None, input=None),
+            SimpleNamespace(type="text", text="the answer", name=None, input=None),
+        ]
+        monkeypatch.setattr(anthropic, "AsyncAnthropic", self._fake_anthropic(blocks))
+        result = await llm.call_anthropic("claude-x", [{"role": "user", "content": "q"}], "sys", "key")
+        assert result.text == "the answer"
+        assert result.reasoning == "the real scratchpad"
+
+    async def test_thinking_is_sent_when_planned(self, monkeypatch):
+        """The budget reaches the wire, under a cap raised to fit it."""
+        import anthropic
+        from core import reasoning as reasoning_policy
+        captured = {}
+
+        class _Client:
+            def __init__(self, **kw): pass
+            class messages:
+                pass
+        fake = self._fake_anthropic([SimpleNamespace(type="text", text="ok", name=None, input=None)])
+
+        class _Capturing(fake):
+            def __init__(self, **kw):
+                super().__init__(**kw)
+                inner = self.messages.create
+                async def create(**kwargs):
+                    captured.update(kwargs)
+                    return await inner(**kwargs)
+                self.messages.create = create
+
+        monkeypatch.setattr(anthropic, "AsyncAnthropic", _Capturing)
+        plan = reasoning_policy.plan_for("claude-sonnet-4-5-20250929", "high", 8192)
+        await llm.call_anthropic("claude-sonnet-4-5-20250929", [{"role": "user", "content": "q"}],
+                                 "sys", "key", max_tokens=plan.max_output_tokens, reasoning=plan)
+        assert captured["thinking"] == {"type": "enabled", "budget_tokens": plan.budget}
+        assert captured["max_tokens"] > plan.budget
+        assert "output_config" not in captured
+
+    @pytest.mark.parametrize("model", ["claude-opus-5", "claude-sonnet-5", "claude-sonnet-4-6"])
+    async def test_adaptive_models_get_an_effort_not_a_budget(self, monkeypatch, model):
+        """F9: `budget_tokens` is a 400 on Claude 5 and Opus 4.7/4.8 and
+        deprecated on 4.6; they take adaptive thinking with an effort. Summarized,
+        because the default display is an empty thinking block."""
+        import anthropic
+        from core import reasoning as reasoning_policy
+        captured = {}
+        fake = self._fake_anthropic([SimpleNamespace(type="text", text="ok", name=None, input=None)])
+
+        class _Capturing(fake):
+            def __init__(self, **kw):
+                super().__init__(**kw)
+                inner = self.messages.create
+                async def create(**kwargs):
+                    captured.update(kwargs)
+                    return await inner(**kwargs)
+                self.messages.create = create
+
+        monkeypatch.setattr(anthropic, "AsyncAnthropic", _Capturing)
+        plan = reasoning_policy.plan_for(model, "medium", 8192)
+        await llm.call_anthropic(model, [{"role": "user", "content": "q"}],
+                                 "sys", "key", max_tokens=plan.max_output_tokens, reasoning=plan)
+        assert captured["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert captured["output_config"] == {"effort": "medium"}
 
     async def test_non_retryable_api_error_raises_llmerror(self, monkeypatch):
         import anthropic
@@ -140,3 +211,57 @@ class TestAnthropicBody:
         monkeypatch.setattr(anthropic, "AsyncAnthropic", _FakeAnthropic)
         with pytest.raises(llm.LLMError):
             await llm.call_anthropic("claude-x", [{"role": "user", "content": "q"}], "sys", "key")
+
+
+class TestAReplyThatArrivedIsReadOnce:
+    """A reply we cannot parse is not a reason to buy another one (F138).
+
+    Four of the five provider loops read the answer inside the `try` that
+    retries, so an exception while reading a reply that *had arrived* landed in
+    the catch-all and sent the call again — up to four more times, each paid,
+    for a body that was never going to parse. Anthropic was moved out in
+    `1ebddcf` and is the shape the others now follow: the `try` ends at `break`
+    and the reading happens after the loop.
+    """
+
+    @staticmethod
+    def _counting(monkeypatch):
+        """A 200 with no `choices` — delivered, and unreadable."""
+        calls = {"n": 0}
+
+        def handler(url, kwargs):
+            calls["n"] += 1
+            return FakeResponse({"usage": {"prompt_tokens": 3, "completion_tokens": 1}})
+
+        install_httpx(monkeypatch, handler)
+
+        async def _no_sleep(_seconds):
+            return None
+
+        monkeypatch.setattr(llm.asyncio, "sleep", _no_sleep)
+        return calls
+
+    async def test_openai_sends_the_call_once(self, monkeypatch):
+        calls = self._counting(monkeypatch)
+        with pytest.raises(Exception):
+            await llm.call_openai("gpt-4o", [{"role": "user", "content": "q"}], "key")
+        assert calls["n"] == 1
+
+    async def test_grok_sends_the_call_once(self, monkeypatch):
+        calls = self._counting(monkeypatch)
+        with pytest.raises(Exception):
+            await llm.call_grok("grok-2", [{"role": "user", "content": "q"}], "sys", "key")
+        assert calls["n"] == 1
+
+    async def test_deepseek_sends_the_call_once(self, monkeypatch):
+        calls = self._counting(monkeypatch)
+        with pytest.raises(Exception):
+            await llm.call_deepseek("deepseek-chat", [{"role": "user", "content": "q"}], "sys", "key")
+        assert calls["n"] == 1
+
+    async def test_a_v1_compatible_endpoint_sends_the_call_once(self, monkeypatch):
+        calls = self._counting(monkeypatch)
+        with pytest.raises(Exception):
+            await llm.call_v1_compatible("m", [{"role": "user", "content": "q"}], "sys",
+                                         "http://host/v1", "key")
+        assert calls["n"] == 1

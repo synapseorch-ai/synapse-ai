@@ -2,38 +2,43 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useState, useEffect, useCallback } from 'react';
 import {
-    Loader2, CheckCircle2, XCircle, RefreshCw, Trash2, Plus, AlertTriangle,
-    Activity, Server, Database, Zap, Users, Eye, Cloud,
-    ChevronDown, ChevronRight, Search, Copy, BarChart3, BookOpen, X,
+    CheckCircle2, XCircle, RefreshCw, Trash2, AlertTriangle,
+    Activity, Zap, Cloud,
+    ChevronDown, ChevronRight, Search, Copy, BookOpen, X,
 } from 'lucide-react';
+
+import { Button, EmptyState, Field, IconButton, Input, Section, Spinner, StatStrip, Switch } from '@/components/ui';
+import { cn } from '@/lib/cn';
+import { usd } from '@/lib/money';
+import { FIELD_LABEL, FORM } from './form';
+import { SaveBar } from './SaveBar';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 interface ScaleConfig {
+    /** True when METRICS_TOKEN is set. The token itself is never sent (F58). */
+    metrics_token_set?: boolean;
+    /** True when an S3 secret is stored. The secret itself is never sent (F95). */
+    s3_secret_access_key_set?: boolean;
+    /** Field → environment variable, for the settings only the environment sets. */
+    env_only?: Record<string, string>;
     redis_url: string;
     scale_postgres_url: string;
     scale_mode_enabled: boolean;
-    scale_auto_sync: boolean;
     worker_concurrency: number;
     otlp_endpoint: string;
     metrics_token: string;
     max_global_queue_depth: number;
     rate_limit_per_tenant_rps: number;
     pgbouncer_mode: boolean;
-    num_queue_shards: number;
     s3_bucket: string;
     s3_region: string;
     s3_prefix: string;
     s3_access_key_id: string;
     s3_secret_access_key: string;
     s3_endpoint_url: string;
-}
-
-interface SyncStatus {
-    available: boolean;
-    counts?: Record<string, number>;
 }
 
 interface WorkerInfo {
@@ -63,14 +68,6 @@ interface DLQEntry {
     error_message: string;
     attempt_count: number;
     last_failed_at: string;
-}
-
-interface Tenant {
-    tenant_id: string;
-    name: string;
-    max_concurrent_runs: number;
-    max_queued_runs: number;
-    priority: number;
 }
 
 interface AnalyticsData {
@@ -112,14 +109,12 @@ const DEFAULT_CONFIG: ScaleConfig = {
     redis_url: '',
     scale_postgres_url: '',
     scale_mode_enabled: false,
-    scale_auto_sync: false,
     worker_concurrency: 10,
     otlp_endpoint: '',
     metrics_token: '',
     max_global_queue_depth: 1000000,
     rate_limit_per_tenant_rps: 1000,
     pgbouncer_mode: false,
-    num_queue_shards: 1,
     s3_bucket: '',
     s3_region: 'us-east-1',
     s3_prefix: 'synapse',
@@ -142,74 +137,74 @@ function formatDuration(startedAt: string | null, endedAt: string | null): strin
     return `${mins}m ${secs % 60}s`;
 }
 
-function formatCost(usd: number | null): string {
-    if (usd == null) return '—';
-    if (usd === 0) return '$0';
-    if (usd < 0.0001) return '<$0.0001';
-    return `$${usd.toFixed(4)}`;
-}
-
 function copyToClipboard(text: string) {
     navigator.clipboard.writeText(text).catch(() => {});
 }
+
 
 // ---------------------------------------------------------------------------
 // Helper components
 // ---------------------------------------------------------------------------
 
+/** A state as a small dot and a word (UX1): success is quiet, red only for a failure. */
 function StatusBadge({ status }: { status: string }) {
-    const colors: Record<string, string> = {
-        online: 'text-emerald-400 bg-emerald-400/10',
-        offline: 'text-red-400 bg-red-400/10',
-        draining: 'text-amber-400 bg-amber-400/10',
-        ok: 'text-emerald-400 bg-emerald-400/10',
-        error: 'text-red-400 bg-red-400/10',
-        completed: 'text-emerald-400 bg-emerald-400/10',
-        running: 'text-blue-400 bg-blue-400/10',
-        failed: 'text-red-400 bg-red-400/10',
-        paused: 'text-amber-400 bg-amber-400/10',
-        cancelled: 'text-zinc-400 bg-zinc-800',
+    const dots: Record<string, string> = {
+        online: 'bg-success',
+        offline: 'bg-danger',
+        draining: 'bg-warning',
+        ok: 'bg-success',
+        error: 'bg-danger',
+        completed: 'bg-success',
+        running: 'bg-machine',
+        failed: 'bg-danger',
+        paused: 'bg-person',
+        cancelled: 'bg-text-faint',
     };
+    const word = status ? status.charAt(0).toUpperCase() + status.slice(1) : status;
     return (
-        <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${colors[status] || 'text-zinc-400 bg-zinc-800'}`}>
-            <span className="w-1.5 h-1.5 rounded-full bg-current" />
-            {status}
+        <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs text-text-muted">
+            <span aria-hidden className={cn('size-1.5 shrink-0 rounded-full', dots[status] || 'bg-text-faint')} />
+            {word}
         </span>
     );
 }
 
-function CollapsibleSection({
-    sectionKey, title, icon: Icon, subtitle, expanded, onToggle, children,
-}: {
-    sectionKey: string; title: string; icon: any; subtitle: string;
-    expanded: boolean; onToggle: () => void; children: React.ReactNode;
+/** A connection test's result, as one quiet line under the field. */
+function TestResult({ status }: { status: { ok: boolean; msg: string } }) {
+    return (
+        <p className={cn('flex items-center gap-1.5 text-xs', status.ok ? 'text-success' : 'text-danger')}>
+            {status.ok ? <CheckCircle2 className="size-3 shrink-0" aria-hidden /> : <XCircle className="size-3 shrink-0" aria-hidden />}
+            {status.msg}
+        </p>
+    );
+}
+
+/** The two-column fields of a run's detail card. */
+function DetailRow({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
+    return (
+        <div className={cn('flex min-w-0 justify-between gap-2', className)}>
+            <span className="shrink-0 text-text-faint">{label}</span>
+            {children}
+        </div>
+    );
+}
+
+/**
+ * A setting the scale layer reads from the environment and nowhere else. It is
+ * shown — the value in effect is worth knowing — but not as an input: saving
+ * one used to report success while nothing changed (F58). The route names the
+ * variable in its `env_only` map, so this never restates it.
+ */
+function EnvValue({ label, value, envVar, hint }: {
+    label: string; value: string; envVar?: string; hint?: React.ReactNode;
 }) {
     return (
-        <div className="border border-zinc-800">
-            <button
-                onClick={onToggle}
-                className="w-full flex items-center justify-between p-4 hover:bg-zinc-900/50 transition-colors text-left"
-            >
-                <div className="flex items-center gap-3">
-                    <div className="p-1.5 bg-zinc-900 border border-zinc-800 shrink-0">
-                        <Icon className="h-3.5 w-3.5 text-zinc-400" />
-                    </div>
-                    <div>
-                        <h3 className="text-xs font-bold text-zinc-100 tracking-wider uppercase">{title}</h3>
-                        <p className="text-[10px] text-zinc-500 mt-0.5">{subtitle}</p>
-                    </div>
-                </div>
-                {expanded
-                    ? <ChevronDown className="h-4 w-4 text-zinc-500 shrink-0" />
-                    : <ChevronRight className="h-4 w-4 text-zinc-500 shrink-0" />
-                }
-            </button>
-            {expanded && (
-                <div className="px-6 pb-6 pt-2 border-t border-zinc-800">
-                    {children}
-                </div>
-            )}
-        </div>
+        <Field label={label} hint={<>
+            Set by <span className="font-code text-text-muted">{envVar ?? 'the environment'}</span> in the
+            environment; change it there and restart. {hint}
+        </>}>
+            <Input readOnly value={value} className="cursor-default bg-surface-2 font-code text-text-muted" />
+        </Field>
     );
 }
 
@@ -226,12 +221,12 @@ const CodeBlock = ({ code }: { code: string }) => {
     };
     return (
         <div className="relative group">
-            <pre className="bg-zinc-950 border border-zinc-800 p-3 text-xs text-zinc-400 overflow-x-auto font-mono leading-relaxed whitespace-pre-wrap break-words">
+            <pre className="bg-surface-2 border border-border p-3 text-xs text-text-muted overflow-x-auto font-code leading-relaxed whitespace-pre-wrap break-words rounded-md">
                 {code}
             </pre>
             <button
                 onClick={copy}
-                className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity px-2 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white text-[10px] font-bold border border-zinc-700"
+                className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity px-2 py-1 bg-surface hover:bg-surface-2 text-text-muted hover:text-text text-xs font-medium border border-border-strong rounded-md"
             >
                 {copied ? '✓ Copied' : 'Copy'}
             </button>
@@ -242,18 +237,33 @@ const CodeBlock = ({ code }: { code: string }) => {
 const DocSection = ({ title, children, defaultOpen = false }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) => {
     const [open, setOpen] = useState(defaultOpen);
     return (
-        <div className="border border-zinc-800">
+        <div className="rounded-md border border-border">
             <button
                 onClick={() => setOpen(o => !o)}
-                className="w-full flex items-center justify-between px-4 py-3 bg-zinc-900 hover:bg-zinc-800 transition-colors text-left"
+                className="w-full flex items-center justify-between px-4 py-3 hover:bg-row-hover transition-colors text-left rounded-md"
             >
-                <span className="text-xs uppercase font-bold text-zinc-300 tracking-wider">{title}</span>
-                {open ? <ChevronDown className="w-3.5 h-3.5 text-zinc-500" /> : <ChevronRight className="w-3.5 h-3.5 text-zinc-500" />}
+                <span className="text-sm font-medium text-text">{title}</span>
+                {open ? <ChevronDown className="w-3.5 h-3.5 text-text-faint" /> : <ChevronRight className="w-3.5 h-3.5 text-text-faint" />}
             </button>
-            {open && <div className="p-4 space-y-4 border-t border-zinc-800">{children}</div>}
+            {open && <div className="p-4 space-y-4 border-t border-border">{children}</div>}
         </div>
     );
 };
+
+/** One group of the environment reference: its name, then each variable over a hairline. */
+const EnvGroup = ({ title, rows }: { title: string; rows: string[][] }) => (
+    <div>
+        <p className={cn(FIELD_LABEL, 'mb-2 font-medium')}>{title}</p>
+        <div className="space-y-1 text-xs">
+            {rows.map(([k, v]) => (
+                <div key={k} className="flex gap-3 py-1.5 border-b border-border">
+                    <span className="font-code text-text shrink-0 w-44">{k}</span>
+                    <span className="text-text-faint">{v}</span>
+                </div>
+            ))}
+        </div>
+    </div>
+);
 
 const ScaleDocsDrawer = ({ open, onClose }: { open: boolean; onClose: () => void }) => {
     useEffect(() => {
@@ -265,92 +275,95 @@ const ScaleDocsDrawer = ({ open, onClose }: { open: boolean; onClose: () => void
     return (
         <>
             <div
-                className={`fixed inset-0 z-40 bg-black/50 transition-opacity duration-300 ${open ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+                className={`fixed inset-0 z-40 bg-scrim/50 transition-opacity duration-300 ${open ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
                 onClick={onClose}
             />
-            <div className={`fixed top-0 right-0 z-50 h-full w-full md:w-3/4 bg-zinc-950 border-l border-zinc-800 flex flex-col shadow-2xl transition-transform duration-300 ease-in-out ${open ? 'translate-x-0' : 'translate-x-full'}`}>
+            {/* Closed, the guide is only moved off-screen for the slide, so it is
+                inert too: nothing in it takes focus or is read out (F179). */}
+            <div
+                role="dialog"
+                aria-label="Scale deployment guide"
+                inert={!open}
+                className={`fixed top-0 right-0 z-50 h-full w-full md:w-3/4 bg-bg border-l border-border flex flex-col shadow-2xl transition-transform duration-300 ease-in-out ${open ? 'translate-x-0' : 'translate-x-full'}`}
+            >
                 {/* Header */}
-                <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800 shrink-0">
+                <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
                     <div className="flex items-center gap-3">
-                        <BookOpen className="w-4 h-4 text-zinc-400" />
-                        <h2 className="text-sm uppercase font-bold text-zinc-200 tracking-wider">Scale Deployment Guide</h2>
+                        <BookOpen className="w-4 h-4 text-text-faint" aria-hidden />
+                        <h2 className="text-[15px] font-semibold text-text">Scale deployment guide</h2>
                     </div>
-                    <button onClick={onClose} className="text-zinc-500 hover:text-white transition-colors">
-                        <X className="w-4 h-4" />
-                    </button>
+                    <IconButton label="Close the deployment guide" icon={X} size="sm" onClick={onClose} />
                 </div>
 
                 {/* Content */}
                 <div className="flex-1 overflow-y-auto p-6 space-y-3 modern-scrollbar">
 
                     {/* Intro banner */}
-                    <div className="flex items-start gap-3 px-4 py-3 bg-violet-950/30 border border-violet-800/40 text-xs text-violet-300">
-                        <Zap className="w-3.5 h-3.5 text-violet-400 shrink-0 mt-0.5" />
+                    <div className="flex items-start gap-3 px-4 py-3 bg-accent-subtle border border-border text-xs leading-relaxed text-text rounded-md">
+                        <Zap className="w-3.5 h-3.5 text-accent-ink shrink-0 mt-0.5" aria-hidden />
                         <span>
-                            Scale mode turns Synapse into a <strong className="text-violet-200">distributed job queue</strong>. Your main Synapse instance manages definitions and the UI — workers pull jobs from Redis and execute them in parallel. All you need to get started is a <strong className="text-violet-200">Redis server</strong>.
+                            Scale mode turns Synapse into a <strong className="font-semibold">distributed job queue</strong>. Your main Synapse instance manages definitions and the UI — workers pull jobs from Redis and execute them in parallel. All you need to get started is a <strong className="font-semibold">Redis server</strong>.
                         </span>
                     </div>
 
-                    <DocSection title="Architecture Overview" defaultOpen>
-                        <p className="text-xs text-zinc-500 leading-relaxed">
-                            In scale mode, Synapse splits into three roles. You always run exactly one <strong className="text-zinc-300">main instance</strong> (the combined image you already have). Workers and API servers are optional replicas.
+                    <DocSection title="Architecture overview" defaultOpen>
+                        <p className="text-xs text-text-muted leading-relaxed">
+                            In scale mode, Synapse splits into three roles. You always run exactly one <strong className="font-medium text-text">main instance</strong> (the combined image you already have). Workers and API servers are optional replicas.
                         </p>
-                        <div className="space-y-2 text-xs font-mono">
-                            <div className="border border-zinc-800 p-3 bg-zinc-900/50">
-                                <p className="text-zinc-200 font-bold mb-1">synapseorchai/synapse-ai  <span className="text-zinc-500 font-normal">(your existing install)</span></p>
-                                <p className="text-zinc-500">→ Hosts the UI and settings</p>
-                                <p className="text-zinc-500">→ Manages orchestrations, agents, tools</p>
-                                <p className="text-zinc-500">→ Syncs definitions to Postgres for workers</p>
-                                <p className="text-zinc-500">→ Enqueues jobs to Redis when V2 API is called</p>
-                                <p className="text-zinc-500">→ Streams SSE events back to clients from Redis</p>
+                        <div className="space-y-2 text-xs">
+                            <div className="border border-border p-3 rounded-md">
+                                <p className="text-text font-medium mb-1"><span className="font-code">synapseorchai/synapse-ai</span>  <span className="text-text-faint font-normal">(your existing install)</span></p>
+                                <p className="text-text-muted">→ Hosts the UI and settings</p>
+                                <p className="text-text-muted">→ Manages workflows, agents, tools</p>
+                                <p className="text-text-muted">→ Enqueues jobs to Redis when V2 API is called</p>
+                                <p className="text-text-muted">→ Streams SSE events back to clients from Redis</p>
                             </div>
-                            <div className="border border-zinc-800 p-3 bg-zinc-900/50">
-                                <p className="text-zinc-200 font-bold mb-1">synapseorchai/synapse-ai-worker  <span className="text-zinc-500 font-normal">(scale out ×N)</span></p>
-                                <p className="text-zinc-500">→ Pulls jobs from Redis ARQ queue</p>
-                                <p className="text-zinc-500">→ Reads definitions from Postgres</p>
-                                <p className="text-zinc-500">→ Executes orchestrations and agent chat</p>
-                                <p className="text-zinc-500">→ Publishes step events back to Redis Streams</p>
-                                <p className="text-zinc-500">→ Health endpoint on :9000/health</p>
+                            <div className="border border-border p-3 rounded-md">
+                                <p className="text-text font-medium mb-1"><span className="font-code">synapseorchai/synapse-ai-worker</span>  <span className="text-text-faint font-normal">(scale out ×N)</span></p>
+                                <p className="text-text-muted">→ Pulls jobs from Redis ARQ queue</p>
+                                <p className="text-text-muted">→ Reads definitions from Postgres</p>
+                                <p className="text-text-muted">→ Runs workflows and agent chat</p>
+                                <p className="text-text-muted">→ Publishes step events back to Redis Streams</p>
+                                <p className="text-text-muted">→ Health endpoint on <span className="font-code">:9000/health</span></p>
                             </div>
-                            <div className="border border-zinc-800 p-3 bg-zinc-900/50">
-                                <p className="text-zinc-200 font-bold mb-1">synapseorchai/synapse-ai-api-server  <span className="text-zinc-500 font-normal">(optional — scale API tier)</span></p>
-                                <p className="text-zinc-500">→ Same API as the main instance but no UI</p>
-                                <p className="text-zinc-500">→ Useful when you want to scale API replicas separately</p>
-                                <p className="text-zinc-500">→ Put behind a load balancer alongside the main instance</p>
+                            <div className="border border-border p-3 rounded-md">
+                                <p className="text-text font-medium mb-1"><span className="font-code">synapseorchai/synapse-ai-api-server</span>  <span className="text-text-faint font-normal">(optional — scale API tier)</span></p>
+                                <p className="text-text-muted">→ Same API as the main instance but no UI</p>
+                                <p className="text-text-muted">→ Useful when you want to scale API replicas separately</p>
+                                <p className="text-text-muted">→ Put behind a load balancer alongside the main instance</p>
                             </div>
                         </div>
                     </DocSection>
 
-                    <DocSection title="What You Need" defaultOpen>
+                    <DocSection title="What you need" defaultOpen>
                         <div className="space-y-3 text-xs">
-                            <div className="flex items-start gap-3 p-3 border border-zinc-800">
-                                <span className="text-emerald-400 font-bold shrink-0 mt-0.5">✓ Required</span>
+                            <div className="flex items-start gap-3 p-3 border border-border rounded-md">
+                                <span className="text-success font-medium shrink-0 mt-0.5">✓ Required</span>
                                 <div>
-                                    <p className="text-zinc-200 font-bold">Redis</p>
-                                    <p className="text-zinc-500 mt-0.5">Job queue, cancellation signals, SSE event streams. Any Redis 6+ works — managed (Upstash, Redis Cloud, ElastiCache) or self-hosted.</p>
+                                    <p className="text-text font-medium">Redis</p>
+                                    <p className="text-text-muted mt-0.5">Job queue, cancellation signals, SSE event streams. Any Redis 6+ works — managed (Upstash, Redis Cloud, ElastiCache) or self-hosted.</p>
                                     <CodeBlock code={`# Quickest self-hosted option:\ndocker run -d -p 6379:6379 redis:7-alpine`} />
                                 </div>
                             </div>
-                            <div className="flex items-start gap-3 p-3 border border-zinc-800">
-                                <span className="text-emerald-400 font-bold shrink-0 mt-0.5">✓ Required</span>
+                            <div className="flex items-start gap-3 p-3 border border-border rounded-md">
+                                <span className="text-success font-medium shrink-0 mt-0.5">✓ Required</span>
                                 <div>
-                                    <p className="text-zinc-200 font-bold">Postgres</p>
-                                    <p className="text-zinc-500 mt-0.5">Workers read orchestration/agent definitions and write run state here. The main instance syncs to it. Any Postgres 14+ works.</p>
-                                    <p className="text-zinc-500 mt-1">After connecting, go to <strong className="text-zinc-300">Postgres Sync → Sync Now</strong> to push your definitions to the database.</p>
+                                    <p className="text-text font-medium">Postgres</p>
+                                    <p className="text-text-muted mt-0.5">Workflows, agents and tools live here, and workers write run state here. This instance reads and writes the same database, so there is nothing to push. Any Postgres 14+ works.</p>
                                 </div>
                             </div>
-                            <div className="flex items-start gap-3 p-3 border border-zinc-800">
-                                <span className="text-zinc-500 font-bold shrink-0 mt-0.5">○ Optional</span>
+                            <div className="flex items-start gap-3 p-3 border border-border rounded-md">
+                                <span className="text-text-faint font-medium shrink-0 mt-0.5">○ Optional</span>
                                 <div>
-                                    <p className="text-zinc-200 font-bold">S3 (or compatible)</p>
-                                    <p className="text-zinc-500 mt-0.5">When configured, vault files and execution logs are stored in S3 and shared across all workers. Without it, each worker uses local disk — fine for single-worker setups.</p>
+                                    <p className="text-text font-medium">S3 (or compatible)</p>
+                                    <p className="text-text-muted mt-0.5">When configured, the vault, tool outputs and run logs are stored in S3, and every worker reads the same files. Without it, each process uses its own disk (<span className="font-code">SYNAPSE_BLOB_DIR</span>) — fine on one machine; across several hosts that directory has to be shared.</p>
                                 </div>
                             </div>
                         </div>
                     </DocSection>
 
-                    <DocSection title="Quick Start — Docker Run" defaultOpen>
-                        <p className="text-xs text-zinc-500">The fastest way to add a worker to your existing Synapse install. Set the two required env vars and pull the image.</p>
+                    <DocSection title="Quick start — Docker run" defaultOpen>
+                        <p className="text-xs text-text-muted">The fastest way to add a worker to your existing Synapse install. Set the two required env vars and pull the image.</p>
                         <CodeBlock code={`# 1. Pull the worker image
 docker pull synapseorchai/synapse-ai-worker:latest
 
@@ -366,11 +379,11 @@ docker run -d \\
 # 3. Check it registered
 curl http://localhost:9000/health
 # {"status":"ok","worker_id":"...","active_jobs":0,"uptime":12.3}`} />
-                        <p className="text-xs text-zinc-500">Scale horizontally by running this command on multiple machines — all workers share the same Redis queue.</p>
+                        <p className="text-xs text-text-muted">Scale horizontally by running this command on multiple machines — all workers share the same Redis queue.</p>
                     </DocSection>
 
-                    <DocSection title="Quick Start — Docker Compose">
-                        <p className="text-xs text-zinc-500">Add workers alongside your existing stack using the built-in scale profile.</p>
+                    <DocSection title="Quick start — Docker Compose">
+                        <p className="text-xs text-text-muted">Add workers alongside your existing stack using the built-in scale profile.</p>
                         <CodeBlock code={`# In your .env file, add:
 SCALE_POSTGRES_URL=postgresql://user:pass@your-pg-host:5432/synapse
 
@@ -386,8 +399,8 @@ docker compose --profile scale up -d
 docker compose --profile scale up -d --scale worker=4`} />
                     </DocSection>
 
-                    <DocSection title="Kubernetes Deployment">
-                        <p className="text-xs text-zinc-500">Pre-built manifests are in <code className="text-zinc-400">infra/k8s/</code> in the repo. Apply them after creating a <code className="text-zinc-400">synapse-secrets</code> Secret.</p>
+                    <DocSection title="Kubernetes deployment">
+                        <p className="text-xs text-text-muted">Pre-built manifests are in <code className="font-code text-text">infra/k8s/</code> in the repo. Apply them after creating a <code className="font-code text-text">synapse-secrets</code> Secret.</p>
                         <CodeBlock code={`# 1. Create the secrets
 kubectl create secret generic synapse-secrets \\
   --from-literal=redis-url="redis://your-redis:6379/0" \\
@@ -404,93 +417,53 @@ kubectl apply -f infra/k8s/
 # When queue > 5 jobs, a new worker pod spins up (up to 100).
 # Requires KEDA installed in your cluster:
 kubectl apply -f https://github.com/kedacore/keda/releases/download/v2.13.0/keda-2.13.0.yaml`} />
-                        <p className="text-xs text-zinc-500">The worker manifest uses <code className="text-zinc-400">synapseorchai/synapse-ai-worker:latest</code> with <code className="text-zinc-400">imagePullPolicy: Always</code> so new versions roll out automatically on pod restart.</p>
+                        <p className="text-xs text-text-muted">The worker manifest uses <code className="font-code text-text">synapseorchai/synapse-ai-worker:latest</code> with <code className="font-code text-text">imagePullPolicy: Always</code> so new versions roll out automatically on pod restart.</p>
                     </DocSection>
 
-                    <DocSection title="Environment Variables Reference">
-                        <p className="text-xs text-zinc-500 mb-3">All variables supported by the worker image. Pass via <code className="text-zinc-400">-e</code>, <code className="text-zinc-400">--env-file</code>, or k8s Secret/ConfigMap.</p>
+                    <DocSection title="Environment variables reference">
+                        <p className="text-xs text-text-muted mb-3">All variables supported by the worker image. Pass via <code className="font-code text-text">-e</code>, <code className="font-code text-text">--env-file</code>, or k8s Secret/ConfigMap.</p>
                         <div className="space-y-4">
-                            <div>
-                                <p className="text-[10px] uppercase font-bold text-zinc-500 tracking-wider mb-2">Required</p>
-                                <div className="space-y-1 text-xs font-mono">
-                                    {[
-                                        ['REDIS_URL', 'redis://host:6379/0  or  redis+cluster://h1:6379,h2:6379'],
-                                        ['SCALE_POSTGRES_URL', 'postgresql://user:pass@host:5432/dbname'],
-                                    ].map(([k, v]) => (
-                                        <div key={k} className="flex gap-3 py-1.5 border-b border-zinc-800/50">
-                                            <span className="text-zinc-200 shrink-0 w-44">{k}</span>
-                                            <span className="text-zinc-600">{v}</span>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                            <div>
-                                <p className="text-[10px] uppercase font-bold text-zinc-500 tracking-wider mb-2">Worker Tuning</p>
-                                <div className="space-y-1 text-xs font-mono">
-                                    {[
-                                        ['WORKER_CONCURRENCY', '10 — max parallel jobs per worker'],
-                                        ['WORKER_JOB_TIMEOUT', '3600 — seconds before a job times out'],
-                                        ['WORKER_MAX_RETRIES', '3 — retries before sending to DLQ'],
-                                        ['WORKER_HEALTH_PORT', '9000 — HTTP health endpoint port'],
-                                        ['NUM_QUEUE_SHARDS', '1 — increase for Redis Cluster'],
-                                    ].map(([k, v]) => (
-                                        <div key={k} className="flex gap-3 py-1.5 border-b border-zinc-800/50">
-                                            <span className="text-zinc-200 shrink-0 w-44">{k}</span>
-                                            <span className="text-zinc-600">{v}</span>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                            <div>
-                                <p className="text-[10px] uppercase font-bold text-zinc-500 tracking-wider mb-2">S3 Storage (optional)</p>
-                                <div className="space-y-1 text-xs font-mono">
-                                    {[
-                                        ['S3_BUCKET', 'my-synapse-bucket'],
-                                        ['S3_REGION', 'us-east-1'],
-                                        ['S3_ACCESS_KEY_ID', 'AKIA... (blank = use IAM role)'],
-                                        ['S3_SECRET_ACCESS_KEY', ''],
-                                        ['S3_ENDPOINT_URL', 'https://... (MinIO / R2 / etc.)'],
-                                    ].map(([k, v]) => (
-                                        <div key={k} className="flex gap-3 py-1.5 border-b border-zinc-800/50">
-                                            <span className="text-zinc-200 shrink-0 w-44">{k}</span>
-                                            <span className="text-zinc-600">{v}</span>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                            <div>
-                                <p className="text-[10px] uppercase font-bold text-zinc-500 tracking-wider mb-2">Observability (optional)</p>
-                                <div className="space-y-1 text-xs font-mono">
-                                    {[
-                                        ['OTLP_ENDPOINT', 'http://jaeger:4317'],
-                                        ['METRICS_TOKEN', 'bearer token for /metrics'],
-                                        ['K8S_MODE', '1 when running on Kubernetes'],
-                                        ['PGBOUNCER_MODE', '1 when Postgres URL points to PgBouncer'],
-                                    ].map(([k, v]) => (
-                                        <div key={k} className="flex gap-3 py-1.5 border-b border-zinc-800/50">
-                                            <span className="text-zinc-200 shrink-0 w-44">{k}</span>
-                                            <span className="text-zinc-600">{v}</span>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
+                            <EnvGroup title="Required" rows={[
+                                ['REDIS_URL', 'redis://host:6379/0  or  redis+cluster://h1:6379,h2:6379'],
+                                ['SCALE_POSTGRES_URL', 'postgresql://user:pass@db.example.com:5432/dbname'],
+                            ]} />
+                            <EnvGroup title="Worker tuning" rows={[
+                                ['WORKER_CONCURRENCY', '10 — max parallel jobs per worker'],
+                                ['WORKER_JOB_TIMEOUT', '3600 — seconds before a job times out'],
+                                ['WORKER_MAX_RETRIES', '3 — tries a job gets when a stopping worker cuts it off; each resumes from its checkpoint, and after the last the run is failed and dead-lettered'],
+                                ['WORKER_HEALTH_PORT', '9000 — HTTP health endpoint port'],
+                            ]} />
+                            <EnvGroup title="S3 storage (optional)" rows={[
+                                ['S3_BUCKET', 'my-synapse-bucket'],
+                                ['S3_REGION', 'us-east-1'],
+                                ['S3_PREFIX', 'synapse — every key is stored under <prefix>/<tenant>/'],
+                                ['S3_ACCESS_KEY_ID', 'AKIA... (blank = use IAM role)'],
+                                ['S3_SECRET_ACCESS_KEY', ''],
+                                ['S3_ENDPOINT_URL', 'https://... (MinIO / R2 / etc.)'],
+                            ]} />
+                            <EnvGroup title="Observability (optional)" rows={[
+                                ['OTLP_ENDPOINT', 'your collector — telemetry is off until set'],
+                                ['SYNAPSE_TELEMETRY', 'otlp: send to OTEL_EXPORTER_OTLP_ENDPOINT'],
+                                ['METRICS_TOKEN', 'bearer token for /api/v2/metrics'],
+                                ['K8S_MODE', '1 when running on Kubernetes'],
+                                ['PGBOUNCER_MODE', '1 when Postgres URL points to PgBouncer'],
+                            ]} />
                         </div>
                     </DocSection>
 
-                    <DocSection title="Setup Checklist">
+                    <DocSection title="Setup checklist">
                         <div className="space-y-2 text-xs">
                             {[
-                                ['1', 'Connect Redis URL in the Redis Connection section above and click Test'],
-                                ['2', 'Enable Scale Mode toggle'],
-                                ['3', 'Connect Postgres URL in the Postgres Sync section and click Test'],
-                                ['4', 'Click Sync Now to push your orchestrations, agents, and tools to Postgres'],
-                                ['5', 'Pull and start the worker image (Docker Run or Docker Compose above)'],
-                                ['6', 'Confirm the worker appears in the Workers panel (it self-registers on startup)'],
-                                ['7', 'Trigger a V2 run via API and watch the Live Queue counter increment → decrement'],
+                                ['1', 'Connect Redis URL in the Redis connection section above and click Test'],
+                                ['2', 'Enable scale mode toggle'],
+                                ['3', 'Connect Postgres URL in the Postgres section and click Test'],
+                                ['4', 'Pull and start the worker image (Docker run or Docker Compose above)'],
+                                ['5', 'Confirm the worker appears in the Workers panel (it self-registers on startup)'],
+                                ['6', 'Trigger a V2 run via API and watch the Live queue counter increment → decrement'],
                             ].map(([n, text]) => (
-                                <div key={n} className="flex items-start gap-3 py-2 border-b border-zinc-800/50 last:border-b-0">
-                                    <span className="w-5 h-5 rounded-full border border-zinc-700 text-zinc-500 text-[10px] font-bold flex items-center justify-center shrink-0">{n}</span>
-                                    <span className="text-zinc-400">{text}</span>
+                                <div key={n} className="flex items-start gap-3 py-2 border-b border-border last:border-b-0">
+                                    <span className="w-5 h-5 rounded-full border border-border-strong text-text-faint text-xs font-medium tabular-nums flex items-center justify-center shrink-0">{n}</span>
+                                    <span className="text-text-muted">{text}</span>
                                 </div>
                             ))}
                         </div>
@@ -520,15 +493,9 @@ export function ScaleTab() {
     const [s3Testing, setS3Testing] = useState(false);
     const [s3Status, setS3Status] = useState<{ ok: boolean; msg: string } | null>(null);
 
-    // Sync state
-    const [syncing, setSyncing] = useState(false);
-    const [syncResult, setSyncResult] = useState<any>(null);
-    const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
-
     // Workers
     const [workers, setWorkers] = useState<WorkerInfo[]>([]);
     const [workerHealthResults, setWorkerHealthResults] = useState<Record<string, any>>({});
-    const [newWorkerAddress, setNewWorkerAddress] = useState('');
 
     // Queue stats
     const [queueStats, setQueueStats] = useState<QueueStats | null>(null);
@@ -537,12 +504,9 @@ export function ScaleTab() {
     const [dlqEntries, setDlqEntries] = useState<DLQEntry[]>([]);
     const [dlqLoading, setDlqLoading] = useState(false);
     const [retryingDlq, setRetryingDlq] = useState<string | null>(null);
+    const [dlqRefused, setDlqRefused] = useState<{ id: string; message: string } | null>(null);
     const [expandedDlq, setExpandedDlq] = useState<string | null>(null);
 
-    // Tenants
-    const [tenants, setTenants] = useState<Tenant[]>([]);
-    const [newTenant, setNewTenant] = useState({ tenant_id: '', name: '', max_concurrent_runs: 100, max_queued_runs: 1000 });
-    const [addingTenant, setAddingTenant] = useState(false);
 
     // Analytics & monitoring (new)
     const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
@@ -555,7 +519,7 @@ export function ScaleTab() {
 
     // Collapsible config sections (all collapsed by default)
     const [expandedConfigs, setExpandedConfigs] = useState<Record<string, boolean>>({
-        redis: false, postgres: false, s3: false, workers: false, tenants: false, observability: false,
+        redis: false, postgres: false, s3: false, workers: false, observability: false,
     });
 
     const toggleSection = (key: string) =>
@@ -568,15 +532,9 @@ export function ScaleTab() {
             .then(data => setConfig({ ...DEFAULT_CONFIG, ...data }))
             .catch(() => {});
 
-        fetch('/api/scale/sync/status')
-            .then(r => r.json())
-            .then(setSyncStatus)
-            .catch(() => {});
-
         loadWorkers();
         loadQueueStats();
         loadDlq();
-        loadTenants();
         loadAnalytics();
         loadRecentRuns();
     }, []);
@@ -613,13 +571,6 @@ export function ScaleTab() {
             .then(data => setDlqEntries(Array.isArray(data) ? data : []))
             .catch(() => setDlqEntries([]))
             .finally(() => setDlqLoading(false));
-    }, []);
-
-    const loadTenants = useCallback(() => {
-        fetch('/api/scale/tenants')
-            .then(r => r.json())
-            .then(data => setTenants(Array.isArray(data) ? data : []))
-            .catch(() => setTenants([]));
     }, []);
 
     const loadAnalytics = useCallback(() => {
@@ -666,12 +617,23 @@ export function ScaleTab() {
         setIsSaving(true);
         setSaveMsg('');
         try {
-            await fetch('/api/scale/config', {
+            // Only what saving can change. The environment-only settings and the
+            // route's own annotations are left out rather than sent to be ignored.
+            const envOnly = new Set(Object.keys(config.env_only ?? {}));
+            const body = Object.fromEntries(Object.entries(config).filter(
+                ([k]) => !envOnly.has(k) && k !== 'env_only' && k !== 'metrics_token_set'
+                    && k !== 's3_secret_access_key_set'));
+            const res = await fetch('/api/scale/config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(config),
+                body: JSON.stringify(body),
             });
-            setSaveMsg('Saved. Restart the server to apply Redis/Postgres changes.');
+            if (!res.ok) {
+                const detail = await res.json().catch(() => ({}));
+                setSaveMsg(detail.detail || `Save failed (${res.status}).`);
+                return;
+            }
+            setSaveMsg('Saved. Restart the server and every worker to apply Redis, Postgres or S3 changes.');
         } catch {
             setSaveMsg('Save failed.');
         } finally {
@@ -740,22 +702,6 @@ export function ScaleTab() {
         }
     };
 
-    const triggerSync = async () => {
-        setSyncing(true);
-        setSyncResult(null);
-        try {
-            const r = await fetch('/api/scale/sync', { method: 'POST' });
-            const d = await r.json();
-            setSyncResult(d);
-            const status = await fetch('/api/scale/sync/status').then(r => r.json());
-            setSyncStatus(status);
-        } catch (e) {
-            setSyncResult({ error: String(e) });
-        } finally {
-            setSyncing(false);
-        }
-    };
-
     const checkWorkerHealth = async (worker: WorkerInfo) => {
         try {
             const r = await fetch(`/api/scale/workers/${worker.worker_id}/health`);
@@ -773,33 +719,21 @@ export function ScaleTab() {
 
     const retryDlq = async (dlqId: string) => {
         setRetryingDlq(dlqId);
+        setDlqRefused(null);
         try {
-            await fetch(`/api/scale/dlq/${dlqId}/retry`, { method: 'POST' });
+            const res = await fetch(`/api/scale/dlq/${dlqId}/retry`, { method: 'POST' });
+            // The route refuses a run that never reached a step, one that is not
+            // failed or cancelled, and one already queued — each with the reason.
+            // Redrawing the list as though it had worked hid all three (F58).
+            if (!res.ok) {
+                const body = await res.json().catch(() => ({}));
+                setDlqRefused({ id: dlqId, message: body.detail || `The retry was refused (${res.status}).` });
+                return;
+            }
             loadDlq();
         } finally {
             setRetryingDlq(null);
         }
-    };
-
-    const addTenant = async () => {
-        if (!newTenant.tenant_id) return;
-        setAddingTenant(true);
-        try {
-            await fetch('/api/scale/tenants', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(newTenant),
-            });
-            setNewTenant({ tenant_id: '', name: '', max_concurrent_runs: 100, max_queued_runs: 1000 });
-            loadTenants();
-        } finally {
-            setAddingTenant(false);
-        }
-    };
-
-    const deleteTenant = async (tenantId: string) => {
-        await fetch(`/api/scale/tenants/${tenantId}`, { method: 'DELETE' });
-        loadTenants();
     };
 
     const field = (key: keyof ScaleConfig) => ({
@@ -808,635 +742,525 @@ export function ScaleTab() {
             setConfig(prev => ({ ...prev, [key]: e.target.type === 'number' ? Number(e.target.value) : e.target.value })),
     });
 
+
+    // The kit Switch hands back the new value rather than an input event.
     const toggle = (key: keyof ScaleConfig) => ({
         checked: Boolean(config[key]),
-        onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
-            setConfig(prev => ({ ...prev, [key]: e.target.checked })),
+        onChange: (checked: boolean) =>
+            setConfig(prev => ({ ...prev, [key]: checked })),
     });
+
+    const openRun = (runId: string) => { setSearchQuery(runId); handleSearch(runId); };
+    const RUN_GRID = 'grid grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)_minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,0.8fr)_minmax(0,0.8fr)] items-center gap-x-4';
 
     // ---------------------------------------------------------------------------
     // Render
     // ---------------------------------------------------------------------------
 
     return (
-        <div className="space-y-6">
+        <div>
 
             {/* Docs Drawer */}
             <ScaleDocsDrawer open={docsOpen} onClose={() => setDocsOpen(false)} />
 
-            {/* ── Analytics Header ─────────────────────────────────────────── */}
-            <div>
-                <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-2">
-                        <BarChart3 className="h-4 w-4 text-zinc-500" />
-                        <h2 className="text-xs font-bold uppercase tracking-wider text-zinc-500">Scale Analytics</h2>
-                        {analytics && !analytics.available && (
-                            <span className="text-[10px] text-zinc-600">(requires Postgres)</span>
-                        )}
+            {/* ── Analytics ─────────────────────────────────────────────────── */}
+            <Section variant="plain" collapsible={false} title="Scale analytics"
+                actions={<>
+                    {analytics && !analytics.available && (
+                        <span className="text-xs text-text-faint">(requires Postgres)</span>
+                    )}
+                    <Button variant="secondary" size="sm" onClick={() => setDocsOpen(true)}>
+                        <BookOpen className="size-3.5" aria-hidden />
+                        Deploy docs
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => { loadAnalytics(); loadRecentRuns(); loadQueueStats(); }}>
+                        <RefreshCw className="size-3.5" aria-hidden /> Refresh
+                    </Button>
+                </>}
+            >
+                {/* `StatStrip` carries `m-0`, which beats a parent's `space-y` (M2e). */}
+                <div className={`${FORM} space-y-4`}>
+                    <div>
+                        <StatStrip size="sm" label="Runs" cells={[
+                            { label: 'Total runs', value: analytics?.available ? analytics.total_runs : '—' },
+                            { label: 'Runs today', value: analytics?.available ? analytics.runs_today : '—' },
+                            { label: 'Active now', value: analytics?.available ? (analytics.status_counts?.running ?? 0) : (queueStats?.active ?? '—'), dot: 'machine' },
+                            { label: 'Success rate', value: analytics?.available ? `${analytics.success_rate}%` : '—', dot: analytics?.available && (analytics.success_rate ?? 0) >= 90 ? 'success' : undefined },
+                        ]} />
                     </div>
-                    <div className="flex items-center gap-3">
-                        <button
-                            onClick={() => setDocsOpen(true)}
-                            className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] uppercase font-bold tracking-wider text-zinc-400 hover:text-white bg-zinc-900 border border-zinc-800 hover:border-zinc-600 transition-colors"
-                        >
-                            <BookOpen className="h-3 w-3" />
-                            Deploy Docs
-                        </button>
-                        <button
-                            onClick={() => { loadAnalytics(); loadRecentRuns(); loadQueueStats(); }}
-                            className="flex items-center gap-1.5 text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors uppercase tracking-wider"
-                        >
-                            <RefreshCw className="h-3 w-3" /> Refresh
-                        </button>
+                    <div>
+                        <StatStrip size="sm" label="Workers and cost" cells={[
+                            { label: 'Workers online', value: analytics?.available ? analytics.workers_online : (workers.filter(w => w.status === 'online').length || '—'), dot: 'success' },
+                            { label: 'Avg cost / run', value: analytics?.available ? usd(analytics.avg_cost_usd) : '—' },
+                            { label: 'Cost today', value: analytics?.available ? usd(analytics.total_cost_usd_today) : '—' },
+                            { label: 'Cache hit rate', value: analytics?.available ? `${analytics.cache_hit_rate}%` : '—' },
+                        ]} />
                     </div>
                 </div>
+            </Section>
 
-                <div className="grid grid-cols-4 gap-3 mb-3">
-                    {[
-                        { label: 'Total Runs', value: analytics?.available ? analytics.total_runs : '—', color: 'text-zinc-100' },
-                        { label: 'Runs Today', value: analytics?.available ? analytics.runs_today : '—', color: 'text-zinc-100' },
-                        { label: 'Active Now', value: analytics?.available ? (analytics.status_counts?.running ?? 0) : (queueStats?.active ?? '—'), color: 'text-blue-400' },
-                        { label: 'Success Rate', value: analytics?.available ? `${analytics.success_rate}%` : '—', color: (analytics?.success_rate ?? 0) >= 90 ? 'text-emerald-400' : 'text-amber-400' },
-                    ].map(stat => (
-                        <div key={stat.label} className="border border-zinc-800 p-4 text-center bg-zinc-950">
-                            <p className={`text-2xl font-bold font-mono ${stat.color}`}>{stat.value}</p>
-                            <p className="text-[10px] uppercase tracking-wider text-zinc-500 mt-1">{stat.label}</p>
+            {/* ── Search ────────────────────────────────────────────────────── */}
+            <Section variant="plain" collapsible={false} title="Search by run ID or session ID">
+                <div className={`${FORM} space-y-3`}>
+                    <label htmlFor="scale-run-search" className="sr-only">Search by run ID or session ID</label>
+                    <div className="flex gap-2">
+                        <div className="relative flex-1">
+                            <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-text-faint" aria-hidden />
+                            <Input
+                                id="scale-run-search"
+                                type="text"
+                                placeholder="run_abc_1234567890 or sess_xyz..."
+                                className="w-full pl-8 font-code"
+                                value={searchQuery}
+                                onChange={e => setSearchQuery(e.target.value)}
+                                onKeyDown={e => e.key === 'Enter' && handleSearch()}
+                            />
                         </div>
-                    ))}
-                </div>
+                        <Button
+                            variant="secondary"
+                            onClick={() => handleSearch()}
+                            loading={isSearching}
+                            disabled={!searchQuery.trim()}
+                        >
+                            {!isSearching && <Search className="size-3.5" aria-hidden />}
+                            Search
+                        </Button>
+                    </div>
+                    <p className="text-xs text-text-faint">Prefix <span className="font-code text-text-muted">sess_</span> to search by session ID and see all runs in that session.</p>
 
-                <div className="grid grid-cols-4 gap-3">
-                    {[
-                        { label: 'Workers Online', value: analytics?.available ? analytics.workers_online : (workers.filter(w => w.status === 'online').length || '—'), color: 'text-emerald-400' },
-                        { label: 'Avg Cost / Run', value: analytics?.available ? formatCost(analytics.avg_cost_usd) : '—', color: 'text-zinc-100' },
-                        { label: 'Cost Today', value: analytics?.available ? formatCost(analytics.total_cost_usd_today) : '—', color: 'text-zinc-100' },
-                        { label: 'Cache Hit Rate', value: analytics?.available ? `${analytics.cache_hit_rate}%` : '—', color: 'text-purple-400' },
-                    ].map(stat => (
-                        <div key={stat.label} className="border border-zinc-800 p-4 text-center bg-zinc-950">
-                            <p className={`text-2xl font-bold font-mono ${stat.color}`}>{stat.value}</p>
-                            <p className="text-[10px] uppercase tracking-wider text-zinc-500 mt-1">{stat.label}</p>
-                        </div>
-                    ))}
-                </div>
-            </div>
+                    {/* Search error */}
+                    {searchError && (
+                        <p className="text-xs text-danger flex items-center gap-1.5">
+                            <XCircle className="h-3 w-3" aria-hidden /> {searchError}
+                        </p>
+                    )}
 
-            {/* ── Two-column monitoring section ────────────────────────────── */}
-            <div className="grid gap-6" style={{ gridTemplateColumns: '70% 30%' }}>
-
-                {/* Left: Search + Recent Runs */}
-                <div className="space-y-4 min-w-0">
-
-                    {/* Search bar */}
-                    <div className="border border-zinc-800 p-4">
-                        <p className="text-[10px] uppercase font-bold tracking-wider text-zinc-500 mb-3">Search by Run ID or Session ID</p>
-                        <div className="flex gap-2">
-                            <div className="relative flex-1">
-                                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-500" />
-                                <input
-                                    type="text"
-                                    placeholder="run_abc_1234567890 or sess_xyz..."
-                                    className="w-full bg-zinc-900 border border-zinc-700 text-zinc-100 text-sm pl-8 pr-3 py-2 font-mono focus:outline-none focus:border-zinc-500"
-                                    value={searchQuery}
-                                    onChange={e => setSearchQuery(e.target.value)}
-                                    onKeyDown={e => e.key === 'Enter' && handleSearch()}
-                                />
+                    {/* Run detail result */}
+                    {searchRunDetail && (
+                        <div className="rounded-md border border-border bg-surface p-4">
+                            <div className="flex items-start justify-between gap-4 mb-3">
+                                <div className="flex items-center gap-3 flex-wrap min-w-0">
+                                    <button
+                                        onClick={() => copyToClipboard(searchRunDetail.run_id)}
+                                        className="font-code text-xs text-text hover:text-accent-ink flex items-center gap-1 truncate rounded-sm"
+                                    >
+                                        {searchRunDetail.run_id}
+                                        <Copy className="h-3 w-3 shrink-0 text-text-faint" />
+                                    </button>
+                                    <StatusBadge status={searchRunDetail.status} />
+                                </div>
+                                <button onClick={() => setSearchRunDetail(null)} className="text-text-faint hover:text-text text-xs shrink-0 rounded-sm">✕</button>
                             </div>
-                            <button
-                                onClick={() => handleSearch()}
-                                disabled={isSearching || !searchQuery.trim()}
-                                className="px-4 py-2 text-xs font-bold uppercase tracking-wider bg-zinc-800 text-zinc-300 hover:bg-zinc-700 disabled:opacity-40 transition-colors flex items-center gap-2"
-                            >
-                                {isSearching ? <Loader2 className="h-3 w-3 animate-spin" /> : <Search className="h-3 w-3" />}
-                                Search
-                            </button>
-                        </div>
-                        <p className="text-[10px] text-zinc-600 mt-2">Prefix <span className="font-mono text-zinc-400">sess_</span> to search by session ID and see all runs in that session.</p>
-
-                        {/* Search error */}
-                        {searchError && (
-                            <p className="text-xs text-red-400 mt-3 flex items-center gap-1.5">
-                                <XCircle className="h-3 w-3" /> {searchError}
-                            </p>
-                        )}
-
-                        {/* Run detail result */}
-                        {searchRunDetail && (
-                            <div className="mt-4 border border-zinc-700 bg-zinc-950 p-4">
-                                <div className="flex items-start justify-between gap-4 mb-3">
-                                    <div className="flex items-center gap-2 flex-wrap min-w-0">
-                                        <button
-                                            onClick={() => copyToClipboard(searchRunDetail.run_id)}
-                                            className="font-mono text-xs text-zinc-300 hover:text-zinc-100 flex items-center gap-1 truncate"
-                                        >
-                                            {searchRunDetail.run_id}
-                                            <Copy className="h-3 w-3 shrink-0" />
-                                        </button>
-                                        <StatusBadge status={searchRunDetail.status} />
-                                    </div>
-                                    <button onClick={() => setSearchRunDetail(null)} className="text-zinc-600 hover:text-zinc-400 text-xs shrink-0">✕</button>
-                                </div>
-                                <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
-                                    <div className="flex justify-between">
-                                        <span className="text-zinc-500">Orchestration</span>
-                                        <span className="font-mono text-zinc-300 truncate ml-2">{searchRunDetail.orchestration_id || '—'}</span>
-                                    </div>
-                                    <div className="flex justify-between">
-                                        <span className="text-zinc-500">Worker</span>
-                                        <span className="font-mono text-zinc-300 truncate ml-2">{searchRunDetail.worker_id || '—'}</span>
-                                    </div>
-                                    <div className="flex justify-between">
-                                        <span className="text-zinc-500">Duration</span>
-                                        <span className="text-zinc-300">{formatDuration(searchRunDetail.started_at, searchRunDetail.ended_at)}</span>
-                                    </div>
-                                    <div className="flex justify-between">
-                                        <span className="text-zinc-500">Cost</span>
-                                        <span className="text-zinc-300">{formatCost(searchRunDetail.total_cost_usd)}</span>
-                                    </div>
-                                    <div className="flex justify-between">
-                                        <span className="text-zinc-500">Tokens</span>
-                                        <span className="text-zinc-300">{searchRunDetail.total_tokens_used?.toLocaleString() ?? '—'}</span>
-                                    </div>
-                                    <div className="flex justify-between">
-                                        <span className="text-zinc-500">Cache Hits</span>
-                                        <span className="text-zinc-300">{searchRunDetail.cache_hit_count ?? '—'}</span>
-                                    </div>
-                                    {searchRunDetail.current_step_id && (
-                                        <div className="flex justify-between col-span-2">
-                                            <span className="text-zinc-500">Current Step</span>
-                                            <span className="font-mono text-zinc-300">{searchRunDetail.current_step_id}</span>
-                                        </div>
-                                    )}
-                                    {searchRunDetail.waiting_for_human && (
-                                        <div className="col-span-2 flex items-start gap-2 p-2 bg-amber-900/20 border border-amber-800/40 text-amber-400">
-                                            <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                                            <span className="text-[11px]">Waiting for human input{searchRunDetail.human_prompt ? `: ${searchRunDetail.human_prompt}` : ''}</span>
-                                        </div>
-                                    )}
-                                    {searchRunDetail.estimated_savings_usd != null && searchRunDetail.estimated_savings_usd > 0 && (
-                                        <div className="flex justify-between">
-                                            <span className="text-zinc-500">Cache Savings</span>
-                                            <span className="text-emerald-400">{formatCost(searchRunDetail.estimated_savings_usd)}</span>
-                                        </div>
-                                    )}
-                                </div>
-                                <div className="mt-2 text-[10px] text-zinc-600">
-                                    Started: {searchRunDetail.started_at ? new Date(searchRunDetail.started_at).toLocaleString() : '—'}
-                                    {searchRunDetail.ended_at && ` · Ended: ${new Date(searchRunDetail.ended_at).toLocaleString()}`}
-                                </div>
-                            </div>
-                        )}
-
-                        {/* Session search results */}
-                        {searchSessionRuns !== null && (
-                            <div className="mt-4">
-                                <p className="text-[10px] text-zinc-500 uppercase tracking-wider mb-2">
-                                    {searchSessionRuns.length} run{searchSessionRuns.length !== 1 ? 's' : ''} in session
-                                </p>
-                                {searchSessionRuns.length === 0 ? (
-                                    <p className="text-xs text-zinc-500 text-center py-4">No runs found for this session.</p>
-                                ) : (
-                                    <div className="space-y-1">
-                                        {searchSessionRuns.map(run => (
-                                            <div
-                                                key={run.run_id}
-                                                className="flex items-center justify-between border border-zinc-800 p-2.5 hover:bg-zinc-900/50 cursor-pointer transition-colors"
-                                                onClick={() => { setSearchQuery(run.run_id); handleSearch(run.run_id); }}
-                                            >
-                                                <div className="flex items-center gap-2 min-w-0">
-                                                    <span className="font-mono text-[11px] text-zinc-400 truncate">{run.run_id}</span>
-                                                    <StatusBadge status={run.status} />
-                                                </div>
-                                                <div className="flex items-center gap-3 text-[10px] text-zinc-500 shrink-0">
-                                                    <span>{formatDuration(run.started_at, run.ended_at)}</span>
-                                                    <span>{formatCost(run.total_cost_usd)}</span>
-                                                </div>
-                                            </div>
-                                        ))}
+                            <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
+                                <DetailRow label="Workflow">
+                                    <span className="text-text truncate">{searchRunDetail.orchestration_id || '—'}</span>
+                                </DetailRow>
+                                <DetailRow label="Worker">
+                                    <span className="text-text truncate">{searchRunDetail.worker_id || '—'}</span>
+                                </DetailRow>
+                                <DetailRow label="Duration">
+                                    <span className="text-text tabular-nums">{formatDuration(searchRunDetail.started_at, searchRunDetail.ended_at)}</span>
+                                </DetailRow>
+                                <DetailRow label="Cost">
+                                    <span className="text-text tabular-nums">{usd(searchRunDetail.total_cost_usd)}</span>
+                                </DetailRow>
+                                <DetailRow label="Tokens">
+                                    <span className="text-text tabular-nums">{searchRunDetail.total_tokens_used?.toLocaleString() ?? '—'}</span>
+                                </DetailRow>
+                                <DetailRow label="Cache hits">
+                                    <span className="text-text tabular-nums">{searchRunDetail.cache_hit_count ?? '—'}</span>
+                                </DetailRow>
+                                {searchRunDetail.current_step_id && (
+                                    <DetailRow label="Current step" className="col-span-2">
+                                        <span className="font-code text-text truncate">{searchRunDetail.current_step_id}</span>
+                                    </DetailRow>
+                                )}
+                                {searchRunDetail.waiting_for_human && (
+                                    <div className="col-span-2 flex items-start gap-2 px-3 py-2 bg-person-subtle text-person-ink rounded-md">
+                                        <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" aria-hidden />
+                                        <span className="text-xs">Waiting for human input{searchRunDetail.human_prompt ? `: ${searchRunDetail.human_prompt}` : ''}</span>
                                     </div>
                                 )}
-                            </div>
-                        )}
-                    </div>
-
-                    {/* Recent Runs table */}
-                    <div className="border border-zinc-800 p-4">
-                        <div className="flex items-center justify-between mb-3">
-                            <p className="text-[10px] uppercase font-bold tracking-wider text-zinc-500">Recent Runs</p>
-                            <button
-                                onClick={loadRecentRuns}
-                                className="flex items-center gap-1 text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors"
-                            >
-                                <RefreshCw className="h-3 w-3" /> Refresh
-                            </button>
-                        </div>
-
-                        {recentRuns.length === 0 ? (
-                            <div className="text-center py-8 border border-zinc-800 border-dashed">
-                                <Activity className="h-6 w-6 text-zinc-700 mx-auto mb-2" />
-                                <p className="text-sm text-zinc-500">No runs recorded yet.</p>
-                                <p className="text-xs text-zinc-600 mt-1">Runs appear here when scale mode is active and Postgres is connected.</p>
-                            </div>
-                        ) : (
-                            <div className="overflow-x-auto">
-                                <table className="w-full text-xs">
-                                    <thead>
-                                        <tr className="border-b border-zinc-800">
-                                            {['Run ID', 'Status', 'Orchestration', 'Started', 'Duration', 'Cost'].map(h => (
-                                                <th key={h} className="text-left text-[10px] font-bold uppercase tracking-wider text-zinc-500 pb-2 pr-4">{h}</th>
-                                            ))}
-                                        </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-zinc-800/50">
-                                        {recentRuns.map(run => (
-                                            <tr
-                                                key={run.run_id}
-                                                className="hover:bg-zinc-900/50 cursor-pointer transition-colors"
-                                                onClick={() => { setSearchQuery(run.run_id); handleSearch(run.run_id); }}
-                                            >
-                                                <td className="py-2 pr-4">
-                                                    <div className="flex items-center gap-1.5">
-                                                        <span className="font-mono text-zinc-300 truncate max-w-[140px]" title={run.run_id}>
-                                                            {run.run_id.length > 20 ? `${run.run_id.slice(0, 20)}…` : run.run_id}
-                                                        </span>
-                                                        <button
-                                                            onClick={e => { e.stopPropagation(); copyToClipboard(run.run_id); }}
-                                                            className="text-zinc-600 hover:text-zinc-400 shrink-0"
-                                                        >
-                                                            <Copy className="h-3 w-3" />
-                                                        </button>
-                                                    </div>
-                                                </td>
-                                                <td className="py-2 pr-4"><StatusBadge status={run.status} /></td>
-                                                <td className="py-2 pr-4">
-                                                    <span className="font-mono text-zinc-400 truncate max-w-[100px] block" title={run.orchestration_id}>
-                                                        {run.orchestration_id ? run.orchestration_id.slice(0, 14) : '—'}
-                                                    </span>
-                                                </td>
-                                                <td className="py-2 pr-4 text-zinc-500 whitespace-nowrap">
-                                                    {run.started_at ? new Date(run.started_at).toLocaleTimeString() : '—'}
-                                                </td>
-                                                <td className="py-2 pr-4 text-zinc-400 whitespace-nowrap">
-                                                    {formatDuration(run.started_at, run.ended_at)}
-                                                </td>
-                                                <td className="py-2 text-zinc-400">{formatCost(run.total_cost_usd)}</td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
-                            </div>
-                        )}
-                    </div>
-                </div>
-
-                {/* Right: Queue + Workers + DLQ */}
-                <div className="space-y-4 min-w-0">
-
-                    {/* Live Queue */}
-                    <div className="border border-zinc-800 p-4">
-                        <p className="text-[10px] uppercase font-bold tracking-wider text-zinc-500 mb-3">Live Queue</p>
-                        <div className="grid grid-cols-2 gap-2">
-                            {[
-                                { label: 'Queued', value: queueStats?.queued ?? '—', color: 'text-zinc-100' },
-                                { label: 'Active', value: queueStats?.active ?? '—', color: 'text-blue-400' },
-                                { label: 'Failed', value: queueStats?.failed ?? '—', color: 'text-red-400' },
-                                { label: 'DLQ', value: queueStats?.dlq_count ?? '—', color: 'text-amber-400' },
-                            ].map(stat => (
-                                <div key={stat.label} className="border border-zinc-800 p-3 text-center bg-zinc-950">
-                                    <p className={`text-xl font-bold font-mono ${stat.color}`}>{stat.value}</p>
-                                    <p className="text-[10px] uppercase tracking-wider text-zinc-600 mt-0.5">{stat.label}</p>
-                                </div>
-                            ))}
-                        </div>
-                        {queueStats && !queueStats.available && (
-                            <p className="text-[10px] text-zinc-600 mt-2 text-center">Redis not connected</p>
-                        )}
-                    </div>
-
-                    {/* Workers mini */}
-                    <div className="border border-zinc-800 p-4">
-                        <div className="flex items-center justify-between mb-3">
-                            <p className="text-[10px] uppercase font-bold tracking-wider text-zinc-500">Workers</p>
-                            <button onClick={loadWorkers} className="text-zinc-600 hover:text-zinc-400 transition-colors">
-                                <RefreshCw className="h-3 w-3" />
-                            </button>
-                        </div>
-                        {workers.length === 0 ? (
-                            <p className="text-xs text-zinc-600 text-center py-3">No workers registered</p>
-                        ) : (
-                            <div className="space-y-2">
-                                {workers.map(w => (
-                                    <div key={w.worker_id} className="flex items-center justify-between gap-2 border border-zinc-800 p-2">
-                                        <div className="min-w-0">
-                                            <div className="flex items-center gap-1.5 flex-wrap">
-                                                <StatusBadge status={w.status} />
-                                                <span className="text-[10px] font-mono text-zinc-500 truncate">{w.hostname || w.worker_id.slice(0, 16)}</span>
-                                            </div>
-                                            <p className="text-[10px] text-zinc-600 mt-0.5">{w.active_jobs}/{w.max_jobs} jobs</p>
-                                        </div>
-                                        <button
-                                            onClick={() => checkWorkerHealth(w)}
-                                            className="text-[10px] text-zinc-500 hover:text-zinc-300 border border-zinc-700 px-2 py-1 shrink-0 transition-colors"
-                                        >
-                                            <Activity className="h-3 w-3" />
-                                        </button>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                        <button
-                            onClick={() => toggleSection('workers')}
-                            className="mt-3 text-[10px] text-zinc-600 hover:text-zinc-400 transition-colors w-full text-center"
-                        >
-                            Manage workers ↓
-                        </button>
-                    </div>
-
-                    {/* DLQ mini */}
-                    <div className="border border-zinc-800 p-4">
-                        <div className="flex items-center justify-between mb-3">
-                            <p className="text-[10px] uppercase font-bold tracking-wider text-zinc-500">Failed Jobs (DLQ)</p>
-                            <button onClick={loadDlq} className="text-zinc-600 hover:text-zinc-400 transition-colors">
-                                {dlqLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                            </button>
-                        </div>
-                        {dlqEntries.length === 0 ? (
-                            <div className="flex items-center gap-2 text-xs text-zinc-600 justify-center py-3">
-                                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-700" /> No failed jobs
-                            </div>
-                        ) : (
-                            <div className="space-y-2">
-                                {dlqEntries.slice(0, 3).map(entry => (
-                                    <div key={entry.id} className="border border-zinc-800 p-2">
-                                        <div className="flex items-start justify-between gap-2">
-                                            <div className="min-w-0">
-                                                <p className="font-mono text-[10px] text-zinc-400 truncate">{entry.run_id || entry.id}</p>
-                                                <p className="text-[10px] text-red-400 truncate mt-0.5">{entry.error_message}</p>
-                                                <p className="text-[10px] text-zinc-600">{entry.attempt_count} attempts</p>
-                                            </div>
-                                            <button
-                                                onClick={() => retryDlq(entry.id)}
-                                                disabled={retryingDlq === entry.id}
-                                                className="text-[10px] border border-zinc-700 px-2 py-1 text-zinc-500 hover:text-zinc-300 disabled:opacity-40 shrink-0 transition-colors"
-                                            >
-                                                {retryingDlq === entry.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                                            </button>
-                                        </div>
-                                    </div>
-                                ))}
-                                {dlqEntries.length > 3 && (
-                                    <p className="text-[10px] text-zinc-600 text-center">+{dlqEntries.length - 3} more — expand Queue section below</p>
+                                {searchRunDetail.estimated_savings_usd != null && searchRunDetail.estimated_savings_usd > 0 && (
+                                    <DetailRow label="Cache savings">
+                                        <span className="text-success tabular-nums">{usd(searchRunDetail.estimated_savings_usd)}</span>
+                                    </DetailRow>
                                 )}
                             </div>
-                        )}
-                    </div>
-                </div>
-            </div>
-
-            {/* ── Configuration Sections (collapsed by default) ────────────── */}
-
-            <CollapsibleSection sectionKey="redis" title="Redis Connection" icon={Zap}
-                subtitle="Required for distributed workers, queue management, and distributed cancellation."
-                expanded={expandedConfigs.redis} onToggle={() => toggleSection('redis')}
-            >
-                <div className="space-y-4 mt-4">
-                    <div>
-                        <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider block mb-1.5">Redis URL</label>
-                        <div className="flex gap-2">
-                            <input type="text" placeholder="redis://localhost:6379/0"
-                                className="flex-1 bg-zinc-900 border border-zinc-700 text-zinc-100 text-sm px-3 py-2 font-mono focus:outline-none focus:border-zinc-500"
-                                {...field('redis_url')} />
-                            <button onClick={testRedis} disabled={redisTesting || !config.redis_url}
-                                className="px-4 py-2 text-xs font-bold uppercase tracking-wider bg-zinc-800 text-zinc-300 hover:bg-zinc-700 disabled:opacity-40 transition-colors flex items-center gap-2">
-                                {redisTesting ? <Loader2 className="h-3 w-3 animate-spin" /> : null} Test
-                            </button>
-                        </div>
-                        {redisStatus && (
-                            <p className={`text-xs mt-1.5 flex items-center gap-1.5 ${redisStatus.ok ? 'text-emerald-400' : 'text-red-400'}`}>
-                                {redisStatus.ok ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
-                                {redisStatus.msg}
-                            </p>
-                        )}
-                        <p className="text-[10px] text-zinc-600 mt-1.5">For Redis Cluster: <span className="font-mono">redis+cluster://host1:6379,host2:6379</span></p>
-                    </div>
-
-                    <div className="flex items-center justify-between py-3 border-t border-zinc-800">
-                        <div>
-                            <p className="text-sm text-zinc-300 font-medium">Enable Scale Mode</p>
-                            <p className="text-xs text-zinc-500 mt-0.5">Route V2 API calls through Redis ARQ workers instead of in-process execution.</p>
-                        </div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                            <input type="checkbox" className="sr-only peer" {...toggle('scale_mode_enabled')} />
-                            <div className="w-11 h-6 bg-zinc-700 rounded-full peer peer-checked:bg-zinc-100 transition-colors" />
-                            <div className="absolute left-1 top-1 bg-white peer-checked:bg-zinc-950 w-4 h-4 rounded-full transition-all peer-checked:translate-x-5" />
-                        </label>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-4 pt-2">
-                        <div>
-                            <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider block mb-1.5">Queue Shards</label>
-                            <input type="number" min="1" max="64" className="w-full bg-zinc-900 border border-zinc-700 text-zinc-100 text-sm px-3 py-2 focus:outline-none focus:border-zinc-500" {...field('num_queue_shards')} />
-                            <p className="text-[10px] text-zinc-600 mt-1">Use &gt;1 for Redis Cluster shard-aware routing.</p>
-                        </div>
-                        <div>
-                            <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider block mb-1.5">Worker Concurrency</label>
-                            <input type="number" min="1" max="100" className="w-full bg-zinc-900 border border-zinc-700 text-zinc-100 text-sm px-3 py-2 focus:outline-none focus:border-zinc-500" {...field('worker_concurrency')} />
-                            <p className="text-[10px] text-zinc-600 mt-1">Max parallel jobs per worker process.</p>
-                        </div>
-                    </div>
-                </div>
-            </CollapsibleSection>
-
-            <CollapsibleSection sectionKey="postgres" title="Postgres Sync" icon={Database}
-                subtitle="Workers read orchestrations, agents, and tools from Postgres. Sync after any changes."
-                expanded={expandedConfigs.postgres} onToggle={() => toggleSection('postgres')}
-            >
-                <div className="space-y-4 mt-4">
-                    <div>
-                        <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider block mb-1.5">Postgres URL (Scale)</label>
-                        <div className="flex gap-2">
-                            <input type="text" placeholder="postgresql://user:pass@host:5432/synapse"
-                                className="flex-1 bg-zinc-900 border border-zinc-700 text-zinc-100 text-sm px-3 py-2 font-mono focus:outline-none focus:border-zinc-500"
-                                {...field('scale_postgres_url')} />
-                            <button onClick={testPostgres} disabled={pgTesting || !config.scale_postgres_url}
-                                className="px-4 py-2 text-xs font-bold uppercase tracking-wider bg-zinc-800 text-zinc-300 hover:bg-zinc-700 disabled:opacity-40 transition-colors flex items-center gap-2">
-                                {pgTesting ? <Loader2 className="h-3 w-3 animate-spin" /> : null} Test
-                            </button>
-                        </div>
-                        {pgStatus && (
-                            <p className={`text-xs mt-1.5 flex items-center gap-1.5 ${pgStatus.ok ? 'text-emerald-400' : 'text-red-400'}`}>
-                                {pgStatus.ok ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
-                                {pgStatus.msg}
-                            </p>
-                        )}
-                        <p className="text-[10px] text-zinc-600 mt-1.5">Separate from the embed-code Postgres. PgBouncer: enable the toggle below and point to PgBouncer port.</p>
-                    </div>
-
-                    <div className="flex items-center justify-between py-3 border-t border-zinc-800">
-                        <div>
-                            <p className="text-sm text-zinc-300 font-medium">PgBouncer Mode</p>
-                            <p className="text-xs text-zinc-500 mt-0.5">Use NullPool (required when Postgres URL points to PgBouncer in transaction mode).</p>
-                        </div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                            <input type="checkbox" className="sr-only peer" {...toggle('pgbouncer_mode')} />
-                            <div className="w-11 h-6 bg-zinc-700 rounded-full peer peer-checked:bg-zinc-100 transition-colors" />
-                            <div className="absolute left-1 top-1 bg-white peer-checked:bg-zinc-950 w-4 h-4 rounded-full transition-all peer-checked:translate-x-5" />
-                        </label>
-                    </div>
-
-                    <div className="flex items-center justify-between py-3 border-t border-zinc-800">
-                        <div>
-                            <p className="text-sm text-zinc-300 font-medium">Auto-sync on change</p>
-                            <p className="text-xs text-zinc-500 mt-0.5">Automatically sync to Postgres whenever you save an orchestration, agent, or tool.</p>
-                        </div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                            <input type="checkbox" className="sr-only peer" {...toggle('scale_auto_sync')} />
-                            <div className="w-11 h-6 bg-zinc-700 rounded-full peer peer-checked:bg-zinc-100 transition-colors" />
-                            <div className="absolute left-1 top-1 bg-white peer-checked:bg-zinc-950 w-4 h-4 rounded-full transition-all peer-checked:translate-x-5" />
-                        </label>
-                    </div>
-
-                    <div className="flex items-center gap-4 pt-2">
-                        <button onClick={triggerSync} disabled={syncing || !config.scale_postgres_url}
-                            className="flex items-center gap-2 px-4 py-2 text-xs font-bold uppercase tracking-wider bg-zinc-100 text-zinc-950 hover:bg-white disabled:opacity-40 transition-colors">
-                            {syncing ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                            Sync Now
-                        </button>
-                        {syncStatus?.available && syncStatus.counts && (
-                            <div className="flex gap-4 text-[10px] text-zinc-500 font-mono">
-                                {Object.entries(syncStatus.counts).map(([k, v]) => (
-                                    <span key={k}>{k}: <span className="text-zinc-300">{v}</span></span>
-                                ))}
+                            <div className="mt-3 text-xs text-text-faint">
+                                Started: {searchRunDetail.started_at ? new Date(searchRunDetail.started_at).toLocaleString() : '—'}
+                                {searchRunDetail.ended_at && ` · Ended: ${new Date(searchRunDetail.ended_at).toLocaleString()}`}
                             </div>
-                        )}
-                    </div>
-
-                    {syncResult && (
-                        <div className={`mt-3 p-3 border text-xs font-mono ${syncResult.errors?.length ? 'border-red-800 text-red-400' : 'border-emerald-800 text-emerald-400'}`}>
-                            {syncResult.errors?.length
-                                ? `${syncResult.total_synced} synced, ${syncResult.errors.length} error(s): ${syncResult.errors[0]}`
-                                : `✓ Synced ${syncResult.total_synced} items at ${syncResult.synced_at}`
-                            }
                         </div>
                     )}
 
-                    <div className="flex items-start gap-2 p-3 bg-amber-900/20 border border-amber-800/40 text-amber-400">
-                        <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
-                        <p className="text-xs">Workers read definitions from Postgres only. Always sync before running V2 jobs after making changes.</p>
-                    </div>
-                </div>
-            </CollapsibleSection>
-
-            <CollapsibleSection sectionKey="s3" title="Storage (S3)" icon={Cloud}
-                subtitle="When configured, vault files and run logs are stored in S3 — shared across all workers."
-                expanded={expandedConfigs.s3} onToggle={() => toggleSection('s3')}
-            >
-                <div className="space-y-4 mt-4">
-                    <div className="grid grid-cols-2 gap-4">
+                    {/* Session search results */}
+                    {searchSessionRuns !== null && (
                         <div>
-                            <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider block mb-1.5">S3 Bucket</label>
-                            <input type="text" placeholder="my-synapse-bucket"
-                                className="w-full bg-zinc-900 border border-zinc-700 text-zinc-100 text-sm px-3 py-2 font-mono focus:outline-none focus:border-zinc-500"
-                                {...field('s3_bucket')} />
-                        </div>
-                        <div>
-                            <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider block mb-1.5">Region</label>
-                            <input type="text" placeholder="us-east-1"
-                                className="w-full bg-zinc-900 border border-zinc-700 text-zinc-100 text-sm px-3 py-2 font-mono focus:outline-none focus:border-zinc-500"
-                                {...field('s3_region')} />
-                        </div>
-                    </div>
-                    <div>
-                        <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider block mb-1.5">Key Prefix</label>
-                        <input type="text" placeholder="synapse"
-                            className="w-full bg-zinc-900 border border-zinc-700 text-zinc-100 text-sm px-3 py-2 font-mono focus:outline-none focus:border-zinc-500"
-                            {...field('s3_prefix')} />
-                        <p className="text-[10px] text-zinc-600 mt-1">All objects are stored under this prefix.</p>
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                        <div>
-                            <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider block mb-1.5">Access Key ID</label>
-                            <input type="text" placeholder="AKIA... (optional)"
-                                className="w-full bg-zinc-900 border border-zinc-700 text-zinc-100 text-sm px-3 py-2 font-mono focus:outline-none focus:border-zinc-500"
-                                {...field('s3_access_key_id')} />
-                        </div>
-                        <div>
-                            <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider block mb-1.5">Secret Access Key</label>
-                            <input type="password" placeholder="••••••••"
-                                className="w-full bg-zinc-900 border border-zinc-700 text-zinc-100 text-sm px-3 py-2 font-mono focus:outline-none focus:border-zinc-500"
-                                {...field('s3_secret_access_key')} />
-                        </div>
-                    </div>
-                    <div>
-                        <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider block mb-1.5">
-                            Endpoint URL <span className="text-zinc-600 font-normal normal-case">(optional — for MinIO, Cloudflare R2, etc.)</span>
-                        </label>
-                        <input type="text" placeholder="https://account.r2.cloudflarestorage.com"
-                            className="w-full bg-zinc-900 border border-zinc-700 text-zinc-100 text-sm px-3 py-2 font-mono focus:outline-none focus:border-zinc-500"
-                            {...field('s3_endpoint_url')} />
-                    </div>
-                    <div className="flex items-center gap-3 pt-1">
-                        <button onClick={testS3} disabled={s3Testing || !config.s3_bucket}
-                            className="px-4 py-2 text-xs font-bold uppercase tracking-wider bg-zinc-800 text-zinc-300 hover:bg-zinc-700 disabled:opacity-40 transition-colors flex items-center gap-2">
-                            {s3Testing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Cloud className="h-3 w-3" />}
-                            Test S3 Connection
-                        </button>
-                        {s3Status && (
-                            <p className={`text-xs flex items-center gap-1.5 ${s3Status.ok ? 'text-emerald-400' : 'text-red-400'}`}>
-                                {s3Status.ok ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
-                                {s3Status.msg}
+                            <p className={cn(FIELD_LABEL, 'mb-2')}>
+                                {searchSessionRuns.length} run{searchSessionRuns.length !== 1 ? 's' : ''} in session
                             </p>
-                        )}
-                    </div>
-                    <p className="text-[10px] text-zinc-600">Leave Access Key / Secret blank to use IAM role or environment credentials.</p>
-                </div>
-            </CollapsibleSection>
-
-            <CollapsibleSection sectionKey="workers" title="Workers" icon={Server}
-                subtitle="Remote worker instances running Dockerfile.worker. Each worker pulls jobs from Redis ARQ."
-                expanded={expandedConfigs.workers} onToggle={() => toggleSection('workers')}
-            >
-                <div className="mt-4">
-                    {workers.length === 0 ? (
-                        <div className="text-center py-8 border border-zinc-800 border-dashed">
-                            <Server className="h-8 w-8 text-zinc-700 mx-auto mb-3" />
-                            <p className="text-sm text-zinc-500">No workers registered.</p>
-                            <p className="text-xs text-zinc-600 mt-1">Deploy <span className="font-mono text-zinc-400">Dockerfile.worker</span> and register its health endpoint below.</p>
+                            {searchSessionRuns.length === 0 ? (
+                                <p className="text-xs text-text-faint text-center py-4">No runs found for this session.</p>
+                            ) : (
+                                <div className="rounded-md border border-border">
+                                    {searchSessionRuns.map(run => (
+                                        // A button, so a keyboard opens a run as a click does (F236).
+                                        <button
+                                            type="button"
+                                            key={run.run_id}
+                                            className="flex w-full items-center justify-between gap-3 border-b border-border px-3 py-2.5 text-left last:border-b-0 hover:bg-row-hover transition-colors first:rounded-t-md last:rounded-b-md"
+                                            onClick={() => openRun(run.run_id)}
+                                        >
+                                            <span className="flex items-center gap-3 min-w-0">
+                                                <span className="font-code text-xs text-text truncate">{run.run_id}</span>
+                                                <StatusBadge status={run.status} />
+                                            </span>
+                                            <span className="flex items-center gap-3 text-xs tabular-nums text-text-muted shrink-0">
+                                                <span>{formatDuration(run.started_at, run.ended_at)}</span>
+                                                <span>{usd(run.total_cost_usd)}</span>
+                                            </span>
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
                         </div>
+                    )}
+                </div>
+            </Section>
+
+            {/* ── Recent runs ───────────────────────────────────────────────── */}
+            <Section variant="plain" collapsible={false} title="Recent runs"
+                actions={
+                    <Button variant="ghost" size="sm" onClick={loadRecentRuns}>
+                        <RefreshCw className="size-3.5" aria-hidden /> Refresh
+                    </Button>
+                }
+            >
+                {recentRuns.length === 0 ? (
+                    <EmptyState title="No runs recorded yet." className={`${FORM} py-8`}>
+                        Runs appear here when scale mode is active and Postgres is connected.
+                    </EmptyState>
+                ) : (
+                    <div className="overflow-x-auto">
+                        <div role="table" aria-label="Recent runs" className="min-w-[640px] text-[13px]">
+                            <div role="rowgroup">
+                                <div role="row" className={cn(RUN_GRID, 'border-b border-border px-2.5 pb-2 text-xs text-text-faint')}>
+                                    {['Run ID', 'Status', 'Workflow', 'Started', 'Duration', 'Cost'].map(h => (
+                                        <span role="columnheader" key={h} className={h === 'Cost' || h === 'Duration' ? 'text-right' : undefined}>{h}</span>
+                                    ))}
+                                </div>
+                            </div>
+                            <div role="rowgroup">
+                                {recentRuns.map(run => (
+                                    <div
+                                        role="row"
+                                        key={run.run_id}
+                                        className={cn(RUN_GRID, 'cursor-pointer border-b border-border px-2.5 py-2 transition-colors hover:bg-row-hover')}
+                                        onClick={() => openRun(run.run_id)}
+                                    >
+                                        <span role="cell" className="flex min-w-0 items-center gap-1.5">
+                                            {/* The row opens on a click; its id does the same for a keyboard (F236). */}
+                                            <button
+                                                type="button"
+                                                onClick={e => { e.stopPropagation(); openRun(run.run_id); }}
+                                                className="font-code text-xs text-text truncate max-w-[140px] text-left rounded-sm hover:text-accent-ink"
+                                                title={run.run_id}
+                                                aria-label={`Open run ${run.run_id}`}
+                                            >
+                                                {run.run_id.length > 20 ? `${run.run_id.slice(0, 20)}…` : run.run_id}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={e => { e.stopPropagation(); copyToClipboard(run.run_id); }}
+                                                className="text-text-faint hover:text-text shrink-0 rounded-sm"
+                                                aria-label={`Copy run id ${run.run_id}`}
+                                                title="Copy run id"
+                                            >
+                                                <Copy className="h-3 w-3" aria-hidden />
+                                            </button>
+                                        </span>
+                                        <span role="cell"><StatusBadge status={run.status} /></span>
+                                        <span role="cell" className="min-w-0">
+                                            <span className="text-text-muted truncate block" title={run.orchestration_id}>
+                                                {run.orchestration_id ? run.orchestration_id.slice(0, 14) : '—'}
+                                            </span>
+                                        </span>
+                                        <span role="cell" className="text-text-faint whitespace-nowrap tabular-nums">
+                                            {run.started_at ? new Date(run.started_at).toLocaleTimeString() : '—'}
+                                        </span>
+                                        <span role="cell" className="text-right text-text-muted whitespace-nowrap tabular-nums">
+                                            {formatDuration(run.started_at, run.ended_at)}
+                                        </span>
+                                        <span role="cell" className="text-right text-text tabular-nums">{usd(run.total_cost_usd)}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </Section>
+
+            {/* ── Live queue ────────────────────────────────────────────────── */}
+            <Section variant="plain" collapsible={false} title="Live queue">
+                <div className={`${FORM} space-y-2`}>
+                    <div>
+                        <StatStrip size="sm" label="Live queue" cells={[
+                            { label: 'Queued', value: queueStats?.queued ?? '—' },
+                            { label: 'Active', value: queueStats?.active ?? '—', dot: 'machine' },
+                            { label: 'Failed', value: queueStats?.failed ?? '—', dot: 'danger' },
+                            { label: 'DLQ', value: queueStats?.dlq_count ?? '—', dot: 'neutral' },
+                        ]} />
+                    </div>
+                    {queueStats && !queueStats.available && (
+                        <p className="text-xs text-text-faint">Redis not connected</p>
+                    )}
+                </div>
+            </Section>
+
+            {/* ── Workers (at a glance) ─────────────────────────────────────── */}
+            <Section variant="plain" collapsible={false} title="Workers"
+                actions={<IconButton label="Refresh workers" icon={RefreshCw} size="sm" onClick={loadWorkers} />}
+            >
+                <div className={`${FORM} space-y-3`}>
+                    {workers.length === 0 ? (
+                        <p className="text-sm text-text-faint">No workers registered</p>
                     ) : (
-                        <div className="space-y-2 mb-4">
+                        <div className="rounded-md border border-border">
+                            {workers.map(w => (
+                                <div key={w.worker_id} className="flex items-center justify-between gap-3 border-b border-border px-3 py-2 last:border-b-0">
+                                    <div className="flex min-w-0 items-center gap-3">
+                                        <StatusBadge status={w.status} />
+                                        <span className="text-xs font-code text-text truncate">{w.hostname || w.worker_id.slice(0, 16)}</span>
+                                        <span className="shrink-0 text-xs tabular-nums text-text-faint">{w.active_jobs}/{w.max_jobs} jobs</span>
+                                    </div>
+                                    <IconButton label="Health" icon={Activity} size="sm" onClick={() => checkWorkerHealth(w)} />
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                    <button
+                        onClick={() => toggleSection('workers')}
+                        className="text-xs text-accent-ink hover:underline rounded-sm"
+                    >
+                        Manage workers ↓
+                    </button>
+                </div>
+            </Section>
+
+            {/* ── Failed jobs (DLQ) ─────────────────────────────────────────── */}
+            <Section variant="plain" collapsible={false} title="Failed jobs (DLQ)"
+                actions={
+                    <Button variant="ghost" size="sm" iconOnly onClick={loadDlq} aria-label="Refresh the failed jobs list">
+                        {dlqLoading ? <Spinner size={12} /> : <RefreshCw className="size-3.5" aria-hidden />}
+                    </Button>
+                }
+            >
+                <div className={FORM}>
+                    {dlqEntries.length === 0 ? (
+                        <p className="flex items-center gap-2 text-sm text-text-muted">
+                            <span aria-hidden className="size-1.5 rounded-full bg-success" /> No failed jobs
+                        </p>
+                    ) : (
+                        <div className="space-y-2">
+                            <div className="rounded-md border border-border">
+                                {dlqEntries.slice(0, 3).map(entry => (
+                                    <div key={entry.id} className="flex items-start justify-between gap-3 border-b border-border px-3 py-2.5 last:border-b-0">
+                                        <div className="min-w-0">
+                                            <p className="font-code text-xs text-text truncate">{entry.run_id || entry.id}</p>
+                                            <p className="text-xs text-danger truncate mt-0.5">{entry.error_message}</p>
+                                            <p className="text-xs text-text-faint">{entry.attempt_count} attempts</p>
+                                            {dlqRefused?.id === entry.id && (
+                                                <p role="alert" className="text-xs text-text mt-1.5 rounded-md border border-warning/25 bg-warning-subtle px-2 py-1">{dlqRefused.message}</p>
+                                            )}
+                                        </div>
+                                        <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            iconOnly
+                                            onClick={() => retryDlq(entry.id)}
+                                            disabled={retryingDlq === entry.id}
+                                            aria-label={`Retry ${entry.run_id || entry.id}`}
+                                            title="Resume this run from the step it failed at"
+                                        >
+                                            {retryingDlq === entry.id ? <Spinner size={12} /> : <RefreshCw className="size-3.5" aria-hidden />}
+                                        </Button>
+                                    </div>
+                                ))}
+                            </div>
+                            {dlqEntries.length > 3 && (
+                                <p className="text-xs text-text-faint">+{dlqEntries.length - 3} more — expand Queue section below</p>
+                            )}
+                        </div>
+                    )}
+                </div>
+            </Section>
+
+            {/* ── Configuration sections (collapsed by default) ─────────────── */}
+
+            <Section variant="plain" title="Redis connection" defaultOpen={expandedConfigs.redis}
+                description="Required for distributed workers, queue management, and distributed cancellation."
+            >
+                <div className={`${FORM} space-y-5`}>
+                    <div className="space-y-1.5">
+                        <div className="flex items-end gap-2">
+                            <Field label="Redis URL" className="flex-1">
+                                <Input type="text" placeholder="redis://localhost:6379/0"
+                                    className="font-code"
+                                    {...field('redis_url')} />
+                            </Field>
+                            <Button variant="secondary" onClick={testRedis}
+                                loading={redisTesting} disabled={!config.redis_url}>
+                                Test
+                            </Button>
+                        </div>
+                        {redisStatus && <TestResult status={redisStatus} />}
+                        <p className="text-xs text-text-faint">For Redis Cluster: <span className="font-code">redis+cluster://host1:6379,host2:6379</span></p>
+                    </div>
+
+                    <div className="flex items-start justify-between gap-6 border-t border-border pt-4">
+                        <div>
+                            <p className="text-sm text-text font-medium">Enable scale mode</p>
+                            <p className="text-xs text-text-muted mt-0.5">Route V2 API calls through Redis ARQ workers instead of in-process execution.</p>
+                        </div>
+                        <Switch label="Enable scale mode" className="mt-0.5" {...toggle('scale_mode_enabled')} />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                        <EnvValue label="Worker concurrency" value={String(config.worker_concurrency)}
+                            envVar={config.env_only?.worker_concurrency}
+                            hint="Max parallel jobs per worker process." />
+                    </div>
+                </div>
+            </Section>
+
+            <Section variant="plain" title="Postgres" defaultOpen={expandedConfigs.postgres}
+                description="Workers read workflows, agents and tools from the same database this instance writes."
+            >
+                <div className={`${FORM} space-y-5`}>
+                    <div className="space-y-1.5">
+                        <div className="flex items-end gap-2">
+                            <Field label="Postgres URL (scale)" className="flex-1">
+                                <Input type="text" placeholder="postgresql://user:pass@host:5432/synapse"
+                                    className="font-code"
+                                    {...field('scale_postgres_url')} />
+                            </Field>
+                            <Button variant="secondary" onClick={testPostgres}
+                                loading={pgTesting} disabled={!config.scale_postgres_url}>
+                                Test
+                            </Button>
+                        </div>
+                        {pgStatus && <TestResult status={pgStatus} />}
+                        <p className="text-xs text-text-faint">Separate from the embed-code Postgres. Behind PgBouncer, point this at the PgBouncer port.</p>
+                    </div>
+
+                    <div className="border-t border-border pt-4 max-w-xs">
+                        <EnvValue label="PgBouncer mode" value={config.pgbouncer_mode ? 'On' : 'Off'}
+                            envVar={config.env_only?.pgbouncer_mode}
+                            hint="Uses NullPool, which PgBouncer in transaction mode requires." />
+                    </div>
+                </div>
+            </Section>
+
+            <Section variant="plain" title="Storage (S3)" defaultOpen={expandedConfigs.s3}
+                description="When a bucket is set, the vault, tool outputs and run logs live in S3, and every worker reads the same files."
+            >
+                <div className={`${FORM} space-y-4`}>
+                    <div className="grid grid-cols-2 gap-4">
+                        <Field label="S3 bucket">
+                            <Input type="text" placeholder="my-synapse-bucket" className="font-code" {...field('s3_bucket')} />
+                        </Field>
+                        <Field label="Region">
+                            <Input type="text" placeholder="us-east-1" className="font-code" {...field('s3_region')} />
+                        </Field>
+                    </div>
+                    <Field label="Key prefix" hint="All objects are stored under this prefix.">
+                        <Input type="text" placeholder="synapse" className="font-code" {...field('s3_prefix')} />
+                    </Field>
+                    <div className="grid grid-cols-2 gap-4">
+                        <Field label="Access key ID">
+                            <Input type="text" placeholder="AKIA... (optional)" className="font-code" {...field('s3_access_key_id')} />
+                        </Field>
+                        <Field label="Secret access key"
+                            hint={config.s3_secret_access_key_set
+                                ? 'Stored, and never shown. Leave empty to keep it.'
+                                : undefined}>
+                            {/* Write-only (F95): the route no longer reads it back,
+                                and an empty field keeps what is stored. */}
+                            <Input type="password" autoComplete="new-password"
+                                placeholder={config.s3_secret_access_key_set ? '•••••••• stored' : '••••••••'}
+                                className="font-code" {...field('s3_secret_access_key')} />
+                        </Field>
+                    </div>
+                    <Field label="Endpoint URL" hint="Optional — for MinIO, Cloudflare R2, and other S3-compatible stores.">
+                        <Input type="text" placeholder="https://account.r2.cloudflarestorage.com"
+                            className="font-code"
+                            {...field('s3_endpoint_url')} />
+                    </Field>
+                    <div className="flex flex-wrap items-center gap-3 pt-1">
+                        <Button variant="secondary" onClick={testS3}
+                            loading={s3Testing} disabled={!config.s3_bucket}>
+                            {!s3Testing && <Cloud className="size-3.5" aria-hidden />}
+                            Test S3 connection
+                        </Button>
+                        {s3Status && <TestResult status={s3Status} />}
+                    </div>
+                    <p className="text-xs text-text-faint">Leave the access key ID blank to use an IAM role or environment credentials — saving without one also clears a stored secret.</p>
+                    {/* F57: the bucket became the real blob store in batch 1C. It is
+                        chosen when each process starts, and reads go to it alone. */}
+                    <div className="flex items-start gap-2 rounded-md border border-warning/25 bg-warning-subtle px-3 py-2.5 text-xs text-text">
+                        <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-px text-warning" aria-hidden />
+                        <p>
+                            A bucket takes effect when the server and every worker restart. Files already on
+                            local disk are not copied: after the switch the vault starts empty in S3, and what
+                            was there stays in <span className="font-code">SYNAPSE_BLOB_DIR</span> until uploaded again.
+                        </p>
+                    </div>
+                </div>
+            </Section>
+
+            {/* "Manage workers ↓" flips `expandedConfigs.workers`; the key remounts the
+                section so it opens or closes with it, as the hand-written one did. */}
+            <Section key={`workers-${expandedConfigs.workers}`} variant="plain" title="Workers" defaultOpen={expandedConfigs.workers}
+                description="Remote worker instances running Dockerfile.worker. Each worker pulls jobs from Redis ARQ."
+            >
+                <div className={`${FORM} space-y-3`}>
+                    {workers.length === 0 ? (
+                        <EmptyState title="No workers have reported in." className="py-8">
+                            A worker appears here on its first heartbeat. Start one from <span className="font-code text-text">Dockerfile.worker</span>, pointed at the same Redis and database.
+                        </EmptyState>
+                    ) : (
+                        <div className="space-y-2">
                             {workers.map(w => {
                                 const health = workerHealthResults[w.worker_id];
                                 return (
-                                    <div key={w.worker_id} className="border border-zinc-800 p-4">
+                                    <div key={w.worker_id} className="rounded-md border border-border p-4">
                                         <div className="flex items-start justify-between gap-4">
                                             <div className="flex-1 min-w-0">
-                                                <div className="flex items-center gap-2 flex-wrap">
-                                                    <span className="text-xs font-mono text-zinc-300">{w.worker_id}</span>
+                                                <div className="flex items-center gap-3 flex-wrap">
+                                                    <span className="text-xs font-code text-text">{w.worker_id}</span>
                                                     <StatusBadge status={w.status} />
-                                                    <span className="text-[10px] text-zinc-500">{w.active_jobs}/{w.max_jobs} jobs</span>
+                                                    <span className="text-xs tabular-nums text-text-faint">{w.active_jobs}/{w.max_jobs} jobs</span>
                                                 </div>
-                                                <p className="text-xs text-zinc-500 mt-1 font-mono">{w.address}</p>
+                                                <p className="text-xs text-text-muted mt-1 font-code">{w.address}</p>
                                                 {w.mcp_disabled?.length > 0 && (
-                                                    <p className="text-[10px] text-amber-500 mt-1">MCP disabled: {w.mcp_disabled.join(', ')}</p>
+                                                    <p className="text-xs text-warning mt-1">MCP disabled: {w.mcp_disabled.join(', ')}</p>
                                                 )}
                                                 {w.last_heartbeat && (
-                                                    <p className="text-[10px] text-zinc-600 mt-0.5">Last heartbeat: {new Date(w.last_heartbeat).toLocaleTimeString()}</p>
+                                                    <p className="text-xs text-text-faint mt-0.5">Last heartbeat: {new Date(w.last_heartbeat).toLocaleTimeString()}</p>
                                                 )}
                                                 {health && (
-                                                    <p className={`text-[10px] mt-1 ${health.status === 'ok' ? 'text-emerald-400' : 'text-red-400'}`}>
+                                                    <p className={cn('text-xs mt-1', health.status === 'ok' ? 'text-success' : 'text-danger')}>
                                                         Health: {health.status} {health.latency_ms != null ? `(${health.latency_ms}ms)` : ''}
                                                         {health.data?.mcp_disabled?.length > 0 ? ` — MCP disabled: ${health.data.mcp_disabled.join(', ')}` : ''}
                                                     </p>
                                                 )}
                                             </div>
-                                            <div className="flex gap-2 shrink-0">
-                                                <button onClick={() => checkWorkerHealth(w)}
-                                                    className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider border border-zinc-700 text-zinc-400 hover:text-zinc-100 hover:border-zinc-500 transition-colors flex items-center gap-1">
-                                                    <Activity className="h-3 w-3" /> Health
-                                                </button>
-                                                <button onClick={() => removeWorker(w.worker_id)} className="p-1.5 text-zinc-600 hover:text-red-400 transition-colors">
-                                                    <Trash2 className="h-3.5 w-3.5" />
-                                                </button>
+                                            <div className="flex items-center gap-1 shrink-0">
+                                                <Button variant="secondary" size="sm" onClick={() => checkWorkerHealth(w)}>
+                                                    <Activity className="size-3.5" aria-hidden /> Health
+                                                </Button>
+                                                <IconButton label="Remove worker" icon={Trash2} size="sm" className="hover:text-danger" onClick={() => removeWorker(w.worker_id)} />
                                             </div>
                                         </div>
                                     </div>
@@ -1445,108 +1269,41 @@ export function ScaleTab() {
                         </div>
                     )}
 
-                    <div className="flex gap-2 mt-4 pt-4 border-t border-zinc-800">
-                        <input type="text" placeholder="http://10.0.0.5:9000"
-                            className="flex-1 bg-zinc-900 border border-zinc-700 text-zinc-100 text-sm px-3 py-2 font-mono focus:outline-none focus:border-zinc-500"
-                            value={newWorkerAddress} onChange={e => setNewWorkerAddress(e.target.value)} />
-                        <button disabled={!newWorkerAddress}
-                            onClick={() => {
-                                fetch('/api/scale/workers', {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ address: newWorkerAddress }),
-                                }).then(() => { setNewWorkerAddress(''); loadWorkers(); });
-                            }}
-                            className="flex items-center gap-2 px-4 py-2 text-xs font-bold uppercase tracking-wider border border-zinc-700 text-zinc-300 hover:text-zinc-100 hover:border-zinc-500 disabled:opacity-40 transition-colors">
-                            <Plus className="h-3 w-3" /> Register
-                        </button>
-                        <button onClick={loadWorkers} className="p-2 text-zinc-500 hover:text-zinc-300 transition-colors">
-                            <RefreshCw className="h-4 w-4" />
-                        </button>
+                    {/* No Register: workers write their own row on each heartbeat, and
+                        the address form posted to a route that never existed (F58). */}
+                    <div className="flex justify-end">
+                        <IconButton label="Refresh workers" icon={RefreshCw} size="sm" onClick={loadWorkers} />
                     </div>
                 </div>
-            </CollapsibleSection>
+            </Section>
 
-            <CollapsibleSection sectionKey="tenants" title="Tenants" icon={Users}
-                subtitle="Per-tenant queue limits. Tenants exceeding max_queued_runs receive 429 responses."
-                expanded={expandedConfigs.tenants} onToggle={() => toggleSection('tenants')}
+            <Section variant="plain" title="Observability" defaultOpen={expandedConfigs.observability}
+                description="Optional OpenTelemetry export to your own collector, off by default. Nothing is sent to us."
             >
-                <div className="mt-4">
-                    <div className="space-y-2 mb-4">
-                        {tenants.map(t => (
-                            <div key={t.tenant_id} className="flex items-center justify-between border border-zinc-800 p-3">
-                                <div>
-                                    <span className="text-sm text-zinc-300 font-mono">{t.tenant_id}</span>
-                                    {t.name && <span className="text-xs text-zinc-500 ml-2">{t.name}</span>}
-                                </div>
-                                <div className="flex items-center gap-4 text-xs text-zinc-500">
-                                    <span>Max queued: <span className="text-zinc-300">{t.max_queued_runs}</span></span>
-                                    <span>Max concurrent: <span className="text-zinc-300">{t.max_concurrent_runs}</span></span>
-                                    <button onClick={() => deleteTenant(t.tenant_id)} className="text-zinc-600 hover:text-red-400 transition-colors">
-                                        <Trash2 className="h-3.5 w-3.5" />
-                                    </button>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2 pt-4 border-t border-zinc-800">
-                        <input type="text" placeholder="tenant_id" className="bg-zinc-900 border border-zinc-700 text-zinc-100 text-sm px-3 py-2 focus:outline-none focus:border-zinc-500"
-                            value={newTenant.tenant_id} onChange={e => setNewTenant(p => ({ ...p, tenant_id: e.target.value }))} />
-                        <input type="text" placeholder="Name (optional)" className="bg-zinc-900 border border-zinc-700 text-zinc-100 text-sm px-3 py-2 focus:outline-none focus:border-zinc-500"
-                            value={newTenant.name} onChange={e => setNewTenant(p => ({ ...p, name: e.target.value }))} />
-                        <input type="number" placeholder="Max queued" className="bg-zinc-900 border border-zinc-700 text-zinc-100 text-sm px-3 py-2 focus:outline-none focus:border-zinc-500"
-                            value={newTenant.max_queued_runs} onChange={e => setNewTenant(p => ({ ...p, max_queued_runs: Number(e.target.value) }))} />
-                        <button onClick={addTenant} disabled={addingTenant || !newTenant.tenant_id}
-                            className="flex items-center justify-center gap-2 px-4 py-2 text-xs font-bold uppercase tracking-wider border border-zinc-700 text-zinc-300 hover:text-zinc-100 disabled:opacity-40 transition-colors">
-                            {addingTenant ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />} Add
-                        </button>
-                    </div>
-                </div>
-            </CollapsibleSection>
-
-            <CollapsibleSection sectionKey="observability" title="Observability" icon={Activity}
-                subtitle="OpenTelemetry traces (Jaeger) and Prometheus metrics for distributed debugging."
-                expanded={expandedConfigs.observability} onToggle={() => toggleSection('observability')}
-            >
-                <div className="space-y-4 mt-4">
-                    <div>
-                        <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider block mb-1.5">OTLP Endpoint</label>
-                        <input type="text" placeholder="http://jaeger:4317"
-                            className="w-full bg-zinc-900 border border-zinc-700 text-zinc-100 text-sm px-3 py-2 font-mono focus:outline-none focus:border-zinc-500"
-                            {...field('otlp_endpoint')} />
-                        <p className="text-[10px] text-zinc-600 mt-1">Leave empty to disable tracing. When set, every run gets a distributed trace propagated through API server → Redis → Worker → Postgres.</p>
-                    </div>
-                    <div>
-                        <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider block mb-1.5">Metrics Token</label>
-                        <input type="password" placeholder="Bearer token for /metrics endpoint"
-                            className="w-full bg-zinc-900 border border-zinc-700 text-zinc-100 text-sm px-3 py-2 font-mono focus:outline-none focus:border-zinc-500"
-                            {...field('metrics_token')} />
-                        <p className="text-[10px] text-zinc-600 mt-1">Prometheus scrapes <span className="font-mono text-zinc-400">GET /metrics</span> with this as a Bearer token.</p>
+                <div className={`${FORM} space-y-4`}>
+                    <Field label="OTLP endpoint" hint="Empty keeps telemetry off. Set, each request, run, step, model call and tool call becomes a span sent to this collector, across the API and its workers: ids, timings, token counts and cost — never prompts, answers or tool data. Applies on restart, and needs the telemetry packages (pip install 'synapse-orch-ai[telemetry]').">
+                        <Input type="text" placeholder="http://jaeger:4317" className="font-code" {...field('otlp_endpoint')} />
+                    </Field>
+                    <div className="max-w-xs">
+                        <EnvValue label="Metrics token" value={config.metrics_token_set ? 'Set' : 'Not set'}
+                            envVar={config.env_only?.metrics_token}
+                            hint={<>The API serves <span className="font-code text-text-muted">GET /api/v2/metrics</span> with it as a Bearer token.</>} />
                     </div>
                     <div className="grid grid-cols-2 gap-4">
-                        <div>
-                            <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider block mb-1.5">Max Global Queue Depth</label>
-                            <input type="number" className="w-full bg-zinc-900 border border-zinc-700 text-zinc-100 text-sm px-3 py-2 focus:outline-none focus:border-zinc-500" {...field('max_global_queue_depth')} />
-                            <p className="text-[10px] text-zinc-600 mt-1">Returns 503 when exceeded (backpressure).</p>
-                        </div>
-                        <div>
-                            <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider block mb-1.5">Rate Limit (req/s per tenant)</label>
-                            <input type="number" className="w-full bg-zinc-900 border border-zinc-700 text-zinc-100 text-sm px-3 py-2 focus:outline-none focus:border-zinc-500" {...field('rate_limit_per_tenant_rps')} />
-                            <p className="text-[10px] text-zinc-600 mt-1">Returns 429 when exceeded.</p>
-                        </div>
+                        <EnvValue label="Max global queue depth" value={String(config.max_global_queue_depth)}
+                            envVar={config.env_only?.max_global_queue_depth}
+                            hint="Returns 503 when exceeded (backpressure)." />
+                        <EnvValue label="Rate limit (req/s per tenant)" value={String(config.rate_limit_per_tenant_rps)}
+                            envVar={config.env_only?.rate_limit_per_tenant_rps}
+                            hint="Returns 429 when exceeded." />
                     </div>
                 </div>
-            </CollapsibleSection>
+            </Section>
 
-            {/* Save Button */}
-            <div className="flex items-center gap-4 pt-2">
-                <button onClick={handleSave} disabled={isSaving}
-                    className="flex items-center gap-2 px-6 py-2.5 text-sm font-bold uppercase tracking-wider bg-zinc-100 text-zinc-950 hover:bg-white disabled:opacity-40 transition-colors">
-                    {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                    Save Scale Config
-                </button>
-                {saveMsg && <p className="text-xs text-zinc-400">{saveMsg}</p>}
+            {/* Save */}
+            <div className={`${FORM} space-y-2`}>
+                <SaveBar onSave={handleSave} isSaving={isSaving} label="Save scale config" />
+                {saveMsg && <p className="text-right text-xs text-text-muted">{saveMsg}</p>}
             </div>
         </div>
     );

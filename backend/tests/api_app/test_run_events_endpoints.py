@@ -35,13 +35,13 @@ class _FakeEngine:
 
 def _one_journaled_run_id():
     import core.orchestration.journal as journal_mod
-    files = list(journal_mod.EVENTS_DIR.glob("*.jsonl"))
+    files = list(journal_mod._events_dir().glob("*.jsonl"))
     assert len(files) == 1
     return files[0].stem
 
 
 async def _run_orch(client, seed_orchestration, monkeypatch, events):
-    orch = seed_orchestration()
+    orch = await seed_orchestration()
     import core.orchestration.engine as engine_mod
     _FakeEngine.events = events
     monkeypatch.setattr(engine_mod, "OrchestrationEngine", _FakeEngine)
@@ -94,14 +94,13 @@ class TestEventsJson:
         resp = await client.get("/api/orchestrations/runs/run_nope/events")
         assert resp.status_code == 404
 
-    async def test_pre_journal_run_returns_checkpoint_only(self, client, tmp_path, monkeypatch):
+    async def test_pre_journal_run_returns_checkpoint_only(self, client):
         """A run from before the journal existed: checkpoint but no .jsonl."""
         import core.orchestration.state as state_mod
         from core.models_orchestration import OrchestrationRun
-        monkeypatch.setattr(state_mod, "RUNS_DIR", tmp_path)
         run = OrchestrationRun(run_id="run_old", orchestration_id="orch_1",
                               status="completed")
-        state_mod.SharedState(run).checkpoint()
+        await state_mod.SharedState(run).checkpoint()
 
         resp = await client.get("/api/orchestrations/runs/run_old/events")
         assert resp.status_code == 200

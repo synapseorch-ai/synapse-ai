@@ -1,11 +1,11 @@
 """
-Data seeders — write agents / orchestrations / API keys into the sandboxed
-SYNAPSE_DATA_DIR so route handlers load them exactly as in production.
+Data seeders — write agents / orchestrations / API keys into the per-test
+store so route handlers load them exactly as in production.
 
 These call the same persistence helpers the app uses (``save_user_agents``,
-``save_orchestrations``, ``generate_api_key``), whose JsonStore updates its
-in-memory cache on write, so a subsequent ``load_*`` returns the seeded data
-immediately (no cache-TTL race).
+``save_orchestrations``, ``generate_api_key``), which invalidate the store's
+read-through cache on write, so a subsequent ``load_*`` returns the seeded
+data immediately.
 """
 from __future__ import annotations
 
@@ -73,19 +73,31 @@ def make_orchestration(**overrides: Any) -> dict:
 
 
 # ── persistence ──────────────────────────────────────────────────────────────
-def seed_agents(agents: list[dict]) -> list[dict]:
+async def seed_agents(agents: list[dict]) -> list[dict]:
     from core.routes.agents import save_user_agents
-    save_user_agents(agents)
+    await save_user_agents(agents)
     return agents
 
 
-def seed_orchestrations(orchs: list[dict]) -> list[dict]:
+async def seed_orchestrations(orchs: list[dict]) -> list[dict]:
     from core.routes.orchestrations import save_orchestrations
-    save_orchestrations(orchs)
+    await save_orchestrations(orchs)
     return orchs
 
 
-def seed_api_key(name: str = "test") -> tuple[str, dict]:
+async def seed_api_key(name: str = "test") -> tuple[str, dict]:
     """Create a real API key. Returns (raw_key, record). raw_key -> Bearer token."""
     from core.api_keys import generate_api_key
-    return generate_api_key(name)
+    return await generate_api_key(name)
+
+
+async def seed_paused_run(run_id: str, orchestration_id: str = "orch_x") -> None:
+    """A run stored as paused on a question — what a resume route will answer."""
+    from core.store import get_store, upsert
+    from core.store.models import OrchestrationRunDB
+    async with (await get_store())() as session:
+        await upsert(session, OrchestrationRunDB, values={
+            "run_id": run_id, "orchestration_id": orchestration_id, "status": "paused",
+            "waiting_for_human": True, "current_step_id": "h",
+        }, index_elements=["run_id"])
+        await session.commit()

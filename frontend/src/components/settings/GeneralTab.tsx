@@ -1,5 +1,34 @@
 import { useState, useEffect } from 'react';
-import { Loader2, AlertTriangle } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
+import { Button, ConfirmDialog, Input, Label, Section, Select, Spinner, Switch } from '@/components/ui';
+import { FIELD_LABEL, FORM } from './form';
+import { SaveBar } from './SaveBar';
+import { ToolPolicyFields, type ToolPolicy } from './ToolPolicy';
+import { WORKSPACE_TURN_LIMIT_CHOICES } from './turnLimit';
+
+
+/** A setting that is on or off: what it does, and its switch at the end of the line. */
+function SwitchRow({ label, children, checked, onChange, disabled }: {
+    label: string; children: React.ReactNode; checked: boolean; onChange: () => void; disabled?: boolean;
+}) {
+    return (
+        <div className={`flex items-start justify-between gap-6 ${FORM}`}>
+            <p className="text-sm leading-relaxed text-text-muted">{children}</p>
+            <Switch checked={checked} onChange={onChange} label={label} disabled={disabled} className="mt-0.5" />
+        </div>
+    );
+}
+
+/** A note under a setting: a caveat (neutral-strong, the `warning` alias) or a failure. */
+function Note({ tone = 'warning', children }: { tone?: 'warning' | 'danger'; children: React.ReactNode }) {
+    return (
+        <div className={`${FORM} space-y-2 rounded-md border px-3 py-2.5 text-xs leading-relaxed ${tone === 'danger'
+            ? 'border-danger/25 bg-danger-subtle text-danger'
+            : 'border-warning/25 bg-warning-subtle text-text'}`}>
+            {children}
+        </div>
+    );
+}
 
 type EmbedIssue = 'no_psql' | 'no_db' | 'existing_url_broken' | 'no_pgvector' | 'connection_error';
 
@@ -16,6 +45,8 @@ interface DbForm {
     dbName: string;
 }
 
+export type BoardsSettings = { enabled: boolean; maxOpenCards: number; maxShared: number };
+
 interface GeneralTabProps {
     agentName: string;
     setAgentName: (v: string) => void;
@@ -27,19 +58,36 @@ interface GeneralTabProps {
     setAutoCompactEnabled: (v: boolean) => void;
     autoCompactThreshold: number;
     setAutoCompactThreshold: (v: number) => void;
+    autoCompactWindowPct: number;
+    setAutoCompactWindowPct: (v: number) => void;
     allowDbWrite: boolean;
     setAllowDbWrite: (v: boolean) => void;
+    /** Knowledge's switch (`knowledge_enabled`, F367); null until the settings are read. */
+    knowledgeEnabled: boolean | null;
+    setKnowledgeEnabled: (v: boolean) => void;
+    /** Boards' switch and caps (`boards_enabled`, `boards_max_open_cards`, `boards_max_shared`; BOARD1b); null until read. */
+    boards: BoardsSettings | null;
+    setBoards: (v: BoardsSettings) => void;
+    /** The most members a Team agent may run at once on this install (`team_at_once_ceiling`; TEAM1b); null until read. */
+    teamCeiling: number | null;
+    setTeamCeiling: (v: number) => void;
+    /** What an agent does at its turn limit (`turn_limit_mode`, F1219): '' is the default; null until read. */
+    turnLimitMode: string | null;
+    setTurnLimitMode: (v: string) => void;
+    toolPolicyDefaults: ToolPolicy;
+    setToolPolicyDefaults: (v: ToolPolicy) => void;
     embedCode: boolean;
     setEmbedCode: (v: boolean) => void;
     bashAllowedDirs: string[];
     setBashAllowedDirs: (v: string[]) => void;
+    /** Where this server runs Transform steps: its operator's choice, shown, never set here (F968). */
     transformRuntime: 'docker' | 'host';
-    setTransformRuntime: (v: 'docker' | 'host') => void;
+    /** Whether login is on, as saved. Only a successful save changes it. */
     loginEnabled: boolean;
-    setLoginEnabled: (v: boolean) => void;
     loginUsername: string;
     setLoginUsername: (v: string) => void;
-    onSaveLogin: (enabled: boolean, username: string, password: string) => Promise<void>;
+    /** Resolves true once the backend has saved it. */
+    onSaveLogin: (enabled: boolean, username: string, password: string) => Promise<boolean>;
     isLoginSaving?: boolean;
     onSave: () => void;
     isSaving?: boolean;
@@ -51,11 +99,17 @@ export function GeneralTab({
     vaultThreshold, setVaultThreshold,
     autoCompactEnabled, setAutoCompactEnabled,
     autoCompactThreshold, setAutoCompactThreshold,
+    autoCompactWindowPct, setAutoCompactWindowPct,
     allowDbWrite, setAllowDbWrite,
+    knowledgeEnabled, setKnowledgeEnabled,
+    boards, setBoards,
+    teamCeiling, setTeamCeiling,
+    turnLimitMode, setTurnLimitMode,
+    toolPolicyDefaults, setToolPolicyDefaults,
     embedCode, setEmbedCode,
     bashAllowedDirs, setBashAllowedDirs,
-    transformRuntime, setTransformRuntime,
-    loginEnabled, setLoginEnabled,
+    transformRuntime,
+    loginEnabled,
     loginUsername, setLoginUsername,
     onSaveLogin, isLoginSaving,
     onSave, isSaving,
@@ -64,19 +118,32 @@ export function GeneralTab({
     const [newDir, setNewDir] = useState('');
     const [vaultDraft, setVaultDraft] = useState(String(vaultThreshold));
     const [compactDraft, setCompactDraft] = useState(String(autoCompactThreshold));
+    const [windowPctDraft, setWindowPctDraft] = useState(String(autoCompactWindowPct));
 
-    // Login form local state
+    // Login form local state. The switch shows what is saved, or that login
+    // is being turned on while its form is open (`enabling`) — never an "off"
+    // that was not sent (F222).
     const [showLoginForm, setShowLoginForm] = useState(false);
+    const [enabling, setEnabling] = useState(false);
+    const [confirmLoginOff, setConfirmLoginOff] = useState(false);
     const [loginPassword, setLoginPassword] = useState('');
     const [loginConfirmPassword, setLoginConfirmPassword] = useState('');
     const [loginFormError, setLoginFormError] = useState('');
+    /** Back to what is saved: nothing typed here was sent. */
+    const closeLoginForm = () => {
+        setShowLoginForm(false);
+        setEnabling(false);
+        setLoginFormError('');
+        setLoginPassword('');
+        setLoginConfirmPassword('');
+    };
 
     // Confirmation modal shown when user tries to flip transform runtime to "host".
     // Going back to "docker" doesn't need confirmation (safe default).
-    const [showHostRuntimeModal, setShowHostRuntimeModal] = useState(false);
 
     useEffect(() => { setVaultDraft(String(vaultThreshold)); }, [vaultThreshold]);
     useEffect(() => { setCompactDraft(String(autoCompactThreshold)); }, [autoCompactThreshold]);
+    useEffect(() => { setWindowPctDraft(String(autoCompactWindowPct)); }, [autoCompactWindowPct]);
     const [embedCheckState, setEmbedCheckState] = useState<EmbedCheckState | null>(null);
     const [dbForm, setDbForm] = useState<DbForm>({ host: 'localhost', port: '5432', username: 'postgres', password: '', dbName: 'synapse' });
     const [setupInProgress, setSetupInProgress] = useState(false);
@@ -148,610 +215,558 @@ export function GeneralTab({
         }
     };
 
-    return (
-        <div className="space-y-8">
-            <div className="space-y-2">
-                <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Global Agent Name</label>
-                <input
-                    type="text"
-                    value={agentName}
-                    onChange={(e) => setAgentName(e.target.value)}
-                    className="w-full bg-zinc-900 border border-zinc-800 p-2.5 text-sm focus:border-white focus:outline-none transition-colors text-white placeholder:text-zinc-700 font-medium"
-                    placeholder="Enter Agent Name"
-                />
-                <p className="text-xs text-zinc-600">This name identifies your agent across the system.</p>
+    const S = { variant: 'plain' as const, collapsible: false };
+    const addDir = () => {
+        if (newDir.trim()) {
+            setBashAllowedDirs([...bashAllowedDirs, newDir.trim()]);
+            setNewDir('');
+        }
+    };
+    const dbFields = (
+        <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+                <Label htmlFor="gen-dbform-host" className={FIELD_LABEL}>Host</Label>
+                <Input id="gen-dbform-host" type="text" value={dbForm.host} onChange={e => setDbForm(f => ({ ...f, host: e.target.value }))} className="font-code" />
             </div>
-
-            <div className="space-y-4">
-                <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Large Response Handling</label>
-                <div className="flex items-center justify-between">
-                    <div>
-                        <p className="text-xs text-zinc-600 mt-0.5">When enabled, tool outputs exceeding the threshold are saved to a vault file instead of flooding the context.</p>
-                    </div>
-                    <button
-                        onClick={() => setVaultEnabled(!vaultEnabled)}
-                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${vaultEnabled ? 'bg-white' : 'bg-zinc-700'}`}
-                    >
-                        <span
-                            className={`inline-block h-4 w-4 transform rounded-full transition-transform ${vaultEnabled ? 'translate-x-6 bg-black' : 'translate-x-1 bg-zinc-400'}`}
-                        />
-                    </button>
-                </div>
-                {vaultEnabled && (
-                    <div className="space-y-2">
-                        <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Character Threshold</label>
-                        <p className="text-xs text-zinc-500">
-                            ≈ <span className="text-zinc-300 font-semibold">{Math.round(vaultThreshold / 4).toLocaleString()}</span> tokens
-                            <span className="text-zinc-600 ml-1">(at ~4 chars / token)</span>
-                        </p>
-                        <input
-                            type="number"
-                            value={vaultDraft}
-                            onChange={(e) => setVaultDraft(e.target.value)}
-                            onBlur={() => {
-                                const v = Math.max(1, parseInt(vaultDraft) || 1);
-                                setVaultThreshold(v);
-                                setVaultDraft(String(v));
-                            }}
-                            className="w-full bg-zinc-900 border border-zinc-800 p-2.5 text-sm focus:border-white focus:outline-none transition-colors text-white placeholder:text-zinc-700 font-medium"
-                            min={1}
-                        />
-                        <p className="text-xs text-zinc-600">Responses longer than this many characters will be saved to a file.</p>
-                    </div>
-                )}
+            <div className="space-y-1">
+                <Label htmlFor="gen-dbform-port" className={FIELD_LABEL}>Port</Label>
+                <Input id="gen-dbform-port" type="text" value={dbForm.port} onChange={e => setDbForm(f => ({ ...f, port: e.target.value }))} className="font-code" />
             </div>
-
-            <div className="space-y-4">
-                <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Auto Context Compaction</label>
-                <div className="flex items-center justify-between">
-                    <div>
-                        <p className="text-xs text-zinc-600 mt-0.5">
-                            When the accumulated context exceeds the threshold, the agent summarises everything so far to ~30% of its size and archives the original to the vault so nothing is lost.
-                        </p>
-                    </div>
-                    <button
-                        onClick={() => setAutoCompactEnabled(!autoCompactEnabled)}
-                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none flex-shrink-0 ml-4 ${autoCompactEnabled ? 'bg-white' : 'bg-zinc-700'}`}
-                    >
-                        <span
-                            className={`inline-block h-4 w-4 transform rounded-full transition-transform ${autoCompactEnabled ? 'translate-x-6 bg-black' : 'translate-x-1 bg-zinc-400'}`}
-                        />
-                    </button>
-                </div>
-                {autoCompactEnabled && (
-                    <div className="space-y-2">
-                        <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Compaction Threshold (characters)</label>
-                        <p className="text-xs text-zinc-500">
-                            ≈ <span className="text-zinc-300 font-semibold">{Math.round(autoCompactThreshold / 4).toLocaleString()}</span> tokens
-                            <span className="text-zinc-600 ml-1">(at ~4 chars / token)</span>
-                        </p>
-                        <input
-                            type="number"
-                            value={compactDraft}
-                            onChange={(e) => setCompactDraft(e.target.value)}
-                            onBlur={() => {
-                                const v = Math.max(10000, parseInt(compactDraft) || 10000);
-                                setAutoCompactThreshold(v);
-                                setCompactDraft(String(v));
-                            }}
-                            className="w-full bg-zinc-900 border border-zinc-800 p-2.5 text-sm focus:border-white focus:outline-none transition-colors text-white placeholder:text-zinc-700 font-medium"
-                            min={10000}
-                        />
-                        <p className="text-xs text-zinc-600">
-                            When context exceeds this, it is compacted using the current model. The full original is archived to the vault.
-                        </p>
-                    </div>
-                )}
+            <div className="space-y-1">
+                <Label htmlFor="gen-dbform-username" className={FIELD_LABEL}>Username</Label>
+                <Input id="gen-dbform-username" type="text" value={dbForm.username} onChange={e => setDbForm(f => ({ ...f, username: e.target.value }))} className="font-code" autoComplete="off" />
             </div>
-
-            <div className="space-y-4">
-                <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Database Write Access</label>
-                <div className="flex items-center justify-between">
-                    <div>
-                        <p className="text-xs text-zinc-600 mt-0.5">
-                            When disabled (default), agents are strictly limited to SELECT/SHOW/DESCRIBE queries.
-                            When enabled, INSERT/UPDATE/DELETE and other write queries are allowed — but agents must always ask for confirmation before executing them.
-                        </p>
-                    </div>
-                    <button
-                        onClick={() => setAllowDbWrite(!allowDbWrite)}
-                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none flex-shrink-0 ml-4 ${allowDbWrite ? 'bg-amber-500' : 'bg-zinc-700'}`}
-                    >
-                        <span
-                            className={`inline-block h-4 w-4 transform rounded-full transition-transform ${allowDbWrite ? 'translate-x-6 bg-black' : 'translate-x-1 bg-zinc-400'}`}
-                        />
-                    </button>
-                </div>
-                {allowDbWrite && (
-                    <div className="p-3 bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs">
-                        <strong>Write mode active.</strong> Agents MUST ask for explicit user confirmation before running any INSERT, UPDATE, DELETE, DROP, or CREATE queries. This is enforced in the system prompt.
-                    </div>
-                )}
+            <div className="space-y-1">
+                <Label htmlFor="gen-dbform-password" className={FIELD_LABEL}>Password</Label>
+                <Input id="gen-dbform-password" type="password" value={dbForm.password} onChange={e => setDbForm(f => ({ ...f, password: e.target.value }))} className="font-code" autoComplete="new-password" />
             </div>
-
-            {/* Code Repository Indexing */}
-            <div className="space-y-4">
-                <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Code Repository Indexing</label>
-                <div className="flex items-center justify-between">
-                    <div>
-                        <p className="text-xs text-zinc-600 mt-0.5">
-                            When enabled, agents can semantically search your indexed code repositories using vector embeddings.
-                            Requires PostgreSQL with the pgvector extension.
-                        </p>
-                    </div>
-                    <button
-                        onClick={handleEmbedToggle}
-                        disabled={embedChecking}
-                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none flex-shrink-0 ml-4 ${embedCode ? 'bg-white' : 'bg-zinc-700'} ${embedChecking ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    >
-                        <span
-                            className={`inline-block h-4 w-4 transform rounded-full transition-transform ${embedCode ? 'translate-x-6 bg-black' : 'translate-x-1 bg-zinc-400'}`}
-                        />
-                    </button>
-                </div>
-
-                {/* Checking state */}
-                {embedChecking && (
-                    <div className="flex items-center gap-2 text-xs text-zinc-400">
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        Checking PostgreSQL setup…
-                    </div>
-                )}
-
-                {/* No psql found */}
-                {embedCheckState?.issue === 'no_psql' && (
-                    <div className="p-3 bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs space-y-2">
-                        <p><strong>PostgreSQL not found.</strong> Install it to enable code indexing.</p>
-                        <ul className="space-y-0.5 text-amber-300/80">
-                            <li><strong>Ubuntu/Debian:</strong> <code className="bg-black/30 px-1">sudo apt install postgresql postgresql-contrib</code></li>
-                            <li><strong>macOS:</strong> <code className="bg-black/30 px-1">brew install postgresql</code></li>
-                            <li><strong>Windows:</strong> Download from <span className="underline">postgresql.org/download/windows</span></li>
-                        </ul>
-                        <p className="text-amber-300/60">After installing, also install pgvector: <code className="bg-black/30 px-1">sudo apt install postgresql-pgvector</code> (Ubuntu) or <code className="bg-black/30 px-1">brew install pgvector</code> (macOS).</p>
-                        <button
-                            onClick={runEmbedCheck}
-                            className="mt-1 px-3 py-1 text-xs font-bold bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 transition-colors"
-                        >
-                            Check again
-                        </button>
-                    </div>
-                )}
-
-                {/* Existing URL configured but connection is failing */}
-                {embedCheckState?.issue === 'existing_url_broken' && (
-                    <div className="p-3 bg-zinc-800/60 border border-zinc-700 text-xs space-y-3">
-                        <div className="space-y-1">
-                            <p className="text-zinc-300 font-semibold">Existing connection is failing</p>
-                            <p className="text-zinc-500 font-mono break-all">{embedCheckState.detail}</p>
-                            <p className="text-zinc-500">Please provide new connection details to reconfigure.</p>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                            <div className="space-y-1">
-                                <label className="text-zinc-500 uppercase tracking-wider text-[10px] font-bold">Host</label>
-                                <input type="text" value={dbForm.host} onChange={e => setDbForm(f => ({ ...f, host: e.target.value }))} className="w-full bg-zinc-900 border border-zinc-700 p-2 text-white focus:border-white focus:outline-none font-mono text-xs" />
-                            </div>
-                            <div className="space-y-1">
-                                <label className="text-zinc-500 uppercase tracking-wider text-[10px] font-bold">Port</label>
-                                <input type="text" value={dbForm.port} onChange={e => setDbForm(f => ({ ...f, port: e.target.value }))} className="w-full bg-zinc-900 border border-zinc-700 p-2 text-white focus:border-white focus:outline-none font-mono text-xs" />
-                            </div>
-                            <div className="space-y-1">
-                                <label className="text-zinc-500 uppercase tracking-wider text-[10px] font-bold">Username</label>
-                                <input type="text" value={dbForm.username} onChange={e => setDbForm(f => ({ ...f, username: e.target.value }))} className="w-full bg-zinc-900 border border-zinc-700 p-2 text-white focus:border-white focus:outline-none font-mono text-xs" autoComplete="off" />
-                            </div>
-                            <div className="space-y-1">
-                                <label className="text-zinc-500 uppercase tracking-wider text-[10px] font-bold">Password</label>
-                                <input type="password" value={dbForm.password} onChange={e => setDbForm(f => ({ ...f, password: e.target.value }))} className="w-full bg-zinc-900 border border-zinc-700 p-2 text-white focus:border-white focus:outline-none font-mono text-xs" autoComplete="new-password" />
-                            </div>
-                            <div className="col-span-2 space-y-1">
-                                <label className="text-zinc-500 uppercase tracking-wider text-[10px] font-bold">Database Name</label>
-                                <input type="text" value={dbForm.dbName} onChange={e => setDbForm(f => ({ ...f, dbName: e.target.value }))} className="w-full bg-zinc-900 border border-zinc-700 p-2 text-white focus:border-white focus:outline-none font-mono text-xs" />
-                            </div>
-                        </div>
-                        {setupError && <p className="text-red-400 font-mono text-[11px]">{setupError}</p>}
-                        <div className="flex items-center gap-2 pt-1">
-                            <button onClick={handleSetupDb} disabled={setupInProgress} className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-white text-black hover:bg-zinc-200 transition-all disabled:opacity-50 disabled:cursor-not-allowed">
-                                {setupInProgress && <Loader2 className="w-3 h-3 animate-spin" />}
-                                {setupInProgress ? 'Connecting…' : 'Save & Connect'}
-                            </button>
-                            <button onClick={() => setEmbedCheckState(null)} className="px-3 py-2 text-xs text-zinc-500 hover:text-white transition-colors">Cancel</button>
-                        </div>
-                    </div>
-                )}
-
-                {/* pgvector missing */}
-                {embedCheckState?.issue === 'no_pgvector' && (
-                    <div className="p-3 bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs space-y-2">
-                        <p><strong>pgvector extension not installed.</strong> PostgreSQL is running but the vector extension is missing.</p>
-                        <p>Connect to your database and run:</p>
-                        <code className="block bg-black/40 px-2 py-1.5 font-mono text-white/80">CREATE EXTENSION vector;</code>
-                        <p className="text-amber-300/60">Or install the OS package first: <code className="bg-black/30 px-1">sudo apt install postgresql-pgvector</code> (Ubuntu) / <code className="bg-black/30 px-1">brew install pgvector</code> (macOS), then run the SQL above.</p>
-                        <button
-                            onClick={runEmbedCheck}
-                            className="mt-1 px-3 py-1 text-xs font-bold bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 transition-colors"
-                        >
-                            Check again
-                        </button>
-                    </div>
-                )}
-
-                {/* No DB URL configured — show fresh setup form */}
-                {embedCheckState?.issue === 'no_db' && (
-                    <div className="p-3 bg-zinc-800/60 border border-zinc-700 text-xs space-y-3">
-                        <div className="space-y-1">
-                            <p className="text-zinc-300 font-semibold">Set up a PostgreSQL database for code indexing</p>
-                            <p className="text-zinc-500">No database configured yet. Enter your PostgreSQL credentials and we'll create the database and enable pgvector.</p>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                            <div className="space-y-1">
-                                <label className="text-zinc-500 uppercase tracking-wider text-[10px] font-bold">Host</label>
-                                <input
-                                    type="text"
-                                    value={dbForm.host}
-                                    onChange={e => setDbForm(f => ({ ...f, host: e.target.value }))}
-                                    className="w-full bg-zinc-900 border border-zinc-700 p-2 text-white focus:border-white focus:outline-none font-mono text-xs"
-                                />
-                            </div>
-                            <div className="space-y-1">
-                                <label className="text-zinc-500 uppercase tracking-wider text-[10px] font-bold">Port</label>
-                                <input
-                                    type="text"
-                                    value={dbForm.port}
-                                    onChange={e => setDbForm(f => ({ ...f, port: e.target.value }))}
-                                    className="w-full bg-zinc-900 border border-zinc-700 p-2 text-white focus:border-white focus:outline-none font-mono text-xs"
-                                />
-                            </div>
-                            <div className="space-y-1">
-                                <label className="text-zinc-500 uppercase tracking-wider text-[10px] font-bold">Username</label>
-                                <input
-                                    type="text"
-                                    value={dbForm.username}
-                                    onChange={e => setDbForm(f => ({ ...f, username: e.target.value }))}
-                                    className="w-full bg-zinc-900 border border-zinc-700 p-2 text-white focus:border-white focus:outline-none font-mono text-xs"
-                                    autoComplete="off"
-                                />
-                            </div>
-                            <div className="space-y-1">
-                                <label className="text-zinc-500 uppercase tracking-wider text-[10px] font-bold">Password</label>
-                                <input
-                                    type="password"
-                                    value={dbForm.password}
-                                    onChange={e => setDbForm(f => ({ ...f, password: e.target.value }))}
-                                    className="w-full bg-zinc-900 border border-zinc-700 p-2 text-white focus:border-white focus:outline-none font-mono text-xs"
-                                    autoComplete="new-password"
-                                />
-                            </div>
-                            <div className="col-span-2 space-y-1">
-                                <label className="text-zinc-500 uppercase tracking-wider text-[10px] font-bold">Database Name</label>
-                                <input
-                                    type="text"
-                                    value={dbForm.dbName}
-                                    onChange={e => setDbForm(f => ({ ...f, dbName: e.target.value }))}
-                                    className="w-full bg-zinc-900 border border-zinc-700 p-2 text-white focus:border-white focus:outline-none font-mono text-xs"
-                                />
-                            </div>
-                        </div>
-                        {setupError && (
-                            <p className="text-red-400 font-mono text-[11px]">{setupError}</p>
-                        )}
-                        <div className="flex items-center gap-2 pt-1">
-                            <button
-                                onClick={handleSetupDb}
-                                disabled={setupInProgress}
-                                className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-white text-black hover:bg-zinc-200 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                                {setupInProgress && <Loader2 className="w-3 h-3 animate-spin" />}
-                                {setupInProgress ? 'Creating…' : 'Create Database'}
-                            </button>
-                            <button
-                                onClick={() => setEmbedCheckState(null)}
-                                className="px-3 py-2 text-xs text-zinc-500 hover:text-white transition-colors"
-                            >
-                                Cancel
-                            </button>
-                        </div>
-                    </div>
-                )}
-
-                {/* Generic connection error */}
-                {embedCheckState?.issue === 'connection_error' && (
-                    <div className="p-3 bg-red-500/10 border border-red-500/20 text-red-400 text-xs space-y-2">
-                        <p><strong>Check failed.</strong> {embedCheckState.detail}</p>
-                        <button
-                            onClick={runEmbedCheck}
-                            className="px-3 py-1 text-xs font-bold bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 transition-colors"
-                        >
-                            Try again
-                        </button>
-                    </div>
-                )}
-            </div>
-
-            {/* Bash Command Directories */}
-            <div className="space-y-4">
-                <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Allowed Directories</label>
-                <p className="text-xs text-zinc-600">
-                    Directories the bash tool and filesystem MCP server can access.
-                    Linked repos and vault are always included automatically.
-                </p>
-                {bashAllowedDirs.length > 0 && (
-                    <div className="space-y-1">
-                        {bashAllowedDirs.map((dir, i) => (
-                            <div key={i} className="flex items-center justify-between bg-zinc-900 border border-zinc-800 px-3 py-2">
-                                <span className="text-xs font-mono text-zinc-300 truncate">{dir}</span>
-                                <button
-                                    onClick={() => setBashAllowedDirs(bashAllowedDirs.filter((_, j) => j !== i))}
-                                    className="text-zinc-600 hover:text-red-400 transition-colors text-xs ml-2 flex-shrink-0"
-                                >
-                                    Remove
-                                </button>
-                            </div>
-                        ))}
-                    </div>
-                )}
-                <div className="flex gap-2">
-                    <input
-                        type="text"
-                        value={newDir}
-                        onChange={e => setNewDir(e.target.value)}
-                        onKeyDown={e => {
-                            if (e.key === 'Enter' && newDir.trim()) {
-                                setBashAllowedDirs([...bashAllowedDirs, newDir.trim()]);
-                                setNewDir('');
-                            }
-                        }}
-                        placeholder="/path/to/directory"
-                        className="flex-1 bg-zinc-900 border border-zinc-800 p-2.5 text-sm focus:border-white focus:outline-none transition-colors text-white placeholder:text-zinc-700 font-mono"
-                    />
-                    <button
-                        onClick={() => {
-                            if (newDir.trim()) {
-                                setBashAllowedDirs([...bashAllowedDirs, newDir.trim()]);
-                                setNewDir('');
-                            }
-                        }}
-                        disabled={!newDir.trim()}
-                        className="px-4 py-2.5 text-xs font-bold bg-zinc-800 hover:bg-zinc-700 text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                        Add
-                    </button>
-                </div>
-            </div>
-
-            {/* Transform Step Python Runtime */}
-            <div className="space-y-4">
-                <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Transform Step Python Runtime</label>
-                <div className="flex items-center justify-between">
-                    <div>
-                        <p className="text-xs text-zinc-600 mt-0.5">
-                            Where Transform-step Python code runs. <strong className="text-zinc-400">Docker</strong> (default) sandboxes execution with 512 MB / 1 CPU / 60s caps and no GPU access — safe but limited.
-                            <strong className="text-zinc-400"> Host</strong> runs Python directly on the host with full RAM, GPU, filesystem, and network.
-                        </p>
-                    </div>
-                    <button
-                        onClick={() => {
-                            if (transformRuntime === 'docker') {
-                                setShowHostRuntimeModal(true);
-                            } else {
-                                setTransformRuntime('docker');
-                            }
-                        }}
-                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none flex-shrink-0 ml-4 ${transformRuntime === 'host' ? 'bg-amber-500' : 'bg-zinc-700'}`}
-                    >
-                        <span className={`inline-block h-4 w-4 transform rounded-full transition-transform ${transformRuntime === 'host' ? 'translate-x-6 bg-black' : 'translate-x-1 bg-zinc-400'}`} />
-                    </button>
-                </div>
-                {transformRuntime === 'host' && (
-                    <div className="p-3 bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs flex items-start gap-2">
-                        <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
-                        <div>
-                            <strong>Host mode active.</strong> Any Python in any Transform step now runs unsandboxed with full backend permissions. Only use on self-hosted instances you control.
-                        </div>
-                    </div>
-                )}
-            </div>
-
-            {/* Host-mode confirmation modal */}
-            {showHostRuntimeModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setShowHostRuntimeModal(false)}>
-                    <div className="bg-zinc-950 border border-amber-500/40 max-w-lg w-full p-6 space-y-4" onClick={e => e.stopPropagation()}>
-                        <div className="flex items-start gap-3">
-                            <AlertTriangle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
-                            <div className="space-y-1">
-                                <h3 className="text-sm font-bold text-white">Enable host-mode Transform execution?</h3>
-                                <p className="text-xs text-zinc-400">This removes the Docker sandbox from Transform steps.</p>
-                            </div>
-                        </div>
-                        <div className="text-xs text-zinc-400 space-y-2 leading-relaxed">
-                            <p>With host mode on, Transform-step Python code runs as a subprocess on the host machine with:</p>
-                            <ul className="list-disc list-inside space-y-1 text-zinc-500 pl-1">
-                                <li>Full backend filesystem access (including <code className="text-zinc-300">backend/data/</code>)</li>
-                                <li>Full network access</li>
-                                <li>Access to any GPU and all host RAM</li>
-                                <li>The same permissions as the Synapse backend process</li>
-                            </ul>
-                            <p className="text-amber-400/90 pt-1">
-                                Only enable this on a self-hosted instance you control. It is the wrong choice for any deployment where untrusted code or untrusted users can reach the Transform step.
-                            </p>
-                        </div>
-                        <div className="flex items-center justify-end gap-2 pt-2">
-                            <button
-                                onClick={() => setShowHostRuntimeModal(false)}
-                                className="px-4 py-2 text-xs font-bold text-zinc-400 hover:text-white transition-colors"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                onClick={() => {
-                                    setTransformRuntime('host');
-                                    setShowHostRuntimeModal(false);
-                                }}
-                                className="px-4 py-2 text-xs font-bold bg-amber-500 text-black hover:bg-amber-400 transition-colors"
-                            >
-                                I understand — enable host mode
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* Login & Security */}
-            <div className="space-y-4">
-                <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Login &amp; Security</label>
-
-                <div className="flex items-center justify-between">
-                    <div>
-                        <p className="text-sm text-zinc-300 font-medium">Require Login</p>
-                        <p className="text-xs text-zinc-600 mt-0.5">Protect Synapse with a username and password.</p>
-                    </div>
-                    <button
-                        onClick={() => {
-                            if (!loginEnabled) {
-                                setShowLoginForm(true);
-                            }
-                            setLoginEnabled(!loginEnabled);
-                            setLoginFormError('');
-                        }}
-                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none flex-shrink-0 ml-4 ${loginEnabled ? 'bg-white' : 'bg-zinc-700'}`}
-                    >
-                        <span className={`inline-block h-4 w-4 transform rounded-full transition-transform ${loginEnabled ? 'translate-x-6 bg-black' : 'translate-x-1 bg-zinc-400'}`} />
-                    </button>
-                </div>
-
-                {/* Configured state: show summary + actions */}
-                {loginEnabled && !showLoginForm && loginUsername && (
-                    <div className="p-3 bg-zinc-900 border border-zinc-800 space-y-2">
-                        <p className="text-xs text-zinc-400">
-                            Login enabled for user: <span className="text-white font-mono">{loginUsername}</span>
-                        </p>
-                        <div className="flex gap-4">
-                            <button
-                                onClick={() => { setShowLoginForm(true); setLoginFormError(''); }}
-                                className="text-xs text-zinc-400 hover:text-white transition-colors"
-                            >
-                                Change Password
-                            </button>
-                            <button
-                                onClick={() => onSaveLogin(false, '', '')}
-                                className="text-xs text-red-500 hover:text-red-400 transition-colors"
-                            >
-                                Disable Login
-                            </button>
-                        </div>
-                    </div>
-                )}
-
-                {/* Credentials form */}
-                {loginEnabled && (showLoginForm || !loginUsername) && (
-                    <div className="p-4 bg-zinc-900 border border-zinc-800 space-y-3">
-                        <p className="text-xs font-bold text-zinc-300">
-                            {loginUsername ? 'Update Credentials' : 'Set Login Credentials'}
-                        </p>
-
-                        <div className="space-y-1">
-                            <label className="text-[10px] uppercase font-bold text-zinc-500 tracking-wider">Username</label>
-                            <input
-                                type="text"
-                                value={loginUsername}
-                                onChange={e => setLoginUsername(e.target.value)}
-                                autoComplete="off"
-                                className="w-full bg-zinc-950 border border-zinc-700 p-2 text-sm focus:border-white focus:outline-none text-white"
-                                placeholder="admin"
-                            />
-                        </div>
-
-                        <div className="space-y-1">
-                            <label className="text-[10px] uppercase font-bold text-zinc-500 tracking-wider">
-                                {loginUsername ? 'New Password' : 'Password'}
-                            </label>
-                            <input
-                                type="password"
-                                value={loginPassword}
-                                onChange={e => setLoginPassword(e.target.value)}
-                                autoComplete="new-password"
-                                className="w-full bg-zinc-950 border border-zinc-700 p-2 text-sm focus:border-white focus:outline-none text-white"
-                                placeholder={loginUsername ? 'Leave blank to keep current' : 'Min. 8 characters'}
-                            />
-                        </div>
-
-                        <div className="space-y-1">
-                            <label className="text-[10px] uppercase font-bold text-zinc-500 tracking-wider">Confirm Password</label>
-                            <input
-                                type="password"
-                                value={loginConfirmPassword}
-                                onChange={e => setLoginConfirmPassword(e.target.value)}
-                                autoComplete="new-password"
-                                className="w-full bg-zinc-950 border border-zinc-700 p-2 text-sm focus:border-white focus:outline-none text-white"
-                            />
-                        </div>
-
-                        {loginFormError && (
-                            <p className="text-red-400 text-xs">{loginFormError}</p>
-                        )}
-
-                        <div className="flex gap-2 pt-1">
-                            <button
-                                onClick={async () => {
-                                    setLoginFormError('');
-                                    if (!loginUsername.trim()) {
-                                        setLoginFormError('Username is required.');
-                                        return;
-                                    }
-                                    if (loginPassword && loginPassword !== loginConfirmPassword) {
-                                        setLoginFormError('Passwords do not match.');
-                                        return;
-                                    }
-                                    if (!loginPassword && !loginUsername) {
-                                        setLoginFormError('Password is required for first-time setup.');
-                                        return;
-                                    }
-                                    if (loginPassword && loginPassword.length < 8) {
-                                        setLoginFormError('Password must be at least 8 characters.');
-                                        return;
-                                    }
-                                    await onSaveLogin(true, loginUsername, loginPassword);
-                                    setShowLoginForm(false);
-                                    setLoginPassword('');
-                                    setLoginConfirmPassword('');
-                                }}
-                                disabled={isLoginSaving}
-                                className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-white text-black hover:bg-zinc-200 transition-all disabled:opacity-50"
-                            >
-                                {isLoginSaving && <Loader2 className="w-3 h-3 animate-spin" />}
-                                {isLoginSaving ? 'Saving…' : 'Save Login Settings'}
-                            </button>
-                            <button
-                                onClick={() => {
-                                    setShowLoginForm(false);
-                                    setLoginFormError('');
-                                    setLoginPassword('');
-                                    setLoginConfirmPassword('');
-                                    if (!loginUsername) setLoginEnabled(false);
-                                }}
-                                className="px-3 py-2 text-xs text-zinc-500 hover:text-white transition-colors"
-                            >
-                                Cancel
-                            </button>
-                        </div>
-
-                        <p className="text-xs text-zinc-600 pt-1">
-                            Forgot your password? Run{' '}
-                            <code className="text-zinc-400 bg-zinc-950 px-1 font-mono text-[11px]">synapse reset-password</code>
-                            {' '}in your terminal.
-                        </p>
-                    </div>
-                )}
-            </div>
-
-            <div className="pt-4 flex justify-end">
-                <button
-                    onClick={onSave}
-                    disabled={isSaving}
-                    className="flex items-center gap-2 px-6 py-2.5 text-sm font-bold bg-white text-black hover:bg-zinc-200 transition-all shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                    {isSaving && <Loader2 className="w-4 h-4 animate-spin" />}
-                    {isSaving ? 'Saving…' : 'Save Changes'}
-                </button>
+            <div className="col-span-2 space-y-1">
+                <Label htmlFor="gen-dbform-dbname" className={FIELD_LABEL}>Database name</Label>
+                <Input id="gen-dbform-dbname" type="text" value={dbForm.dbName} onChange={e => setDbForm(f => ({ ...f, dbName: e.target.value }))} className="font-code" />
             </div>
         </div>
     );
+    const code = 'rounded bg-surface-2 px-1 font-code text-text';
+
+    return (
+        <div>
+            <Section {...S} title="Global agent name">
+                <div className={`space-y-1.5 ${FORM}`}>
+                    <Input id="gen-agentname"
+                        type="text"
+                        aria-label="Global agent name"
+                        value={agentName}
+                        onChange={(e) => setAgentName(e.target.value)}
+                        className="font-medium"
+                        placeholder="Enter agent name"
+                    />
+                    <p className="text-xs text-text-faint">This name identifies your agent across the system.</p>
+                </div>
+            </Section>
+
+            <Section {...S} title="Knowledge">
+                <SwitchRow label="Knowledge" checked={!!knowledgeEnabled} disabled={knowledgeEnabled === null}
+                    onChange={() => setKnowledgeEnabled(!knowledgeEnabled)}>
+                    Makes Vault folders searchable, so agents and workflows answer from your documents and cite them. Once it is saved, choose an embedding model in Settings → Models.
+                </SwitchRow>
+            </Section>
+
+            <Section {...S} title="Boards">
+                <div className="space-y-4">
+                    <SwitchRow label="Boards" checked={!!boards?.enabled} disabled={boards === null}
+                        onChange={() => boards && setBoards({ ...boards, enabled: !boards.enabled })}>
+                        Cards of shared work that agents read, claim and close. Each workflow and each scheduled agent gets its own board, kept across runs, and shared boards are used by what their lists name. An agent&apos;s Boards section turns its own board off.
+                    </SwitchRow>
+                    {boards?.enabled && (
+                        <div className={`grid gap-4 sm:grid-cols-2 ${FORM}`}>
+                            <div className="space-y-1.5">
+                                <Label htmlFor="gen-boards-open" className={FIELD_LABEL}>Open cards per board</Label>
+                                <Input id="gen-boards-open" type="number" min={1} className="w-40 font-medium tabular-nums"
+                                    value={boards.maxOpenCards}
+                                    onChange={(e) => setBoards({ ...boards, maxOpenCards: Math.max(1, parseInt(e.target.value) || 1) })} />
+                                <p className="text-xs text-text-faint">At the limit an agent is told to close some cards first.</p>
+                            </div>
+                            <div className="space-y-1.5">
+                                <Label htmlFor="gen-boards-shared" className={FIELD_LABEL}>Shared boards</Label>
+                                <Input id="gen-boards-shared" type="number" min={0} className="w-40 font-medium tabular-nums"
+                                    value={boards.maxShared}
+                                    onChange={(e) => setBoards({ ...boards, maxShared: Math.max(0, parseInt(e.target.value) || 0) })} />
+                                <p className="text-xs text-text-faint">0 means no limit.</p>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </Section>
+
+            <Section {...S} title="Agent teams">
+                <div className={`space-y-1.5 ${FORM}`}>
+                    <Label htmlFor="gen-team-at-once" className={FIELD_LABEL}>Members working at once, most</Label>
+                    <Input id="gen-team-at-once" type="number" min={1} max={50} className="w-40 font-medium tabular-nums"
+                        value={teamCeiling ?? ''} disabled={teamCeiling === null}
+                        onChange={(e) => setTeamCeiling(Math.min(50, Math.max(1, parseInt(e.target.value) || 1)))} />
+                    <p className="text-xs text-text-faint">
+                        The most members any Team agent here runs side by side. Each Team agent sets its own number up
+                        to this; extra members wait for a free slot. More at once costs no more, but providers&apos; rate
+                        limits slow a large team down.
+                    </p>
+                </div>
+            </Section>
+
+            <Section {...S} title="Turn limit">
+                <div className={`space-y-1.5 ${FORM}`}>
+                    <Label className={FIELD_LABEL}>When an agent reaches its turn limit</Label>
+                    <Select className="w-full max-w-sm" aria-label="When an agent reaches its turn limit"
+                        aria-describedby="gen-turn-limit-help" disabled={turnLimitMode === null}
+                        value={turnLimitMode === null ? undefined : (turnLimitMode || '__default__')}
+                        onChange={(v) => setTurnLimitMode(v === '__default__' ? '' : v)}
+                        options={WORKSPACE_TURN_LIMIT_CHOICES} />
+                    <p id="gen-turn-limit-help" className="text-xs text-text-faint">
+                        An agent that reaches its turn limit first gets one last turn to answer with what it has. If
+                        it still hasn&apos;t finished, this decides what happens next, here and in Synapse AI. An
+                        agent&apos;s own setting overrides it. Extra turns are billed as any turn is.
+                    </p>
+                </div>
+            </Section>
+
+            <Section {...S} title="Large response handling">
+                <div className="space-y-4">
+                    <SwitchRow label="Large response handling" checked={vaultEnabled} onChange={() => setVaultEnabled(!vaultEnabled)}>
+                        When enabled, tool outputs exceeding the threshold are saved to a vault file instead of flooding the context.
+                    </SwitchRow>
+                    {vaultEnabled && (
+                        <div className={`space-y-1.5 ${FORM}`}>
+                            <Label htmlFor="gen-character-threshold" className={FIELD_LABEL}>Character threshold</Label>
+                            <div className="flex items-center gap-3">
+                                <Input id="gen-character-threshold"
+                                    type="number"
+                                    value={vaultDraft}
+                                    onChange={(e) => setVaultDraft(e.target.value)}
+                                    onBlur={() => {
+                                        const v = Math.max(1, parseInt(vaultDraft) || 1);
+                                        setVaultThreshold(v);
+                                        setVaultDraft(String(v));
+                                    }}
+                                    className="w-40 font-medium tabular-nums"
+                                    min={1}
+                                />
+                                <p className="text-xs text-text-faint">
+                                    ≈ <span className="font-medium tabular-nums text-text">{Math.round(vaultThreshold / 4).toLocaleString()}</span> tokens
+                                    <span className="ml-1">(at ~4 chars / token)</span>
+                                </p>
+                            </div>
+                            <p className="text-xs text-text-faint">
+                                Tool and code steps&apos; outputs longer than this are saved to a file and passed on by
+                                reference. An agent&apos;s own line comes from its model&apos;s window when compaction uses
+                                a share of it; this one applies when the window isn&apos;t known.
+                            </p>
+                        </div>
+                    )}
+                </div>
+            </Section>
+
+            <Section {...S} title="Auto context compaction">
+                <div className="space-y-4">
+                    <SwitchRow label="Auto context compaction" checked={autoCompactEnabled} onChange={() => setAutoCompactEnabled(!autoCompactEnabled)}>
+                        When a step&apos;s context fills up, its older tool results move to the vault first, keeping the
+                        newest whole; only if that isn&apos;t enough is the rest summarised, with the original archived to
+                        the vault so nothing is lost.
+                    </SwitchRow>
+                    {autoCompactEnabled && (
+                        <div className={`space-y-1.5 ${FORM}`}>
+                            <Label htmlFor="gen-compaction-window-share" className={FIELD_LABEL}>Compact at (% of the model&apos;s window)</Label>
+                            <div className="flex items-center gap-3">
+                                <div className="flex items-center gap-1.5">
+                                    <Input id="gen-compaction-window-share"
+                                        type="number"
+                                        value={windowPctDraft}
+                                        onChange={(e) => setWindowPctDraft(e.target.value)}
+                                        onBlur={() => {
+                                            const n = parseInt(windowPctDraft);
+                                            const v = Number.isNaN(n) ? 50 : Math.min(90, Math.max(0, n));
+                                            setAutoCompactWindowPct(v);
+                                            setWindowPctDraft(String(v));
+                                        }}
+                                        className="w-24 font-medium tabular-nums"
+                                        min={0}
+                                        max={90}
+                                    />
+                                    <span className="text-sm text-text-muted">%</span>
+                                </div>
+                                {autoCompactWindowPct > 0 && (
+                                    <p className="text-xs text-text-faint">
+                                        e.g. ≈ <span className="font-medium tabular-nums text-text">{(autoCompactWindowPct * 2000).toLocaleString()}</span> tokens
+                                        <span className="ml-1">on a 200k-token model</span>
+                                    </p>
+                                )}
+                            </div>
+                            <p className="text-xs text-text-faint">
+                                Each step uses this share of its own model&apos;s window, so a model with a larger window
+                                holds more before anything is moved. 0 uses the fixed limit below for every model.
+                            </p>
+                        </div>
+                    )}
+                    {autoCompactEnabled && (
+                        <div className={`space-y-1.5 ${FORM}`}>
+                            <Label htmlFor="gen-compaction-threshold-characters" className={FIELD_LABEL}>Fixed limit (characters)</Label>
+                            <div className="flex items-center gap-3">
+                                <Input id="gen-compaction-threshold-characters"
+                                    type="number"
+                                    value={compactDraft}
+                                    onChange={(e) => setCompactDraft(e.target.value)}
+                                    onBlur={() => {
+                                        const v = Math.max(10000, parseInt(compactDraft) || 10000);
+                                        setAutoCompactThreshold(v);
+                                        setCompactDraft(String(v));
+                                    }}
+                                    className="w-40 font-medium tabular-nums"
+                                    min={10000}
+                                />
+                                <p className="text-xs text-text-faint">
+                                    ≈ <span className="font-medium tabular-nums text-text">{Math.round(autoCompactThreshold / 4).toLocaleString()}</span> tokens
+                                    <span className="ml-1">(at ~4 chars / token)</span>
+                                </p>
+                            </div>
+                            <p className="text-xs text-text-faint">
+                                Used for a model whose window isn&apos;t known, or when the share above is 0.
+                            </p>
+                        </div>
+                    )}
+                </div>
+            </Section>
+
+            <Section {...S} title="Database write access">
+                <div className="space-y-3">
+                    <SwitchRow label="Database write access" checked={allowDbWrite} onChange={() => setAllowDbWrite(!allowDbWrite)}>
+                        When disabled (default), agents are strictly limited to SELECT/SHOW/DESCRIBE queries.
+                        When enabled, INSERT/UPDATE/DELETE and other write queries are allowed — but agents must always ask for confirmation before executing them.
+                    </SwitchRow>
+                    {allowDbWrite && (
+                        <Note>
+                            <p><strong>Write mode active.</strong> Agents MUST ask for explicit user confirmation before running any INSERT, UPDATE, DELETE, DROP, or CREATE queries. This is enforced in the system prompt.</p>
+                        </Note>
+                    )}
+                </div>
+            </Section>
+
+            {/* Tool policy — the workspace floor. An agent sets its own per
+                category and inherits the rest from here. */}
+            <Section {...S} title="Tool policy">
+                <div className="space-y-4">
+                    <p className={`text-sm leading-relaxed text-text-muted ${FORM}`}>
+                        What every agent may do with the tools it holds, decided by what a tool does rather than
+                        by its name. An agent can be stricter or looser per category; anything it leaves alone
+                        follows this. Allow everywhere is the shipped default, so nothing changes until you
+                        change it here.
+                    </p>
+                    <div className={FORM}>
+                        <ToolPolicyFields
+                            value={toolPolicyDefaults}
+                            onChange={setToolPolicyDefaults}
+                        />
+                    </div>
+                </div>
+            </Section>
+
+            {/* Code Repository Indexing */}
+            <Section {...S} title="Code repository indexing">
+                <div className="space-y-3">
+                    <SwitchRow label="Code repository indexing" checked={embedCode} onChange={handleEmbedToggle} disabled={embedChecking}>
+                        When enabled, agents can semantically search your indexed code repositories using vector embeddings.
+                        Requires PostgreSQL with the pgvector extension.
+                    </SwitchRow>
+
+                    {/* Checking state */}
+                    {embedChecking && (
+                        <p className="flex items-center gap-2 text-xs text-text-muted">
+                            <Spinner size={14} />
+                            Checking PostgreSQL setup…
+                        </p>
+                    )}
+
+                    {/* No psql found */}
+                    {embedCheckState?.issue === 'no_psql' && (
+                        <Note>
+                            <p><strong>PostgreSQL not found.</strong> Install it to enable code indexing.</p>
+                            <ul className="space-y-0.5 text-text-muted">
+                                <li><strong>Ubuntu/Debian:</strong> <code className={code}>sudo apt install postgresql postgresql-contrib</code></li>
+                                <li><strong>macOS:</strong> <code className={code}>brew install postgresql</code></li>
+                                <li><strong>Windows:</strong> Download from <span className="underline">postgresql.org/download/windows</span></li>
+                            </ul>
+                            <p className="text-text-muted">After installing, also install pgvector: <code className={code}>sudo apt install postgresql-pgvector</code> (Ubuntu) or <code className={code}>brew install pgvector</code> (macOS).</p>
+                            <Button variant="secondary" size="sm" onClick={runEmbedCheck}>Check again</Button>
+                        </Note>
+                    )}
+
+                    {/* Existing URL configured but connection is failing */}
+                    {embedCheckState?.issue === 'existing_url_broken' && (
+                        <div className={`${FORM} space-y-3 rounded-md border border-border p-4 text-xs`}>
+                            <div className="space-y-1">
+                                <p className="text-sm font-medium text-text">Existing connection is failing</p>
+                                <p className="break-all font-code text-text-faint">{embedCheckState.detail}</p>
+                                <p className="text-text-faint">Please provide new connection details to reconfigure.</p>
+                            </div>
+                            {dbFields}
+                            {setupError && <p className="font-code text-2xs text-danger">{setupError}</p>}
+                            <div className="flex items-center gap-2 pt-1">
+                                <Button size="sm" onClick={handleSetupDb} loading={setupInProgress}>
+                                    {setupInProgress ? 'Connecting…' : 'Save & connect'}
+                                </Button>
+                                <Button variant="ghost" size="sm" onClick={() => setEmbedCheckState(null)}>Cancel</Button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* pgvector missing */}
+                    {embedCheckState?.issue === 'no_pgvector' && (
+                        <Note>
+                            <p><strong>pgvector extension not installed.</strong> PostgreSQL is running but the vector extension is missing.</p>
+                            <p>Connect to your database and run:</p>
+                            <code className="block rounded bg-surface-2 px-2 py-1.5 font-code text-text">CREATE EXTENSION vector;</code>
+                            <p className="text-text-muted">Or install the OS package first: <code className={code}>sudo apt install postgresql-pgvector</code> (Ubuntu) / <code className={code}>brew install pgvector</code> (macOS), then run the SQL above.</p>
+                            <Button variant="secondary" size="sm" onClick={runEmbedCheck}>Check again</Button>
+                        </Note>
+                    )}
+
+                    {/* No DB URL configured — show fresh setup form */}
+                    {embedCheckState?.issue === 'no_db' && (
+                        <div className={`${FORM} space-y-3 rounded-md border border-border p-4 text-xs`}>
+                            <div className="space-y-1">
+                                <p className="text-sm font-medium text-text">Set up a PostgreSQL database for code indexing</p>
+                                <p className="text-text-faint">No database configured yet. Enter your PostgreSQL credentials and we&apos;ll create the database and enable pgvector.</p>
+                            </div>
+                            {dbFields}
+                            {setupError && <p className="font-code text-2xs text-danger">{setupError}</p>}
+                            <div className="flex items-center gap-2 pt-1">
+                                <Button size="sm" onClick={handleSetupDb} loading={setupInProgress}>
+                                    {setupInProgress ? 'Creating…' : 'Create database'}
+                                </Button>
+                                <Button variant="ghost" size="sm" onClick={() => setEmbedCheckState(null)}>Cancel</Button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Generic connection error */}
+                    {embedCheckState?.issue === 'connection_error' && (
+                        <Note tone="danger">
+                            <p><strong>Check failed.</strong> {embedCheckState.detail}</p>
+                            <Button variant="secondary" size="sm" onClick={runEmbedCheck}>Try again</Button>
+                        </Note>
+                    )}
+                </div>
+            </Section>
+
+            {/* Bash Command Directories */}
+            <Section {...S} title="Allowed directories">
+                <div className={`space-y-3 ${FORM}`}>
+                    <p className="text-sm leading-relaxed text-text-muted">
+                        Directories the bash tool and filesystem MCP server can access.
+                        Linked repos and vault are always included automatically.
+                    </p>
+                    {bashAllowedDirs.length > 0 && (
+                        <ul className="divide-y divide-border border-y border-border">
+                            {bashAllowedDirs.map((dir, i) => (
+                                <li key={i} className="flex items-center justify-between gap-3 py-2">
+                                    <span className="truncate font-code text-xs text-text">{dir}</span>
+                                    <Button variant="ghost" size="sm" className="hover:text-danger"
+                                        onClick={() => setBashAllowedDirs(bashAllowedDirs.filter((_, j) => j !== i))}>
+                                        Remove
+                                    </Button>
+                                </li>
+                            ))}
+                        </ul>
+                    )}
+                    <div className="flex gap-2">
+                        <Input
+                            type="text"
+                            value={newDir}
+                            onChange={e => setNewDir(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') addDir(); }}
+                            placeholder="/path/to/directory"
+                            aria-label="Directory to allow"
+                            className="flex-1 font-code"
+                        />
+                        <Button variant="secondary" onClick={addDir} disabled={!newDir.trim()}>Add</Button>
+                    </div>
+                </div>
+            </Section>
+
+            {/* Transform Step Python Runtime — the server operator's, never a setting (F968) */}
+            <Section {...S} title="Transform step Python runtime">
+                <div className="space-y-3 text-sm text-text-muted">
+                    {transformRuntime === 'host' ? (
+                        <Note>
+                            <p className="flex items-start gap-2">
+                                <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+                                <span>
+                                    <strong>This server runs Transform steps on the host</strong> (it was started with{' '}
+                                    <code className="font-code text-text">SYNAPSE_TRANSFORM_RUNTIME=host</code>): outside the
+                                    sandbox, as the server, able to read everything the server can, including stored keys,
+                                    with the network. Only for a single-user machine you trust every workflow on.
+                                </span>
+                            </p>
+                        </Note>
+                    ) : (
+                        <p>
+                            Transform steps run in a Docker sandbox: 512 MB, one CPU, up to a minute, and no network.
+                            Reach outside through a tool step and pass the result in.
+                        </p>
+                    )}
+                    <p className="text-text-faint">
+                        Set by whoever runs the server, not here: starting it with{' '}
+                        <code className="font-code text-text">SYNAPSE_TRANSFORM_RUNTIME=host</code> runs Transform steps on
+                        the host (full RAM, any GPU) — outside the sandbox, as the server, able to read everything the
+                        server can, including stored keys. Only for a single-user machine you trust every workflow on.
+                    </p>
+                </div>
+            </Section>
+
+            {/* Login & Security */}
+            <Section {...S} title="Login & security">
+                <div className="space-y-4">
+                    <div className={`flex items-start justify-between gap-6 ${FORM}`}>
+                        <div>
+                            <p className="text-sm font-medium text-text">Require login</p>
+                            <p className="mt-0.5 text-sm text-text-muted">Protect Synapse with a username and password.</p>
+                        </div>
+                        <Switch
+                            checked={loginEnabled || enabling}
+                            label="Require login"
+                            disabled={isLoginSaving}
+                            className="mt-0.5"
+                            onChange={() => {
+                                setLoginFormError('');
+                                if (loginEnabled) {
+                                    // Off is saved at once, after a confirm; the
+                                    // switch moves when the save succeeds.
+                                    setConfirmLoginOff(true);
+                                } else if (enabling) {
+                                    closeLoginForm();
+                                } else {
+                                    // On needs credentials first: the form saves it.
+                                    setEnabling(true);
+                                    setShowLoginForm(true);
+                                }
+                            }}
+                        />
+                    </div>
+
+                    <ConfirmDialog
+                        open={confirmLoginOff}
+                        onClose={() => setConfirmLoginOff(false)}
+                        onConfirm={async () => {
+                            await onSaveLogin(false, '', '');
+                            setConfirmLoginOff(false);
+                        }}
+                        title="Turn off login?"
+                        description="Anyone who can open this address will be able to use Synapse, with no password. You can turn it back on at any time."
+                        confirmLabel="Turn off login"
+                        busy={isLoginSaving}
+                    />
+
+                    {/* Configured state: show summary + actions. Turning login off
+                        is the switch's job, so it has no second control here. */}
+                    {loginEnabled && !showLoginForm && loginUsername && (
+                        <div className={`flex items-center justify-between gap-3 border-y border-border py-2.5 ${FORM}`}>
+                            <p className="text-xs text-text-muted">
+                                Login enabled for user: <span className="font-code text-text">{loginUsername}</span>
+                            </p>
+                            <Button variant="ghost" size="sm" onClick={() => { setShowLoginForm(true); setLoginFormError(''); }}>
+                                Change password
+                            </Button>
+                        </div>
+                    )}
+
+                    {/* Credentials form */}
+                    {(loginEnabled || enabling) && (showLoginForm || !loginUsername) && (
+                        <div className={`space-y-3 rounded-md border border-border p-4 ${FORM}`}>
+                            <p className="text-sm font-medium text-text">
+                                {loginUsername ? 'Update credentials' : 'Set login credentials'}
+                            </p>
+
+                            <div className="space-y-1">
+                                <Label htmlFor="gen-loginusername" className={FIELD_LABEL}>Username</Label>
+                                <Input id="gen-loginusername"
+                                    type="text"
+                                    value={loginUsername}
+                                    onChange={e => setLoginUsername(e.target.value)}
+                                    autoComplete="off"
+                                    placeholder="admin"
+                                />
+                            </div>
+
+                            <div className="space-y-1">
+                                <Label htmlFor="gen-login-password" className={FIELD_LABEL}>
+                                    {loginUsername ? 'New password' : 'Password'}
+                                </Label>
+                                <Input
+                                    id="gen-login-password"
+                                    type="password"
+                                    value={loginPassword}
+                                    onChange={e => setLoginPassword(e.target.value)}
+                                    autoComplete="new-password"
+                                    placeholder={loginUsername ? 'Leave blank to keep current' : 'Min. 8 characters'}
+                                />
+                            </div>
+
+                            <div className="space-y-1">
+                                <Label htmlFor="gen-loginconfirmpassword" className={FIELD_LABEL}>Confirm password</Label>
+                                <Input id="gen-loginconfirmpassword"
+                                    type="password"
+                                    value={loginConfirmPassword}
+                                    onChange={e => setLoginConfirmPassword(e.target.value)}
+                                    autoComplete="new-password"
+                                />
+                            </div>
+
+                            {loginFormError && (
+                                <p className="text-xs text-danger">{loginFormError}</p>
+                            )}
+
+                            <div className="flex gap-2 pt-1">
+                                <Button
+                                    size="sm"
+                                    loading={isLoginSaving}
+                                    onClick={async () => {
+                                        setLoginFormError('');
+                                        if (!loginUsername.trim()) {
+                                            setLoginFormError('Username is required.');
+                                            return;
+                                        }
+                                        if (loginPassword && loginPassword !== loginConfirmPassword) {
+                                            setLoginFormError('Passwords do not match.');
+                                            return;
+                                        }
+                                        if (!loginPassword && !loginUsername) {
+                                            setLoginFormError('Password is required for first-time setup.');
+                                            return;
+                                        }
+                                        if (loginPassword && loginPassword.length < 8) {
+                                            setLoginFormError('Password must be at least 8 characters.');
+                                            return;
+                                        }
+                                        // A failed save keeps the form, and what was typed.
+                                        if (await onSaveLogin(true, loginUsername, loginPassword)) {
+                                            closeLoginForm();
+                                        }
+                                    }}
+                                >
+                                    {isLoginSaving ? 'Saving…' : 'Save login settings'}
+                                </Button>
+                                <Button variant="ghost" size="sm" onClick={closeLoginForm}>Cancel</Button>
+                            </div>
+
+                            <p className="pt-1 text-xs text-text-faint">
+                                Forgot your password? Run{' '}
+                                <code className="rounded bg-surface-2 px-1 font-code text-2xs text-text-muted">synapse reset-password</code>
+                                {' '}in your terminal.
+                            </p>
+                        </div>
+                    )}
+                </div>
+            </Section>
+
+            <SaveBar onSave={onSave} isSaving={isSaving} />
+        </div>
+    );
 }
+

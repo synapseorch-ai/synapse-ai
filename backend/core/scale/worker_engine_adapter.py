@@ -2,17 +2,78 @@
 WorkerEngineAdapter — wraps OrchestrationEngine.run() for use inside an ARQ job.
 
 Differences from the in-process (V1) execution path:
-  - Uses SharedStatePG (Postgres) instead of SharedState (JSON files)
   - Publishes every SSE event to a Redis Stream via RunEventPublisher
   - Polls Redis for distributed cancellation signal at each step boundary
   - Handles HUMAN step pause/resume via Redis keys + ARQ re-enqueue
+
+`resume()` below builds its engine from the orchestration this process already
+loaded from the store, rather than reloading a definition it may not have — and
+then calls `OrchestrationEngine.resume_paused`, the same method the in-process
+`resume()` calls. It used to be a hand copy of that logic instead, and on a
+shared fleet *every* resume runs here and none runs there, so each fix to the
+classmethod was invisible here until someone found it broken on a fleet: the
+human step's history entry never closed, the routing events after an answer
+were dropped, and a tool call's approval was treated as an answer and stepped
+past (F109). `tests/unit/test_adapter_resume.py` keeps it a call.
 """
 from typing import AsyncGenerator
 
 from core.models_orchestration import Orchestration, OrchestrationRun
-from core.orchestration.engine import OrchestrationEngine
+from core.orchestration.engine import OrchestrationEngine, apply_model_override
 from core.scale.pubsub import RunEventPublisher, is_cancelled, clear_cancellation
-from core.scale.state_pg import SharedStatePG
+
+
+import asyncio as _asyncio
+import contextlib as _contextlib
+import functools as _functools
+import time as _time
+
+from core.log import get_logger
+
+_log = get_logger(__name__)
+
+#: How often a running job looks for its cancel key. The engine also checks
+#: between steps; this is what reaches a step in progress.
+CANCEL_POLL_SECONDS = 2.0
+
+
+def _cancel_guarded(method):
+    """Run an engine-driving method under the cancel watcher.
+
+    A cancel used to be a Redis key the engine polled between steps, so a
+    run inside a twenty-minute agent step ignored it until the step returned.
+    The watcher cancels the task driving the engine — which is the ARQ job
+    task itself, since the adapter is awaited inline — the moment the key
+    appears. A cancel that is NOT ours (ARQ's own timeout or shutdown) is not
+    a request: it propagates, so the job is retried or abandoned as it always
+    was.
+
+    A decorator rather than an edit to each method: `test_adapter_resume.py`
+    reads `resume` at the source level, and a wrapper is transparent to
+    `inspect.getsource`.
+
+    A run handed back because its worker is stopping (`drain.HandedBack`, F424)
+    is a cancel nobody requested, so it propagates the same way and ARQ hands
+    the job out again at once.
+    """
+    @_functools.wraps(method)
+    async def wrapper(self, *args, **kwargs):
+        try:
+            async with self._cancel_watch():
+                return await method(self, *args, **kwargs)
+        except _asyncio.CancelledError:
+            # We asked for this cancel, so we handle it — and the task must
+            # be told so: the outstanding cancellation count (3.11+) is what
+            # asyncio.timeout and the redis client's own read timeouts consult,
+            # and with it still raised every await in the handler below would
+            # be cancelled again.
+            task = _asyncio.current_task()
+            if task is not None and hasattr(task, "uncancel"):
+                task.uncancel()
+            if not await self._cancelled_by_request():
+                raise
+            return await self._finish_cancelled()
+    return wrapper
 
 
 class WorkerEngineAdapter:
@@ -37,19 +98,113 @@ class WorkerEngineAdapter:
         self._redis = redis_client
         self._worker_id = worker_id
         self._job_id = job_id
+        # When each step this job ran started and ended, from the events it
+        # relays — what a person's cancel needs to price the step it cut (F391).
+        # The adapter is built per job, so this is when the job began.
+        self._began = _time.time()
+        self._step_started: dict[str, float] = {}
+        self._step_ended: dict[str, float] = {}
+        # Whether this job has finished a step of the run itself, not one
+        # nested inside a step — before then it does not hand the run back (F424).
+        self._ended_a_step = False
 
+    async def _relay(self, event: dict) -> None:
+        """Publish an engine event, noting the steps it starts and ends.
+
+        A worker that is stopping hands the run back here, before the next
+        step's start goes out (F424): see `_hands_back_before`.
+        """
+        if event.get("type") == "step_start" and await self._hands_back_before(event):
+            _log.info(f"[worker] run {self._run_id}: handed back before step "
+                      f"{event.get('orch_step_id')} — this worker is stopping (F424)")
+            from core.scale.drain import HandedBack
+            raise HandedBack(f"run {self._run_id} handed back before step {event.get('orch_step_id')}")
+        await self._publisher.publish(event)
+        step_id = event.get("orch_step_id")
+        if step_id:
+            kind = event.get("type")
+            if kind == "step_start":
+                self._step_started[step_id] = _time.time()
+            elif kind in ("step_complete", "step_error"):
+                self._step_ended[step_id] = _time.time()
+                if kind == "step_complete" and not event.get("nested_run_id"):
+                    self._ended_a_step = True
+
+    async def _hands_back_before(self, event: dict) -> bool:
+        """Whether a stopping worker gives the run back before this step starts (F424).
+
+        ARQ gives a stopping worker's jobs 45 s and then cuts them wherever they
+        are; the next worker runs the cut step again from its start. Between two
+        steps of the run itself nothing is lost: the engine checkpointed where
+        the run goes next before it announced the step, the step has done
+        nothing yet, and its start is not published. Ending the job here —
+        with a cancel ARQ treats as its own — puts it back on the queue at
+        once, and the next worker resumes at this step, which runs once, with
+        one history entry, one price and one loop-guard count.
+
+        Only at the run's own boundaries. A step nested in a Loop, a Parallel
+        branch or a workflow the step runs is mid-way through its container,
+        whose position is the container's — a nested workflow cut there starts
+        again as a new child run. The row is the judge: the run hands back only
+        when it is stored `running` at exactly this step, which a body step or
+        a child's event (tagged `nested_run_id`, carrying its parent's step id)
+        never is. A read that fails keeps the run going, as before.
+
+        Not before this job has finished a step: a job that hands back with no
+        progress of its own would count, under F376, toward giving the run up.
+        """
+        from core.scale import drain
+
+        if not drain.draining() or not self._ended_a_step or event.get("nested_run_id"):
+            return False
+        step_id = event.get("orch_step_id")
+        if not step_id:
+            return False
+        try:
+            from sqlalchemy import select
+            from core.scale.models_db import OrchestrationRunDB
+            async with self._session_factory() as session:
+                row = (await session.execute(
+                    select(OrchestrationRunDB.status, OrchestrationRunDB.current_step_id)
+                    .where(OrchestrationRunDB.run_id == self._run_id)
+                )).one_or_none()
+        except Exception as e:  # noqa: BLE001 — in doubt, the run carries on
+            _log.warning(f"[worker] run {self._run_id}: could not read where it is, so it is not handed back: {e}")
+            return False
+        return row is not None and row.status == "running" and row.current_step_id == step_id
+
+    @_cancel_guarded
     async def run(
         self,
         initial_input: str,
         session_id: str | None = None,
         initial_state: dict | None = None,
+        images: list[str] | None = None,
+        image_refs: list[str] | None = None,
     ) -> str:
         """
         Run the orchestration and publish events to Redis.
         Returns the final status string.
-        Raises on unrecoverable error (ARQ will retry).
+        Raises on an error outside the engine; the job dead-letters it (a step
+        failure is recorded by the engine and returned as `failed`).
+
+        `images` are the attachments this run starts with, given to steps that
+        set `pass_images`. They are set on the engine and deliberately not put
+        in `initial_state`: that becomes `shared_state`, which is echoed to the
+        browser twice per run, checkpointed at every step boundary, returned by
+        the run-detail endpoint and fed to the memory summariser. Fine for a
+        model name, not for twenty megabytes of image.
+
+        The in-process route sets `engine.images` directly, which is why this
+        parameter did not exist until something ran a builder conversation on a
+        worker instead.
+
+        `image_refs` are the host's own names for them (cloud's attachment
+        keys), which the run keeps for after a pause in their place (F395).
         """
         engine = self._build_engine()
+        engine.images = list(images or [])
+        engine.image_refs = list(image_refs) if image_refs else None
         final_status = "completed"
 
         async for event in engine.run(
@@ -58,7 +213,7 @@ class WorkerEngineAdapter:
             session_id=session_id,
             initial_state=initial_state,
         ):
-            await self._publisher.publish(event)
+            await self._relay(event)
 
             # Capture the real final status from the engine event
             if event.get("type") == "orchestration_complete":
@@ -73,126 +228,269 @@ class WorkerEngineAdapter:
 
         # Sync final run state from the in-memory engine state back to Postgres
         await self._sync_final_state(final_status)
+        await self._end_events(initial_state)
         await self._publisher.publish_done()
         return final_status
 
+    @_cancel_guarded
     async def resume(
         self,
         human_response: dict | str,
+        images: list[str] | None = None,
+        door: str | None = None,
     ) -> str:
         """Resume a paused run after human input.
 
-        Uses self._orch (loaded from Postgres by the worker) instead of the
-        OrchestrationEngine.resume() classmethod, which loads from local disk
-        files that don't exist in distributed worker deployments.
+        What an answer does is decided by `OrchestrationEngine.resume_paused`,
+        the same method the in-process `resume()` calls. This method only does
+        what is the fleet's own: it builds the engine from `self._orch` (loaded
+        from the store by the worker) instead of reloading a definition this
+        process may not have, and it publishes what the engine yields.
+
+        `images` are the attachments sent *with the answer*, matching
+        `OrchestrationEngine.resume`. The ones the run started with come back
+        in `resume_paused`, from where the run kept them (F395).
         """
         from core.orchestration.state import SharedState
-        from core.orchestration.logger import OrchestrationLogger
 
-        # Restore in-progress run state from the JSON checkpoint written during the initial run.
-        print(f"[adapter.resume] ▶ restoring JSON checkpoint run_id={self._run_id}", flush=True)
-        restored = SharedState.restore(self._run_id)
+        # Restore in-progress run state. This reads the store, so the process
+        # resuming need not be the one that paused — which is what lets a
+        # single shared fleet drain one queue.
+        _log.debug(f"[adapter.resume] ▶ restoring checkpoint run_id={self._run_id}")
+        restored = await SharedState.restore(self._run_id)
         run = restored.run
-        print(f"[adapter.resume] 📋 restored: status={run.status} current_step_id={run.current_step_id!r} waiting_for_human={run.waiting_for_human} step_history_len={len(run.step_history)}", flush=True)
+        _log.debug(f"[adapter.resume] 📋 restored: status={run.status} current_step_id={run.current_step_id!r} waiting_for_human={run.waiting_for_human} step_history_len={len(run.step_history)}")
+
+        # The model the run was started with, re-applied from the checkpoint.
+        # This is the whole reason the override rides in shared_state: the
+        # worker resuming is rarely the worker that paused, and it loaded
+        # `self._orch` fresh from Postgres with every step's own model.
+        # And its model roles (BWA1): a run the fleet resumed used to lose them, so the builder's quick steps after
+        # a question ran on the builder's model (the engine's own resumes re-applied both).
+        apply_model_override(self._orch, run.shared_state.get(OrchestrationEngine.MODEL_OVERRIDE_KEY),
+                             run.shared_state.get(OrchestrationEngine.MODEL_ROLES_KEY))
 
         # Build engine using self._orch (Postgres-loaded) so step_map is always populated.
         engine = self._build_engine()
-        print(f"[adapter.resume] 🗺  step_map keys: {list(engine.step_map.keys())}", flush=True)
-
-        engine.logger = OrchestrationLogger(
-            run_id=self._run_id,
-            orchestration_id=run.orchestration_id,
-            orchestration_name=self._orch.name,
-            user_input=f"(resumed) human_response={human_response}",
-            session_id=run.session_id,
-        )
+        engine.images = list(images or [])
 
         final_status = "completed"
-
-        # Nested-orchestration pause: delegate to the classmethod's nested handler.
-        if run.nested_run_id:
-            print(f"[adapter.resume] 🔗 nested run — delegating to _resume_nested_orch nested_run_id={run.nested_run_id}", flush=True)
-            event_count = 0
-            async for event in OrchestrationEngine._resume_nested_orch(run, engine, human_response, self._server_module):
-                event_count += 1
-                print(f"[adapter.resume] 📨 nested event #{event_count} type={event.get('type', '?')}", flush=True)
-                await self._publisher.publish(event)
-                if event.get("type") == "orchestration_complete":
-                    final_status = event.get("status", "completed")
-                if event.get("type") == "human_input_required":
-                    await self._sync_paused_state(event)
-                    await self._publisher.publish_paused()
-                    return "paused"
-            await self._sync_final_state(final_status)
-            await self._publisher.publish_done()
-            return final_status
-
-        # Normal path: human step is directly in this orchestration.
-        current_step = engine.step_map.get(run.current_step_id)
-        print(f"[adapter.resume] 🔍 current_step lookup: id={run.current_step_id!r} found={current_step is not None} type={current_step.type.value if current_step else 'N/A'}", flush=True)
-
-        output_key = (current_step.output_key if current_step else None) or "human_response"
-        run.shared_state[output_key] = human_response
-        if output_key != "human_response":
-            run.shared_state["human_response"] = human_response
-
-        run.waiting_for_human = False
-        run.status = "running"
-
-        if current_step:
-            next_id, _ = engine._resolve_next(current_step, run)
-            run.current_step_id = next_id
-            print(f"[adapter.resume] ➡  _resolve_next → next_step_id={next_id!r}", flush=True)
-        else:
-            print(f"[adapter.resume] ⚠️  current_step not in step_map — step_id={run.current_step_id!r} will fail in _execute_loop", flush=True)
-
-        print(f"[adapter.resume] 🚀 entering _execute_loop with current_step_id={run.current_step_id!r} status={run.status}", flush=True)
-        state = SharedState(run)
-        event_count = 0
-        async for event in engine._execute_loop(run, state):
-            event_count += 1
-            etype = event.get("type", "unknown")
-            print(f"[adapter.resume] 📨 event #{event_count} type={etype} step={event.get('orch_step_id', '')} status={event.get('status', '')}", flush=True)
-            await self._publisher.publish(event)
+        async for event in engine.resume_paused(run, human_response, door=door):
+            _log.debug(f"[adapter.resume] 📨 type={event.get('type', '?')} step={event.get('orch_step_id', '')} status={event.get('status', '')}")
+            await self._relay(event)
 
             if event.get("type") == "orchestration_complete":
                 final_status = event.get("status", "completed")
-                print(f"[adapter.resume] 🏁 orchestration_complete → final_status={final_status}", flush=True)
 
             if event.get("type") == "human_input_required":
-                print(f"[adapter.resume] ⏸ another human step — pausing again", flush=True)
+                _log.debug(f"[adapter.resume] ⏸ paused again")
                 await self._sync_paused_state(event)
                 await self._publisher.publish_paused()
                 return "paused"
 
-        print(f"[adapter.resume] ✅ loop done after {event_count} events, calling _sync_final_state(status={final_status})", flush=True)
+        _log.debug(f"[adapter.resume] ✅ done, calling _sync_final_state(status={final_status})")
         await self._sync_final_state(final_status)
+        await self._end_events(run.shared_state)
         await self._publisher.publish_done()
         return final_status
 
-    async def resume_failed(self) -> str:
-        """Resume a failed or cancelled run."""
-        engine = self._build_engine()
-        final_status = "completed"
+    async def _end_events(self, state: dict | None) -> None:
+        """A builder run that failed ends with its plain line and F1018's offer before the stream's end, as the
+        self-hosted route's does (F1153). Other runs: nothing, after one read of the host's builder ids."""
+        from types import SimpleNamespace
+
+        from core import try_stronger
+        from core.native_builder.identity import is_builder_run
+
+        if not await is_builder_run(SimpleNamespace(orchestration_id=getattr(self._orch, "id", ""))):
+            return
+        try:
+            for event in await try_stronger.end_events(
+                    self._run_id, retried=bool((state or {}).get(try_stronger.RETRIED_KEY))):
+                await self._relay(event)
+        except Exception:  # noqa: BLE001 — what a failed build ends with never fails the run's ending
+            _log.warning("[adapter] the end of builder run %s was not said", self._run_id, exc_info=True)
+
+    @_cancel_guarded
+    async def resume_failed(
+        self, *, interrupted: bool = False, images: list[str] | None = None,
+    ) -> str:
+        """Resume a failed or cancelled run — or, `interrupted`, one whose job was stopped mid-run.
+
+        Raises when the engine refuses or cannot find the orchestration. This
+        used to fall through to `completed`, so a refused resume was recorded
+        as a finished run that had run nothing.
+        """
+        final_status = None
+        refusal = None
 
         async for event in OrchestrationEngine.resume_failed(
             run_id=self._run_id,
             server_module=self._server_module,
+            interrupted=interrupted,
+            images=images,
         ):
-            await self._publisher.publish(event)
+            await self._relay(event)
 
             if event.get("type") == "orchestration_complete":
                 final_status = event.get("status", "completed")
+            elif event.get("type") == "orchestration_error" and refusal is None:
+                refusal = event.get("error")
 
             if event.get("type") == "human_input_required":
+                await self._sync_paused_state(event)
                 await self._publisher.publish_paused()
                 return "paused"
+
+        if final_status is None:
+            raise RuntimeError(refusal or f"Run {self._run_id} could not be resumed")
 
         await self._sync_final_state(final_status)
         await self._publisher.publish_done()
         return final_status
 
     # ------------------------------------------------------------------
+
+    @_contextlib.asynccontextmanager
+    async def _cancel_watch(self):
+        """Poll for the cancel key and cancel the current task when it appears.
+
+        A Team step's run hears its person too (TEAM1e): an answer to one of its questions, a member's Stop or
+        Message, words to its lead — given in another process while the step works — are handed to its team at
+        each look, and its team reads the answers held for it before it pauses (TEAM1c's chat shape, by the
+        run's mailbox)."""
+        from core import team as _team
+        from core.chat_approval import held_reader
+        from core.scale.worker import _hand_over_answers, _hand_over_team_asks, _take_held_answers
+
+        driver = _asyncio.current_task()
+        stop = _asyncio.Event()
+        mailbox = _team.run_mailbox(self._run_id)
+
+        async def watch():
+            while not stop.is_set():
+                try:
+                    if await is_cancelled(self._redis, self._run_id):
+                        driver.cancel()
+                        return
+                    if _team.at(mailbox):
+                        await _hand_over_answers(self._redis, mailbox)
+                        await _hand_over_team_asks(self._redis, mailbox)
+                except Exception:  # noqa: BLE001 — a Redis hiccup is not a cancel
+                    pass
+                with _contextlib.suppress(_asyncio.TimeoutError):
+                    await _asyncio.wait_for(stop.wait(), timeout=CANCEL_POLL_SECONDS)
+
+        held = held_reader.set(lambda questions: _take_held_answers(self._redis, mailbox, questions))
+        watcher = _asyncio.create_task(watch())
+        try:
+            yield
+        finally:
+            stop.set()
+            watcher.cancel()
+            with _contextlib.suppress(BaseException):
+                await watcher
+            with _contextlib.suppress(ValueError):
+                held_reader.reset(held)
+
+    async def _cancelled_by_request(self) -> bool:
+        try:
+            return await is_cancelled(self._redis, self._run_id)
+        except Exception:  # noqa: BLE001
+            return False
+
+    async def _finish_cancelled(self) -> str:
+        """Record and announce a requested cancel the way the in-process pump does."""
+        try:
+            await self._publisher.publish({"type": "orchestration_error", "error": "Cancelled"})
+        except Exception:  # noqa: BLE001
+            pass
+        await self._end_cut_step()
+        # keep_position: a cancelled run resumes from the step it was in,
+        # and its mid-step progress is already in its column.
+        await self._sync_final_state("cancelled", keep_position=True)
+        # The runs nested under it stopped with it; their records say so (F257).
+        try:
+            from core.orchestration.descendants import settle_descendants
+            await settle_descendants(self._run_id, "cancelled", "Stopped: the run that called it was cancelled")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await self._publisher.publish_done()
+        except Exception:  # noqa: BLE001
+            pass
+        return "cancelled"
+
+    async def _end_cut_step(self) -> None:
+        """The entry for the step a person's cancel cut (F391).
+
+        The step was stopped mid-way, so the engine wrote nothing for it, and a
+        host that prices a run by its history (cloud) charged neither its price
+        nor its time — a cancel cost less than letting the step finish. Written
+        as a run stopped at its length writes one (cloud's `_end_cut_step`):
+        through `end_step`, so a step an approval's resume reopened is closed
+        rather than entered twice; `cut`, so a container's time counts.
+
+        Only for a step this job saw start and not end: a cancel that lands
+        between steps — the run already on the next one, not yet started —
+        writes nothing. A step re-entered by a resume (no start of its own in
+        this job) is timed from the job's start.
+        """
+        from datetime import datetime, timezone
+
+        from sqlalchemy import select, update
+
+        from core.orchestration.pauses import end_step, take_tasks
+        from core.orchestration.step_usage import exact_window
+        from core.scale.models_db import OrchestrationRunDB
+
+        try:
+            async with self._session_factory() as session:
+                row = (await session.execute(
+                    select(OrchestrationRunDB).where(OrchestrationRunDB.run_id == self._run_id)
+                )).scalar_one_or_none()
+                step_id = row.current_step_id if row is not None else None
+                if not step_id:
+                    return
+                history = list(row.step_history or [])
+                started = self._step_started.get(step_id)
+                if started is None:
+                    reopened = any(isinstance(e, dict) and e.get("step_id") == step_id
+                                   and e.get("status") == "running" for e in history)
+                    if not reopened:
+                        return
+                    started = self._began
+                ended = self._step_ended.get(step_id)
+                if ended is not None and ended >= started:
+                    return
+                step = next((s for s in self._orch.steps if s.id == step_id), None)
+                now = _time.time()
+
+                def stamp(t: float) -> str:
+                    return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+                end_step(history, {
+                    "step_id": step_id,
+                    "step_name": step.name if step else step_id,
+                    "step_type": step.type.value if step else "",
+                    "status": "cancelled",
+                    "error": "Cancelled",
+                    "cut": True,
+                    "started_at": stamp(started),
+                    "ended_at": stamp(now),
+                    **exact_window(started, now),
+                    "duration_seconds": round(max(0.0, now - started), 2),
+                    # The tasks a delegate's step ran before the cancel (TEAM1d): its work, counted.
+                    **take_tasks(dict(row.shared_state or {}), step_id),
+                })
+                await session.execute(
+                    update(OrchestrationRunDB)
+                    .where(OrchestrationRunDB.run_id == self._run_id)
+                    .values(step_history=history)
+                )
+                await session.commit()
+        except Exception as e:  # noqa: BLE001 — the cancel stands whatever this does
+            _log.warning(f"[worker_engine_adapter] run {self._run_id}: the cut step's entry was not written: {e}")
 
     def _build_engine(self) -> OrchestrationEngine:
         redis = self._redis
@@ -208,7 +506,16 @@ class WorkerEngineAdapter:
         return engine
 
     async def _sync_paused_state(self, human_event: dict) -> None:
-        """Update Postgres to reflect the run is paused waiting for human input."""
+        """Update Postgres to reflect the run is paused waiting for human input.
+
+        Not the position: the engine's pause checkpoint already wrote it, and it
+        is the step the engine drives — the container, for a question asked
+        inside a Loop, a Parallel branch or a nested orchestration. This used to
+        overwrite it with the event's `orch_step_id`, the step that asked, left
+        over from when this row was a display mirror; so a fleet run resumed
+        from inside the loop body as if that step stood alone, and ended there
+        (F109). The step that asked is the run's newest `paused` history entry.
+        """
         try:
             async with self._session_factory() as session:
                 from sqlalchemy import update
@@ -219,17 +526,23 @@ class WorkerEngineAdapter:
                     .values(
                         status="paused",
                         waiting_for_human=True,
-                        current_step_id=human_event.get("orch_step_id"),
                         human_prompt=human_event.get("prompt"),
                         human_fields=human_event.get("fields") or [],
                     )
                 )
                 await session.commit()
         except Exception as e:
-            print(f"[worker_engine_adapter] _sync_paused_state error: {e}", flush=True)
+            _log.debug(f"[worker_engine_adapter] _sync_paused_state error: {e}")
 
-    async def _sync_final_state(self, status: str = "completed") -> None:
-        """Persist the final run status, ended_at, worker attribution, and cost/tokens to Postgres."""
+    async def _sync_final_state(self, status: str = "completed", *, keep_position: bool = False) -> None:
+        """Persist the final run status, ended_at, worker attribution, and cost/tokens to Postgres.
+
+        `keep_position` leaves current_step_id alone — a cancelled run is
+        resumable from where it stopped, a finished one has nowhere to go. A
+        failed run keeps it too: the engine left it on the failed step, and
+        clearing it here gave Replay (`resume_failed`) nothing to re-run, so a
+        replayed fleet run "completed" having run nothing.
+        """
         from datetime import datetime, timezone
         try:
             async with self._session_factory() as session:
@@ -239,8 +552,9 @@ class WorkerEngineAdapter:
                     "status": status,
                     "ended_at": datetime.now(timezone.utc),
                     "waiting_for_human": False,
-                    "current_step_id": None,
                 }
+                if not (keep_position or status == "failed"):
+                    values["current_step_id"] = None
                 if self._worker_id:
                     values["worker_id"] = self._worker_id
                     values["job_id"] = self._job_id
@@ -248,7 +562,7 @@ class WorkerEngineAdapter:
                 # Aggregate cost/token totals from usage_tracker for this run
                 try:
                     from core.usage_tracker import get_usage_logs
-                    usage_records = get_usage_logs(run_id=self._run_id, limit=100_000)
+                    usage_records = await get_usage_logs(run_id=self._run_id, limit=100_000)
                     values["total_tokens_used"] = sum(r.get("total_tokens", 0) for r in usage_records)
                     values["total_cost_usd"] = round(sum(r.get("estimated_cost", 0.0) for r in usage_records), 8)
                     values["cache_read_tokens"] = sum(r.get("cache_read_tokens", 0) for r in usage_records)
@@ -256,7 +570,7 @@ class WorkerEngineAdapter:
                     values["cache_hit_count"] = sum(1 for r in usage_records if r.get("response_cache_hit"))
                     values["estimated_savings_usd"] = round(sum(r.get("estimated_savings", 0.0) for r in usage_records), 8)
                 except Exception as e:
-                    print(f"[worker_engine_adapter] cost aggregation error: {e}", flush=True)
+                    _log.debug(f"[worker_engine_adapter] cost aggregation error: {e}")
 
                 await session.execute(
                     update(OrchestrationRunDB)
@@ -265,7 +579,7 @@ class WorkerEngineAdapter:
                 )
                 await session.commit()
         except Exception as e:
-            print(f"[worker_engine_adapter] _sync_final_state error: {e}", flush=True)
+            _log.debug(f"[worker_engine_adapter] _sync_final_state error: {e}")
 
         # Clear any stale cancel signal
         try:

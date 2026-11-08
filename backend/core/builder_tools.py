@@ -4,25 +4,537 @@ Builder tools for the Synapse AI Builder agent.
 Provides CRUD operations on agents and orchestrations that the builder
 meta-agent can call to design and create multi-agent workflows.
 """
+import contextlib
 import json
-import os
+import re
 import random
 import string
 import time
-import datetime
-from typing import Any
+from typing import Any, Iterator
 
-from core.config import DATA_DIR
-from core.json_store import JsonStore
-
-_repos_store = JsonStore(os.path.join(DATA_DIR, "repos.json"), cache_ttl=5.0)
-_db_store = JsonStore(os.path.join(DATA_DIR, "db_configs.json"), cache_ttl=5.0)
-_mcp_store = JsonStore(os.path.join(DATA_DIR, "mcp_servers.json"), cache_ttl=5.0)
+from core.state_types import (
+    CANONICAL_STATE_TYPES,
+    matches_declared_type,
+    normalize_state_type,
+)
+from core.expressions import vocabulary_sentence
+from core.store import collections
+from core.store.resources import load_mcp_servers
+from core import agent_knowledge
+from core.store.ids import new_id as _mint_id
 
 
 def _random_id(prefix: str, length: int = 7) -> str:
     chars = string.ascii_lowercase + string.digits
     return prefix + ''.join(random.choices(chars, k=length))
+
+
+# ─── What the builder is allowed to see and touch ────────────────────────────
+# The builder is itself a seeded orchestration with sub-agents (`native_builder`),
+# and those rows live in the same store as the customer's own. They carry a
+# `system` marker, and every read path here filters on it: the builder must not
+# list, edit or delete its own machinery. Cloud additionally soft-deletes an
+# orchestration by stamping `is_active` false, which the engine's list does not
+# filter — so a retired orchestration is invisible here too, rather than being
+# resurrected by the next save.
+
+#: What `update_orchestration` sets, flat or through its legacy `fields` (F784): its declared fields, and
+#: `steps`/`state_schema` as `_normalize_steps_arg`/`_normalize_state_schema_arg` make them. The run caps
+#: (`RUN_CAP_PROPERTIES`) are added where it is used.
+_UPDATE_ORCHESTRATION_FIELDS = frozenset({
+    "name", "description", "entry_step_id", "state_schema_json", "state_schema",
+    "steps_json", "steps", "max_total_turns", "timeout_minutes",
+})
+
+
+def _is_visible(resource: dict) -> bool:
+    """Whether a stored agent/orchestration is workspace content."""
+    if resource.get("system"):
+        return False
+    return resource.get("is_active", True) is not False
+
+
+async def _visible_orchestration(orch_id: str | None) -> dict | None:
+    """Point-load one orchestration, or None if it is missing or not ours to touch."""
+    if not orch_id:
+        return None
+    from core.store.resources import get_orchestration
+    orch = await get_orchestration(orch_id)
+    if orch is None or not _is_visible(orch):
+        return None
+    return orch
+
+
+async def _workflows_called(orch: dict, agents: dict) -> tuple[list[dict], list[str]]:
+    """The workflows `orch` calls, at any depth, and an issue for each call whose
+    workflow is gone (F429).
+
+    A workflow calls another through an agent step whose agent runs it, or a
+    Workflow step that names it (E3), so this is what validating a parent has to
+    validate with it. A step that runs a workflow already on the chain that
+    reached it — this one included — is a loop: every run would call itself
+    again without end (F691).
+    """
+    from core.orchestration.save_rules import loop_sentence
+    from core.store.resources import get_orchestration
+
+    called: list[dict] = []
+    issues: list[str] = []
+    seen = {orch.get("id")}
+
+    async def visit(current: dict, chain: tuple) -> None:
+        where = "" if current is orch else f"In the inner workflow '{current.get('name')}' ({current.get('id')}): "
+        for s in current.get("steps") or []:
+            direct = s.get("type") == "workflow"
+            target = {} if direct else (agents.get(s.get("agent_id")) or {})
+            if direct:
+                child_id = s.get("workflow_id") or None
+            else:
+                child_id = target.get("orchestration_id") if target.get("type") == "orchestrator" else None
+            if not child_id:
+                continue
+            if child_id in chain:
+                looped = "this workflow" if child_id == orch.get("id") else f"the workflow '{child_id}' that calls it"
+                issues.append(loop_sentence(s, target, looped, where))
+                continue
+            if child_id in seen:
+                continue
+            seen.add(child_id)
+            child = await get_orchestration(child_id)
+            if child is None or child.get("is_active", True) is False:
+                issues.append(
+                    f"{where}Workflow step '{s.get('id')}' runs the workflow '{child_id}', which does not exist — "
+                    f"build it first, or point the step at one that does." if direct else
+                    f"{where}Agent step '{s.get('id')}' uses workflow agent '{target.get('id')}', whose "
+                    f"orchestration '{child_id}' does not exist — build it again, deploy_orchestration it, "
+                    f"and use the agent id it returns."
+                )
+                continue
+            if child.get("system"):
+                # Synapse AI's own workflow acts for the person who asks it: no workflow may run it (F1315).
+                kind = "Workflow" if direct else "Agent"
+                issues.append(f"{where}{kind} step '{s.get('id')}' runs Synapse AI's own workflow, which no "
+                              "workflow may run: point it at one of this workspace's workflows.")
+                continue
+            called.append(child)
+            await visit(child, (*chain, child_id))
+
+    await visit(orch, (orch.get("id"),))
+    return called, issues
+
+
+def _tool_name(raw: Any) -> str:
+    """A custom tool's name is an identifier the model types into a tool call."""
+    name = str(raw or "").strip()
+    return name if name and name.replace("_", "a").isalnum() and not name[0].isdigit() else ""
+
+
+#: A tool's address that holds a user and a password: said as a login, before any key check (F1343's mask reads its
+#: password as a key and would say only that), never with the address, and nothing of it kept. One sentence for every
+#: door that makes or changes a tool's address: create_http_tool, update_http_tool and the change route (F1312b).
+LOGIN_REFUSAL = "Its address holds a user and a password: a tool's key goes on its Connect card, never in its address."
+#: `scheme://…@` before the path: a user part, its password masked or not.
+_LOGIN = re.compile(r"(?i)^\s*[a-z][a-z0-9+.-]*://[^/?#]*@")
+
+
+def holds_a_login(url: Any) -> bool:
+    """Whether a tool's address carries a user part (`scheme://user:password@host`), its password masked or not."""
+    return isinstance(url, str) and bool(_LOGIN.match(url))
+
+
+async def http_tool_issues(args: dict) -> dict | None:
+    """What `create_http_tool` refuses before it saves anything, as it answers it, or None: a name that is no tool
+    name, a tool that would place calls, an address inside our own network, headers that are not a JSON object or
+    that hold a key (F1309: a shape, or a value the workspace holds), an input schema that is not a JSON object. One
+    check: the change route holds a new tool to it before its review (F1322)."""
+    if not _tool_name(args.get("name")):
+        return {"error": "name must be a tool-style identifier (letters, digits, underscores)"}
+    url = str(args.get("url") or "").strip()
+    if holds_a_login(url):
+        return {"error": LOGIN_REFUSAL}
+    from core.builder_guard import PLACES_CALLS, places_calls
+    if places_calls(url, args.get("method")):
+        # Outbound calls wait for VOX2's consent model (V20, F497): the builder never makes a tool that dials.
+        return {"error": PLACES_CALLS}
+    refused = await _refuse_inward_url(url)
+    if refused:
+        return refused
+    headers = _parse_json_field(args.get("headers_json"), {})
+    if not isinstance(headers, dict):
+        return {"error": "headers_json must decode to a JSON object"}
+    if await _header_holds_a_key(headers):
+        # F1309: a key written into a made tool's header came out of the chat (prod-02); it goes on the tool's
+        # Connect card once the tool is made, where it is kept encrypted, never in the tool's definition.
+        return {"error": "A key never goes in a tool's headers here: make the tool without it (leave the header "
+                         "out); its Connect card asks the person for the key once the tool is made."}
+    if not isinstance(_parse_json_field(args.get("input_schema_json"), {"type": "object", "properties": {}}), dict):
+        return {"error": "input_schema_json must decode to a JSON Schema object"}
+    return None
+
+
+async def python_code_issues(before: dict | None, args: dict) -> dict | None:
+    """What `update_python_tool` refuses before it saves anything (F1325), as it answers it, or None: no Python tool by
+    that name; a variable named by a caller; code changed since the change was read; a key in its code (F1309: a
+    shape, or a value the workspace holds); and create_python_tool's own draft, the host's plan gate among it."""
+    from core.secret_scrub import held_in, holds_credential
+
+    name = str(args.get("name") or "").strip()
+    if before is None:
+        return {"error": f"No Python tool is called `{name}`: a new one is made with create_python_tool."}
+    if before.get("tool_type") != "python":
+        return {"error": f"`{name}` is not a Python tool: an HTTP tool's address is changed with update_http_tool."}
+    if "globals" in args:
+        return {"error": _PYTHON_VARIABLES_ARE_A_PERSONS}
+    code = str(args.get("code") or "")
+    if args.get("was_sha256"):
+        from core.python_edits import code_sha
+
+        if args["was_sha256"] != code_sha(str(before.get("code") or "")):
+            return {"error": f"`{name}`'s code changed since this change was read: ask again to change it."}
+    if holds_credential(code) or await held_in(code):
+        return {"error": "A key never goes in a tool's code here: a person gives it as a variable in the tool's "
+                         "editor, which the code reads."}
+    _, _, refused = await python_tool_draft(_python_update_args(before, args))
+    return refused
+
+
+def _python_update_args(before: dict, args: dict) -> dict:
+    """create_python_tool's arguments for an update: the new code and words, its inputs as they are."""
+    return {"name": before.get("name"), "code": str(args.get("code") or ""),
+            "description": str(args.get("description") or before.get("description") or ""),
+            "input_schema_json": json.dumps(before.get("inputSchema") or {"type": "object", "properties": {}})}
+
+
+async def _tested_said(passed: bool, results: list[dict], globals_: list[str]) -> dict:
+    """What a press of "Test this fix" answers (F1380): how it went, in words the card shows (`say`), and each
+    sample's run. Never a secret: a press is not a run, so beside the workspace's held secrets (what a run's events
+    are masked by) each variable the tool reads is said by its name wherever its value was printed or raised, and a
+    credential's shape is masked though nothing holds it."""
+    from core import python_edits
+
+    shown = await python_edits.masked_results(results, globals_)  # F1381's one mask
+    if passed:
+        n = len(shown)
+        say = (f"It passed on its {n} sample{'' if n == 1 else 's'}: " + "; ".join(python_edits.said(shown))
+               + ". Press Go ahead on the change to make it.")
+    else:
+        failed = next((r for r in shown if not r["ok"]), None)
+        say = (f"It failed with {json.dumps(failed['args'], ensure_ascii=False)}: "
+               f"{python_edits.last_line(failed.get('error') or '') or 'no error was said'}. "
+               "Say what to change, or stop the change.") if failed else "It ran nothing: it has no samples to test."
+    return {"passed": passed, "results": shown, "say": say,
+            "next": "Press Go ahead on the change to make it." if passed else
+                    "It failed: say what to change, or stop the change."}
+
+
+async def _change_fix(args: dict) -> tuple[dict | None, str | None]:
+    """The fix a change proposed, from its own run (F1325): `(its checked op, None)`, or `(None, why)`."""
+    from sqlalchemy import select
+
+    from core.store import session
+    from core.store.models import OrchestrationRunDB
+    from core.tenancy import get_tenant
+
+    run_id, n = str(args.get("run_id") or ""), args.get("op")
+    async with session() as s:
+        row = (await s.execute(select(OrchestrationRunDB.shared_state).where(
+            OrchestrationRunDB.tenant_id == get_tenant(), OrchestrationRunDB.run_id == run_id))).first()
+    state = row[0] if row else None
+    state = json.loads(state) if isinstance(state, str) else (state or {})
+    checked = state.get("change_checked")
+    checked = json.loads(checked) if isinstance(checked, str) else (checked or {})
+    ops = checked.get("ops") if isinstance(checked, dict) else None
+    if not isinstance(n, int) or not isinstance(ops, list) or not 0 <= n < len(ops):
+        return None, "There is no change with that fix to test."
+    item = ops[n]
+    if item.get("op") != "update_python_tool" or item.get("status") != "ready" or not item.get("call"):
+        return None, "That part of the change is not a Python tool's fix waiting on its test."
+    return item, None
+
+
+async def http_tool_update_issues(before: dict | None, args: dict) -> dict | None:
+    """What `update_http_tool` refuses before it saves anything (F1312b), as it answers it, or None: no HTTP tool by
+    that name; its new address or method by create_http_tool's own check (never its headers, which keep its key); a
+    locked tool's address off its lock, in create_http_tool's words; a user part in the address, or a key in it."""
+    from core.secret_scrub import held_in, holds_credential
+
+    name = str(args.get("name") or "").strip()
+    if before is None:
+        return {"error": f"No custom tool is called `{name}`."}
+    if before.get("tool_type") != "http":
+        return {"error": f"`{name}` is a {before.get('tool_type') or 'custom'} tool, not an HTTP tool: its own editor "
+                         "changes it."}
+    url = str(args.get("url") or before.get("url") or "").strip()
+    method = str(args.get("method") or before.get("method") or "GET").strip().upper()
+    if method not in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+        return {"error": "method is GET, POST, PUT, PATCH or DELETE"}
+    if refused := await http_tool_issues({"name": "tool", "url": url, "method": method}):
+        return refused
+    from core.http_tool import under_lock
+
+    if (lock := str(before.get("base_lock") or "")) and not under_lock(url, lock):
+        return {"error": f"`{name}` was made for {lock}, and keeps to that API: a tool for another address is a new "
+                         "tool, under another name."}
+    # A login was said by create_http_tool's own check, above, before the key check below could read it as a key.
+    if holds_credential(url) or await held_in(url):
+        return {"error": "A key never goes in a tool's address here: its Connect card keeps it."}
+    return None
+
+
+async def _refuse_inward_url(url: str) -> dict | None:
+    """Refuse a tool URL that points back inside our own network.
+
+    Narrow on purpose. A host that does not resolve from this machine right now
+    is allowed through — an internal API, a service not yet deployed, a DNS
+    blip — because refusing there would be a guess about someone else's
+    network, and the tool would be just as creatable from the tools screen.
+    What is refused is what is never right: a non-HTTP scheme, no host, and a
+    host that is (or resolves to) loopback, link-local, or private space. That
+    is the shape a prompt-injected builder writes when it goes looking for the
+    cloud metadata endpoint.
+
+    This is no longer the only check these URLs get — `core/http_tool.py::send`
+    re-checks the rendered URL at the moment of the call (S4), which is the one
+    that holds when DNS moves after a tool is saved. This check stays because a
+    refusal while the model is still writing is worth more than one at run time.
+    """
+    import ipaddress
+    from urllib.parse import urlparse
+
+    from core import egress_guard
+
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return {"error": f"A tool URL must be http or https, not '{parsed.scheme or url}'."}
+    host = (parsed.hostname or "").strip().lower().strip("[]")
+    if not host:
+        return {"error": "That URL has no host."}
+    if host in egress_guard.allowed_hosts():
+        return None
+
+    try:
+        ipaddress.ip_address(host)
+        addresses = [host]
+    except ValueError:
+        try:
+            addresses = await egress_guard.resolve(host)
+        except egress_guard.BlockedEgress:
+            return None  # unresolvable from here; not our call to make
+
+    for address in addresses:
+        reason = egress_guard.reject_address(address)
+        if reason is not None:
+            return {"error": f"That URL points inside our own network ({reason}) and cannot be used as a tool."}
+    return None
+
+
+def _require_confirm(args: dict, what: str) -> dict | None:
+    """Destructive tools refuse until the caller says so explicitly.
+
+    Two layers guard a delete: this one, and the fact that `delete_*` is
+    declared only on the operator agent, which runs only after a human has
+    approved a plan naming the deletion.
+    """
+    if args.get("confirm") is True:
+        return None
+    return {
+        "error": (
+            f"Refusing to {what} without confirmation. This cannot be undone. "
+            f"Call again with confirm=true once the user has agreed."
+        )
+    }
+
+
+def _refuse_ungated_transform(steps: list) -> dict | None:
+    """Refuse `transform` steps when this workspace has no code runtime.
+
+    Checked at authoring time rather than only at run time: a plan gate that
+    fires halfway through a run leaves the customer with a saved orchestration
+    that cannot complete. `code_execution_enabled` is set by the cloud's
+    per-plan settings binding; open-source installs run their own sandbox and
+    default to true.
+    """
+    from core.config import load_settings
+
+    if load_settings().get("code_execution_enabled", True):
+        return None
+    offenders = [s.get("id") or "?" for s in steps if s.get("type") == "transform"]
+    if not offenders:
+        return None
+    return {
+        "error": (
+            f"Transform steps run Python code, which this workspace's plan does not "
+            f"include: {offenders}. Use an `llm` step to reshape data, or upgrade the "
+            f"plan to run code."
+        )
+    }
+
+
+#: Knowledge's step types (R1): they search knowledge bases and add records to one.
+KNOWLEDGE_STEP_TYPES = frozenset({"retrieve", "ingest"})
+#: Builder tools that exist only while Knowledge is on — absent from every roster while it is off.
+KNOWLEDGE_BUILDER_TOOLS = frozenset({"list_knowledge_bases"})
+#: Builder tools `"all"` does not reach (`core.tools.permits(opt_in=)`): an agent names them, as the builder's
+#: analyst does. Knowledge on or off, no `"all"` agent's roster — nor its prompt cache — changes (B1b's rule).
+OPT_IN_BUILDER_TOOLS: set[str] = set(KNOWLEDGE_BUILDER_TOOLS)
+#: Python tools are code with the internet: offered to an agent that names them (the builder's maker), never through
+#: "all", as `create_http_tool` long was (F1198; F495's reason too: every "all" agent's prompt would grow).
+OPT_IN_BUILDER_TOOLS |= {"create_python_tool", "test_python_tool"}
+#: A tool's address changed in place (F1312b): a change's own write, through the registry; no "all" agent's.
+OPT_IN_BUILDER_TOOLS |= {"update_http_tool"}
+#: A Python tool's code changed by a reviewed change, and its fix tested on a person's press (F1325): no "all" agent's.
+OPT_IN_BUILDER_TOOLS |= {"update_python_tool", "test_code_change"}
+
+#: Why the builder's Python tool names no variable (F1198, Naveen 10-29).
+_PYTHON_VARIABLES_ARE_A_PERSONS = (
+    "A Python tool's code reads a workspace variable only when a person adds it, in the tool's editor (Tools, the "
+    "tool, 'Variables this tool can read'): make the tool without `globals`, and say which variable it needs."
+)
+#: How much of a test run's output and errors the builder reads back: their ends, where a result and a traceback are.
+_TEST_OUTPUT = 4000
+_KNOWLEDGE_OFF = "Knowledge is switched off in this workspace (turn it on in Settings › General › Knowledge)"
+
+
+def builder_tool_offered(name: str) -> bool:
+    """Whether builder tool `name` exists here right now: Knowledge's are absent while it is off, even to an agent
+    that names them. (An `"all"` agent never gets them: `OPT_IN_BUILDER_TOOLS`.)"""
+    if name not in KNOWLEDGE_BUILDER_TOOLS:
+        return True
+    from core.knowledge.config import knowledge_enabled
+
+    return knowledge_enabled()
+
+
+async def python_tool_draft(args: dict) -> tuple[dict, dict | None, dict | None]:
+    """The Python tool `create_python_tool` would save from `args`, the tool it would replace, and its refusal: one
+    copy for the save and for its preview over MCP (F1198)."""
+    from core import python_tool
+    from core.store.resources import load_tools
+
+    name = _tool_name(args.get("name"))
+    if not name:
+        return {}, None, {"error": "name must be a tool-style identifier (letters, digits, underscores)"}
+    if "globals" in args:
+        # A person decides which variable (often a key) code with the internet receives (Naveen 10-29, F28).
+        return {}, None, {"error": _PYTHON_VARIABLES_ARE_A_PERSONS}
+    input_schema = _parse_json_field(args.get("input_schema_json"), {"type": "object", "properties": {}})
+    if not isinstance(input_schema, dict):
+        return {}, None, {"error": "input_schema_json must decode to a JSON Schema object"}
+    before = next((t for t in await load_tools() if t.get("name") == name), None)
+    if before is not None and (before.get("tool_type") or "http") != "python":
+        return {}, before, {"error": f"`{name}` is an HTTP tool here: a Python tool is a new tool, under another name."}
+    tool = {
+        "name": name,
+        "generalName": name.replace("_", " ").title()[:80],
+        "description": str(args.get("description") or "").strip(),
+        "tool_type": "python",
+        "code": str(args.get("code") or ""),
+        "inputSchema": input_schema,
+        # Replacing it keeps what a person gave it to read; the builder never adds one.
+        "globals": list((before or {}).get("globals") or []),
+    }
+    if refused := await python_tool.refusal(tool):
+        return tool, before, {"error": refused}
+    return tool, before, None
+
+
+def _refuse_knowledge_off(steps: list) -> dict | None:
+    """Refuse Retrieve and Ingest steps while Knowledge is off: each would fail its run at that step."""
+    offenders = [s.get("id") or "?" for s in steps if s.get("type") in KNOWLEDGE_STEP_TYPES]
+    if not offenders:
+        return None
+    from core.knowledge.config import knowledge_enabled
+
+    if knowledge_enabled():
+        return None
+    return {
+        "error": (
+            f"Retrieve and Ingest steps search and fill knowledge bases, and {_KNOWLEDGE_OFF}: "
+            f"{offenders}. Build the orchestration without them."
+        )
+    }
+
+
+def _expression_problems(steps: list, *, unsafe_only: bool) -> list[str]:
+    """Every expression problem in `steps`, as sentences naming step and field:
+    one rule with every door that saves a workflow (F850)."""
+    from core.orchestration.save_rules import expression_problems
+
+    return expression_problems(steps, unsafe_only=unsafe_only)
+
+
+def _refuse_unsafe_expression(steps: list) -> dict | None:
+    """Refuse steps whose expression this engine will not run.
+
+    Checked at authoring time for the reason `_refuse_ungated_transform` gives:
+    an orchestration that saves and then refuses to evaluate is worse than one
+    that would not save. It matters more here, because `if_condition` is a
+    parameter this model writes directly — so refusing now is what turns a
+    prompt-injected expression into a corrected one rather than a stored one.
+
+    Only *unsafe* expressions are refused here, on every write. A typo, or
+    `{{ … }}` inside a longer expression, is refused where the workflow is saved
+    and when a plan is checked (`save_rules.refusal`, F1433): at run time it
+    fails its step, so it is never saved. The validator reports it too.
+    """
+    problems = _expression_problems(steps, unsafe_only=True)
+    if not problems:
+        return None
+    from core.expressions import vocabulary_sentence
+
+    return {
+        "error": (
+            "Refusing to save: an expression uses something this engine will not run. "
+            + " ".join(problems)
+            # What it may use, from the tables that decide it (F957).
+            + " " + vocabulary_sentence()
+        )
+    }
+
+
+def _refuse_engine_key_defaults(fields: dict) -> dict | None:
+    """Refuse a declared state that gives an engine key (a leading underscore) a default (F1315): one rule with every
+    door that saves a workflow (`save_rules.engine_key_defaults`)."""
+    from core.orchestration.save_rules import engine_key_defaults
+
+    if said := engine_key_defaults(fields.get("state_schema")):
+        return {"error": "Refusing to save: " + " ".join(said)}
+    return None
+
+
+def _refuse_misshapen_steps(steps: list) -> dict | None:
+    """Refuse steps the engine's own step model would not read (F1047).
+
+    A field in the wrong shape — a human step's `human_fields` written as
+    `{"fields": [...]}` rather than the list itself, as rc4.3's saver did on
+    prod — saved as given, broke the editor's page on open and failed the run
+    at its first load. Each problem names the step, the field and the shape it
+    needs, so the model writes the step again; nothing is saved.
+    """
+    from pydantic import ValidationError
+
+    from core.models_orchestration import StepConfig
+    from core.orchestration.read_shapes import shape_problem as _shape_problem
+
+    from core.orchestration.save_rules import reserved_problems
+
+    if reserved := reserved_problems(steps):  # Synapse AI's own steps, an engine key (F1315): never a step's
+        return {"error": "Refusing to save: " + " ".join(reserved)}
+    problems = []
+    for s in steps:
+        try:
+            StepConfig.model_validate(s)
+        except ValidationError as e:
+            said = "; ".join(dict.fromkeys(_shape_problem(err) for err in e.errors()))
+            problems.append(f"Step '{s.get('id', '?')}': {said}.")
+    if not problems:
+        return None
+    return {
+        "error": (
+            "Refusing to save: a step is not in the shape the engine reads, so the workflow would neither open "
+            "nor run. " + " ".join(problems) + " Write the step again with each field in that shape."
+        )
+    }
 
 
 # ─── JSON-string boundary ────────────────────────────────────────────────────
@@ -41,10 +553,12 @@ STEPS_JSON_DESCRIPTION = (
     "lean — include only fields that differ from zero-defaults.\n"
     "Sub-structures MUST be JSON strings inside each step: route_map_json, "
     "route_descriptions_json, parallel_branches_json, human_fields_json, "
-    "switch_cases_json.\n"
+    "switch_cases_json. Retrieve and ingest steps take add_single_step's flat "
+    "retrieve_* / ingest_* fields. An agent step that should read the images "
+    "a person attaches in chat sets \"pass_images\": true.\n"
     "Minimal example (2 agent steps):\n"
     "'[{\"id\":\"step_abc1234\",\"name\":\"Analyse\",\"type\":\"agent\","
-    "\"agent_id\":\"agent_123\",\"prompt_template\":\"Summarise {state.user_input}\","
+    "\"agent_id\":\"agent_123\",\"prompt_template\":\"Summarise {{ state.user_input }}\","
     "\"input_keys\":[\"user_input\"],\"output_key\":\"summary\","
     "\"next_step_id\":\"step_def5678\"},"
     "{\"id\":\"step_def5678\",\"name\":\"Done\",\"type\":\"end\"}]'"
@@ -54,9 +568,94 @@ PATCH_JSON_DESCRIPTION = (
     "JSON-encoded object with the step fields you want to change. Omit any "
     "field you don't want touched. Use *_json string keys for sub-structures "
     "(route_map_json, parallel_branches_json, human_fields_json, "
-    "route_descriptions_json). "
+    "route_descriptions_json); a retrieve or ingest step's flat retrieve_* / ingest_* "
+    "fields change only those settings; pass_images (agent steps) turns Sees attachments on or off; a browser "
+    "step's recording_inputs_json, may_send_steps, on_miss and browser_sessions as add_single_step takes them. "
     "Example: '{\"prompt_template\":\"New prompt\",\"next_step_id\":\"step_xyz7890\"}'"
 )
+
+#: A Browser step's own fields (F1146, F1189), as the step tools take them flat.
+BROWSER_STEP_PROPERTIES: dict = {
+    "recording_id": {
+        "type": "string",
+        "description": "The recording a browser step replays by code, from list_recordings (browser steps; required). "
+                       "Recordings are made by a person in the app, never by the builder.",
+    },
+    "recording_inputs_json": {
+        "type": "string",
+        "description": "JSON object filling each of the recording's inputs (get_recording names them), each a value "
+                       "or a {{ state.key }} template. Example: '{\"order number\":\"{{ state.user_input }}\"}' "
+                       "(browser steps; every input filled).",
+    },
+    "may_send_steps": {
+        "type": "array", "items": {"type": "string"},
+        "description": "Ids of the recording's steps that may send on their own (get_recording lists them). A run is "
+                       "never watched: any other send pauses it for the person. Default none (browser steps).",
+    },
+    "on_miss": {
+        "type": "string", "enum": ["pause", "agent"],
+        "description": "When a page no longer matches a step: 'pause' (the default) gives the person the wheel; "
+                       "'agent' has the step's agent_id, a Browser agent, find the way (browser steps). Either way "
+                       "the new path waits as a fix for a person to approve.",
+    },
+    "browser_sessions": {
+        "type": "array", "items": {"type": "string"},
+        "description": "Kept sessions the step's browser starts signed in with: ids from list_browser_sessions, or a "
+                       "site (e.g. 'portal.example.com') for the person's own session there. One per site; only the "
+                       "person's own or shared with them. Signing in is the person's, in Sessions.",
+    },
+}
+
+#: A Browser agent's settings (`core.models.AgentBrowser`), as the agent tools take them.
+#: An agent's Boards section, as the agent editor's Boards switch saves it (F1214): `{"own": false}` keeps it off its
+#: workflow's own board, so its cards go to the shared board its workflow is given.
+AGENT_BOARDS_PROPERTY: dict = {
+    "type": "object",
+    "description": "Whether the agent posts to the board of the workflow it runs in: {\"own\": false} for an agent "
+                   "whose workflow was given a shared board to post to. Omit to keep the default (on).",
+    "properties": {"own": {"type": "boolean"}},
+}
+
+
+AGENT_BROWSER_PROPERTY: dict = {
+    "type": "object",
+    "description": (
+        "For a Browser agent (type 'browser') only: where it may go and what it starts with. sites: hosts its "
+        "pages may reach ('portal.example.com', or '*.example.com' for its subdomains; empty = any public site); "
+        "sessions: kept sessions it starts signed in with, by id from list_browser_sessions or by site (the "
+        "person's own; one per site); recordings: recording ids it may run by code; mode: 'read_only' (default) or "
+        "'co_drive' (it may type and send, with the person watching); action_budget: actions per task (1-200, "
+        "default 40). Signing in and recording are a person's, in the app."
+    ),
+    "properties": {
+        "sites": {"type": "array", "items": {"type": "string"}},
+        "sessions": {"type": "array", "items": {"type": "string"}},
+        "recordings": {"type": "array", "items": {"type": "string"}},
+        "mode": {"type": "string", "enum": ["read_only", "co_drive"]},
+        "action_budget": {"type": "integer", "minimum": 1, "maximum": 200},
+    },
+}
+
+#: The knowledge bases an agent answers from, as the agent editor's picker sets them (F1223): checked where every
+#: agent is saved (`core.agent_knowledge`).
+AGENT_KNOWLEDGE_PROPERTY: dict = {
+    "type": "array",
+    "items": {"type": "string"},
+    "description": (
+        "Knowledge base ids it answers from (from list_knowledge_bases; at most 10, active ones, while Knowledge is "
+        "on): it can then search and read those bases. Omit for none."
+    ),
+}
+
+#: An agent's memory (`core.agent_memory`), as the agent editor's Memory switch sets it (F1199).
+AGENT_MEMORY_PROPERTY: dict = {
+    "type": "boolean",
+    "description": (
+        "true: the agent keeps what it learns across conversations and runs (remember, search_memory) and reads its "
+        "memory's index every turn. For an agent that must recall people, preferences or past results; omit for "
+        "one that starts fresh each time (the default)."
+    ),
+}
 
 STATE_SCHEMA_JSON_DESCRIPTION = (
     "JSON-encoded state-schema object mapping each state key to "
@@ -65,8 +664,60 @@ STATE_SCHEMA_JSON_DESCRIPTION = (
     "Pass '{}' (empty object JSON) when the orchestration has no upfront state keys."
 )
 
+#: A run's cap (CAP1, D272), as every tool that writes a workflow's top-level
+#: fields takes it. A number, not a nullable one: 0 removes a cap.
+RUN_CAP_PROPERTIES = {
+    "max_run_credits": {
+        "type": "number",
+        "description": (
+            "Cloud only: the most execution credits one run of this workflow may use, 1 or more. "
+            "A run that reaches it stops before its next step and says so. Set a cap only when "
+            "the person asks for one; 0 removes it."),
+    },
+    "max_run_usd": {
+        "type": "number",
+        "description": (
+            "The most one run of this workflow may spend on models, in US dollars (0.5 is fifty "
+            "cents). A run that has spent it stops before its next step and says so. Set a cap "
+            "only when the person asks for one; 0 removes it."),
+    },
+}
+
 
 # ─── Tool Schemas ─────────────────────────────────────────────────────────────
+
+#: The tags the builder may give a custom tool it makes (TAG1, D296). Only claims that make the tool stricter are kept
+#: (`core.tool_tags.tighten`): its method's tags are used otherwise, and the person sees and changes them in the editor.
+_TAG_PARAMS = {
+    "read_only": {"type": "boolean", "description": "false when this GET changes something (e.g. /send?to=…). Omit otherwise."},
+    "destructive": {"type": "boolean", "description": "true when a call deletes, cancels, pays or sends something that cannot be undone. Omit otherwise."},
+    "idempotent": {"type": "boolean", "description": "false when calling twice does the work twice (books two rooms). Omit otherwise."},
+    "open_world": {"type": "boolean", "description": "Every HTTP tool reaches outside this workspace; omit."},
+}
+
+
+def _builder_tags(tool: dict, before: dict | None, claimed: dict | None) -> dict:
+    """`tool` as the builder saves it (TAG1): its method's tags, or the person's when it replaces a tool they tagged
+    with the same method, made stricter by what the builder claims and never looser. Its own tags stay marked as a
+    claim; a person's stay theirs."""
+    from core.tool_tags import carried, defaults_for, hints_of, tags_of, tighten
+    from core.tools import BUILDER_HINTS
+
+    carried(tool, before)
+    persons = isinstance(tool.get("annotations"), dict) and not tool.get("annotations_by")
+    # A Python tool has no method, and its code may do anything: it starts as a write (F1198), never as GET's read.
+    method = tool.get("method") or ("POST" if tool.get("tool_type") == "python" else None)
+    base = tags_of(tool.get("annotations")) or defaults_for(method)
+    tool["annotations"] = hints_of(tighten(base, claimed))
+    if not persons:
+        tool["annotations_by"] = BUILDER_HINTS
+    return tool
+
+
+#: What a condition or switch expression may use, from the engine's own tables (F957): one source with the save's
+#: refusal and the planner's steps passage, so a function the engine adds or refuses is said everywhere at once.
+_EXPRESSION_DIALECT = ("Restricted Python over `state`. " + vocabulary_sentence()
+                       + " No f-strings, comprehensions or lambdas.")
 
 BUILDER_TOOL_SCHEMAS = [
     {
@@ -94,12 +745,32 @@ BUILDER_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "deploy_orchestration",
+            "description": (
+                "Deploy an orchestration that already exists as an agent (type 'orchestrator'), so "
+                "another orchestration's agent step can run it as a sub-workflow. Returns the agent id — "
+                "the one already deployed if it has been. This is the only way to make an orchestrator "
+                "agent: create_agent cannot, because an orchestrator agent with no orchestration runs "
+                "nothing. One orchestration is built per build, so a nested design is built child first."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"orch_id": {"type": "string", "description": "The orchestration to deploy"}},
+                "required": ["orch_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "create_agent",
             "description": (
                 "Create a new agent and save it. Returns the created agent with its new ID. "
                 "Use type='conversational' for general-purpose agents, 'code' for agents that work with repos/files, "
-                "'orchestrator' for agents that run orchestrations, "
-                "'delegate' for agents that dynamically route queries to sub-agents (set delegate_agent_ids to restrict which agents it can delegate to; empty = all agents). "
+                "'browser' for an agent that works in websites in its own browser (its `browser` settings), "
+                "'delegate' for a Team agent: a lead whose members (delegate_agent_ids; empty = any agent) do the work, "
+                "as a team in parallel (the default) or one at a time (`team`); its own tools are what its lead answers "
+                "small questions with, usually none. "
                 "Set tools=['all'] to give access to all tools, or list specific tool names."
             ),
             "parameters": {
@@ -109,7 +780,7 @@ BUILDER_TOOL_SCHEMAS = [
                     "description": {"type": "string", "description": "What this agent does"},
                     "type": {
                         "type": "string",
-                        "enum": ["conversational", "code", "orchestrator", "delegate"],
+                        "enum": ["conversational", "code", "delegate", "browser"],
                         "description": "Agent type",
                     },
                     "tools": {
@@ -138,7 +809,31 @@ BUILDER_TOOL_SCHEMAS = [
                     "delegate_agent_ids": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "For delegate agents: list of agent IDs to restrict delegation to. Leave empty to allow delegation to any agent.",
+                        "description": "For a Team agent: its members' agent IDs. Leave empty to allow any agent.",
+                    },
+                    "team": {
+                        "type": "object",
+                        "description": (
+                            "For a Team agent (type 'delegate') only: how its members work. Omit it and a new Team agent "
+                            "works as a team. {\"mode\": \"team\"}: members work in parallel on what its lead assigns, "
+                            "talking while they work; \"one_at_a_time\": the lead hands work to one member and waits. "
+                            "Optional: at_once (members working at once, default 3), task_budget (tasks in all, default "
+                            "6), spend_limit_usd (per turn)."
+                        ),
+                        "properties": {
+                            "mode": {"type": "string", "enum": ["team", "one_at_a_time"]},
+                            "at_once": {"type": "integer", "minimum": 1},
+                            "task_budget": {"type": "integer", "minimum": 1},
+                            "spend_limit_usd": {"type": "number"},
+                        },
+                    },
+                    "browser": AGENT_BROWSER_PROPERTY,
+                    "memory": AGENT_MEMORY_PROPERTY,
+                    "knowledge": AGENT_KNOWLEDGE_PROPERTY,
+                    "boards": AGENT_BOARDS_PROPERTY,
+                    "tool_policy": {
+                        "type": "object",
+                        "description": "When the agent must ask a person before a tool runs: {\"tool:<name>\": \"confirm\"} for each tool that books, pays, sends, posts or deletes. The plan's 'Asks you first' list says which. Omit for none.",
                     },
                 },
                 "required": ["name", "description", "type", "tools", "system_prompt"],
@@ -161,7 +856,7 @@ BUILDER_TOOL_SCHEMAS = [
                 "properties": {
                     "agents": {
                         "type": "array",
-                        "description": "Array of agent specs to create. Each item must include name, description, type, tools, system_prompt. Optional: role, model, repos, db_configs.",
+                        "description": "Array of agent specs to create. Each item must include name, description, type, tools, system_prompt. Optional: role, model, repos, db_configs, memory.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -173,7 +868,7 @@ BUILDER_TOOL_SCHEMAS = [
                                 "description": {"type": "string"},
                                 "type": {
                                     "type": "string",
-                                    "enum": ["conversational", "code", "orchestrator", "delegate"],
+                                    "enum": ["conversational", "code", "delegate", "browser"],
                                 },
                                 "tools": {
                                     "type": "array",
@@ -193,7 +888,31 @@ BUILDER_TOOL_SCHEMAS = [
                                 "delegate_agent_ids": {
                                     "type": "array",
                                     "items": {"type": "string"},
-                                    "description": "For delegate agents: agent IDs to restrict delegation to. Empty = allow any agent.",
+                                    "description": "For a Team agent: its members' agent IDs. Empty = allow any agent.",
+                                },
+                                "team": {
+                                    "type": "object",
+                                    "description": (
+                                        "For a Team agent (type 'delegate') only: how its members work. Omit it and a new Team agent "
+                                        "works as a team. {\"mode\": \"team\"}: members work in parallel on what its lead assigns, "
+                                        "talking while they work; \"one_at_a_time\": the lead hands work to one member and waits. "
+                                        "Optional: at_once (members working at once, default 3), task_budget (tasks in all, default "
+                                        "6), spend_limit_usd (per turn)."
+                                    ),
+                                    "properties": {
+                                        "mode": {"type": "string", "enum": ["team", "one_at_a_time"]},
+                                        "at_once": {"type": "integer", "minimum": 1},
+                                        "task_budget": {"type": "integer", "minimum": 1},
+                                        "spend_limit_usd": {"type": "number"},
+                                    },
+                                },
+                                "browser": AGENT_BROWSER_PROPERTY,
+                                "memory": AGENT_MEMORY_PROPERTY,
+                                "knowledge": AGENT_KNOWLEDGE_PROPERTY,
+                                "boards": AGENT_BOARDS_PROPERTY,
+                                "tool_policy": {
+                                    "type": "object",
+                                    "description": "When the agent must ask a person before a tool runs: {\"tool:<name>\": \"confirm\"} for each tool that books, pays, sends, posts or deletes. The plan's 'Asks you first' list says which. Omit for none.",
                                 },
                             },
                             "required": ["name", "description", "type", "tools", "system_prompt"],
@@ -215,7 +934,10 @@ BUILDER_TOOL_SCHEMAS = [
                     "agent_id": {"type": "string"},
                     "fields": {
                         "type": "object",
-                        "description": "Fields to update (name, description, tools, system_prompt, model, etc.)",
+                        "description": "Fields to update (name, description, tools, system_prompt, model, memory, etc.; "
+                                       "for a Team agent, delegate_agent_ids and team: how its members work, as "
+                                       "create_agent takes it; for a Browser agent, browser: the settings to "
+                                       "change, kept where not given)",
                     },
                 },
                 "required": ["agent_id", "fields"],
@@ -363,6 +1085,7 @@ BUILDER_TOOL_SCHEMAS = [
                     },
                     "max_total_turns": {"type": "integer", "description": "Global turn limit (default 100)"},
                     "timeout_minutes": {"type": "integer", "description": "Overall timeout (default 30)"},
+                    **RUN_CAP_PROPERTIES,
                 },
                 "required": ["name", "steps_json", "entry_step_id"],
             },
@@ -394,6 +1117,7 @@ BUILDER_TOOL_SCHEMAS = [
                     },
                     "max_total_turns": {"type": "integer"},
                     "timeout_minutes": {"type": "integer"},
+                    **RUN_CAP_PROPERTIES,
                 },
                 "required": ["orch_id"],
             },
@@ -424,6 +1148,7 @@ BUILDER_TOOL_SCHEMAS = [
                     },
                     "max_total_turns": {"type": "integer"},
                     "timeout_minutes": {"type": "integer"},
+                    **RUN_CAP_PROPERTIES,
                 },
                 "required": ["name", "entry_step_id"],
             },
@@ -458,8 +1183,9 @@ BUILDER_TOOL_SCHEMAS = [
             "name": "set_orchestration_meta",
             "description": (
                 "Patch top-level orchestration metadata only. Does NOT touch the steps list. Use this for "
-                "renames, description edits, entry_step_id changes, state_schema updates, or turn/timeout "
-                "budget changes. Pass only the fields you want to change."
+                "renames, description edits, entry_step_id changes, state_schema updates, turn/timeout "
+                "budget changes, or a cap on what one run may spend. Pass only the fields you want to "
+                "change."
             ),
             "parameters": {
                 "type": "object",
@@ -474,6 +1200,27 @@ BUILDER_TOOL_SCHEMAS = [
                     },
                     "max_total_turns": {"type": "integer"},
                     "timeout_minutes": {"type": "integer"},
+                    **RUN_CAP_PROPERTIES,
+                    "strict_state_types": {
+                        "type": "boolean",
+                        "description": (
+                            "Stop a run when a step's text will not become the type its "
+                            "state key declares — an llm step answering in prose where the "
+                            "key is declared `list`, say. Off by default: the text stays put "
+                            "and the run log says so. Turn it on only when asked to."
+                        ),
+                    },
+                    "result_key": {
+                        "type": "string",
+                        "description": (
+                            "The state key whose value is what this orchestration makes: its "
+                            "answer when chatted with as an agent, and what a parent gets back "
+                            "when it runs nested. Leave empty for the last step that produces "
+                            "content (a human step's answer, an evaluator's route label and an "
+                            "end step never count). Set it when the result is not the last step's "
+                            "output — a workflow ending in an approval of its report, say."
+                        ),
+                    },
                 },
                 "required": ["orch_id"],
             },
@@ -506,7 +1253,11 @@ BUILDER_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "remove_step",
-            "description": "Delete a single step from an orchestration by its step_id.",
+            "description": (
+                "Delete a single step from an orchestration by its step_id. Every field that named it (another "
+                "step's next_step_id, a route, a branch, a loop body, the entry) is cleared, and the answer lists "
+                "what was cleared."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -556,17 +1307,17 @@ BUILDER_TOOL_SCHEMAS = [
                     "name": {"type": "string", "description": "Human-readable step name"},
                     "type": {
                         "type": "string",
-                        "enum": ["agent", "llm", "evaluator", "parallel", "merge", "human", "tool", "loop", "transform", "extract_json", "if_else", "switch", "print", "end"],
+                        "enum": ["agent", "llm", "evaluator", "parallel", "merge", "human", "tool", "loop", "transform", "extract_json", "if_else", "switch", "print", "end", "retrieve", "ingest", "workflow", "browser"],
                         "description": "Step type",
                     },
-                    "agent_id": {"type": "string", "description": "Agent ID (required for agent/tool steps)"},
-                    "prompt_template": {"type": "string", "description": "Prompt with {state.key} placeholders (for agent/llm steps)"},
+                    "agent_id": {"type": "string", "description": "Agent ID (required for agent/tool steps; on a browser step with on_miss 'agent', a Browser agent)"},
+                    "prompt_template": {"type": "string", "description": "Prompt with {{ state.key }} placeholders (for agent/llm steps)"},
                     "input_keys": {
                         "type": "array", "items": {"type": "string"},
                         "description": "State keys this step reads",
                     },
                     "output_key": {"type": "string", "description": "State key this step writes to"},
-                    "next_step_id": {"type": "string", "description": "Next step ID. NOT used for evaluator/if_else/switch steps."},
+                    "next_step_id": {"type": "string", "description": "Next step ID. NOT used for evaluator/if_else/switch steps. REQUIRED on a parallel step, where it is the join and must name a merge step."},
                     "evaluator_prompt": {"type": "string", "description": "Routing instructions for evaluator steps"},
                     "route_map_json": {
                         "type": "string",
@@ -583,9 +1334,10 @@ BUILDER_TOOL_SCHEMAS = [
                     "human_prompt": {"type": "string", "description": "Prompt shown to user (human steps)"},
                     "human_fields_json": {
                         "type": "string",
-                        "description": "JSON string of field definitions. Example: '[{\"name\":\"feedback\",\"type\":\"textarea\",\"label\":\"Your feedback\"}]'",
+                        "description": "JSON string of field definitions. The answer is stored under output_key as a mapping {field name: value}: name the output_key for the step (e.g. `review`), not after a field, type it dict, and read one field as `{{ state.review.feedback }}`. Types: string, textarea, number, boolean, email, date, phone, choice (a dropdown; give it \"options\": [..], one is picked). Example: '[{\"name\":\"feedback\",\"type\":\"textarea\",\"label\":\"Your feedback\"},{\"name\":\"decision\",\"type\":\"choice\",\"label\":\"Decision\",\"options\":[\"Approve\",\"Later\"]}]'",
                     },
                     "forced_tool": {"type": "string", "description": "Tool name for tool steps"},
+                    "workflow_id": {"type": "string", "description": "The id of the workflow a workflow step runs, as a nested run (workflow steps)"},
                     "merge_strategy": {
                         "type": "string", "enum": ["concat", "list", "dict"],
                         "description": "How to combine inputs (merge steps)",
@@ -594,22 +1346,29 @@ BUILDER_TOOL_SCHEMAS = [
                         "type": "array", "items": {"type": "string"},
                         "description": "Step IDs in loop body (loop steps)",
                     },
-                    "loop_count": {"type": "integer", "description": "Number of loop iterations"},
+                    "loop_count": {"type": "integer", "description": "Number of loop iterations (fixed-count loops)"},
+                    "loop_over": {"type": "string", "description": "Expression over shared state yielding a list, e.g. `state.tickets` (loop steps). When set, the loop runs once per item instead of loop_count. Same restricted expression syntax as if_condition; filter a list in a transform step and loop over what it writes."},
+                    "loop_item_key": {"type": "string", "description": "State key each for-each item is written to (default `loop_item`)"},
+                    "loop_index_key": {"type": "string", "description": "State key each iteration's 0-based index is written to, in every loop mode (default `loop_index`)"},
+                    "loop_while_condition": {"type": "string", "description": "Condition re-evaluated before each iteration, e.g. `(state.n or 0) < 5` (loop steps). Same restricted expression syntax as if_condition."},
+                    "loop_break_condition": {"type": "string", "description": "Condition evaluated after each iteration; True stops the loop (loop steps). Same restricted expression syntax as if_condition."},
+                    "loop_max_iterations": {"type": "integer", "description": "Hard ceiling on iterations for any loop mode (default 50)"},
                     "transform_code": {"type": "string", "description": "Python code: reads `state`, assigns `result` (transform steps)"},
                     # ── New deterministic step fields ──────────────────────────
                     "print_content": {
                         "type": "string",
                         "description": (
                             "Markdown or plain text to store in output_key (print steps). "
-                            "Use {state.key} or {state.key.nested} to embed shared state values."
+                            "Use {{ state.key }} or {{ state.key.nested }} to embed shared state values."
                         ),
                     },
                     "if_condition": {
                         "type": "string",
                         "description": (
-                            "Python expression evaluated against shared state (if_else steps). "
+                            "Condition for if_else steps, evaluated against shared state. "
                             "Use dot-notation: e.g. `state.result.flag == True` or `state.score > 5`. "
-                            "Missing keys are treated as None."
+                            "Missing keys are treated as None. "
+                            + _EXPRESSION_DIALECT
                         ),
                     },
                     "if_true_step_id": {"type": "string", "description": "Step to go to when if_condition is True (if_else steps)"},
@@ -617,8 +1376,9 @@ BUILDER_TOOL_SCHEMAS = [
                     "switch_expression": {
                         "type": "string",
                         "description": (
-                            "Python expression whose str() result is matched against switch_cases (switch steps). "
-                            "Example: `state.category` or `state.result.status.lower()`."
+                            "Expression whose str() result is matched against switch_cases (switch steps). "
+                            "Example: `state.category` or `state.result.status.lower()`. "
+                            + _EXPRESSION_DIALECT
                         ),
                     },
                     "switch_cases_json": {
@@ -630,10 +1390,44 @@ BUILDER_TOOL_SCHEMAS = [
                         ),
                     },
                     "switch_default_step_id": {"type": "string", "description": "Fallback step when no switch case matches"},
+                    # ── Browser steps: a recording replayed by code (F1146) ──
+                    **BROWSER_STEP_PROPERTIES,
+                    # ── Knowledge steps: retrieve / ingest (only while Knowledge is on) ──
+                    "retrieve_kb_ids": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": "Knowledge base ids to search, from list_knowledge_bases (retrieve steps; at most 10)",
+                    },
+                    "retrieve_query": {"type": "string", "description": "What to search for, with {{ state.key }} placeholders, e.g. `{{ state.question }}` (retrieve steps)"},
+                    "retrieve_filters_json": {
+                        "type": "string",
+                        "description": (
+                            "Optional JSON metadata filter (retrieve steps), e.g. '{\"doc_type\":\"contract\",\"year\":{\"$gte\":2024}}'. "
+                            "Operators: $eq $ne $in $nin $gt $gte $lt $lte, combined with $and $or $not"
+                        ),
+                    },
+                    "retrieve_top_k": {"type": "integer", "description": "How many passages, 1-50; unset: the knowledge base's own (retrieve steps)"},
+                    "retrieve_rerank": {"type": "boolean", "description": "Rerank on or off; unset: the knowledge base's default (retrieve steps)"},
+                    "retrieve_snapshot": {"type": "string", "description": "\"active\" (default), or a ksnap_… id to pin ONE knowledge base's index version (retrieve steps)"},
+                    "ingest_kb_id": {"type": "string", "description": "Knowledge base id the records are added to, from list_knowledge_bases (ingest steps)"},
+                    "ingest_records_from": {"type": "string", "description": "State key holding the list of objects to add, e.g. `tickets` (ingest steps)"},
+                    "ingest_id_field": {"type": "string", "description": "Field naming each record, e.g. `ticket_id`: the same id replaces its record. Unset: an id from the record's content (ingest steps)"},
+                    "ingest_text_field": {"type": "string", "description": "Field holding the text to index; unset: the whole object is indexed as JSON (ingest steps)"},
+                    "ingest_metadata_fields": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": "Fields copied into each record's metadata, so retrieve steps can filter on them (ingest steps)",
+                    },
+                    "max_iterations": {"type": "integer", "description": "How many times this step may run in one run (default 3). A route to it after that fails the run, unless on_exhausted_step_id names where to go. Raise it for a cycle a person drives (a revision or clarification loop)."},
+                    "on_exhausted_step_id": {"type": "string", "description": "Step the run goes to when a route reaches this step after it has run max_iterations times, e.g. an escalation or a best-effort finish. Unset, the run fails with \"'<step>' gave up after N attempts\"."},
                     # ──────────────────────────────────────────────────────────
                     "max_turns": {"type": "integer", "description": "Max agent turns (default 15)"},
-                    "timeout_seconds": {"type": "integer", "description": "Step timeout (default 300)"},
+                    "timeout_seconds": {"type": "integer", "description": (
+                        "Step timeout (default 300). An agent step whose agent runs a workflow waits "
+                        "on that workflow's own timeout_minutes at the default; set another value to cap it")},
                     "model": {"type": "string", "description": "LLM model override for this step"},
+                    "pass_images": {"type": "boolean", "description": (
+                        "Agent steps only: Sees attachments. The images a person attaches in chat reach this "
+                        "step's model (pick one that can read images). A step that runs another workflow "
+                        "passes them on to it. Off by default; chat offers Attach only when a step has it.")},
                     "include_full_history": {
                         "type": "boolean",
                         "description": (
@@ -671,7 +1465,7 @@ BUILDER_TOOL_SCHEMAS = [
                                 "name": {"type": "string", "description": "Step name"},
                                 "type": {
                                     "type": "string",
-                                    "enum": ["agent", "llm", "evaluator", "parallel", "merge", "human", "tool", "loop", "transform", "extract_json", "if_else", "switch", "print", "end"],
+                                    "enum": ["agent", "llm", "evaluator", "parallel", "merge", "human", "tool", "loop", "transform", "extract_json", "if_else", "switch", "print", "end", "retrieve", "ingest", "workflow", "browser"],
                                 },
                                 "agent_id": {"type": "string"},
                                 "prompt_template": {"type": "string"},
@@ -685,20 +1479,42 @@ BUILDER_TOOL_SCHEMAS = [
                                 "human_prompt": {"type": "string"},
                                 "human_fields_json": {"type": "string"},
                                 "forced_tool": {"type": "string"},
+                                "workflow_id": {"type": "string", "description": "The id of the workflow a workflow step runs (workflow steps)"},
                                 "merge_strategy": {"type": "string", "enum": ["concat", "list", "dict"]},
                                 "loop_step_ids": {"type": "array", "items": {"type": "string"}},
                                 "loop_count": {"type": "integer"},
+                                "loop_over": {"type": "string", "description": "Expression over shared state yielding a list, e.g. `state.tickets` (loop steps). When set, the loop runs once per item instead of loop_count. Same restricted expression syntax as if_condition; filter a list in a transform step and loop over what it writes."},
+                                "loop_item_key": {"type": "string", "description": "State key each for-each item is written to (default `loop_item`)"},
+                                "loop_index_key": {"type": "string", "description": "State key each iteration's 0-based index is written to, in every loop mode (default `loop_index`)"},
+                                "loop_while_condition": {"type": "string", "description": "Condition re-evaluated before each iteration, e.g. `(state.n or 0) < 5` (loop steps). Same restricted expression syntax as if_condition."},
+                                "loop_break_condition": {"type": "string", "description": "Condition evaluated after each iteration; True stops the loop (loop steps). Same restricted expression syntax as if_condition."},
+                                "loop_max_iterations": {"type": "integer", "description": "Hard ceiling on iterations for any loop mode (default 50)"},
                                 "transform_code": {"type": "string"},
-                                "print_content": {"type": "string", "description": "Markdown/text for print steps. Supports {state.key} interpolation."},
-                                "if_condition": {"type": "string", "description": "Python condition for if_else steps (e.g. `state.flag == True`)"},
+                                "print_content": {"type": "string", "description": "Markdown/text for print steps. Supports {{ state.key }} interpolation."},
+                                "if_condition": {"type": "string", "description": "Condition for if_else steps (e.g. `state.flag == True`). " + _EXPRESSION_DIALECT},
                                 "if_true_step_id": {"type": "string", "description": "Step ID when condition is True"},
                                 "if_false_step_id": {"type": "string", "description": "Step ID when condition is False"},
-                                "switch_expression": {"type": "string", "description": "Expression to evaluate for switch steps"},
+                                "switch_expression": {"type": "string", "description": "Expression to evaluate for switch steps. Same restricted expression syntax as if_condition."},
                                 "switch_cases_json": {"type": "string", "description": "JSON string: '{\"value\":\"step_id\"}'"},
                                 "switch_default_step_id": {"type": "string", "description": "Fallback step when no case matches"},
+                                **BROWSER_STEP_PROPERTIES,
+                                "retrieve_kb_ids": {"type": "array", "items": {"type": "string"}, "description": "Knowledge base ids to search (retrieve steps)"},
+                                "retrieve_query": {"type": "string", "description": "Search query with {{ state.key }} placeholders (retrieve steps)"},
+                                "retrieve_filters_json": {"type": "string", "description": "JSON metadata filter (retrieve steps)"},
+                                "retrieve_top_k": {"type": "integer"},
+                                "retrieve_rerank": {"type": "boolean"},
+                                "retrieve_snapshot": {"type": "string", "description": "\"active\" or a ksnap_… id (retrieve steps)"},
+                                "ingest_kb_id": {"type": "string", "description": "Knowledge base id the records go into (ingest steps)"},
+                                "ingest_records_from": {"type": "string", "description": "State key holding the list of objects (ingest steps)"},
+                                "ingest_id_field": {"type": "string"},
+                                "ingest_text_field": {"type": "string"},
+                                "ingest_metadata_fields": {"type": "array", "items": {"type": "string"}},
+                                "max_iterations": {"type": "integer", "description": "Times this step may run in one run (default 3); a route to it after that fails the run unless on_exhausted_step_id is set"},
+                                "on_exhausted_step_id": {"type": "string", "description": "Step to go to when this step has used its max_iterations"},
                                 "max_turns": {"type": "integer"},
                                 "timeout_seconds": {"type": "integer"},
                                 "model": {"type": "string"},
+                                "pass_images": {"type": "boolean", "description": "Agent steps only: Sees attachments — the images a person attaches in chat reach this step"},
                                 "include_full_history": {"type": "boolean", "description": "Opt OUT of full revision history on re-runs (default: auto-on for any re-run). Set false to keep prompts small."},
                             },
                             "required": ["step_id", "name", "type"],
@@ -706,6 +1522,512 @@ BUILDER_TOOL_SCHEMAS = [
                     },
                 },
                 "required": ["orch_id", "steps"],
+            },
+        },
+    },
+    # ── Custom HTTP tools ────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "list_custom_tools",
+            "description": "List this workspace's custom HTTP tools with their name, description, method, URL and group.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_http_tool",
+            "description": (
+                "Create a custom HTTP tool an agent can call. The tool's inputs are declared as a "
+                "JSON Schema; use {{ placeholders }} in the URL, headers and body to interpolate them "
+                "(e.g. https://api.example.com/users/{{ user_id }}). Use {{ global.KEY }} for a "
+                "workspace variable and {{ args }} for the whole argument payload. Re-creating a tool "
+                "with an existing name replaces it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Unique tool name (snake_case, e.g. create_ticket)"},
+                    "description": {"type": "string", "description": "What the tool does — the model reads this to decide when to call it"},
+                    "url": {"type": "string", "description": "Full https URL, with {{ placeholders }} for path/query values"},
+                    "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"], "description": "HTTP method (default GET)"},
+                    "headers_json": {"type": "string", "description": "JSON object of static headers, e.g. '{\"Authorization\":\"Bearer {{ global.API_KEY }}\"}'"},
+                    "input_schema_json": {"type": "string", "description": "JSON Schema object describing the tool's arguments, e.g. '{\"type\":\"object\",\"properties\":{\"user_id\":{\"type\":\"string\"}},\"required\":[\"user_id\"]}'"},
+                    "body_template": {"type": "string", "description": "Request body template for POST/PUT/PATCH, with {{ placeholders }}. Omit to send the arguments as JSON."},
+                    "group": {"type": "string", "description": "Optional group name to file the tool under"},
+                    # Declared so the calls that carry it name only what the tool takes (F1322): the build's save and a
+                    # change's own, each under MAKING_TOOLS. Its handler takes it nowhere else (SAI2's blocker 1).
+                    "base_lock": {"type": "string", "description": "Set by Synapse's own save; a value a caller gives is never taken."},
+                    **_TAG_PARAMS,
+                },
+                "required": ["name", "description", "url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_http_tool",
+            "description": (
+                "Change an HTTP tool's address, method or what it does, in place: its headers, its key, its lock and "
+                "the inputs it has stay as they are. A variable the new address reads ({{ order_id }}) is added to "
+                "its inputs; none is taken away."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "The HTTP tool's name"},
+                    "url": {"type": "string", "description": (
+                        "Its new address, with {{ placeholders }} for each value that changes from call to call (an id, "
+                        "a date, a name), never one call's value as written")},
+                    "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
+                    "description": {"type": "string", "description": "What it does, in new words"},
+                    "drop_inputs": {"type": "array", "items": {"type": "string"},
+                                    "description": "Inputs to take out that its address no longer reads (an undo's)"},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_python_tool",
+            "description": (
+                "Change a Python tool's code, or what it does, in place: the variables a person gave it to read, its "
+                "inputs and its group stay. Held to create_python_tool's own checks; its code holds no key."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "The Python tool's name"},
+                    "code": {"type": "string", "description": "Its whole new code. Reads `_args`, prints its result."},
+                    "description": {"type": "string", "description": "What it does, in new words"},
+                    "was_sha256": {"type": "string",
+                                   "description": "The sha256 of the code this change was read from: a tool changed "
+                                                  "since is refused"},
+                },
+                "required": ["name", "code"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "test_code_change",
+            "description": (
+                "Run a Python tool's fix that a change proposed, on its own sample inputs, as the editor's Test button "
+                "runs it (with the internet): the change's card offers it where the fix could not be tested with no "
+                "network. The fix is read from the change itself, never given here."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "run_id": {"type": "string", "description": "The Synapse AI run whose change proposed the fix"},
+                    "op": {"type": "integer", "description": "The fix's place in that change, from 0"},
+                },
+                "required": ["run_id", "op"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_python_tool",
+            "description": (
+                "Create a custom Python tool an agent can call: code run in the sandbox, with the internet, the Vault "
+                "read-only at /data and 30 s a call. `_args` is the call's arguments as a dict; what the code prints "
+                "is the tool's result (print JSON for structured results). Its code reads no workspace variable "
+                "until a person adds one in the tool's editor (Tools, the tool, 'Variables this tool can read'): "
+                "when it needs a key, name the variable and say so. Prove it with test_python_tool. Re-creating a "
+                "Python tool with an existing name replaces it, keeping the variables a person added."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Unique tool name (snake_case, e.g. region_totals)"},
+                    "description": {"type": "string", "description": "What the tool does — the model reads this to decide when to call it"},
+                    "code": {"type": "string", "description": "The Python source. Reads `_args`, prints its result."},
+                    "input_schema_json": {"type": "string", "description": "JSON Schema object describing the tool's arguments, e.g. '{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}'"},
+                    "group": {"type": "string", "description": "Optional group name to file the tool under"},
+                    **_TAG_PARAMS,
+                },
+                "required": ["name", "description", "code"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "test_python_tool",
+            "description": (
+                "Run a Python tool you made, once, as the editor's Test button runs it (the same sandbox and limits, "
+                "the variables a person gave it), with `args_json` as its arguments. Answers its exit code, output "
+                "and errors; a run that fails answers as an error, to fix with create_python_tool and test again. "
+                "Use it to prove the tool before you say it works."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "The Python tool's name"},
+                    "args_json": {"type": "string", "description": "JSON object of the arguments, e.g. '{\"path\": \"sales.csv\"}'"},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "import_openapi",
+            "description": (
+                "Import an OpenAPI 3.x / Swagger 2.0 spec as a set of custom HTTP tools — one tool per "
+                "operation, filed under a single group. Pass the spec text (JSON or YAML). Use this "
+                "instead of hand-writing many create_http_tool calls when the user supplies a spec."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "spec_text": {"type": "string", "description": "The raw OpenAPI spec, JSON or YAML"},
+                    "base_url": {"type": "string", "description": "Override the spec's server base URL"},
+                    "name_prefix": {"type": "string", "description": "Prefix for every generated tool name, to avoid collisions"},
+                    "group": {"type": "string", "description": "Group name (default: the spec's title)"},
+                    "tags_json": {"type": "string", "description": (
+                        "Optional JSON object of operation name → tags, only for an operation riskier than its "
+                        "method says, e.g. '{\"send_invoice\": {\"destructive\": true}}'. Tags: read_only, "
+                        "destructive, idempotent, open_world. Each operation otherwise takes its method's tags.")},
+                },
+                "required": ["spec_text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_custom_tool",
+            "description": "Delete a custom tool by name. Destructive: requires confirm=true, and agents referencing the tool lose it.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "confirm": {"type": "boolean", "description": "Must be true. Deleting is not reversible."},
+                },
+                "required": ["name", "confirm"],
+            },
+        },
+    },
+    # ── Skills ───────────────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "list_skills",
+            "description": "List the skills available in this workspace (name, description, source). Skills are reusable instruction documents an agent loads on demand.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_knowledge_bases",
+            "description": (
+                "List this workspace's knowledge bases (id, name, description, folder, status, top_k): searchable "
+                "folders of documents. A retrieve step searches them by id (retrieve_kb_ids); an ingest step adds "
+                "records to one (ingest_kb_id). Only active ones can be used."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_skill",
+            "description": "Read one skill's full body by name.",
+            "parameters": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_skill",
+            "description": (
+                "Create a reusable skill: a markdown instruction document an agent can load when the "
+                "task calls for it. Prefer a skill over stuffing procedure into a system prompt — it is "
+                "shared across agents and only enters the context when needed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "kebab-case name, e.g. quarterly-report-format"},
+                    "description": {"type": "string", "description": "One line: when an agent should load this skill"},
+                    "body": {"type": "string", "description": "The skill's markdown body — the instructions themselves"},
+                },
+                "required": ["name", "description", "body"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_skill",
+            "description": "Replace an existing skill's description and/or body.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "body": {"type": "string"},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "attach_skills",
+            "description": "Set the list of skills an agent can load. Replaces the agent's current skill list.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_id": {"type": "string"},
+                    "names": {"type": "array", "items": {"type": "string"}, "description": "Skill names; pass [] to detach all"},
+                },
+                "required": ["agent_id", "names"],
+            },
+        },
+    },
+    # ── Schedules ────────────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "finish_build",
+            "description": (
+                "Close the build this run started: remove any orchestration it created that "
+                "never passed validation. Takes no arguments; touches nothing outside this run."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_schedules",
+            "description": "List this workspace's schedules with their target, cadence, enabled state and next run.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_schedule",
+            "description": (
+                "Run an agent or orchestration on a cadence. Either an interval "
+                "(interval_value + interval_unit) or a cron expression — not both. "
+                "It is created paused: show the person the message each run starts with and when it would first "
+                "run, and on their yes turn it on with turn_on_schedule."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "target_type": {"type": "string", "enum": ["agent", "orchestration"]},
+                    "target_id": {"type": "string", "description": "The agent or orchestration id to run"},
+                    "prompt": {"type": "string", "description": "The message the scheduled run starts with"},
+                    "schedule_type": {"type": "string", "enum": ["interval", "cron"]},
+                    "interval_value": {"type": "integer"},
+                    "interval_unit": {"type": "string", "enum": ["minutes", "hours", "days"]},
+                    "cron_expression": {"type": "string", "description": (
+                        "Standard 5-field cron on the schedule's own clock (its timezone), the time as they said it, "
+                        "never converted to UTC, e.g. '0 8 * * 1-5'")},
+                    "timezone": {"type": "string", "description": (
+                        "The timezone its cron is read in, as a name like America/New_York or Europe/Amsterdam: the "
+                        "one the person named, else their own. Leave it out for UTC")},
+                    "missed_run_policy": {"type": "string", "enum": ["run_immediately", "skip"], "description": (
+                        "A time it missed (the machine was off): run it once as soon as it can, or skip it")},
+                },
+                "required": ["name", "target_type", "target_id", "prompt", "schedule_type"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_schedule_enabled",
+            "description": "Pause or resume a schedule without deleting it.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "schedule_id": {"type": "string"},
+                    "enabled": {"type": "boolean"},
+                },
+                "required": ["schedule_id", "enabled"],
+            },
+        },
+    },
+    # F1451: on and off as two tools, since MCP marks a tool, not an argument: turning one on asks a client's person
+    # first (`product_tools.build.OVERWRITES`), pausing does not. `set_schedule_enabled` is the app's own card's.
+    {
+        "type": "function",
+        "function": {
+            "name": "turn_on_schedule",
+            "description": (
+                "Turn a paused schedule on, so it starts its runs, only once the person has said yes to it: first show "
+                "them the message each run starts with and when it would next run (list_schedules, or "
+                "create_schedule's reply). Its next run is worked out from now."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"schedule_id": {"type": "string"}},
+                "required": ["schedule_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "pause_schedule",
+            "description": "Pause a schedule, so it starts no runs until it is turned on again. It is kept as it is.",
+            "parameters": {
+                "type": "object",
+                "properties": {"schedule_id": {"type": "string"}},
+                "required": ["schedule_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_schedule",
+            "description": (
+                "Change a schedule in place: its time (cron_expression, or interval_value + interval_unit), the "
+                "message each run starts with (prompt), its name, or what it runs (target_type + target_id). Give "
+                "only what changes. It keeps its id, its history and whether it is on. Use this to move a "
+                "schedule's time — never delete it and create another. To pause or resume it, use "
+                "set_schedule_enabled."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "schedule_id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "prompt": {"type": "string", "description": "The message each scheduled run starts with"},
+                    "target_type": {"type": "string", "enum": ["agent", "orchestration"]},
+                    "target_id": {"type": "string"},
+                    "schedule_type": {"type": "string", "enum": ["interval", "cron"]},
+                    "interval_value": {"type": "integer"},
+                    "interval_unit": {"type": "string", "enum": ["minutes", "hours", "days"]},
+                    "cron_expression": {"type": "string", "description": (
+                        "Standard 5-field cron on the schedule's own clock (its timezone), never converted to UTC")},
+                    "timezone": {"type": "string", "description": (
+                        "The timezone its cron is read in, as a name like America/New_York or Europe/Amsterdam: the "
+                        "one the person named, else their own. Leave it out for UTC")},
+                    "missed_run_policy": {"type": "string", "enum": ["run_immediately", "skip"], "description": (
+                        "A time it missed (the machine was off): run it once as soon as it can, or skip it")},
+                },
+                "required": ["schedule_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_schedule",
+            "description": "Delete a schedule. Destructive: requires confirm=true.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "schedule_id": {"type": "string"},
+                    "confirm": {"type": "boolean", "description": "Must be true."},
+                },
+                "required": ["schedule_id", "confirm"],
+            },
+        },
+    },
+    # ── Variables and runs ───────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "list_variables",
+            "description": (
+                "List the workspace variables by name, each with the reference that uses it in tool URLs, "
+                "headers and bodies ({{ global.KEY }}). A value is never shown: the run fills it in."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_recent_runs",
+            "description": (
+                "Recent workflow runs, newest first: each with its workflow's name, status, step, times, whether it "
+                "waits on a person, and `error`, why a failed or cancelled run stopped. `name` keeps one workflow's "
+                "runs. Use this to answer questions about what ran and what failed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "How many runs (default 10, max 50)"},
+                    "name": {"type": "string", "description": "Only runs of workflows whose name contains this."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_run_summary",
+            "description": (
+                "One run step by step: its workflow's name, status, current step, whether it waits on a person, "
+                "times, `error` (why it failed) and what each step wrote. A workflow's id reads its latest run."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"run_id": {"type": "string", "description": "The run's id, or a workflow's id"}},
+                "required": ["run_id"],
+            },
+        },
+    },
+    # ── Deletes ──────────────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_agent",
+            "description": (
+                "Delete an agent. Destructive: requires confirm=true. Refused while anything uses it "
+                "— a widget, a channel or phone number, a schedule, a workflow's step or another agent "
+                "that hands work to it — naming each; repoint or delete those first."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_id": {"type": "string"},
+                    "confirm": {"type": "boolean", "description": "Must be true."},
+                },
+                "required": ["agent_id", "confirm"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_orchestration",
+            "description": "Delete an orchestration. Destructive: requires confirm=true. Its run history is kept.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "orch_id": {"type": "string"},
+                    "confirm": {"type": "boolean", "description": "Must be true."},
+                },
+                "required": ["orch_id", "confirm"],
             },
         },
     },
@@ -718,24 +2040,640 @@ BUILDER_TOOL_SCHEMAS = [
 # expose them as first-class tools that any agent can declare.
 BUILDER_TOOL_NAMES = {t["function"]["name"] for t in BUILDER_TOOL_SCHEMAS}
 
+#: Builder tools defined in their own modules (BWA1, D274): name → `handler(args, server_module, events)`.
+#: Each registers itself once, at import, through `register_builder_tool`, so a new tool never touches this file.
+_REGISTERED: dict[str, Any] = {}
+
+
+def register_builder_tool(schema: dict, handler: Any) -> None:
+    """Add a builder tool that lives in another module. Its schema joins `BUILDER_TOOL_SCHEMAS` and `_dispatch` hands
+    its calls to `handler`, which may `_emit`.
+
+    Opt-in (F495): offered to an agent that names it — the builder's own agents, a forced tool step — never through
+    `"all"`, so no other agent's roster, prompt or cache changes when one is added."""
+    name = schema["function"]["name"]
+    if name in BUILDER_TOOL_NAMES and name not in _REGISTERED:
+        raise ValueError(f"builder tool {name!r} already exists")
+    if name not in _REGISTERED:
+        BUILDER_TOOL_SCHEMAS.append(schema)
+        BUILDER_TOOL_NAMES.add(name)
+    OPT_IN_BUILDER_TOOLS.add(name)
+    _REGISTERED[name] = handler
+
+
+# Every module registers through `core.builder_registry`, which imports none of them (F1327): one imported before this
+# module waited there, and is registered now; the rest, at their import below, register at once.
+from core import builder_registry as _builder_registry  # noqa: E402
+
+_builder_registry.attach(register_builder_tool)
+
+
+# ─── Tool server capability ───────────────────────────────────────────────────
+#
+# `list_tool_servers` is the first call every builder prompt tells an agent to
+# make, and the Requirements Analyst gets one round of tool calls — so whatever
+# this answers is often the whole basis for choosing an integration. It used to
+# answer with names: the analyst read `deepwiki` as a wiki to search for general
+# research, against its own "don't guess capabilities" rule, and the agent it
+# actually holds answers questions about GitHub repositories (F126).
+#
+# A name is not a capability, so the listing carries a few of the server's real
+# tools. Bounded on purpose: `list_all_tools` is banned in the analyst's own
+# prompt for blowing up context, and acme's three servers hold 64 tools whose
+# raw definitions are 62 KB. Eight names with a one-line description is ~2.4 KB
+# for the same three and says what each server is for; `tool_count` tells the
+# agent there is more, and `list_server_tools` is the next call the prompt
+# already names.
+
+#: How many of a server's tools the listing names, and how much of each
+#: description it keeps. Enough to characterise a server, not to work from.
+_SERVER_TOOLS_SHOWN = 8
+_SERVER_TOOL_DESC = 90
+
+
+def _tool_summary(tools: list[dict] | None) -> dict:
+    """`tool_count` plus a bounded preview, for one server's listing entry."""
+    tools = tools or []
+    preview = []
+    for t in tools[:_SERVER_TOOLS_SHOWN]:
+        # First line only: an MCP description is often a paragraph with usage
+        # notes under it, and the first line is the sentence that says what it
+        # does.
+        desc = (t.get("description") or "").strip().split("\n")[0]
+        preview.append({"name": t.get("name"), "description": desc[:_SERVER_TOOL_DESC]})
+    return {"tool_count": len(tools) or None, "tools": preview}
+
+
+async def _session_tools(server_module: Any, name: str | None) -> list[dict]:
+    """A registered server's tools from its live session, when the row has none."""
+    session = (getattr(server_module, "agent_sessions", None) or {}).get(f"ext_mcp_{name}")
+    if not session:
+        return []
+    try:
+        return [{"name": t.name, "description": t.description}
+                for t in (await session.list_tools()).tools]
+    except Exception:
+        # A server that cannot be reached is still worth listing by name.
+        return []
+
+
+# ─── Embedder seams ────────────────────────────────────────────────────────────
+
+import contextvars as _contextvars
+
+#: Asked before any builder tool creates an orchestration or agent (F154).
+#: ``await check(kind, adding)`` returns a sentence refusing it, or None. None
+#: installed means no limit — OSS. Cloud installs its plan's census, so the
+#: builder and the template gallery refuse the same thing for the same reason.
+_room_check: Any = None
+
+
+def _boards_wrong(value: Any) -> dict | None:
+    """An agent's Boards section the agent editor would refuse, as the builder says it (F1214)."""
+    from core.models import boards_refusal
+
+    said = boards_refusal(value)
+    return {"error": said} if said else None
+
+
+def set_room_check(check: Any) -> None:
+    """Install the plan-room check. ``None`` removes it."""
+    global _room_check
+    _room_check = check
+
+
+#: Whether agents may have memory turned on: async `check(adding, agent_id | None) -> reason | None` (cloud's
+#: memory allowance; `agent_id` the one being edited, left out of the count). Asked only when a save turns memory
+#: on; an agent that already has it keeps it, as the host's agent route keeps it (F1199). None: OSS, always.
+_memory_check: Any = None
+
+
+def set_memory_check(check: Any) -> None:
+    """Install the host's memory allowance. ``None`` removes it."""
+    global _memory_check
+    _memory_check = check
+
+
+def _memory_wrong(value: Any) -> dict | None:
+    """An agent's `memory` as the agent editor saves it (F1199): true or false."""
+    from core.agent_memory import memory_refusal
+    return {"error": wrong} if (wrong := memory_refusal(value)) is not None else None
+
+
+async def _memory_room(adding: int, agent_id: str | None = None) -> dict | None:
+    """Room in the host's allowance for `adding` agents with memory newly on."""
+    if adding < 1 or _memory_check is None:
+        return None
+    reason = await _memory_check(adding, agent_id)
+    return {"error": reason, "refused": "plan_limit"} if reason else None
+
+
+async def _refused(kind: str, adding: int) -> dict | None:
+    if _room_check is None:
+        return None
+    reason = await _room_check(kind, adding)
+    return {"error": reason, "refused": "plan_limit"} if reason else None
+
+
+# ─── The Browser's parts: what a host decides (F1189; BRW3's binding) ────────
+
+#: Whether the Browser is on this workspace's plan: async `check(kind) -> reason | None`, kind "step" (a Browser
+#: step), "agent" (a Browser agent) or "agent_browser" (an agent's sites, sessions or recordings). None: OSS, always.
+_browser_check: Any = None
+#: The host's own pick rule: async `check(caller, lists, stored) -> reason | None` (cloud's `picks.checked`). None:
+#: this engine's (`save_checks.check_picks`).
+_pick_check: Any = None
+#: The agent types a new agent may have, and the sentence that refuses another: the host's agent route's own.
+_agent_types: tuple[frozenset, str] | None = None
+
+
+def set_browser_check(check: Any) -> None:
+    """Install the Browser's plan check. ``None`` removes it."""
+    global _browser_check
+    _browser_check = check
+
+
+def set_pick_check(check: Any) -> None:
+    """Install the host's rule for picked sessions. ``None`` puts this engine's back."""
+    global _pick_check
+    _pick_check = check
+
+
+def set_agent_types(types: frozenset | None, sentence: str | None = None) -> None:
+    """The types the host's agent route lets a person choose, and its sentence for another. ``None`` puts this
+    engine's back (`routes/agents.CHOOSABLE_TYPES`)."""
+    global _agent_types
+    _agent_types = None if types is None else (frozenset(types), sentence or "")
+
+
+def _acting_caller() -> Any:
+    """Who the builder works for: the assistant's run's person, or an MCP call's caller; None for neither."""
+    from core import builder_access
+    from core.product_tools import caller as _caller
+    return builder_access.current_caller() or _caller.current()
+
+
+def _type_refused(kind: Any, current: str | None = None) -> dict | None:
+    """A type the host's agent route would refuse for a new agent (or one changing to it), in its words. An
+    agent keeps the type it already has."""
+    kind = kind or "conversational"
+    if current is not None and kind == current:
+        return None
+    if _agent_types is not None:
+        allowed, sentence = _agent_types
+    else:
+        from core.routes.agents import CHOOSABLE_TYPES
+        allowed, sentence = CHOOSABLE_TYPES, ""
+    if kind in allowed:
+        return None
+    return {"error": sentence or f"'{kind}' is not an agent type. Choose conversational, delegate (a team), code "
+                                 "or browser."}
+
+
+async def _browser_refused(kind: str) -> dict | None:
+    if _browser_check is None:
+        return None
+    reason = await _browser_check(kind)
+    return {"error": reason, "refused": "plan_limit"} if reason else None
+
+
+async def _picks_refused(lists: list[list[str]], stored: list[list[str]]) -> dict | None:
+    """The picked sessions by the host's rule, or this engine's (F1140, F1167)."""
+    if not any(lists):
+        return None
+    if _pick_check is not None:
+        reason = await _pick_check(_acting_caller(), lists, stored)
+    else:
+        from core.browser import save_checks
+        from core.browser.picks import PickRefused
+        try:
+            await save_checks.check_picks(lists, stored)
+            reason = None
+        except PickRefused as refused:
+            reason = str(refused)
+    return {"error": reason, "refused": "pick"} if reason else None
+
+
+async def _refuse_browser_steps(steps: list, before: list | None = None, *, wired: bool = False,
+                                schema: dict | None = None, agents: dict | None = None) -> dict | None:
+    """Steps' browser parts as the editor's save checks them (F1146, F1140, F1167), and what a model gets wrong that
+    the editor's pickers never let a person: a recording's inputs left unfilled, sends that aren't its steps (F1189),
+    a `{{ state.… }}` input the run never has (F1232). `before` is the workflow's steps as saved, whose sessions and
+    recordings stay. `wired`: `steps` is the whole workflow, so its inputs are read in order (`input_problems`);
+    else the steps go into `before` mid-build. `schema` is its declared state; `agents`, those not saved yet, by id
+    (a plan's own, F1233). Sessions named by site become ids here, in `steps`."""
+    from core.browser import recordings, save_checks
+    from core.browser.picks import PickRefused
+    from core.orchestration.save_rules import browser_step_problems
+    from core.store.resources import get_agent
+
+    steps = [s for s in steps if isinstance(s, dict)]
+    browsers = [s for s in steps if s.get("type") == "browser"]
+    picked = [s for s in steps if s.get("browser_sessions")]
+    if not browsers and not picked and not any(s.get("browser_recordings") for s in steps):
+        return None
+    if browsers and (refused := await _browser_refused("step")) is not None:
+        return refused
+    agents = dict(agents or {})
+    for s in browsers:
+        if s.get("agent_id") and s["agent_id"] not in agents:
+            agents[s["agent_id"]] = await get_agent(s["agent_id"])
+    said = browser_step_problems({"steps": steps}, {k: v for k, v in agents.items() if v})
+    if said:
+        return {"error": "Refusing to save: " + " ".join(said)}
+    try:
+        for s in picked:
+            s["browser_sessions"] = await save_checks.resolve_sessions(s["browser_sessions"], caller=_acting_caller())
+        await save_checks.step_recordings({"steps": steps}, {"steps": before or []})
+    except PickRefused as refused:
+        return {"error": str(refused), "refused": "pick"}
+    except save_checks.RecordingGone as gone:
+        return {"error": str(gone)}
+    for s in browsers:
+        try:
+            said += save_checks.recording_problems(s, await recordings.get(s["recording_id"]))
+        except recordings.NotFound:
+            continue  # gone since this workflow named it: the run says so (F1146)
+    whole = steps if wired else list({s.get("id"): s for s in [*(before or []), *steps] if isinstance(s, dict)}.values())
+    said += save_checks.input_problems(whole, schema, whole=wired, of={s.get("id") for s in browsers})
+    if wired:
+        said += save_checks.loop_problems(steps)
+    if said:
+        return {"error": "Refusing to save: " + " ".join(said)}
+    had = {b.get("id"): b.get("browser_sessions") or [] for b in before or [] if isinstance(b, dict)}
+    return await _picks_refused([s["browser_sessions"] for s in picked], [had.get(s.get("id")) or [] for s in picked])
+
+
+async def _agent_browser(kind: str, given: Any, before: dict | None) -> tuple[dict | None, dict | None]:
+    """An agent's `browser` settings as the agent editor would save them: `(settings, None)`, or `(None, refusal)`.
+    Given on an update, they change what they name and keep the rest. Sessions named by site become ids."""
+    from pydantic import ValidationError
+
+    from core.browser import save_checks
+    from core.browser.picks import PickRefused
+    from core.models import AgentBrowser
+
+    if not isinstance(given, dict):
+        return None, {"error": "`browser` is an object of a Browser agent's settings (sites, sessions, recordings, "
+                               "mode, action_budget)."}
+    if kind != "browser":
+        return None, {"error": "Only a Browser agent has browser settings (sites, sessions, recordings): make it "
+                               "type 'browser', or leave `browser` out."}
+    had = (before or {}).get("browser") or {}
+    try:
+        settings = AgentBrowser.model_validate({**had, **given}).model_dump()
+    except ValidationError as e:
+        said = "; ".join(f"{'.'.join(str(p) for p in err['loc']) or 'browser'}: {err['msg']}" for err in e.errors())
+        return None, {"error": f"The browser settings are not in the shape they take: {said}."}
+    settings.pop("login_ref", None)
+    try:
+        settings["sessions"] = await save_checks.resolve_sessions(settings["sessions"], caller=_acting_caller())
+        settings["recordings"] = await save_checks.existing_recordings(settings["recordings"],
+                                                                       had.get("recordings") or [])
+    except PickRefused as refused:
+        return None, {"error": str(refused), "refused": "pick"}
+    except save_checks.RecordingGone as gone:
+        return None, {"error": str(gone)}
+    refused = await _picks_refused([settings["sessions"]], [save_checks.agent_sessions(before)])
+    return (None, refused) if refused else (settings, None)
+
+
+#: The run a builder tool is working inside, when the engine says (F156). A
+#: skeleton is stamped with it until it validates, so `finish_build` can remove
+#: what its own run started and never finished — never another run's.
+_current_run: _contextvars.ContextVar[str | None] = _contextvars.ContextVar(
+    "builder_tools_current_run", default=None
+)
+
 
 # ─── Tool Implementations ──────────────────────────────────────────────────────
 
+def _agent_policy(value) -> dict:
+    """An agent's tool policy as the builder may write it: the categories and `tool:<name>` rules the engine knows,
+    nothing else (`tool_policy.clean_policy`, the agents route's own writer)."""
+    from core.tool_policy import clean_policy
+    return clean_policy(value)
+
+
+def _long_agent_name(name) -> str | None:
+    """The refusal for an agent name past the limit (F217), or None."""
+    from core.models import AGENT_NAME_MAX
+    if isinstance(name, str) and len(name) > AGENT_NAME_MAX:
+        return (f"An agent's name is at most {AGENT_NAME_MAX} characters; this one is "
+                f"{len(name)}. Choose a shorter name.")
+    return None
+
+
+_HOLLOW_WORKFLOW_AGENT = (
+    "An orchestrator agent runs an orchestration that already exists, so it is not created here: "
+    "build that orchestration first, then call deploy_orchestration(orch_id) and use the agent id it "
+    "returns. One orchestration is built per build — a nested design is built child first."
+)
+
+
+async def _plan_and_agents_of(run: str | None) -> tuple[str, set[str]]:
+    """The plan `run` showed the person and the agents it made, from its last checkpoint; nothing outside a run."""
+    if run is None:
+        return "", set()
+    from core.orchestration.run_writes import WRITES_KEY
+    from core.orchestration.state import SharedState
+
+    try:
+        state = (await SharedState.restore(run)).run.shared_state or {}
+    except FileNotFoundError:
+        return "", set()
+    made = {w.get("id") for w in state.get(WRITES_KEY) or []
+            if isinstance(w, dict) and w.get("kind") == "agent" and w.get("action") == "created"}
+    return str(state.get("plan_draft") or ""), made
+
+
+async def _orphaned_agents(run: str, removed: list[str]) -> list[dict]:
+    """The agents `run` made for a build that saved no workflow, which nothing else uses (F492).
+
+    The agent creator runs before the saver, so a saver that stopped ("Tool not found", "Agents are missing")
+    left them in the workspace with nothing to run them. Read from the run's own writes at its last checkpoint
+    (`run_writes`); a build that kept any workflow keeps its agents. Whether something else uses one is
+    `finish_build`'s to ask, as the agent delete asks it (F467).
+    """
+    from core.orchestration.run_writes import WRITES_KEY
+    from core.orchestration.state import SharedState
+
+    try:
+        writes = (await SharedState.restore(run)).run.shared_state.get(WRITES_KEY) or []
+    except FileNotFoundError:
+        return []
+    writes = [w for w in writes if isinstance(w, dict)]
+    gone = {(w.get("kind"), w.get("id")) for w in writes if w.get("action") == "deleted"}
+    built = [w for w in writes if w.get("kind") == "orchestration" and w.get("action") == "created"
+             and w.get("id") not in removed and ("orchestration", w.get("id")) not in gone]
+    if built:
+        return []
+    return [{"id": w["id"], "name": w.get("name")} for w in writes
+            if w.get("kind") == "agent" and w.get("action") == "created" and w.get("id")
+            and ("agent", w.get("id")) not in gone]
+
+
+#: An issue a person can act on (connect a tool, make an agent) names what is missing in these words (F489, F264).
+_ACTIONABLE = ("which nothing here provides", "which does not exist")
+
+
+def _issues_said(issues: list) -> list[str]:
+    """A failed validation's first three issues as a rollback says them (F867, SAI2's conditions): the validator's
+    own words, what a person can act on first (SAI2: three wiring issues ahead of the missing tool read as
+    plumbing), each cut to a sentence's length, without the closing stop the line adds."""
+    ordered = sorted(issues, key=lambda issue: 0 if any(m in str(issue) for m in _ACTIONABLE) else 1)
+    said = []
+    for issue in ordered[:3]:
+        text = " ".join(str(issue).split()).rstrip(". ")
+        said.append(text if len(text) <= 160 else text[:159].rsplit(" ", 1)[0] + "…")
+    return said
+
+
+async def _why_nothing_was_built(run: str, removed: list[str]) -> str:
+    """Why `run`'s build saved no workflow, when its plan check still names what nothing here provides (F768): the
+    tools, the provider its research found for them, and what to do. "" when it saved one, or for another reason."""
+    from core.orchestration.run_writes import WRITES_KEY
+    from core.orchestration.state import SharedState
+
+    try:
+        state = (await SharedState.restore(run)).run.shared_state or {}
+    except FileNotFoundError:
+        return ""
+    writes = [w for w in state.get(WRITES_KEY) or [] if isinstance(w, dict)]
+    gone = {(w.get("kind"), w.get("id")) for w in writes if w.get("action") == "deleted"}
+    if any(w.get("kind") == "orchestration" and w.get("action") == "created" and w.get("id") not in removed
+           and ("orchestration", w.get("id")) not in gone for w in writes):
+        return ""
+    check = state.get("plan_check") if isinstance(state.get("plan_check"), dict) else {}
+    missing = [str(t) for t in (check.get("missing_tools") or []) + (check.get("missing_agents") or [])]
+    if not missing:
+        return ""
+    plan = str(state.get("plan_draft") or "").lower()
+    findings = state.get("plan_findings") if isinstance(state.get("plan_findings"), dict) else {}
+    found = []
+    for option in findings.get("options") or []:
+        provider = str(option.get("provider") or "").strip() if isinstance(option, dict) else ""
+        if provider and option.get("how") in ("mcp", "api") and provider.lower() in plan:
+            way = "its own MCP server" if option["how"] == "mcp" else "a public API"
+            page = next(iter(option.get("sources") or []), "")
+            found.append(f"{provider} has {way}" + (f" ({page})" if page else ""))
+    names = ", ".join(f"`{t}`" for t in missing[:5])
+    return ("Nothing was built: this plan uses " + names + ", which nothing in this workspace provides yet. "
+            + (("The research found: " + "; ".join(found) + ". ") if found else "")
+            + "Connect the app or service it needs, then ask me to build it again.")
+
+
 async def execute_builder_tool(tool_name: str, args: dict, server_module: Any) -> str:
     """Dispatch a builder tool call and return a JSON string result."""
+    output, _events = await execute_builder_tool_with_events(tool_name, args, server_module)
+    return output
+
+
+@contextlib.contextmanager
+def _the_act_of(caller: Any) -> Iterator[None]:
+    """An ordinary run's act bound to its person for its whole length, as the registry binds an MCP call's (F1319): a
+    host that records what the store does (cloud's delete observer) then leaves the row to the act, one act one row."""
+    if caller is None:
+        yield
+        return
+    from core.product_tools import caller as current
+
+    token = current._CURRENT.set(caller)
     try:
-        result = await _dispatch(tool_name, args, server_module)
-        return json.dumps(result, default=str)
+        yield
+    finally:
+        current._CURRENT.reset(token)
+
+
+async def execute_builder_tool_with_events(
+    tool_name: str, args: dict, server_module: Any, *, run_id: str | None = None, door: str | None = None
+) -> tuple[str, list[dict]]:
+    """Dispatch a builder tool, returning its JSON result *and* what it changed.
+
+    The result string is what the model reads, so it stays lean. The events are
+    what the UI reads, so they carry the whole resource. Keeping them separate
+    is the point: the panel used to recover "an orchestration was saved" by
+    running a regex over a 500-character truncation of the result, which failed
+    on any orchestration big enough to be worth building.
+
+    `door`: how an agent or a workflow named the tool, `"agent"` or `"step"`, so that only Synapse AI's own run takes
+    its own steps (F1315); None for the install's own direct call.
+    """
+    events: list[dict] = []
+    token = _current_run.set(run_id)
+    try:
+        # Only what the run's person may do (ASSIST1, F681): a write is refused below builder, by their role now.
+        from core.builder_access import acting_for, refusal, stops_a_step
+        refused, caller = await refusal(tool_name, run_id, door=door)
+        if refused:
+            # A refusal no argument changes stops a Tool step's run in its words (F1315, F1319); an agent reads it.
+            stop = door == "step" and await stops_a_step(run_id, refused)
+            return json.dumps({"error": refused, **({"stops_the_step": True} if stop else {})}), []
+        from core.native_builder import turn_facts
+        if why := await turn_facts.answer_card_refusal(run_id, tool_name, args or {}):
+            return json.dumps({"error": why}), []
+        for_a_person = caller is not None and caller.via == "workflow"
+        with acting_for(caller), _the_act_of(caller if for_a_person else None):
+            result = await _dispatch(tool_name, args, server_module, events)
+        if for_a_person:
+            # An ordinary run's build write, audited once as its person (F1319).
+            from core.product_tools.build import audit_from_a_run
+            await audit_from_a_run(tool_name, args, result, caller)
+        # What the call put up is kept on its turn's card, for the next turn to read in code (F977).
+        await turn_facts.keep(run_id, getattr(caller, "user_id", None), **turn_facts.facts_of(events))
+        return json.dumps(result, default=str), events
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        return json.dumps({"error": str(e)}), []
+    finally:
+        _current_run.reset(token)
 
 
-async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
-    from core.routes.agents import load_user_agents, save_user_agents
-    from core.routes.orchestrations import load_orchestrations, save_orchestrations
+async def _header_holds_a_key(headers: dict) -> bool:
+    """A literal credential in a header's value, by shape or as a value the workspace holds (F1309); a reference such
+    as `{{ global.X }}` is a name, never a key."""
+    from core.secret_scrub import held_in, holds_credential
+
+    for value in headers.values():
+        text = str(value or "")
+        if not text or "{{" in text:
+            continue
+        if holds_credential(text) or await held_in(text):
+            return True
+    return False
+
+
+def _emit(
+    events: list[dict],
+    kind: str,
+    action: str,
+    resource_id: str | None,
+    name: str | None,
+    resource: Any = None,
+    reason: str | None = None,
+) -> None:
+    """Record that the builder changed something the workspace can see. `reason`: why a removal happened, which
+    the run's own summary says (`run_writes`)."""
+    events.append({
+        "type": "resource_saved",
+        "kind": kind,           # agent | orchestration | tool | skill | schedule
+        "action": action,       # created | updated | deleted
+        "id": resource_id,
+        "name": name,
+        "resource": resource,
+        **({"reason": reason} if reason else {}),
+    })
+
+
+async def _switch_schedule(schedule_id: str, on: bool, events: list[dict], *, same_said: bool = False) -> dict:
+    """A schedule turned on or paused. Turned on from paused, its timing is checked, as the Schedules screen's PATCH
+    does (`routes.schedules`), and a next run already past is worked out again from now (F1451: made paused at nine
+    for half past and turned on at eleven, it kept half past, a run it had missed); one still to come stands, so a
+    deployment that arms hears the time it was made with (F149). `same_said`: one already as asked is said so, and
+    nothing is written (`turn_on_schedule` and `pause_schedule`)."""
+    from core.models_schedule import ScheduleInvalid, validate_timing
+    from core.scheduler import _iso, _parse_iso, _utc_now, compute_next_run
+    from core.store import schedules as schedule_store
+
+    schedule = await schedule_store.get(schedule_id)
+    if schedule is None:
+        return {"error": f"Schedule '{schedule_id}' not found"}
+    was_on = bool(schedule.get("enabled", True))
+    said = {"id": schedule_id, "name": schedule.get("name"), "prompt": schedule.get("prompt"),
+            "timezone": schedule.get("timezone") or "UTC"}
+    if same_said and was_on == on:
+        return {"status": "unchanged", **said, "enabled": on, "next_run_at": schedule.get("next_run_at"),
+                "note": f"It is already {'on' if on else 'paused'}: nothing changed."}
+    if on and not was_on:
+        try:
+            validate_timing(schedule)
+            now = _utc_now()
+            if not schedule.get("next_run_at") or _parse_iso(str(schedule["next_run_at"])) <= now:
+                schedule["next_run_at"] = _iso(compute_next_run(schedule, now))
+        except ScheduleInvalid as exc:
+            return {"error": f"Invalid schedule: {exc}"}
+        except Exception as exc:
+            return {"error": f"Could not work out when that would next run: {exc}"}
+    schedule["enabled"] = on
+    await schedule_store.save(schedule)
+    _emit(events, "schedule", "updated", schedule_id, schedule.get("name"), schedule)
+    return {"status": "updated", **said, "enabled": on, "next_run_at": schedule.get("next_run_at")}
+
+
+#: The builder tools that read the whole session set (`agent_sessions`, or
+#: `aggregate_all_tools` over it) rather than one agent's tools. A fleet turn
+#: that may call one of them is given every MCP server, because what they list
+#: is whatever the module holds (VOX-MCP, `core/scale/mcp_needs.py`). A new
+#: tool below that reads the sessions belongs here;
+#: `test_mcp_needs.py` checks this list against `_dispatch`.
+READS_EVERY_SESSION: frozenset[str] = frozenset({
+    "list_all_tools",
+    "get_tools_detail",
+    "list_tool_servers",
+    "list_server_tools",
+})
+
+
+def _team_block(agent_type: Any, team: Any, *, new: bool) -> tuple[dict | None, str | None]:
+    """A Team agent's `team` block as the builder saves it (TEAM1e; TEAM1a's `AgentTeam`), or why not.
+
+    Only a Team agent (stored `delegate`) has one. A new one the builder makes works as a team unless the call
+    says otherwise, as a new Team agent in the editor does (20 Q1); a delegate saved before teams keeps none (D204).
+    """
+    if agent_type != "delegate":
+        if team is not None:
+            return None, ("Not saved: only a Team agent (type 'delegate') has members and a `team` block. Leave "
+                          "`team` out, or make it a Team agent with its members in delegate_agent_ids.")
+        return None, None
+    from pydantic import ValidationError
+    from core.models import AgentTeam
+    if team is None:
+        return (AgentTeam(mode="team").model_dump() if new else None), None
+    try:
+        return AgentTeam(**team).model_dump(), None
+    except (TypeError, ValidationError) as exc:
+        return None, f"Not saved: the team settings are not valid ({exc})."
+
+
+async def _workspace_catalogue(server_module) -> list:
+    """Every tool this workspace has, for the builder's discovery (`list_all_tools`, `get_tools_detail`).
+
+    Asked of the workspace, as `builder_guard`'s missing-tool check asks it (`{"tools": ["all"]}`), never of one
+    agent's list. It used to borrow the first non-system agent's: on a workspace whose first agent holds no tools,
+    the builder was told the workspace's own tools did not exist (F866, QA1c on production).
+    """
+    from core.tools import aggregate_all_tools
+    from core.routes.tools import load_custom_tools
+    return (await aggregate_all_tools(server_module, {"tools": ["all"]}, await load_custom_tools()))[0]
+
+
+async def _steps_as_run_calls(orch: dict, server_module: Any) -> dict:
+    """A workflow's Tool steps saved with their tool as a run calls it (F1035): a step the builder wrote as
+    `web_scraper.scrape_url`, or with an external server's bare name, would fail its first run."""
+    from core import builder_guard
+
+    steps = [s for s in orch.get("steps") or [] if isinstance(s, dict) and isinstance(s.get("forced_tool"), str)
+             and s.get("forced_tool")]
+    if steps:
+        fixed = await builder_guard.canonical_names([s["forced_tool"] for s in steps], server_module)
+        for step, name in zip(steps, fixed):
+            step["forced_tool"] = name
+    return orch
+
+
+async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list[dict]) -> Any:
+    if tool_name in _REGISTERED:  # a tool from its own module (`register_builder_tool`)
+        return await _REGISTERED[tool_name](args, server_module, events)
+    from core.routes.agents import load_user_agents
+    from core.routes.orchestrations import load_orchestrations
+    from core.store.resources import (
+        get_agent as _load_agent,
+        get_orchestration as _load_orch,
+        save_agent,
+        save_orchestration,
+    )
 
     if tool_name == "list_agents":
-        agents = load_user_agents()
+        agents = await load_user_agents()
         return [
             {
                 "id": a.get("id"),
@@ -746,19 +2684,60 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
                 "model": a.get("model"),
             }
             for a in agents
-            if a.get("type") != "builder"  # hide the builder itself
+            if not a.get("system")  # the builder's own machinery is not workspace content
         ]
 
     elif tool_name == "get_agent":
-        agents = load_user_agents()
-        agent = next((a for a in agents if a["id"] == args["agent_id"]), None)
-        if not agent:
+        agent = await _load_agent(args["agent_id"])
+        if not agent or agent.get("system"):
             return {"error": f"Agent '{args['agent_id']}' not found"}
         return agent
 
     elif tool_name == "create_agent":
-        agents = load_user_agents()
-        new_id = f"agent_{int(time.time() * 1000)}"
+        team_block, team_refusal = _team_block(args.get("type"), args.get("team"), new=True)
+        if team_refusal:
+            return {"error": team_refusal}
+        if args.get("type") == "orchestrator":
+            return {"error": _HOLLOW_WORKFLOW_AGENT}
+        if (refused := _type_refused(args.get("type"))) is not None:
+            return refused
+        if args.get("type") == "browser" and (refused := await _browser_refused("agent")) is not None:
+            return refused
+        browser = None
+        if args.get("browser") is not None:
+            browser, refused = await _agent_browser(args.get("type") or "conversational", args["browser"], None)
+            if refused:
+                return refused
+        if (too_long := _long_agent_name(args.get("name"))) is not None:
+            return {"error": too_long}
+        if (wrong := _memory_wrong(args.get("memory"))) is not None:
+            return wrong
+        if (wrong := _boards_wrong(args.get("boards"))) is not None:
+            return wrong
+        if (wrong := await agent_knowledge.refusal(args.get("knowledge"))) is not None:
+            return {"error": wrong}
+        from core.native_builder.models_menu import builder_model_refusal  # F1250: Synapse AI's own, callable
+        wrong, model = await builder_model_refusal(args.get("model"), has_tools=bool(args.get("tools")))
+        if wrong is not None:
+            return {"error": wrong}
+        args = {**args, "model": model}
+        from core import builder_guard  # F489: never a tool nothing provides
+        if (phantom := await builder_guard.unknown(args.get("tools") or [], server_module)) is not None:
+            return phantom
+        if args.get("tools"):  # saved as a run calls them (F1035): `web_scraper.scrape_url` → `scrape_url`
+            args = {**args, "tools": await builder_guard.canonical_names(args["tools"], server_module)}
+        if (refusal := await _refused("agent", 1)) is not None:
+            return refusal
+        if (refusal := await _memory_room(1 if args.get("memory") is True else 0)) is not None:
+            return refusal
+        agents = await load_user_agents()
+        existing_ids = {a.get("id") for a in agents}
+        # Guarantee uniqueness: the id is a primary key, and on cloud it is a
+        # global one, minted the way cloud's routes mint (F431). A millisecond
+        # timestamp collides under any concurrency.
+        new_id = _mint_id("agent", length=10)
+        while new_id in existing_ids:
+            new_id = _mint_id("agent", length=10)
         agent = {
             "id": new_id,
             "name": args["name"],
@@ -775,17 +2754,32 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
             "max_turns": None,
             "delegate_agent_ids": args.get("delegate_agent_ids", []) or [],
         }
-        agents.append(agent)
-        save_user_agents(agents)
+        if team_block is not None:
+            agent["team"] = team_block
+        if browser is not None:
+            agent["browser"] = browser
+        if (policy := _agent_policy(args.get("tool_policy"))):
+            agent["tool_policy"] = policy
+        if args.get("memory") is not None:
+            agent["memory"] = args["memory"]
+        if args.get("boards") is not None:
+            agent["boards"] = dict(args["boards"])
+        if args.get("knowledge"):
+            agent["knowledge"] = agent_knowledge.ids(args["knowledge"])
+        await save_agent(agent)
+        _emit(events, "agent", "created", agent["id"], agent["name"], agent)
         return {"status": "created", "agent": agent}
 
     elif tool_name == "create_agents":
         specs = args.get("agents") or []
         if not isinstance(specs, list) or not specs:
             return {"error": "agents must be a non-empty array of agent specs"}
-        agents = load_user_agents()
+        if (refusal := await _refused("agent", len(specs))) is not None:
+            return refusal
+        agents = await load_user_agents()
         existing_ids = {a.get("id") for a in agents}
         created = []
+        documents = []
         errors = []
         for i, spec in enumerate(specs):
             if not isinstance(spec, dict):
@@ -796,10 +2790,50 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
                     errors.append({"index": i, "role": spec.get("role"), "error": f"missing required field '{field}'"})
                     break
             else:
+                if spec.get("type") == "orchestrator":
+                    errors.append({"index": i, "role": spec.get("role"), "error": _HOLLOW_WORKFLOW_AGENT})
+                    continue
+                refused = _type_refused(spec.get("type"))
+                if refused is None and spec.get("type") == "browser":
+                    refused = await _browser_refused("agent")
+                browser = None
+                if refused is None and spec.get("browser") is not None:
+                    browser, refused = await _agent_browser(spec.get("type") or "conversational", spec["browser"], None)
+                if refused is not None:
+                    errors.append({"index": i, "role": spec.get("role"), **refused})
+                    continue
+                team_block, team_refusal = _team_block(spec.get("type"), spec.get("team"), new=True)
+                if team_refusal:
+                    errors.append({"index": i, "role": spec.get("role"), "error": team_refusal})
+                    continue
+                if (too_long := _long_agent_name(spec["name"])) is not None:
+                    errors.append({"index": i, "role": spec.get("role"), "error": too_long})
+                    continue
+                if (wrong := _memory_wrong(spec.get("memory"))) is not None:
+                    errors.append({"index": i, "role": spec.get("role"), **wrong})
+                    continue
+                if (wrong := _boards_wrong(spec.get("boards"))) is not None:
+                    errors.append({"index": i, "role": spec.get("role"), "error": wrong["error"]})
+                    continue
+                if (wrong := await agent_knowledge.refusal(spec.get("knowledge"))) is not None:
+                    errors.append({"index": i, "role": spec.get("role"), "error": wrong})
+                    continue
+                from core.native_builder.models_menu import builder_model_refusal  # F1250
+                wrong, model = await builder_model_refusal(spec.get("model"), has_tools=bool(spec.get("tools")))
+                if wrong is not None:
+                    errors.append({"index": i, "role": spec.get("role"), "error": wrong})
+                    continue
+                spec = {**spec, "model": model}
+                from core import builder_guard  # F489: never a tool nothing provides
+                if (phantom := await builder_guard.unknown(spec.get("tools") or [], server_module)) is not None:
+                    errors.append({"index": i, "role": spec.get("role"), "error": phantom["error"]})
+                    continue
+                if spec.get("tools"):  # saved as a run calls them (F1035)
+                    spec = {**spec, "tools": await builder_guard.canonical_names(spec["tools"], server_module)}
                 # Guarantee uniqueness even when called repeatedly in the same millisecond.
-                new_id = _random_id("agent_", length=10)
+                new_id = _mint_id("agent", length=10)
                 while new_id in existing_ids:
-                    new_id = _random_id("agent_", length=10)
+                    new_id = _mint_id("agent", length=10)
                 existing_ids.add(new_id)
                 agent = {
                     "id": new_id,
@@ -817,7 +2851,19 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
                     "max_turns": None,
                     "delegate_agent_ids": spec.get("delegate_agent_ids", []) or [],
                 }
-                agents.append(agent)
+                if team_block is not None:
+                    agent["team"] = team_block
+                if browser is not None:
+                    agent["browser"] = browser
+                if (policy := _agent_policy(spec.get("tool_policy"))):
+                    agent["tool_policy"] = policy
+                if spec.get("memory") is not None:
+                    agent["memory"] = spec["memory"]
+                if spec.get("boards") is not None:
+                    agent["boards"] = dict(spec["boards"])
+                if spec.get("knowledge"):
+                    agent["knowledge"] = agent_knowledge.ids(spec["knowledge"])
+                documents.append(agent)
                 created.append({
                     "role": spec.get("role"),
                     "id": new_id,
@@ -825,18 +2871,79 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
                     "type": agent["type"],
                     "repos": agent["repos"],
                 })
-        if created:
-            save_user_agents(agents)
+        # The host's memory allowance, for the batch at once: each alone could fit where all together do not.
+        if (refusal := await _memory_room(sum(d.get("memory") is True for d in documents))) is not None:
+            return refusal
+        for document in documents:
+            await save_agent(document)
+            _emit(events, "agent", "created", document["id"], document["name"], document)
         return {"status": "created", "agents": created, "errors": errors}
 
     elif tool_name == "update_agent":
-        agents = load_user_agents()
-        idx = next((i for i, a in enumerate(agents) if a["id"] == args["agent_id"]), None)
-        if idx is None:
+        agent = await _load_agent(args["agent_id"])
+        if not agent:
             return {"error": f"Agent '{args['agent_id']}' not found"}
-        agents[idx].update(args.get("fields", {}))
-        save_user_agents(agents)
-        return {"status": "updated", "agent": agents[idx]}
+        if agent.get("system"):
+            return {"error": f"Agent '{args['agent_id']}' is part of the builder itself and cannot be edited."}
+        fields = args.get("fields", {}) or {}
+        # Marking an agent as the builder's own hides it from every list (F158).
+        if "system" in fields or fields.get("type") == "builder":
+            return {"error": "An agent cannot be made part of the builder: `system` and type 'builder' are not editable."}
+        if "name" in fields and (too_long := _long_agent_name(fields["name"])) is not None:
+            return {"error": too_long}
+        current = agent.get("type") or "conversational"
+        if "type" in fields and (refused := _type_refused(fields["type"], current)) is not None:
+            return refused
+        kind = fields.get("type") or current
+        if kind == "browser" and current != "browser" and (refused := await _browser_refused("agent")) is not None:
+            return refused
+        if fields.get("browser") is not None:
+            if kind == "browser" and current == "browser" \
+                    and (refused := await _browser_refused("agent_browser")) is not None:
+                return refused
+            fields["browser"], refused = await _agent_browser(kind, fields["browser"], agent)
+            if refused:
+                return refused
+        if "model" in fields:
+            from core.native_builder.models_menu import builder_model_refusal  # F1250: only one it did not have
+            wrong, fields["model"] = await builder_model_refusal(fields["model"], agent.get("model"),
+                                                         has_tools=bool(fields.get("tools", agent.get("tools"))))
+            if wrong is not None:
+                return {"error": wrong}
+        if "tools" in fields:
+            from core import builder_guard  # F489: never a tool nothing provides
+            if (phantom := await builder_guard.unknown(fields.get("tools") or [], server_module)) is not None:
+                return phantom
+            fields["tools"] = await builder_guard.canonical_names(fields.get("tools") or [], server_module)  # F1035
+        if "tool_policy" in fields:
+            fields["tool_policy"] = _agent_policy(fields["tool_policy"])
+        if "memory" in fields:
+            if (wrong := _memory_wrong(fields["memory"])) is not None:
+                return wrong
+            turning_on = fields["memory"] is True and agent.get("memory") is not True
+            if (refusal := await _memory_room(1 if turning_on else 0, args["agent_id"])) is not None:
+                return refusal
+        if "knowledge" in fields:
+            if (wrong := await agent_knowledge.refusal(fields["knowledge"], agent.get("knowledge"))) is not None:
+                return {"error": wrong}
+            fields["knowledge"] = agent_knowledge.ids(fields["knowledge"])
+        if fields.get("team") is not None:
+            # A Team's "How members work" (TEAM1a): checked as the agent editor's save checks it, and only on a
+            # Team agent (TEAM1e).
+            team_block, team_refusal = _team_block(fields.get("type", agent.get("type")), fields["team"], new=False)
+            if team_refusal:
+                return {"error": team_refusal}
+            fields["team"] = team_block
+        from core.native_builder.agent_census import editor_problem
+
+        # What the agent editor's own model would refuse in what this sets, this refuses too (F1259).
+        if (said := editor_problem({**agent, **fields}, only=set(fields))) is not None:
+            return {"error": said}
+        agent.update(fields)
+        agent["id"] = args["agent_id"]  # the id is not patchable
+        await save_agent(agent)
+        _emit(events, "agent", "updated", agent["id"], agent.get("name"), agent)
+        return {"status": "updated", "agent": agent}
 
     elif tool_name == "list_all_tools":
         server_filter = (args.get("server_name") or "").strip()
@@ -860,15 +2967,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
                     for t in tools_result.tools[:limit]
                 ]
             else:
-                from core.tools import aggregate_all_tools
-                from core.routes.tools import load_custom_tools
-                from core.routes.agents import load_user_agents as _lau
-                _agents = _lau()
-                active_agent = next((a for a in _agents if a.get("type") != "builder"), _agents[0] if _agents else {})
-                custom_tools = load_custom_tools()
-                all_tools, _, _, _ = await aggregate_all_tools(
-                    server_module.agent_sessions, active_agent, custom_tools
-                )
+                all_tools = await _workspace_catalogue(server_module)
                 return [
                     {"name": t.name, "description": (t.description or "")[:120]}
                     for t in all_tools[:limit]
@@ -878,20 +2977,20 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
 
     elif tool_name == "get_tools_detail":
         try:
-            from core.tools import aggregate_all_tools
-            from core.routes.tools import load_custom_tools
-            from core.routes.agents import load_user_agents as _lau
-            _agents = _lau()
-            active_agent = next((a for a in _agents if a.get("type") != "builder"), _agents[0] if _agents else {})
-            custom_tools = load_custom_tools()
-            all_tools, _, _, _ = await aggregate_all_tools(
-                server_module.agent_sessions, active_agent, custom_tools
-            )
+            all_tools = await _workspace_catalogue(server_module)
             requested = set(args.get("tool_names", []))
+            # Each asked-for name as a run calls it (F1035): `firecrawl_scrape`, as list_server_tools printed it,
+            # is the catalogue's `firecrawl__firecrawl_scrape`.
+            from core import builder_guard
+
+            asked = [n for n in requested if isinstance(n, str)]
+            as_called = dict(zip(asked, await builder_guard.canonical_names(asked, server_module)))
+            by_name = {t.name: t for t in all_tools}
             result = {}
-            for t in all_tools:
-                if t.name in requested:
-                    result[t.name] = {
+            for name in asked:
+                t = by_name.get(as_called[name])
+                if t is not None:
+                    result[name] = {
                         "name": t.name,
                         "description": t.description or "",
                         "inputSchema": t.inputSchema if hasattr(t, "inputSchema") else {},
@@ -904,19 +3003,24 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
             return {"error": f"Could not fetch tool details: {e}"}
 
     elif tool_name == "list_tool_servers":
-        ext_servers = _mcp_store.load()
-        if not isinstance(ext_servers, list):
-            ext_servers = []
-        result = [
-            {
-                "name": s.get("name"),
-                "label": s.get("label", s.get("name")),
+        from core.routes.tools import _NATIVE_SERVER_LABELS
+
+        ext_servers = await load_mcp_servers()
+        result = []
+        for s in ext_servers:
+            name = s.get("name")
+            # A stored row already carries what the server exposes, so the
+            # capability costs nothing to report (F126). A row saved before
+            # that, or one whose OAuth never completed, has an empty list and
+            # falls through to its live session.
+            tools = s.get("tools") or await _session_tools(server_module, name)
+            result.append({
+                "name": name,
+                "label": s.get("label", name),
                 "type": s.get("server_type", "stdio"),
                 "status": s.get("status", "unknown"),
-                "tool_count": None,
-            }
-            for s in ext_servers
-        ]
+                **_tool_summary(tools),
+            })
         # Also include MCP sessions started programmatically (not in mcp_store.json).
         # Sessions keyed as "ext_mcp_<name>" are external — strip the prefix and
         # mark them as external so callers know to use "name__tool_name" format.
@@ -926,18 +3030,21 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
             if sess_name in ext_keys:
                 continue
             try:
-                tools_result = await session.list_tools()
-                tool_count = len(tools_result.tools)
+                tools = [
+                    {"name": t.name, "description": t.description}
+                    for t in (await session.list_tools()).tools
+                ]
             except Exception:
-                tool_count = 0
+                tools = []
             is_ext = sess_name.startswith("ext_mcp_")
             display_name = sess_name[len("ext_mcp_"):] if is_ext else sess_name
             result.append({
                 "name": display_name,
-                "label": display_name.replace("_", " ").title(),
+                "label": (None if is_ext else _NATIVE_SERVER_LABELS.get(display_name))
+                         or display_name.replace("_", " ").title(),
                 "type": "external_mcp" if is_ext else "native_mcp",
                 "status": "running",
-                "tool_count": tool_count,
+                **_tool_summary(tools),
             })
         return result
 
@@ -955,33 +3062,45 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
             return {"error": f"Server '{server_name}' not found. Call list_tool_servers to see available names."}
         try:
             tools_result = await session.list_tools()
+            # Each tool by the name a run calls it (F1035): an external server's are `server__tool`, as the catalogue,
+            # the resolver and every saved agent hold them. Printed bare, they were the names the builder then used
+            # and could not find.
+            session_key = next((k for k, v in server_module.agent_sessions.items() if v is session), server_name)
+            from core.tool_router import SEP
+
+            def called(tool_name: str) -> str:
+                router = getattr(server_module, "tool_router", None)
+                key = router.key_for(session_key, tool_name) if hasattr(router, "key_for") else None
+                if session_key.startswith("ext_mcp_"):
+                    return key or f"{session_key[len('ext_mcp_'):]}{SEP}{tool_name}"
+                # A native server's tool is called bare, unless another server won its bare name: then its key.
+                if key and hasattr(router, "declares") and not router.declares(session_key, tool_name):
+                    return key
+                return tool_name
+
             return [
-                {"name": t.name, "description": (t.description or "")[:150]}
+                {"name": called(t.name), "description": (t.description or "")[:150]}
                 for t in tools_result.tools
             ]
         except Exception as e:
             return {"error": f"Could not list tools for server '{server_name}': {e}"}
 
     elif tool_name == "list_repos":
-        repos = _repos_store.load()
-        if not isinstance(repos, list):
-            return []
+        repos = await collections.load("repos")
         return [
             {"id": r.get("id"), "name": r.get("name", r.get("path", "")), "path": r.get("path", "")}
             for r in repos
         ]
 
     elif tool_name == "list_db_configs":
-        dbs = _db_store.load()
-        if not isinstance(dbs, list):
-            return []
+        dbs = await collections.load("db_configs")
         return [
             {"id": d.get("id"), "name": d.get("name", ""), "type": d.get("type", "")}
             for d in dbs
         ]
 
     elif tool_name == "list_orchestrations":
-        orchs = load_orchestrations()
+        orchs = await load_orchestrations()
         return [
             {
                 "id": o.get("id"),
@@ -990,26 +3109,51 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
                 "step_count": len(o.get("steps", [])),
             }
             for o in orchs
+            if _is_visible(o)
         ]
 
     elif tool_name == "get_orchestration":
-        orchs = load_orchestrations()
-        orch = next((o for o in orchs if o["id"] == args["orch_id"]), None)
-        if not orch:
+        orch = await _visible_orchestration(args["orch_id"])
+        if orch is None:
             return {"error": f"Orchestration '{args['orch_id']}' not found"}
         return orch
 
     elif tool_name == "create_orchestration":
-        orchs = load_orchestrations()
-        orch_id = _random_id("orch_")
+        if (refusal := await _refused("orchestration", 1)) is not None:
+            return refusal
+        existing_ids = {o.get("id") for o in await load_orchestrations()}
+        orch_id = _mint_id("orch")
+        while orch_id in existing_ids:
+            orch_id = _mint_id("orch")
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
         _normalize_state_schema_arg(args)
+        if (refused := _refuse_engine_key_defaults(args)) is not None:
+            return refused
         _normalize_steps_arg(args)
         steps = args.get("steps", [])
         if not isinstance(steps, list) or not steps:
             return {"error": "steps_json must decode to a non-empty JSON array of step objects"}
         steps = _fill_step_defaults(steps)
+        refused = _refuse_misshapen_steps(steps)
+        if refused:
+            return refused
+        refused = _refuse_ungated_transform(steps)
+        if refused:
+            return refused
+        refused = _refuse_knowledge_off(steps)
+        if refused:
+            return refused
+        refused = _refuse_unsafe_expression(steps)
+        if refused:
+            return refused
+        refused = await _refuse_browser_steps(steps, wired=True, schema=args.get("state_schema"))
+        if refused:
+            return refused
+        try:
+            caps = _run_cap_args(args)
+        except ValueError as e:
+            return {"error": str(e)}
 
         orch = {
             "id": orch_id,
@@ -1020,47 +3164,94 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
             "entry_step_id": args["entry_step_id"],
             "state_schema": args.get("state_schema", {}),
             "max_total_turns": args.get("max_total_turns", 100),
-            "max_total_cost_usd": None,
             "timeout_minutes": args.get("timeout_minutes", 30),
+            **{k: v for k, v in caps.items() if v is not None},
             "trigger": "manual",
             "created_at": now,
             "updated_at": now,
         }
-        orchs.append(orch)
-        save_orchestrations(orchs)
+        await save_orchestration(await _steps_as_run_calls(orch, server_module))
+        _emit(events, "orchestration", "created", orch["id"], orch["name"], orch)
         return {"status": "created", "orchestration": orch}
 
     elif tool_name == "update_orchestration":
-        orchs = load_orchestrations()
-        idx = next((i for i, o in enumerate(orchs) if o["id"] == args["orch_id"]), None)
-        if idx is None:
+        orch = await _visible_orchestration(args["orch_id"])
+        if orch is None:
             return {"error": f"Orchestration '{args['orch_id']}' not found"}
         # update_orchestration now accepts flat top-level fields (like the other
-        # builder tools), falling back to legacy `fields` for back-compat.
+        # builder tools), falling back to legacy `fields` for back-compat — for the
+        # fields it declares only, on this workflow only (F784). Written whole, an
+        # `id` in it overwrote another workflow (a system or deleted one too, as the
+        # check above read `orch_id`), and `rubric_id`, `system` or `is_active` went in
+        # unchecked. An echo of this workflow's own id or times is ignored.
         legacy_fields = args.get("fields") or {}
-        fields = dict(legacy_fields)
+        if not isinstance(legacy_fields, dict):
+            return {"error": "`fields` must be an object of the fields to set."}
+        echoed = {k for k in ("created_at", "updated_at") if k in legacy_fields}
+        if legacy_fields.get("id") == orch["id"]:
+            echoed.add("id")
+        settable = _UPDATE_ORCHESTRATION_FIELDS | set(RUN_CAP_PROPERTIES)
+        refused_keys = sorted(set(legacy_fields) - settable - echoed)
+        if refused_keys:
+            return {"error": f"update_orchestration cannot set {', '.join(refused_keys)}: it sets "
+                             f"{', '.join(sorted(settable))}, on the workflow `orch_id` names."}
+        fields = {k: v for k, v in legacy_fields.items() if k in settable}
         for key in ("name", "description", "entry_step_id", "state_schema_json",
                     "steps_json", "max_total_turns", "timeout_minutes"):
             if key in args and args[key] is not None:
                 fields[key] = args[key]
+        try:
+            fields.update(_run_cap_args({**legacy_fields, **args}))
+        except ValueError as e:
+            return {"error": str(e)}
         _normalize_state_schema_arg(fields)
+        if (refused := _refuse_engine_key_defaults(fields)) is not None:
+            return refused
         _normalize_steps_arg(fields)
         if "steps" in fields and isinstance(fields["steps"], list):
             fields["steps"] = _fill_step_defaults(fields["steps"])
+            refused = _refuse_misshapen_steps(fields["steps"])
+            if refused:
+                return refused
+            refused = _refuse_ungated_transform(fields["steps"])
+            if refused:
+                return refused
+            refused = _refuse_knowledge_off(fields["steps"])
+            if refused:
+                return refused
+            refused = _refuse_unsafe_expression(fields["steps"])
+            if refused:
+                return refused
+            refused = await _refuse_browser_steps(fields["steps"], orch.get("steps"), wired=True,
+                                                  schema=fields.get("state_schema", orch.get("state_schema")))
+            if refused:
+                return refused
         if not fields or set(fields.keys()) - {"orch_id"} == set():
             return {"error": "no updatable fields supplied"}
         # Drop orch_id if it snuck in
         fields.pop("orch_id", None)
-        orchs[idx].update(fields)
-        orchs[idx]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        save_orchestrations(orchs)
-        return {"status": "updated", "orchestration": orchs[idx]}
+        orch.update(fields)
+        orch["id"] = args["orch_id"]  # the id is not patchable (F784), as `update_agent`'s is not
+        orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        await save_orchestration(await _steps_as_run_calls(orch, server_module))
+        _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
+        return {"status": "updated", "orchestration": orch}
 
     elif tool_name == "create_orchestration_skeleton":
-        orchs = load_orchestrations()
-        orch_id = _random_id("orch_")
+        if (refusal := await _refused("orchestration", 1)) is not None:
+            return refusal
+        existing_ids = {o.get("id") for o in await load_orchestrations()}
+        orch_id = _mint_id("orch")
+        while orch_id in existing_ids:
+            orch_id = _mint_id("orch")
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         _normalize_state_schema_arg(args)
+        if (refused := _refuse_engine_key_defaults(args)) is not None:
+            return refused
+        try:
+            caps = _run_cap_args(args)
+        except ValueError as e:
+            return {"error": str(e)}
         orch = {
             "id": orch_id,
             "name": args["name"],
@@ -1070,20 +3261,21 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
             "entry_step_id": args["entry_step_id"],
             "state_schema": args.get("state_schema", {}),
             "max_total_turns": args.get("max_total_turns", 100),
-            "max_total_cost_usd": None,
             "timeout_minutes": args.get("timeout_minutes", 30),
+            **{k: v for k, v in caps.items() if v is not None},
             "trigger": "manual",
             "created_at": now,
             "updated_at": now,
         }
-        orchs.append(orch)
-        save_orchestrations(orchs)
+        if (run := _current_run.get()) is not None:
+            orch["building_run"] = run  # cleared when it validates (F156)
+        await save_orchestration(await _steps_as_run_calls(orch, server_module))
+        _emit(events, "orchestration", "created", orch["id"], orch["name"], orch)
         return {"status": "created", "orchestration": orch}
 
     elif tool_name == "add_steps":
-        orchs = load_orchestrations()
-        idx = next((i for i, o in enumerate(orchs) if o["id"] == args["orch_id"]), None)
-        if idx is None:
+        orch = await _visible_orchestration(args["orch_id"])
+        if orch is None:
             return {"error": f"Orchestration '{args['orch_id']}' not found"}
         raw_steps = args.get("steps_json", args.get("steps", ""))
         _normalize_steps_arg(args)
@@ -1096,7 +3288,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
                          f"Received: {preview}... "
                          f"Hint: ensure all inner quotes are escaped as \\\" and inner *_json values use \\\\\\\" for their quotes."
             }
-        existing = orchs[idx].get("steps", []) or []
+        existing = orch.get("steps", []) or []
         existing_ids = {s.get("id") for s in existing}
         incoming_ids = [s.get("id") for s in new_steps if s.get("id")]
         dup = existing_ids.intersection(incoming_ids)
@@ -1106,25 +3298,40 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
         # pattern past any existing steps.
         offset = len(existing)
         filled = _fill_step_defaults(new_steps)
+        refused = _refuse_misshapen_steps(filled)
+        if refused:
+            return refused
+        refused = _refuse_ungated_transform(filled)
+        if refused:
+            return refused
+        refused = _refuse_knowledge_off(filled)
+        if refused:
+            return refused
+        refused = _refuse_unsafe_expression(filled)
+        if refused:
+            return refused
+        refused = await _refuse_browser_steps(filled, existing, schema=orch.get("state_schema"))
+        if refused:
+            return refused
         for i, s in enumerate(filled):
             s["position_x"] = _POS_X_START + (offset + i) * _POS_X_STEP
             s["position_y"] = _zigzag_y(offset + i)
-        orchs[idx]["steps"] = existing + filled
-        orchs[idx]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        save_orchestrations(orchs)
+        orch["steps"] = existing + filled
+        orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        await save_orchestration(await _steps_as_run_calls(orch, server_module))
+        _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
         return {
             "status": "appended",
             "added_step_ids": [s["id"] for s in filled],
-            "total_steps": len(orchs[idx]["steps"]),
+            "total_steps": len(orch["steps"]),
         }
 
     elif tool_name == "add_single_step":
         # Flat-parameter tool: assemble a step dict from individual args,
         # then reuse the same pipeline as add_steps.
-        orchs = load_orchestrations()
         orch_id = args.get("orch_id")
-        idx = next((i for i, o in enumerate(orchs) if o["id"] == orch_id), None)
-        if idx is None:
+        orch = await _visible_orchestration(orch_id)
+        if orch is None:
             return {"error": f"Orchestration '{orch_id}' not found"}
 
         step_id = args.get("step_id")
@@ -1136,7 +3343,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
             return {"error": "name and type are required"}
 
         # Check duplicate
-        existing = orchs[idx].get("steps", []) or []
+        existing = orch.get("steps", []) or []
         if any(s.get("id") == step_id for s in existing):
             return {"error": f"Duplicate step id: {step_id}"}
 
@@ -1152,32 +3359,47 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
         # Normalize *_json fields (route_map_json → route_map, etc.)
         step = _normalize_step_inputs(step)
         filled = _fill_step_defaults([step])
+        refused = _refuse_misshapen_steps(filled)
+        if refused:
+            return refused
+        refused = _refuse_ungated_transform(filled)
+        if refused:
+            return refused
+        refused = _refuse_knowledge_off(filled)
+        if refused:
+            return refused
+        refused = _refuse_unsafe_expression(filled)
+        if refused:
+            return refused
+        refused = await _refuse_browser_steps(filled, existing, schema=orch.get("state_schema"))
+        if refused:
+            return refused
         # Position continues the zig-zag past any existing steps.
         offset = len(existing)
         filled[0]["position_x"] = _POS_X_START + offset * _POS_X_STEP
         filled[0]["position_y"] = _zigzag_y(offset)
-        orchs[idx]["steps"] = existing + filled
-        orchs[idx]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        save_orchestrations(orchs)
+        orch["steps"] = existing + filled
+        orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        await save_orchestration(await _steps_as_run_calls(orch, server_module))
+        _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
         return {
             "status": "step_added",
             "step_id": filled[0]["id"],
-            "total_steps": len(orchs[idx]["steps"]),
+            "total_steps": len(orch["steps"]),
         }
 
     elif tool_name == "add_multiple_steps":
         # Batch version of add_single_step — takes a native array of step objects.
-        orchs = load_orchestrations()
         orch_id = args.get("orch_id")
-        idx = next((i for i, o in enumerate(orchs) if o["id"] == orch_id), None)
-        if idx is None:
+        orch = await _visible_orchestration(orch_id)
+        if orch is None:
             return {"error": f"Orchestration '{orch_id}' not found"}
 
         raw_steps = args.get("steps") or []
         if not isinstance(raw_steps, list) or not raw_steps:
             return {"error": "steps must be a non-empty array of step objects"}
 
-        existing = orchs[idx].get("steps", []) or []
+        existing = orch.get("steps", []) or []
         existing_ids = {s.get("id") for s in existing}
 
         processed = []
@@ -1197,101 +3419,1074 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
             processed.append(step)
 
         filled = _fill_step_defaults(processed)
+        refused = _refuse_misshapen_steps(filled)
+        if refused:
+            return refused
+        refused = _refuse_ungated_transform(filled)
+        if refused:
+            return refused
+        refused = _refuse_knowledge_off(filled)
+        if refused:
+            return refused
+        refused = _refuse_unsafe_expression(filled)
+        if refused:
+            return refused
+        refused = await _refuse_browser_steps(filled, existing, schema=orch.get("state_schema"))
+        if refused:
+            return refused
         offset = len(existing)
         for i, s in enumerate(filled):
             s["position_x"] = _POS_X_START + (offset + i) * _POS_X_STEP
             s["position_y"] = _zigzag_y(offset + i)
-        orchs[idx]["steps"] = existing + filled
-        orchs[idx]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        save_orchestrations(orchs)
+        orch["steps"] = existing + filled
+        orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        await save_orchestration(await _steps_as_run_calls(orch, server_module))
+        _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
         return {
             "status": "steps_added",
             "added_step_ids": [s["id"] for s in filled],
-            "total_steps": len(orchs[idx]["steps"]),
+            "total_steps": len(orch["steps"]),
         }
 
     elif tool_name == "set_orchestration_meta":
-        orchs = load_orchestrations()
-        idx = next((i for i, o in enumerate(orchs) if o["id"] == args["orch_id"]), None)
-        if idx is None:
+        orch = await _visible_orchestration(args["orch_id"])
+        if orch is None:
             return {"error": f"Orchestration '{args['orch_id']}' not found"}
         # Accept flat top-level fields (preferred); legacy `fields` wrapper still
         # works for callers that haven't migrated yet.
         raw_fields = dict(args.get("fields") or {})
         for key in ("name", "description", "entry_step_id", "state_schema_json",
-                    "max_total_turns", "timeout_minutes"):
+                    "max_total_turns", "timeout_minutes", "strict_state_types", "result_key"):
             if key in args and args[key] is not None:
                 raw_fields[key] = args[key]
         _normalize_state_schema_arg(raw_fields)
-        allowed = {"name", "description", "entry_step_id", "state_schema", "max_total_turns", "timeout_minutes"}
+        if (refused := _refuse_engine_key_defaults(raw_fields)) is not None:
+            return refused
+        allowed = {"name", "description", "entry_step_id", "state_schema",
+                   "max_total_turns", "timeout_minutes", "strict_state_types", "result_key"}
         fields = {k: v for k, v in raw_fields.items() if k in allowed}
+        try:
+            fields.update(_run_cap_args({**dict(args.get("fields") or {}), **args}))
+        except ValueError as e:
+            return {"error": str(e)}
         if not fields:
-            return {"error": f"No allowed meta fields to set. Allowed: {sorted(allowed)}"}
-        orchs[idx].update(fields)
-        orchs[idx]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        save_orchestrations(orchs)
+            return {"error": f"No allowed meta fields to set. Allowed: {sorted(allowed | set(RUN_CAP_PROPERTIES))}"}
+        orch.update(fields)
+        orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        await save_orchestration(await _steps_as_run_calls(orch, server_module))
+        _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
         return {"status": "meta_updated", "fields": list(fields.keys())}
 
     elif tool_name == "update_step":
-        orchs = load_orchestrations()
-        idx = next((i for i, o in enumerate(orchs) if o["id"] == args["orch_id"]), None)
-        if idx is None:
+        orch = await _visible_orchestration(args["orch_id"])
+        if orch is None:
             return {"error": f"Orchestration '{args['orch_id']}' not found"}
         step_id = args["step_id"]
         patch = _normalize_patch_arg(args)
         if not isinstance(patch, dict) or not patch:
             return {"error": "patch_json must decode to a non-empty JSON object of step fields"}
-        steps = orchs[idx].get("steps", []) or []
+        steps = orch.get("steps", []) or []
         sidx = next((i for i, s in enumerate(steps) if s.get("id") == step_id), None)
         if sidx is None:
             return {"error": f"Step '{step_id}' not found in orchestration '{args['orch_id']}'"}
+        if "recording_inputs_json" in patch:
+            patch["recording_inputs"] = _parse_json_field(patch.pop("recording_inputs_json"), {})
+        had = list(steps)
         merged = {**steps[sidx], **patch}
         merged["id"] = step_id  # id is immutable via patch
         steps[sidx] = _fill_step_defaults([merged])[0]
-        orchs[idx]["steps"] = steps
-        orchs[idx]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        save_orchestrations(orchs)
-        return {"status": "step_updated", "step": steps[sidx]}
+        refused = _refuse_misshapen_steps([steps[sidx]])
+        if refused:
+            return refused
+        refused = _refuse_ungated_transform([steps[sidx]])
+        if refused:
+            return refused
+        refused = _refuse_knowledge_off([steps[sidx]])
+        if refused:
+            return refused
+        refused = _refuse_unsafe_expression([steps[sidx]])
+        if refused:
+            return refused
+        refused = await _refuse_browser_steps([steps[sidx]], had, schema=orch.get("state_schema"))
+        if refused:
+            return refused
+        orch["steps"] = steps
+        orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        await save_orchestration(await _steps_as_run_calls(orch, server_module))
+        _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
+        said = {"status": "step_updated", "step": steps[sidx]}
+        # Saved all the same: a build may point a step at the next before adding it (Naveen 11-08, #376). A run of
+        # the workflow is refused until the step exists; the answer says so now (F1458).
+        from core.orchestration.step_links import links_of
+        ids = {s.get("id") for s in steps}
+        if missing := [(field, target) for field, target in links_of(steps[sidx]) if target not in ids]:
+            said["warnings"] = [
+                f"Step '{step_id}' {field} names '{target}', which is not a step yet — add it, or point "
+                f"{field} at a step that exists, before the workflow runs." for field, target in missing]
+        return said
 
     elif tool_name == "remove_step":
-        orchs = load_orchestrations()
-        idx = next((i for i, o in enumerate(orchs) if o["id"] == args["orch_id"]), None)
-        if idx is None:
+        orch = await _visible_orchestration(args["orch_id"])
+        if orch is None:
             return {"error": f"Orchestration '{args['orch_id']}' not found"}
         step_id = args["step_id"]
-        steps = orchs[idx].get("steps", []) or []
+        steps = orch.get("steps", []) or []
         before = len(steps)
         steps = [s for s in steps if s.get("id") != step_id]
         if len(steps) == before:
             return {"error": f"Step '{step_id}' not found in orchestration '{args['orch_id']}'"}
-        orchs[idx]["steps"] = steps
-        orchs[idx]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        save_orchestrations(orchs)
-        return {"status": "step_removed", "step_id": step_id, "remaining_steps": len(steps)}
+        orch["steps"] = steps
+        # Every field that named it is cleared, as the canvas's delete clears them (F1458, #376): left, the step
+        # before it pointed at nothing and its run failed there, after the steps before it had run.
+        from core.orchestration.step_links import clear_links_to
+        cleared = clear_links_to(orch, step_id)
+        orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        await save_orchestration(await _steps_as_run_calls(orch, server_module))
+        _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
+        said = {"status": "step_removed", "step_id": step_id, "remaining_steps": len(steps)}
+        if cleared:
+            said["cleared"] = cleared
+        return said
+
+    elif tool_name == "deploy_orchestration":
+        orch = await _visible_orchestration(args["orch_id"])
+        if orch is None:
+            return {"error": f"Orchestration '{args['orch_id']}' not found"}
+        from core.orchestration.deploy import deploy_as_agent
+        # A new workflow agent is an agent row like any other, and asks for room
+        # first (F436, F154's posture); one already made is only answered.
+        already = any(a.get("orchestration_id") == orch["id"] for a in await load_user_agents())
+        if not already and (refusal := await _refused("agent", 1)) is not None:
+            return refusal
+        result = await deploy_as_agent(orch["id"])
+        if result.get("agent"):
+            _emit(events, "agent", "created", result["agent_id"], result["agent"]["name"], result["agent"])
+        # A deployed workflow keeps its build's mark: the parent that calls it
+        # validates it and finishes it, and `finish_build` keeps it regardless (F429).
+        return result
 
     elif tool_name == "validate_orchestration":
-        orchs = load_orchestrations()
-        orch = next((o for o in orchs if o["id"] == args["orch_id"]), None)
-        if not orch:
+        orch = await _visible_orchestration(args["orch_id"])
+        if orch is None:
             return {"error": f"Orchestration '{args['orch_id']}' not found"}
-        return _validate_orchestration(orch)
+        # The agents its steps name, so a step whose agent is missing or runs no
+        # orchestration is caught here rather than on the first run (F264).
+        agents = {a.get("id"): a for a in await load_user_agents() if a.get("id")}
+        # And the workflows it calls, at any depth: a parent passes only with what
+        # it calls, so a nested build is validated, and finished, whole (F429).
+        called, issues = await _workflows_called(orch, agents)
+        # And the knowledge bases its Retrieve and Ingest steps name, while Knowledge is on.
+        knowledge_on = builder_tool_offered("list_knowledge_bases")
+        kbs = None
+        if knowledge_on and any(s.get("type") in KNOWLEDGE_STEP_TYPES for w in (orch, *called) for s in w.get("steps") or []):
+            from core.knowledge import bases
+            kbs = {kb.id: kb for kb in await bases.list_bases()}
+        verdict = _validate_orchestration(orch, agents=agents, kbs=kbs, knowledge_off=not knowledge_on)
+        issues = [*verdict["issues"], *issues]
+        # The inner workflows this build made are checked with it; the workspace's
+        # own, which run today, only have to exist — never refused, never rewritten.
+        run = _current_run.get()
+        ours = [child for child in called if run is not None and child.get("building_run") == run]
+        for child in ours:
+            child_verdict = _validate_orchestration(child, agents=agents, kbs=kbs, knowledge_off=not knowledge_on,
+                                                    allow_dead_ends=True)
+            issues += [f"In the inner workflow '{child.get('name')}' ({child['id']}): {i}"
+                       for i in child_verdict["issues"]]
+            verdict["warnings"] = [*verdict.get("warnings", []), *(
+                f"In the inner workflow '{child.get('name')}' ({child['id']}): {w}"
+                for w in child_verdict.get("warnings", []))]
+        # F489: a forced tool nothing provides fails the first run; an agent naming one runs without it.
+        from core import builder_guard
+        tool_issues, tool_warnings = await builder_guard.missing_in([orch, *ours], agents, server_module)
+        issues += tool_issues
+        verdict["warnings"] = [*verdict.get("warnings", []), *tool_warnings]
+        # E1: a Tool step's set arguments fit its tool, or every run fails.
+        issues += await builder_guard.argument_issues([orch, *ours], server_module)
+        # Decision 4 (BWA1): in a build of its own, nothing that changes something outside runs with nobody
+        # approving it, except what the approved plan lets act without asking. A workflow it only edits is warned.
+        plan, made = await _plan_and_agents_of(run)
+        guard_issues, guard_warnings = await builder_guard.unapproved(
+            [orch, *ours], agents, server_module, made_agents=made, exempt=builder_guard.exempt_in_plan(plan),
+            strict=run is not None and orch.get("building_run") == run)
+        issues += guard_issues
+        verdict["warnings"] = [*verdict.get("warnings", []), *guard_warnings]
+        verdict = {**verdict, "ok": not issues, "issues": issues}
+        if verdict["ok"]:
+            for workflow in (orch, *ours):
+                workflow.pop("building_issues", None)
+                if workflow.pop("building_run", None) is not None:
+                    await save_orchestration(await _steps_as_run_calls(workflow, server_module))  # finished: `finish_build` keeps it
+        elif run is not None and orch.get("building_run") == run:
+            # Kept with the build in the making, for `finish_build`'s line if it is rolled back (F867).
+            said = _issues_said(issues)
+            if orch.get("building_issues") != said:
+                orch["building_issues"] = said
+                await save_orchestration(await _steps_as_run_calls(orch, server_module))
+        return verdict
+
+    elif tool_name == "finish_build":
+        # F156: remove what this run's saver started and never validated. Never
+        # another run's, and nothing at all outside a run. F429: and never what
+        # something still runs — a workflow agent (which is how any other
+        # workflow calls it) or a schedule. That is kept, and said.
+        run = _current_run.get()
+        removed: list[str] = []
+        removed_names: list[str] = []
+        kept: list[dict] = []
+        mine = [o for o in await load_orchestrations() if o.get("building_run") == run] if run is not None else []
+        if mine:
+            from core.store import schedules as schedule_store
+            from core.store.resources import delete_orchestration as _delete_orch
+            deployed = {a.get("orchestration_id") for a in await load_user_agents() if a.get("orchestration_id")}
+            scheduled = {s.get("target_id") for s in await schedule_store.load()
+                         if s.get("target_type") == "orchestration"}
+            for orch in mine:
+                reasons = [why for why, holds in (("a workflow agent runs it", orch["id"] in deployed),
+                                                  ("a schedule runs it", orch["id"] in scheduled)) if holds]
+                if reasons:
+                    orch.pop("building_run", None)
+                    orch.pop("building_issues", None)
+                    await save_orchestration(await _steps_as_run_calls(orch, server_module))
+                    kept.append({"id": orch["id"], "name": orch.get("name"), "reason": " and ".join(reasons)})
+                    continue
+                await _delete_orch(orch["id"])
+                # Why, in the validator's words (F867): the person cannot fix what they are not told. One never
+                # checked says so too: every removal a build makes carries its reason (F1281).
+                said = orch.get("building_issues") or []
+                _emit(events, "orchestration", "deleted", orch["id"], orch.get("name"),
+                      reason="it never passed validation" + (": " + "; ".join(said) if said else ""))
+                removed.append(orch["id"])
+                removed_names.append(orch.get("name") or orch["id"])
+        if run is not None:
+            from core import agent_memory
+            from core.orchestration.dependents import what_uses_agent
+            from core.store.resources import delete_agent as _delete_agent
+            left = await _orphaned_agents(run, removed)
+            # As the agent delete does (F467, F469): one something uses stays, and its memory goes with it. A lead
+            # the build made goes on one pass, so the member it handed work to is free on the next.
+            while left:
+                free = [agent for agent in left if not await what_uses_agent(agent["id"])]
+                if not free:
+                    break
+                for agent in free:
+                    await _delete_agent(agent["id"])
+                    await agent_memory.wipe(agent["id"])
+                    _emit(events, "agent", "deleted", agent["id"], agent.get("name"),
+                          reason="the build stopped before its workflow was saved")
+                    removed_names.append(agent.get("name") or agent["id"])
+                left = [agent for agent in left if agent not in free]
+        stopped = await _why_nothing_was_built(run, removed) if run is not None else ""
+        if stopped:
+            events.append({"type": "build_stopped", "reason": stopped})
+        return {"status": "finished", "removed": removed, "removed_names": removed_names, "kept": kept,
+                **({"stopped": stopped} if stopped else {})}
+
+    # ── Custom HTTP tools ────────────────────────────────────────────────────
+
+    elif tool_name == "list_custom_tools":
+        from core.routes.tools import load_custom_tools
+        from core.tool_tags import tags_of
+        return [
+            {
+                "name": t.get("name"),
+                "description": t.get("description", ""),
+                "method": t.get("method", "GET"),
+                "url": t.get("url", ""),
+                "group": t.get("group"),
+                "tool_type": t.get("tool_type", "http"),
+                # What it says it does (TAG1); "not set" until someone saves it, and who set them when not a person.
+                "tags": tags_of(t.get("annotations")) or "not set",
+                **({"tags_by": t["annotations_by"]} if t.get("annotations_by") else {}),
+            }
+            for t in await load_custom_tools()
+        ]
+
+    elif tool_name == "create_http_tool":
+        from core.store.resources import save_tool
+
+        if refused := await http_tool_issues(args):
+            return refused
+        name = _tool_name(args.get("name"))
+        url = str(args.get("url") or "").strip()
+        headers = _parse_json_field(args.get("headers_json"), {})
+        input_schema = _parse_json_field(args.get("input_schema_json"), {"type": "object", "properties": {}})
+        group_name = str(args.get("group") or "").strip()
+        group_id = None
+        if group_name:
+            from core.routes.tools import _group_id, _upsert_group
+            group_id = _group_id(group_name)
+            await _upsert_group({"id": group_id, "name": group_name, "description": ""})
+
+        tool = {
+            "name": name,
+            "generalName": name.replace("_", " ").title()[:80],
+            "description": str(args.get("description") or "").strip(),
+            "tool_type": "http",
+            "method": str(args.get("method") or "GET").upper(),
+            "url": url,
+            "headers": headers,
+            "inputSchema": input_schema,
+            "group": group_id,
+        }
+        # Stored as `body`, the key `http_tool` and both tool editors use. It was
+        # stored under the parameter's own name, so the template never reached
+        # the request and the bare arguments went out instead (F2).
+        body_template = args.get("body_template")
+        if body_template:
+            tool["body"] = body_template
+        # Its method's tags, made stricter by what it claims, marked as the builder's: believed when they restrict, as a
+        # server's are (F488, TAG1). Replacing a tool the person tagged starts from their tags.
+        from core.store.resources import load_tools
+        before = next((t for t in await load_tools() if t.get("name") == name), None)
+        # A tool made from a read API keeps to its base (F944, A8): only code writes a lock, and a builder never
+        # moves a locked tool off it; replacing it carries the lock forward.
+        from core.http_tool import under_lock
+        from core.http_tool import MAKING_TOOLS
+        # The stored lock, or a new one only from the build's own save (SAI2's review, blocker 1): never a caller's.
+        lock = str((before or {}).get("base_lock") or (args.get("base_lock") if MAKING_TOOLS.get() else "") or "")
+        if lock and not under_lock(url, lock):
+            return {"error": f"`{name}` was made for {lock}, and keeps to that API: a tool for another address is a "
+                             "new tool, under another name."}
+        if lock:
+            tool["base_lock"] = lock
+            if before and before.get("base_lock"):
+                # A re-create within its API keeps the key its Connect card saved (SAI2's nit).
+                tool["headers"] = {**(before.get("headers") or {}), **headers}
+        claimed = {t: args[t] for t in ("read_only", "destructive", "idempotent", "open_world") if t in args}
+        await save_tool(_builder_tags(tool, before, claimed))
+        _emit(events, "tool", "created", name, name, tool)
+        return {"status": "created", "id": name, "name": name}
+
+    elif tool_name == "update_http_tool":
+        from core.http_facts import new_inputs, reads
+        from core.store.resources import load_tools, save_tool
+
+        name = str(args.get("name") or "").strip()
+        before = next((t for t in await load_tools() if t.get("name") == name), None)
+        if refused := await http_tool_update_issues(before, args):
+            return refused
+        # Everything it was but what this changes, its tags derived again as a replace derives them (TAG1).
+        tool = {k: v for k, v in before.items() if k not in ("annotations", "annotations_by")}
+        if args.get("url"):
+            tool["url"] = str(args["url"]).strip()
+        if args.get("method"):
+            tool["method"] = str(args["method"]).strip().upper()
+        if args.get("description") is not None:
+            tool["description"] = str(args["description"]).strip()
+        schema, added = new_inputs(before.get("inputSchema"), tool["url"])
+        # An undo's: only inputs its address no longer reads, never one it still needs.
+        drop = [n for n in args.get("drop_inputs") or [] if isinstance(n, str) and n not in reads(tool["url"])]
+        if drop:
+            schema["properties"] = {k: v for k, v in (schema.get("properties") or {}).items() if k not in drop}
+            if schema.get("required"):
+                schema["required"] = [r for r in schema["required"] if r not in drop]
+        tool["inputSchema"] = schema
+        await save_tool(_builder_tags(tool, before, None))
+        _emit(events, "tool", "updated", name, name, tool)
+        return {"status": "updated", "name": name, **({"added_inputs": added} if added else {})}
+
+    elif tool_name == "update_python_tool":
+        from core.store.resources import load_tools, save_tool
+
+        name = str(args.get("name") or "").strip()
+        before = next((t for t in await load_tools() if t.get("name") == name), None)
+        if refused := await python_code_issues(before, args):
+            return refused
+        tool, _, refused = await python_tool_draft(_python_update_args(before, args))
+        if refused:
+            return refused
+        if before.get("group"):
+            tool["group"] = before["group"]
+        await save_tool(_builder_tags(tool, before, None))
+        _emit(events, "tool", "updated", name, name, tool)
+        return {"status": "updated", "name": name}
+
+    elif tool_name == "test_code_change":
+        from core import python_edits
+        from core.execution import ExecUnsupported, Network
+        from core.store.resources import load_tools
+
+        item, why = await _change_fix(args)
+        if why:
+            return {"error": why}
+        code, samples = item["call"]["args"]["code"], list((item.get("fields") or {}).get("test_args") or [])
+        name = item["target"].get("name")
+        tool = next((t for t in await load_tools() if t.get("name") == name), {}) or {}
+        try:
+            results = await python_edits.run_samples(code, tool.get("globals") or [], samples, Network.INTERNET)
+        except ExecUnsupported as exc:
+            return {"error": f"This install can't run Python code: {exc}"}
+        passed = bool(results) and all(r["ok"] for r in results)
+        if passed:
+            await python_edits.keep_pass(code, samples)
+        return await _tested_said(passed, results, tool.get("globals") or [])
+
+    elif tool_name == "create_python_tool":
+        from core.store.resources import save_tool
+
+        tool, before, refused = await python_tool_draft(args)
+        if refused:
+            return refused
+        name = tool["name"]
+        group_name = str(args.get("group") or "").strip()
+        if group_name:
+            from core.routes.tools import _group_id, _upsert_group
+            tool["group"] = _group_id(group_name)
+            await _upsert_group({"id": tool["group"], "name": group_name, "description": ""})
+        claimed = {t: args[t] for t in ("read_only", "destructive", "idempotent", "open_world") if t in args}
+        await save_tool(_builder_tags(tool, before, claimed))
+        _emit(events, "tool", "created", name, name, tool)
+        return {"status": "created", "id": name, "name": name, "reads_variables": tool["globals"],
+                "next": "Prove it with test_python_tool."}
+
+    elif tool_name == "test_python_tool":
+        from fastapi import HTTPException
+
+        from core.routes.tools import PythonTestRequest, test_python_tool
+        from core.store.resources import load_tools
+
+        tool = next((t for t in await load_tools() if t.get("name") == _tool_name(args.get("name"))), None)
+        if tool is None or tool.get("tool_type") != "python":
+            return {"error": f"No Python tool named '{args.get('name')}'. Make it with create_python_tool first."}
+        call_args = _parse_json_field(args.get("args_json"), {})
+        if not isinstance(call_args, dict):
+            return {"error": "args_json must decode to a JSON object"}
+        try:
+            ran = await test_python_tool(PythonTestRequest(code=tool.get("code") or "", args=call_args,
+                                                           globals=tool.get("globals") or None, timeout=30))
+        except HTTPException as refused:
+            return {"error": str(refused.detail)}
+        out = {"exit_code": ran["exit_code"], "stdout": (ran.get("stdout") or "")[-_TEST_OUTPUT:],
+               "stderr": (ran.get("stderr") or "")[-_TEST_OUTPUT:]}
+        if ran["exit_code"] != 0:
+            # A failed run is the model's to fix, and so never a step's finish (E2): its errors' end says why.
+            why = (out["stderr"] or out["stdout"])[-600:].strip() or "no output"
+            return {"error": f"The test failed (exit code {ran['exit_code']}): {why}", **out}
+        return out
+
+    elif tool_name == "import_openapi":
+        from core.openapi_import import parse_openapi_spec
+        from core.routes.tools import _group_id, _parse_spec_text, _upsert_group
+        from core.store.resources import save_tools
+
+        try:
+            spec = _parse_spec_text(args.get("spec_text") or "")
+        except Exception as exc:  # HTTPException from the shared parser
+            return {"error": f"Could not parse the spec: {getattr(exc, 'detail', exc)}"}
+        try:
+            generated = parse_openapi_spec(
+                spec,
+                base_url=(args.get("base_url") or None),
+                name_prefix=str(args.get("name_prefix") or ""),
+            )
+        except ValueError as exc:
+            return {"error": str(exc)}
+
+        # An operation that starts a phone call is left out, and said (F497); the rest of the API still comes in.
+        from core.builder_guard import PLACES_CALLS, places_calls
+        left_out = [t["name"] for t in generated if places_calls(t.get("url") or "", t.get("method"))]
+        generated = [t for t in generated if t["name"] not in left_out]
+        if not generated:
+            return {"error": PLACES_CALLS}
+
+        info = spec.get("info") or {}
+        group_name = (
+            str(args.get("group") or "").strip()
+            or str(info.get("title") or "").strip()
+            or str(args.get("name_prefix") or "").strip()
+            or "Imported API"
+        )
+        group = {
+            "id": _group_id(group_name),
+            "name": group_name,
+            "description": str(info.get("description") or "").strip()[:500],
+        }
+        for t in generated:
+            t["group"] = group["id"]
+        await _upsert_group(group)
+        claims = _parse_json_field(args.get("tags_json"), {})
+        claims = claims if isinstance(claims, dict) else {}
+        prefix = str(args.get("name_prefix") or "")
+        from core.store.resources import load_tools
+        before = {t.get("name"): t for t in await load_tools()}
+
+        def _claimed(name: str):
+            claim = claims.get(name, claims.get(name[len(prefix):] if prefix and name.startswith(prefix) else None))
+            return claim if isinstance(claim, dict) else None
+
+        await save_tools([_builder_tags(t, before.get(t["name"]), _claimed(t["name"])) for t in generated])
+        # One event for the import, not one per operation: a 60-endpoint spec
+        # would otherwise fill the panel with sixty identical banners.
+        _emit(events, "tool", "created", group["id"], group_name,
+              {"group": group, "count": len(generated), "names": [t["name"] for t in generated]})
+        return {
+            "status": "imported",
+            "id": group["id"],
+            "name": group_name,
+            "tool_names": [t["name"] for t in generated],
+            "count": len(generated),
+            **({"left_out": left_out, "why": PLACES_CALLS} if left_out else {}),
+        }
+
+    elif tool_name == "delete_custom_tool":
+        refused = _require_confirm(args, f"delete the tool '{args.get('name')}'")
+        if refused:
+            return refused
+        from core.orchestration.dependents import tool_refusal, what_uses_tool
+        from core.store.resources import delete_tool_named
+        name = str(args.get("name") or "")
+        # Never from under a workflow's step that uses it (F1348): the Tools screen and the change route say the same.
+        if refused := tool_refusal(name, await what_uses_tool(name)):
+            return {"error": refused}
+        if not await delete_tool_named(name):
+            return {"error": f"Custom tool '{name}' not found"}
+        _emit(events, "tool", "deleted", name, name)
+        return {"status": "deleted", "id": name, "name": name}
+
+    # ── Skills ───────────────────────────────────────────────────────────────
+
+    elif tool_name == "list_knowledge_bases":
+        if not builder_tool_offered(tool_name):
+            return {"error": f"{_KNOWLEDGE_OFF}: there are no knowledge bases to list, and retrieve and "
+                             f"ingest steps are not available."}
+        from core.knowledge import bases
+        return [{"id": kb.id, "name": kb.name, "description": kb.description, "folder": kb.folder,
+                 "status": kb.status, "top_k": kb.retrieval.top_k}
+                for kb in await bases.list_bases()]
+
+    elif tool_name == "list_skills":
+        from core import skills as skills_mod
+        return await skills_mod.list_skills()
+
+    elif tool_name == "get_skill":
+        from core import skills as skills_mod
+        skill = await skills_mod.get_skill(str(args.get("name") or ""))
+        if skill is None:
+            return {"error": f"Skill '{args.get('name')}' not found"}
+        return skill
+
+    elif tool_name in ("create_skill", "update_skill"):
+        from core import skills as skills_mod
+
+        name = skills_mod.normalize_name(str(args.get("name") or ""))
+        if not skills_mod._NAME_RE.match(name):
+            return {"error": f"'{name}' is not a usable skill name (letters, digits, ., _, -)"}
+        library = await skills_mod.load_library()
+        existing = next((s for s in library if (s.get("name") or s.get("id")) == name), None)
+        if tool_name == "update_skill" and existing is None:
+            return {"error": f"Skill '{name}' is not in the library — create it first"}
+        description = str(args.get("description") or (existing or {}).get("description") or "").strip()
+        body = args.get("body")
+        if body is None:
+            body = (existing or {}).get("body", "")
+        if not description:
+            return {"error": "description is required — it is how an agent decides to load the skill"}
+        document = {"id": name, "name": name, "description": description, "body": body}
+        await skills_mod.save_library([s for s in library if (s.get("name") or s.get("id")) != name] + [document])
+        _emit(events, "skill", "updated" if existing else "created", name, name, document)
+        return {
+            "status": "updated" if existing else "created",
+            "id": name,
+            "name": name,
+        }
+
+    elif tool_name == "attach_skills":
+        from core import skills as skills_mod
+
+        agent = await _load_agent(args["agent_id"])
+        if not agent:
+            return {"error": f"Agent '{args['agent_id']}' not found"}
+        if agent.get("system"):
+            return {"error": f"Agent '{args['agent_id']}' is part of the builder itself and cannot be edited."}
+        wanted = [skills_mod.normalize_name(n) for n in (args.get("names") or [])]
+        known = {s["name"] for s in await skills_mod.list_skills()}
+        missing = [n for n in wanted if n not in known]
+        if missing:
+            return {"error": f"No such skill(s): {missing}. Call list_skills to see what exists."}
+        agent["skills"] = wanted
+        agent["id"] = args["agent_id"]
+        await save_agent(agent)
+        _emit(events, "agent", "updated", agent["id"], agent.get("name"), agent)
+        return {"status": "updated", "id": agent["id"], "name": agent.get("name"), "skills": wanted}
+
+    # ── Schedules ────────────────────────────────────────────────────────────
+
+    elif tool_name == "list_schedules":
+        from core.store import schedules as schedule_store
+        return [
+            {
+                "id": s.get("id"),
+                "name": s.get("name"),
+                "enabled": s.get("enabled", True),
+                "target_type": s.get("target_type"),
+                "target_id": s.get("target_id"),
+                "schedule_type": s.get("schedule_type"),
+                "interval_value": s.get("interval_value"),
+                "interval_unit": s.get("interval_unit"),
+                "cron_expression": s.get("cron_expression"),
+                "next_run_at": s.get("next_run_at"),
+                "last_run_at": s.get("last_run_at"),
+            }
+            for s in await schedule_store.load()
+        ]
+
+    elif tool_name == "create_schedule":
+        from pydantic import ValidationError
+
+        from core.models_schedule import ScheduleCreate
+        from core.scheduler import _iso, _utc_now, compute_next_run
+        from core.store import schedules as schedule_store
+
+        # The target has to exist, or the schedule fires into nothing forever.
+        target_type = args.get("target_type")
+        target_id = str(args.get("target_id") or "")
+        if target_type == "agent":
+            target = await _load_agent(target_id)
+            if target is None or target.get("system"):
+                return {"error": f"Agent '{target_id}' not found"}
+        elif target_type == "orchestration":
+            if await _visible_orchestration(target_id) is None:
+                return {"error": f"Orchestration '{target_id}' not found"}
+        else:
+            return {"error": "target_type must be 'agent' or 'orchestration'"}
+
+        try:
+            body = ScheduleCreate.model_validate({
+                k: v for k, v in args.items()
+                if k in ScheduleCreate.model_fields and v is not None
+            })
+        except ValidationError as exc:
+            return {"error": f"Invalid schedule: {exc.errors()[0]['msg']}"}
+
+        schedule = body.model_dump()
+        # The routes' own check (F197): -5 minutes is a next run in the past.
+        from core.models_schedule import ScheduleInvalid, validate_timing
+        try:
+            validate_timing(schedule)
+        except ScheduleInvalid as exc:
+            return {"error": f"Invalid schedule: {exc}"}
+        # F155 (D122): always created paused, whatever was asked. The builder's
+        # schedules began each run with a restatement of the task rather than its
+        # input ("Pull the latest blog posts from our client's three competitors"
+        # with none named), so every run would have chosen its own subject. A
+        # person reads what it starts with and turns it on — on their yes in the chat
+        # (`turn_on_schedule`, F1451; Synapse AI's Turn on card), or the Schedules screen.
+        schedule["enabled"] = False
+        schedule["id"] = _mint_id("sched", length=8)
+        schedule["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        schedule["last_run_at"] = None
+        try:
+            schedule["next_run_at"] = _iso(compute_next_run(schedule, _utc_now()))
+        except Exception as exc:
+            return {"error": f"Could not work out when that would next run: {exc}"}
+        await schedule_store.save(schedule)
+        _emit(events, "schedule", "created", schedule["id"], schedule["name"], schedule)
+        return {
+            "status": "created",
+            "id": schedule["id"],
+            "name": schedule["name"],
+            "enabled": False,
+            "next_run_at": schedule["next_run_at"],
+            "prompt": schedule.get("prompt"),
+            "timezone": schedule.get("timezone") or "UTC",
+            # F1451: what the person is shown, and their yes in the chat turns it on.
+            "note": (
+                f"Created paused: nothing runs until it is turned on. Show the person the message each run "
+                f"starts with ({json.dumps(schedule.get('prompt') or '', ensure_ascii=False)}) and when it would "
+                f"first run ({schedule['next_run_at']} UTC; its times are read in "
+                f"{schedule.get('timezone') or 'UTC'}), and ask whether to turn it on; on their yes, turn it on "
+                f"with turn_on_schedule."
+            ),
+        }
+
+    elif tool_name == "set_schedule_enabled":
+        return await _switch_schedule(str(args.get("schedule_id") or ""), bool(args.get("enabled")), events)
+
+    elif tool_name in ("turn_on_schedule", "pause_schedule"):
+        return await _switch_schedule(str(args.get("schedule_id") or ""), tool_name == "turn_on_schedule", events,
+                                      same_said=True)
+
+    elif tool_name == "update_schedule":
+        # F578: the builder could only delete a schedule and create another to move its time, which lost its id
+        # and history and left the new one paused (F155). Patched as the routes' PATCH does; never its enabled
+        # state, which stays a person's to turn on (set_schedule_enabled when they ask).
+        from pydantic import ValidationError
+
+        from core.models_schedule import ScheduleInvalid, ScheduleUpdate, validate_timing
+        from core.scheduler import _iso, _utc_now, compute_next_run
+        from core.store import schedules as schedule_store
+
+        schedule_id = str(args.get("schedule_id") or "")
+        schedule = await schedule_store.get(schedule_id)
+        if schedule is None:
+            return {"error": f"Schedule '{schedule_id}' not found"}
+        try:
+            patch = ScheduleUpdate.model_validate({
+                k: v for k, v in args.items()
+                if k in ScheduleUpdate.model_fields and k != "enabled" and v is not None
+            }).model_dump(exclude_none=True)
+        except ValidationError as exc:
+            return {"error": f"Invalid schedule: {exc.errors()[0]['msg']}"}
+        if not patch:
+            return {"error": "Nothing to change: give the time, prompt, name or target that changes."}
+        patched = {**schedule, **patch}
+        if {"target_type", "target_id"} & patch.keys():
+            if patched.get("target_type") == "agent":
+                target = await _load_agent(str(patched.get("target_id") or ""))
+                if target is None or target.get("system"):
+                    return {"error": f"Agent '{patched.get('target_id')}' not found"}
+            elif await _visible_orchestration(str(patched.get("target_id") or "")) is None:
+                return {"error": f"Orchestration '{patched.get('target_id')}' not found"}
+        if {"schedule_type", "interval_value", "interval_unit", "cron_expression", "timezone"} & patch.keys():
+            try:
+                validate_timing(patched)
+                patched["next_run_at"] = _iso(compute_next_run(patched, _utc_now()))
+            except ScheduleInvalid as exc:
+                return {"error": f"Invalid schedule: {exc}"}
+            except Exception as exc:
+                return {"error": f"Could not work out when that would next run: {exc}"}
+        await schedule_store.save(patched)
+        _emit(events, "schedule", "updated", schedule_id, patched.get("name"), patched)
+        return {"status": "updated", "id": schedule_id, "name": patched.get("name"),
+                "changed": sorted(patch), "enabled": patched.get("enabled"), "next_run_at": patched.get("next_run_at")}
+
+    elif tool_name == "delete_schedule":
+        refused = _require_confirm(args, f"delete the schedule '{args.get('schedule_id')}'")
+        if refused:
+            return refused
+        from core.store import schedules as schedule_store
+
+        schedule_id = str(args.get("schedule_id") or "")
+        schedule = await schedule_store.get(schedule_id)
+        if schedule is None:
+            return {"error": f"Schedule '{schedule_id}' not found"}
+        await schedule_store.delete_one(schedule_id)
+        _emit(events, "schedule", "deleted", schedule_id, schedule.get("name"))
+        return {"status": "deleted", "id": schedule_id, "name": schedule.get("name")}
+
+    # ── Variables and runs ───────────────────────────────────────────────────
+
+    elif tool_name == "list_variables":
+        from core import variables
+
+        # Names and their references only (F1271; Naveen 10-30, D340). A plan uses a variable as {{ global.x }} and
+        # needs nothing of what it holds: a preview of its first 40 characters showed the start of any token or
+        # address saved as a plain variable (F854 hid only the ones held as secrets).
+        return variables.named(await variables.load())
+
+    elif tool_name == "list_recent_runs":
+        from core.orchestration.state import SharedState
+
+        limit = max(1, min(int(args.get("limit") or 10), 50))
+        names = {o["id"]: o.get("name") for o in await load_orchestrations() if _is_visible(o) and o.get("id")}
+        wanted = str(args.get("name") or "").strip().lower()
+        if wanted:
+            # One workflow's runs, by its name (F756): asked "is the invoice sync running?", the model read the
+            # workspace's latest run, another workflow's, as Invoice sync's.
+            names = {i: n for i, n in names.items() if wanted in str(n or "").lower()}
+            if not names:
+                return {"error": f"No workflow's name contains {args.get('name')!r}; list_orchestrations lists them."}
+        runs = await SharedState.list_runs(limit=limit, orchestration_ids=set(names))
+        return [
+            {
+                "run_id": r.get("run_id"),
+                "orchestration_id": r.get("orchestration_id"),
+                "status": r.get("status"),
+                "current_step_id": r.get("current_step_id"),
+                "started_at": r.get("started_at"),
+                "ended_at": r.get("ended_at"),
+                # What `read_workspace`'s `runs` says too (F756): whose run, why it stopped, whether it waits.
+                "workflow": names.get(r.get("orchestration_id")),
+                "error": r.get("error"),
+                "waiting_for_human": bool(r.get("waiting_for_human")),
+            }
+            for r in runs
+        ]
+
+    elif tool_name == "get_run_summary":
+        from core.builder_readers import read_workspace
+        from core.orchestration.state import SharedState
+        from core.routes.orchestrations import _run_summary
+
+        run_id = str(args.get("run_id") or "").strip()
+        flow = await _visible_orchestration(run_id)
+        if flow is not None:
+            # A workflow's id for a run's (F756: did-02 passed `orch_…` and heard "no checkpoint"): its latest run.
+            latest = await SharedState.list_runs(limit=1, orchestration_ids={run_id})
+            if not latest:
+                return {"error": f"The workflow '{flow.get('name')}' has not run yet."}
+            run_id = latest[0]["run_id"]
+        summary = await _run_summary(run_id)
+        if summary is None:
+            return {"error": f"Run '{args.get('run_id')}' has no checkpoint"}
+        if await _visible_orchestration(summary.get("orchestration_id")) is None:
+            return {"error": f"Run '{args.get('run_id')}' has no checkpoint"}
+        # The run step by step from `read_workspace`'s `run` reader, the host's where it has one (F756): its
+        # workflow's name, why it failed, what each step wrote. The snapshot's own fields stay as they were.
+        view = await read_workspace({"topic": "run", "run_id": run_id}, server_module, [])
+        if "status" not in view:  # the reader refused or failed; a failed run's view has `error` and a status
+            return {**summary, "note": f"The steps could not be read: {view['error']}"}
+        view.pop("topic", None)
+        return {**view, **summary}
+
+    # ── Deletes ──────────────────────────────────────────────────────────────
+
+    elif tool_name == "delete_agent":
+        refused = _require_confirm(args, f"delete the agent '{args.get('agent_id')}'")
+        if refused:
+            return refused
+        from core.store.resources import delete_agent as _delete_agent
+
+        agent_id = str(args.get("agent_id") or "")
+        agent = await _load_agent(agent_id)
+        if agent is None or agent.get("system"):
+            return {"error": f"Agent '{agent_id}' not found"}
+        # Not while something uses it, in the route's words (F467): it used to be
+        # deleted anyway, with the workflow steps it left pointing at nothing listed.
+        from core.orchestration.dependents import agent_refusal, what_uses_agent
+        users = await what_uses_agent(agent_id)
+        if users:
+            return {"error": agent_refusal(agent.get("name") or agent_id, users)}
+        await _delete_agent(agent_id)
+        # Its memory goes with it, as the route's delete takes it (F297, F469).
+        from core import agent_memory
+        await agent_memory.wipe(agent_id)
+        _emit(events, "agent", "deleted", agent_id, agent.get("name"))
+        return {
+            "status": "deleted",
+            "id": agent_id,
+            "name": agent.get("name"),
+        }
+
+    elif tool_name == "delete_orchestration":
+        refused = _require_confirm(args, f"delete the orchestration '{args.get('orch_id')}'")
+        if refused:
+            return refused
+        from core.store.resources import delete_orchestration as _delete_orch
+
+        orch_id = str(args.get("orch_id") or "")
+        orch = await _visible_orchestration(orch_id)
+        if orch is None:
+            return {"error": f"Orchestration '{orch_id}' not found"}
+        # Never one a workflow agent or a schedule runs (F408): the same rule
+        # as the Orchestrations screen's delete, in the same words.
+        from core.orchestration.dependents import refusal, what_runs
+        runners = await what_runs(orch_id)
+        if runners:
+            return {"error": refusal(orch.get("name") or orch_id, runners)}
+        await _delete_orch(orch_id)
+        _emit(events, "orchestration", "deleted", orch_id, orch.get("name"))
+        return {"status": "deleted", "id": orch_id, "name": orch.get("name")}
 
     else:
         return {"error": f"Unknown tool: {tool_name}"}
 
 
-def _validate_orchestration(orch: dict) -> dict:
-    """Return {"ok": bool, "issues": [str, ...]} describing wiring problems.
+#: Steps that exist to produce a value, so losing it is worth an issue.
+_RESULT_STEP_TYPES = frozenset({"agent", "llm", "tool", "merge", "transform", "extract_json", "human", "retrieve",
+                                "workflow"})
+
+
+def _knowledge_step_issues(step: dict, kbs: dict | None, knowledge_off: bool) -> list[str]:
+    """A Retrieve or Ingest step's settings held to the contract, and the bases it names checked against the
+    workspace's (R1). `kbs` (id → base) is None when they were not looked up: then only the settings are."""
+    from core.knowledge import workflow_steps as W
+
+    sid = step.get("id", "?")
+    kind = "Retrieve" if step.get("type") == "retrieve" else "Ingest"
+    if knowledge_off:
+        return [f"{kind} step '{sid}' cannot run while Knowledge is switched off in this workspace — remove it."]
+    try:
+        if kind == "Retrieve":
+            named = W.retrieve_config(step.get("retrieve"), step_name=sid).kb_ids
+        else:
+            named = [W.ingest_config(step.get("ingest"), step_name=sid).kb_id]
+    except W.StepFailed as exc:
+        return [f"{exc} — set it with the {kind.lower()}_* fields."]
+    issues = []
+    for kb_id in named if kbs is not None else []:
+        kb = kbs.get(kb_id)
+        if kb is None:
+            issues.append(f"{kind} step '{sid}' uses knowledge base '{kb_id}', which does not exist — use an id "
+                          f"list_knowledge_bases returns.")
+        elif kb.status != "active":
+            issues.append(f"{kind} step '{sid}' uses knowledge base '{kb.name}' ({kb_id}), which is disabled.")
+    return issues
+
+
+def step_successors(s: dict, by_id: dict) -> list[str]:
+    """The steps a step can go to next — its next step, routes, loop body, branches, if/else and switch targets —
+    that exist. The validator's walk and the approval guard (`builder_guard.unapproved`) read the graph the same way."""
+    successors: list[str] = []
+    nxt = s.get("next_step_id")
+    if nxt and nxt in by_id:
+        successors.append(nxt)
+    for target in (s.get("route_map") or {}).values():
+        if target and target in by_id:
+            successors.append(target)
+    for lsid in s.get("loop_step_ids") or []:
+        if lsid in by_id:
+            successors.append(lsid)
+    for branch in s.get("parallel_branches") or []:
+        for bsid in branch:
+            if bsid in by_id:
+                successors.append(bsid)
+    for ref_key in ("if_true_step_id", "if_false_step_id", "switch_default_step_id", "on_exhausted_step_id"):
+        ref = s.get(ref_key)
+        if ref and ref in by_id:
+            successors.append(ref)
+    for target in (s.get("switch_cases") or {}).values():
+        if target and target in by_id:
+            successors.append(target)
+    return successors
+
+
+#: Tools that read a file's whole content into state (their bare names).
+_FILE_READERS = frozenset({"vault_read", "read_file", "read_text_file", "read_multiple_files"})
+
+
+def _file_content_into_code(step: dict, steps: list[dict]) -> list[str]:
+    """A code runner's program fed a file's content from state (F1212, CAP3's stage 0): the code should read the file
+    where the sandbox mounts the vault, `/data/<path>`, not have its text carried in. Said with the path to use."""
+    from core.orchestration.steps import CODE_TOOLS, tool_argument_refs
+
+    if str(step.get("forced_tool") or "").split("__")[-1] not in CODE_TOOLS:
+        return []
+    code = (step.get("tool_arguments") or {}).get("code")
+    if not isinstance(code, str):
+        return []
+    readers = {str(w.get("output_key")): w for w in steps
+               if w.get("type") == "tool" and str(w.get("forced_tool") or "").split("__")[-1] in _FILE_READERS
+               and w.get("output_key")}
+    issues = []
+    for ref in tool_argument_refs({"code": code}):
+        reader = readers.get(ref.split(".")[0])
+        if reader is None:
+            continue
+        path = str(((reader.get("tool_arguments") or {}).get("path")) or "").lstrip("/")
+        where = f"'/data/{path}'" if path else "'/data/<its vault path>'"
+        issues.append(
+            f"Tool step '{step.get('id')}' runs code on a file's content carried in from 'state.{ref}' (step "
+            f"'{reader.get('id')}' reads it). Code reads the vault where the sandbox mounts it: open {where} in the "
+            f"code itself (e.g. pandas.read_csv({where})), and drop the read step if nothing else needs it."
+        )
+    return issues
+
+
+#: What reads a file's text as data: a CSV reader, a frame, a text buffer (F1227). By the callee's last name.
+_PARSES_TEXT = frozenset({"reader", "DictReader", "StringIO", "read_csv", "read_table", "read_json"})
+#: …and the string methods that split it into lines.
+_SPLITS_TEXT = frozenset({"splitlines", "split"})
+
+
+def _state_key(node) -> str | None:
+    """The key a node reads straight out of `state` — `state.k`, `state['k']`, `state.get('k')` — or None."""
+    import ast
+
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "state":
+        return node.attr
+    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id == "state" \
+            and isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str):
+        return node.slice.value
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" \
+            and isinstance(node.func.value, ast.Name) and node.func.value.id == "state" and node.args \
+            and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+        return node.args[0].value
+    return None
+
+
+def _wrappers_parsed(code: str, keys: set[str]) -> list[str]:
+    """Which of `keys` the code parses as text without unwrapping: handed, directly or through a name assigned from
+    it, to a CSV reader, a frame or a text buffer, or split into lines. `json.loads(...)` and `[...]['content']` are
+    reads of the wrapper and never count."""
+    import ast
+
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+    names: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and (key := _state_key(node.value)) in keys:
+            names.update({t.id: key for t in node.targets if isinstance(t, ast.Name)})
+
+    def raw(node) -> str | None:
+        key = _state_key(node)
+        if key in keys:
+            return key
+        return names.get(node.id) if isinstance(node, ast.Name) else None
+
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        callee = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+        if callee in _PARSES_TEXT and node.args and (key := raw(node.args[0])):
+            found.append(key)
+        elif callee in _SPLITS_TEXT and isinstance(node.func, ast.Attribute) and (key := raw(node.func.value)):
+            found.append(key)
+    return list(dict.fromkeys(found))
+
+
+def _transform_reads_a_wrapper(step: dict, steps: list[dict]) -> list[str]:
+    """A Transform that parses a file reader's answer as the file itself (F1227, CAP3's stage 1).
+
+    A Tool step on `vault_read` (or another reader) puts its answer in state as JSON, `{"path": …, "content": …}`: a
+    Transform that hands it, as it is, to a CSV reader, a frame or a split into lines parses that wrapper, finds no
+    rows, and reports zeros (brief 4's $0.00 for every region). Reading `['content']` out of it stays right. Such
+    code is refused, naming `read_vault('<path>')`, which reads the file itself; so is a `read_vault` whose path is not
+    written out, which the step cannot read before it runs."""
+    from core.execution.scripts import vault_paths_named
+
+    if step.get("type") != "transform" or not isinstance(step.get("transform_code"), str):
+        return []
+    code = step["transform_code"]
+    sid = step.get("id")
+    issues = [f"Transform step '{sid}' calls read_vault without its path written out (line {n}): name the file; "
+              "read_vault needs the path written out, as in read_vault('reports/sales.csv')."
+              for n in vault_paths_named(code)[1]]
+    readers = {str(w.get("output_key")): w for w in steps
+               if w.get("type") == "tool" and str(w.get("forced_tool") or "").split("__")[-1] in _FILE_READERS
+               and w.get("output_key")}
+    for key in _wrappers_parsed(code, set(readers)):
+        reader = readers[key]
+        path = str(((reader.get("tool_arguments") or {}).get("path")) or "").lstrip("/")
+        where = f"read_vault('{path}')" if path else "read_vault('<its vault path>')"
+        issues.append(
+            f"Transform step '{sid}' parses 'state.{key}' as the file, but step '{reader.get('id')}' put its answer "
+            f"there as JSON {{\"path\": …, \"content\": …}}. Read the file itself with {where} in the code (and "
+            "drop the read step if nothing else needs it), or parse its ['content']."
+        )
+    return issues
+
+
+def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | None = None,
+                            knowledge_off: bool = False, allow_dead_ends: bool = False,
+                            knowledge_later: bool = False) -> dict:
+    """Return {"ok": bool, "issues": [str, ...], "warnings": [str, ...]}: wiring
+    problems, and what probably is not meant but runs (a prompt that reads a key
+    before any step writes it, U74) — warnings never make `ok` false.
 
     Checks (matches the engine's expectations in core.orchestration.engine):
       - entry_step_id resolves to a real step
       - no duplicate step ids
       - every next_step_id / route_map target / loop_step_ids entry /
         parallel_branches element resolves to a real step (empty string = end)
-      - every reachable path terminates at an `end`-type step
-      - every step's input_keys are either `user_input` / `user_query` or the
-        `output_key` of some step in the orchestration (a key with no writer
-        anywhere is meaningless — it can only ever be its schema default)
+      - every reachable path terminates at an `end`-type step (not asked of a
+        workflow another one calls: `allow_dead_ends`, F429)
+      - every step's input_keys are written by something: `user_input` /
+        `user_query`, some step's `output_key`, a for-each loop's item or
+        index key, or `human_response` where a human step exists (a key with
+        no writer anywhere is meaningless — it can only ever be its schema
+        default)
+      - every state_schema entry declares a type we can read, and its default
+        is of that type
+      - a human step with fields writes a mapping, so its key is not declared
+        as text or a number, and no Print shows that mapping whole (F189)
+      - a retrieve or ingest step's settings hold to the contract, the
+        knowledge bases it names exist (`kbs`, when given) and are active, an
+        ingest step reads a key something writes or the schema declares, and
+        neither is in an orchestration while Knowledge is off (R1)
     """
     issues: list[str] = []
     steps = orch.get("steps", []) or []
@@ -1324,6 +4519,12 @@ def _validate_orchestration(orch: dict) -> dict:
         nxt = s.get("next_step_id")
         if nxt and not _ref_ok(nxt):
             issues.append(f"Step '{sid}' next_step_id '{nxt}' points to unknown step.")
+        spent = s.get("on_exhausted_step_id")
+        if spent and not _ref_ok(spent):
+            issues.append(
+                f"Step '{sid}' goes to '{spent}' when it reaches its limit (on_exhausted_step_id), "
+                f"but no step '{spent}' exists."
+            )
         for label, target in (s.get("route_map") or {}).items():
             if target and not _ref_ok(target):
                 issues.append(
@@ -1338,12 +4539,76 @@ def _validate_orchestration(orch: dict) -> dict:
                     issues.append(
                         f"Step '{sid}' parallel branch references unknown step '{bsid}'."
                     )
+        if stype == "parallel":
+            # The join, and it is not optional. `resolve_branch_chain` builds a
+            # single-entry branch by following `next_step_id` until it reaches
+            # this step's own `next_step_id` or a step with no next — so with no
+            # join each branch runs the whole rest of the graph, one branch after
+            # another, and the first to reach an `end` takes the run with it.
+            # Measured on a real orchestration: branch one ran Summarizer →
+            # Compiler → Review → Finalizer and branch two never started.
+            #
+            # A merge step specifically, because combining what the branches
+            # produced is what a join is for, and `merge` is the step that does
+            # it. The message names the repair: these go back to the saver,
+            # which acts on them literally (told a read had no writer, it
+            # deleted the read).
+            joined = by_id.get(nxt) if nxt else None
+            if not nxt or (joined or {}).get("type") != "merge":
+                where = f"'{nxt}', which is not a merge step" if nxt else "nothing"
+                issues.append(
+                    f"Parallel step '{sid}' converges on {where} — it "
+                    f"needs next_step_id set to the merge step where its branches meet; "
+                    f"add a merge step if the orchestration has none."
+                )
+        if stype in _RESULT_STEP_TYPES and not (s.get("output_key") or "").strip():
+            # These executors write `shared_state[output_key]` and nothing else
+            # keeps what they produced. Routing steps, `print` and the two
+            # containers are left out: their key is a record, not the point.
+            issues.append(
+                f"Step '{sid}' ({stype}) has no output_key — its result is discarded and no "
+                f"later step can read it."
+            )
+        if stype == "merge" and not (s.get("input_keys") or []):
+            # It combines the keys it is given and nothing else — with none it
+            # writes an empty result over its output_key and says nothing.
+            issues.append(
+                f"Merge step '{sid}' has no input_keys — set them to the output_key of each "
+                f"branch it combines."
+            )
         if stype == "agent" and not s.get("agent_id"):
             issues.append(f"Agent step '{sid}' has no agent_id.")
+        elif stype == "agent" and agents is not None:
+            # With the agents in hand (the tool passes them; the function stays
+            # pure), the one behind the step is checked too (F264).
+            target = agents.get(s.get("agent_id"))
+            if target is None:
+                issues.append(
+                    f"Agent step '{sid}' uses agent '{s.get('agent_id')}', which does not exist — "
+                    f"create it first, or use one list_agents returns."
+                )
+            elif target.get("type") == "orchestrator" and not target.get("orchestration_id"):
+                issues.append(
+                    f"Agent step '{sid}' uses orchestrator agent '{s.get('agent_id')}', which runs no "
+                    f"orchestration — build that orchestration first, then deploy_orchestration it "
+                    f"and use the agent id it returns."
+                )
+            # The tools it finishes with (E2) are tools it holds: a finish tool the agent cannot call never ends it.
+            held = [t for t in target.get("tools") or [] if isinstance(t, str)] if target else []
+            if target is not None and "all" not in held:
+                who = target.get("name") or s.get("agent_id") if target else ""
+                for name in s.get("finish_tools") or []:
+                    if name not in held:
+                        issues.append(
+                            f"Agent step '{sid}' finishes with '{name}', which its agent '{who}' does not hold — "
+                            "give the agent that tool, or finish with one it has."
+                        )
         if stype == "evaluator" and not (s.get("route_map") or {}):
             issues.append(f"Evaluator step '{sid}' has an empty route_map.")
         if stype == "tool" and not s.get("forced_tool"):
             issues.append(f"Tool step '{sid}' has no forced_tool.")
+        if stype == "workflow" and not s.get("workflow_id"):
+            issues.append(f"Workflow step '{sid}' has no workflow_id: name the workflow it runs.")
         if stype == "human" and not s.get("human_prompt"):
             issues.append(f"Human step '{sid}' has no human_prompt.")
         if stype == "transform" and not s.get("transform_code"):
@@ -1370,28 +4635,145 @@ def _validate_orchestration(orch: dict) -> dict:
             issues.append(f"Extract JSON step '{sid}' has no output_key — extracted JSON will not be stored.")
         if stype == "print" and not s.get("print_content"):
             issues.append(f"Print step '{sid}' has no print_content.")
+        if stype in KNOWLEDGE_STEP_TYPES and not knowledge_later:
+            # `knowledge_later`: a build's check while Knowledge is off, where the step is its switch's block on the
+            # review and is checked whole once Knowledge is on (F1203). A save still refuses it (`_refuse_knowledge_off`).
+            issues.extend(_knowledge_step_issues(s, kbs, knowledge_off))
+        if stype == "loop":
+            body = s.get("loop_step_ids") or []
+            if sid in body:
+                issues.append(
+                    f"Loop step '{sid}' lists itself in loop_step_ids — it would "
+                    f"re-enter itself forever."
+                )
+            cap = s.get("loop_max_iterations", 50)
+            if not isinstance(cap, int) or cap < 1:
+                issues.append(f"Loop step '{sid}' loop_max_iterations must be a positive integer.")
+            elif not s.get("loop_over") and not s.get("loop_while_condition"):
+                count = s.get("loop_count", 3)
+                if not isinstance(count, int) or count < 1:
+                    issues.append(f"Loop step '{sid}' loop_count must be a positive integer.")
+                elif count > cap:
+                    issues.append(
+                        f"Loop step '{sid}' loop_count ({count}) exceeds its "
+                        f"loop_max_iterations ({cap}), so the run fails before the loop starts — "
+                        f"raise loop_max_iterations or lower loop_count."
+                    )
+            for bsid in body:
+                bstep = by_id.get(bsid)
+                if not bstep:
+                    continue
+                # The loop runs its body as an ordered list; routing decisions
+                # made inside it are evaluated and then discarded, because
+                # _resolve_next only runs for steps the engine itself drives.
+                if bstep.get("type") in ("if_else", "switch", "evaluator"):
+                    issues.append(
+                        f"Loop step '{sid}' body contains '{bsid}' of type "
+                        f"'{bstep.get('type')}' — its routing is ignored inside a "
+                        f"loop body. Put the branch after the loop."
+                    )
+                # A parallel branch auto-follows next_step_id; a loop body does
+                # not, so a chain wired this way silently runs only its head.
+                nxt = bstep.get("next_step_id")
+                if nxt and nxt not in body and nxt != s.get("next_step_id"):
+                    issues.append(
+                        f"Loop body step '{bsid}' has next_step_id '{nxt}', which is "
+                        f"neither in the loop body nor the loop's done path. A loop "
+                        f"body runs only the steps listed in loop_step_ids."
+                    )
+
+    # Expression check. `_refuse_unsafe_expression` is the gate on the write
+    # paths; this catches the rest — an imported bundle, a hand-edited document,
+    # a step the model wrote before the gate existed — and reports a typo too,
+    # which the gate deliberately lets through.
+    for problem in _expression_problems(steps, unsafe_only=False):
+        issues.append(f"Expression problem: {problem}")
 
     # Writer-membership check: every input_key must be `user_input` /
     # `user_query` (engine-seeded) or the `output_key` of some step. Branch
-    # conditioning is not the validator's concern — the engine falls back to
-    # the schema default on unset reads, which is the intended pattern for
-    # optional branch outputs and iterative refinement loops.
+    # conditioning is not the validator's concern — an unset read gets the
+    # schema default, or reads empty in a prompt with none (U74), which is the
+    # intended pattern for optional branch outputs and iterative refinement loops.
     FREE_KEYS = {"user_input", "user_query"}
     writable: set[str] = set(FREE_KEYS)
     for s in steps:
         ok = s.get("output_key")
         if ok:
             writable.add(ok)
+        # `output_key` is not the only way a key reaches shared state (F123).
+        # Every loop writes its iteration's index before the body runs (F212),
+        # and a **for-each** loop its item too (`steps.py`, under
+        # `if mode == "foreach"`); a count or while loop has no item, so a body
+        # reading `loop_item` there is still told so.
+        if s.get("type") == "loop":
+            writable.add(s.get("loop_index_key") or "loop_index")
+            if s.get("loop_over"):
+                writable.add(s.get("loop_item_key") or "loop_item")
+        # And the engine writes a human answer to `human_response` as well as
+        # to the step's own output_key, so evaluators that check it still work.
+        if s.get("type") == "human":
+            writable.add("human_response")
     for s in steps:
         sid = s.get("id", "?")
         for k in s.get("input_keys") or []:
             if k not in writable:
+                # The repair the saver should reach for comes first. Told
+                # "delete the read", it deleted one that was correct (F123).
                 issues.append(
-                    f"Step '{sid}' reads input_key '{k}' but no step writes it — either use an existing output_key or delete the read."
+                    f"Step '{sid}' reads input_key '{k}', which nothing writes — give an "
+                    f"earlier step '{k}' as its output_key, or change the read to a key that "
+                    f"is already written. Remove the read only if the step does not need that value."
                 )
+        # A Tool step's set arguments (E1) read state with no model to repair them: a key nothing writes would
+        # fail every run ("could not set its arguments").
+        if s.get("type") == "tool" and s.get("tool_arguments") is not None:
+            if not isinstance(s["tool_arguments"], dict):
+                issues.append(f"Tool step '{sid}' has tool_arguments that are not an object of argument → value.")
+            else:
+                from core.orchestration.steps import tool_argument_refs
+
+                for ref in tool_argument_refs(s["tool_arguments"]):
+                    key = ref.split(".")[0]
+                    if key not in writable and key not in (orch.get("state_schema") or {}):
+                        issues.append(
+                            f"Tool step '{sid}' sets an argument from 'state.{ref}', but nothing writes '{key}' — "
+                            f"give an earlier step '{key}' as its output_key, or declare it in the state schema."
+                        )
+                issues += _file_content_into_code(s, steps)
+        issues += _transform_reads_a_wrapper(s, steps)
+        # An Ingest step reads its records from one key. A key the schema
+        # declares counts too: a run's caller can fill it, and a list default
+        # is a way to seed records.
+        if s.get("type") == "ingest" and isinstance(s.get("ingest"), dict):
+            source = str(s["ingest"].get("records_from") or "").strip()
+            source = source[len("state."):] if source.startswith("state.") else source
+            if source and source not in writable and source not in (orch.get("state_schema") or {}):
+                issues.append(
+                    f"Ingest step '{sid}' reads its records from '{source}', which nothing writes — give the "
+                    f"step that makes them '{source}' as its output_key, or declare it in the state schema."
+                )
+    # What a run makes (F249): a result_key no step writes is never the result.
+    result_key = orch.get("result_key") or ""
+    if result_key and result_key not in writable:
+        issues.append(
+            f"result_key '{result_key}' is written by no step — name the output_key of the step "
+            f"whose output is this orchestration's result, or leave result_key empty for the last "
+            f"step that produces content."
+        )
 
     # Reachability walk: every reachable step must be able to hit an `end`.
-    # Dead-end non-end steps (no next_step_id / routes / branches) are bugs.
+    # Dead-end non-end steps (no next_step_id / routes / branches) are bugs —
+    # except inside a container, whose members' continuation is the container's
+    # (F124). A loop runs the steps in `loop_step_ids` in order and never
+    # follows `next_step_id`; `resolve_branch_chain` walks a single-entry
+    # branch until the join or a step with no next. Demanding one here is what
+    # made the builder give a loop body an edge to the step after the loop.
+    # The containers themselves are ordinary steps and stay checked.
+    contained: set[str] = set()
+    for s in steps:
+        contained.update(x for x in (s.get("loop_step_ids") or []) if x)
+        for branch in s.get("parallel_branches") or []:
+            contained.update(x for x in branch if x)
     if entry in by_id:
         from collections import deque
         visited: set[str] = set()
@@ -1406,38 +4788,108 @@ def _validate_orchestration(orch: dict) -> dict:
                 continue
             if s.get("type") == "end":
                 continue
-            successors: list[str] = []
-            nxt = s.get("next_step_id")
-            if nxt and nxt in by_id:
-                successors.append(nxt)
-            for target in (s.get("route_map") or {}).values():
-                if target and target in by_id:
-                    successors.append(target)
-            for lsid in s.get("loop_step_ids") or []:
-                if lsid in by_id:
-                    successors.append(lsid)
-            for branch in s.get("parallel_branches") or []:
-                for bsid in branch:
-                    if bsid in by_id:
-                        successors.append(bsid)
-            # New branching step successors
-            for ref_key in ("if_true_step_id", "if_false_step_id", "switch_default_step_id"):
-                ref = s.get(ref_key)
-                if ref and ref in by_id:
-                    successors.append(ref)
-            for target in (s.get("switch_cases") or {}).values():
-                if target and target in by_id:
-                    successors.append(target)
+            successors = step_successors(s, by_id)
             if not successors:
-                issues.append(
-                    f"Step '{cur}' (type={s.get('type')}) has no next_step_id / routes / branches — path dead-ends without reaching an `end` step."
-                )
+                # A run whose last step finishes completes, End or no End: a called
+                # workflow without one is not refused for it (F429, Naveen).
+                if cur not in contained and not allow_dead_ends:
+                    issues.append(
+                        f"Step '{cur}' (type={s.get('type')}) has no next_step_id / routes / branches — path dead-ends without reaching an `end` step."
+                    )
                 continue
             for nxt_id in successors:
                 if nxt_id not in visited:
                     queue.append(nxt_id)
 
-    return {"ok": not issues, "issues": issues}
+    # ── A human step's answer and the key it lands in (F189) ────────────────
+    # A human step with fields stores a mapping {field: value} under its output
+    # key (F106: a step that declares fields keeps the mapping it was answered
+    # with); one with no fields stores the text. The builder named a review
+    # step's key after its one field and typed it `str`, so the Print after it
+    # showed "Final Summary: {'final_summary': …}". The repair leads, as every
+    # message here does, because the savers act on these literally.
+    schema = orch.get("state_schema") or {}
+    fielded: dict[str, tuple[str, str]] = {}  # key -> (the step that asks, its first field)
+    for s in steps:
+        if s.get("type") != "human":
+            continue
+        fields = s.get("human_fields")
+        if fields is None and "human_fields_json" in s:
+            fields = _parse_json_field(s.get("human_fields_json"), [])
+        names = [f["name"] for f in (fields or []) if isinstance(f, dict) and f.get("name")]
+        if not names:
+            continue
+        hid, key = s.get("id", "?"), s.get("output_key") or "human_response"
+        # A dropdown with nothing to choose from cannot be answered (F455).
+        from core.orchestration.human_fields import field_options, field_type
+        for f in fields or []:
+            if isinstance(f, dict) and field_type(f.get("type")) == "choice" and not field_options(f):
+                issues.append(
+                    f"Human step '{hid}' field '{f.get('name')}' is a dropdown (type choice) with no "
+                    f'options: give it "options": ["…", "…"], one of which the person picks.'
+                )
+        fielded[key] = (hid, names[0])
+        entry = schema.get(key)
+        declared = normalize_state_type(entry.get("type")) if isinstance(entry, dict) else None
+        if declared and declared != "dict":
+            issues.append(
+                f"Human step '{hid}' collects fields ({', '.join(names)}), so '{key}' holds a mapping "
+                f"{{field: value}}, not {declared}: declare '{key}' as dict in state_schema and read one "
+                f"field as {{{{ state.{key}.{names[0]} }}}}. Clearer still, name the output_key for the step "
+                f"(e.g. 'review'), not after one of its fields."
+            )
+    from core.templating import STATE_REF, one_form
+
+    for s in steps:
+        if s.get("type") != "print":
+            continue
+        shown = {m.group(1) for m in STATE_REF.finditer(one_form(s.get("print_content") or ""))}
+        for key, (hid, field) in fielded.items():
+            if key in shown:
+                issues.append(
+                    f"Print step '{s.get('id', '?')}' shows {{{{ state.{key} }}}}, human step '{hid}'s whole "
+                    f"answer, which is a mapping and prints as a Python dict: show one field, "
+                    f"{{{{ state.{key}.{field} }}}}."
+                )
+
+    # ── State schema ─────────────────────────────────────────────────────────
+    # Nothing used to look at `state_schema` at all. A key could carry no type,
+    # or a type nobody recognised, and it saved, loaded and ran — the symptoms
+    # being a blank dropdown in the editor and an engine with nothing to coerce
+    # a step's raw text against. Each message names the allowed set, because
+    # both savers cap themselves at two or three repair attempts: a message
+    # without the fix in it burns that budget and reports DONE anyway.
+    allowed = "Use one of: " + ", ".join(CANONICAL_STATE_TYPES) + "."
+    for key, entry in (orch.get("state_schema") or {}).items():
+        if not isinstance(entry, dict):
+            issues.append(
+                f"State key '{key}' is {type(entry).__name__}, not an object — each key "
+                f"maps to {{type, default, description}}. {allowed}"
+            )
+            continue
+        declared = entry.get("type")
+        canonical = normalize_state_type(declared)
+        if canonical is None:
+            what = f"an unknown type '{declared}'" if declared else "no type"
+            issues.append(f"State key '{key}' has {what}. {allowed}")
+            continue
+        if "default" in entry and not matches_declared_type(canonical, entry["default"]):
+            issues.append(
+                f"State key '{key}' is declared {canonical} but its default is "
+                f"{type(entry['default']).__name__} — change the default or the type."
+            )
+
+    # Parallel branches that write the same key: the engine fails the Parallel
+    # before any branch runs (F256).
+    from core.orchestration.branch_keys import missing_key_reads, same_key_branches, unset_reads
+    issues.extend(same_key_branches(orch))
+    # A Transform or a Loop's list a run can reach without the key it breaks without (F1346, cap-05): refused, naming
+    # the branch that misses it. A prompt's unset read stays a warning, below.
+    issues.extend(missing_key_reads(orch))
+
+    # A prompt that reads a key before any step writes it reads it empty there
+    # (U74): said, never refused — a feedback loop's first pass is a real pattern.
+    return {"ok": not issues, "issues": issues, "warnings": unset_reads(orch)}
 
 
 def _parse_json_field(value: Any, fallback: Any) -> Any:
@@ -1490,7 +4942,54 @@ def _normalize_step_inputs(step: dict) -> dict:
         s["human_fields"] = _parse_json_field(s.pop("human_fields_json"), [])
     if "switch_cases_json" in s:
         s["switch_cases"] = _parse_json_field(s.pop("switch_cases_json"), {})
+    if "recording_inputs_json" in s:
+        s["recording_inputs"] = _parse_json_field(s.pop("recording_inputs_json"), {})
+    # A Retrieve or Ingest step keeps its settings as one block, the contract's
+    # own body (`step.retrieve` / `step.ingest`); the model writes them flat.
+    # Folded into whatever block the step already has, so a patch of one field
+    # changes only that field. A filter that is not JSON stays a string, for
+    # `validate_orchestration` to name, rather than vanishing.
+    for block, names in _KNOWLEDGE_FLAT_FIELDS.items():
+        if f"{block}_json" in s:
+            given = _parse_json_field(s.pop(f"{block}_json"), {})
+            if isinstance(given, dict):
+                s[block] = {**(s.get(block) or {}), **given}
+        flat = {field: s.pop(name) for name, field in names.items() if name in s}
+        if isinstance(flat.get("filters"), str):
+            flat["filters"] = _parse_json_field(flat["filters"], flat["filters"]) if flat["filters"].strip() else None
+        if flat:
+            s[block] = {**(s.get(block) or {}), **flat}
     return s
+
+
+#: The flat builder fields of a Retrieve or Ingest step → its settings block's field (R1).
+_KNOWLEDGE_FLAT_FIELDS: dict[str, dict[str, str]] = {
+    "retrieve": {"retrieve_kb_ids": "kb_ids", "retrieve_query": "query", "retrieve_filters_json": "filters",
+                 "retrieve_top_k": "top_k", "retrieve_rerank": "rerank", "retrieve_snapshot": "snapshot"},
+    "ingest": {"ingest_kb_id": "kb_id", "ingest_records_from": "records_from", "ingest_id_field": "id_field",
+               "ingest_text_field": "text_field", "ingest_metadata_fields": "metadata_fields"},
+}
+
+
+def _run_cap_args(args: dict) -> dict:
+    """The run caps `args` sets, as stored: `{field: number}`, None where 0 removes one.
+
+    A field that is absent or null is left as it is. Raises ValueError, worded
+    for the builder, for a value that is not a cap: a cap the engine would read
+    as none must not be saved as if it were one (CAP1).
+    """
+    from core.orchestration.run_cap import clean
+
+    out: dict = {}
+    for key in RUN_CAP_PROPERTIES:
+        value = args.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, bool) and value in (0, "0"):
+            out[key] = None
+            continue
+        out[key] = clean(value, credits=key == "max_run_credits")
+    return out
 
 
 def _normalize_state_schema_arg(args: dict) -> None:
@@ -1561,6 +5060,7 @@ def _fill_step_defaults(steps: list) -> list:
         s.setdefault("merge_strategy", "list")
         s.setdefault("loop_count", 3)
         s.setdefault("loop_step_ids", [])
+        s.setdefault("loop_max_iterations", 50)
         s.setdefault("transform_code", None)
         s.setdefault("human_prompt", None)
         s.setdefault("human_fields", [])
@@ -1574,6 +5074,7 @@ def _fill_step_defaults(steps: list) -> list:
         s.setdefault("allowed_tools", None)
         s.setdefault("next_step_id", None)
         s.setdefault("max_iterations", 3)
+        s.setdefault("on_exhausted_step_id", None)
         # New deterministic step defaults
         s.setdefault("print_content", None)
         s.setdefault("if_condition", None)
@@ -1583,7 +5084,23 @@ def _fill_step_defaults(steps: list) -> list:
         s.setdefault("switch_cases", {})
         s.setdefault("switch_default_step_id", None)
         s.setdefault("include_full_history", None)
+        # Only an agent step reads it, and the engine refuses it on any other:
+        # a step written (or patched) as another type would save and then fail
+        # to load at its first run (F313).
+        if s.get("type") != "agent":
+            s.pop("pass_images", None)
         result.append(s)
     return result
 
 
+# The builder tools that live in their own modules register themselves on import (BWA1, D274). Last, so every name
+# they import from here exists.
+import importlib as _importlib  # noqa: E402
+
+for _module in ("core.builder_connect", "core.builder_readers", "core.builder_help", "core.builder_guard",
+                "core.builder_research", "core.builder_actions", "core.native_builder.change_tools",
+                "core.native_builder.change_apply", "core.native_builder.build_plan",
+                "core.native_builder.build_save", "core.native_builder.read_turn", "core.native_builder.classify",
+                "core.native_builder.answer_pack", "core.native_builder.lookup", "core.native_builder.effort",
+                "core.native_builder.research_service"):
+    _importlib.import_module(_module)

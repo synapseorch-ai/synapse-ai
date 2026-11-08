@@ -66,7 +66,7 @@ Coverage is **scoped** (see `[tool.coverage.run] omit` in `pyproject.toml`): mod
 that are inherently external/integration and can't be meaningfully unit-tested are
 excluded from the denominator and instead exercised by the nightly integration job
 (`.github/workflows/nightly.yml`) and manual/e2e testing. These are: the ARQ worker
-runtime (`scale/worker*`, `scale/sync`, `scale/db`, `scale/heartbeat`), live chat-bot
+runtime (`scale/worker*`, `scale/db`, `scale/heartbeat`), live chat-bot
 adapters (`messaging/*`), the MCP subprocess client (`mcp_client`), the cron scheduler,
 the native/builder subprocess tooling, the app lifespan wiring (`server.py`), scale
 admin, vector memory (`memory.py`, chromadb + embeddings), and AWS S3.
@@ -86,8 +86,10 @@ CI enforces a coverage floor (`--cov-fail-under`) as a regression gate.
 - **Engine-integration tests** drive the *real* `run_agent_step` and
   `OrchestrationEngine` with the fake LLM, proving the interception works
   through the whole stack.
-- Each test gets an isolated, sandboxed `SYNAPSE_DATA_DIR`; stores are reset
-  between tests (see the `_isolate_data` autouse fixture).
+- Each test gets its own database, blob store, scratch and state directory under
+  `tmp_path`, plus a cleared read-through cache (see the `_isolate_store`
+  autouse fixture). A developer's real install is never touched, and nothing one
+  test writes is visible to the next.
 
 ## CI
 

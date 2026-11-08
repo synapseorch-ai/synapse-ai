@@ -1,31 +1,198 @@
 """
 Vault: Automatically saves large tool outputs to files and provides tools to query them.
-Also resolves @[path] vault file mentions in user messages before they reach the LLM.
+Also resolves `@[path]` vault mentions in prompts — `MentionReader`, below — by
+reading the blob store directly: never a working copy, always the file as it is now.
 
 When any tool returns more than VAULT_THRESHOLD characters, the output is saved to
-backend/data/vault/ and the LLM receives only the file path + metadata. The LLM can
-then use the Filesystem MCP tools (read_file, search_files) to access parts of the
-file without flooding its context window.
+the vault and the LLM receives only the file path + metadata. The LLM can then use
+the Filesystem MCP tools (read_file, search_files) to access parts of the file
+without flooding its context window.
+
+The vault root comes from the blob store, which scopes it to the current tenant —
+so two tenants running in one process cannot read each other's tool output, and
+there is no DATA_DIR involved.
+
+The vault hands *filesystem paths* to the LLM and to the Filesystem MCP server,
+so it always needs a real directory. Whether that directory *is* the vault or a
+working copy of one is `core/vault_backend.py`'s decision, taken from whether the
+blob store can offer a path: a local install gets its folder, an object store
+gets a materialised working copy under the scratch root, hydrated on demand.
+
+That note used to read "the vault falls back to a local root ... a deliberate
+design decision and not made here". The decision has now been made, because the
+fallback was writing an object-store deployment's vault to the pod's own disk.
 """
+import asyncio
 import json
 import re
+import secrets
+import unicodedata
+from dataclasses import dataclass, field, replace
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-from core.config import DATA_DIR
-VAULT_DIR = Path(DATA_DIR) / "vault" / "tool_outputs"
+from core.vault_backend import VAULT_PREFIX, get_vault
+
 VAULT_THRESHOLD = 100000  # characters (fallback default)
+
+#: What one read of a vault file answers at most, in characters (D339 P2). A read under the spill line is never
+#: vaulted again: prod's crawl was read back in "slices" of 113k characters, each saved to the vault once more (TRI1,
+#: 10-29). A reader's own `max_chars` may lower it; the spill line caps it (`read_cap`).
+READ_CAP = 20_000
+#: One matching line as `search_text` shows it, at most: a page held on one line is shown around its match.
+SEARCH_LINE_CAP = 400
+#: The fields a document's text is held in, in a list of documents (`_documents`).
+_TEXT_KEYS = ("markdown", "content", "text", "page_text", "body", "html")
+#: The fields that name a document, in order.
+_NAME_KEYS = ("url", "title", "name", "path", "id")
+#: A list held in one of these is the list of documents, before any other list the result has.
+_LIST_KEYS = ("results", "items", "documents", "pages", "data", "hits")
+#: How much of the index the reference itself shows, in characters.
+_INDEX_SHOWN = 3_000
+
+
+def read_cap(asked: int | None = None) -> int:
+    """What one vault read may answer: `asked` (a reader's `max_chars`, or the engine's from the model's budget),
+    else `READ_CAP`, never more than half the spill line, so the answer is not vaulted again."""
+    from core.config import load_settings
+
+    threshold = int(load_settings().get("vault_threshold", VAULT_THRESHOLD) or VAULT_THRESHOLD)
+    cap = asked if isinstance(asked, int) and asked > 0 else READ_CAP
+    return max(1_000, min(cap, threshold // 2))
+
+
+def _vault_root() -> Path:
+    """The current tenant's vault directory.
+
+    A real directory either way, because the Filesystem MCP server and the
+    sandbox mount need one. What differs is whether it *is* the vault or a
+    working copy of it — see `core/vault_backend.py`. It used to fall back to a
+    plain `LocalBlobStore()` when the store had no path, which meant a
+    deployment on object storage wrote its vault to the pod's own disk and lost
+    it when the pod went away.
+    """
+    return get_vault().root
+
+
+def _vault_outputs_dir() -> Path:
+    return _vault_root() / "tool_outputs"
 
 
 def _make_vault_path(tool_name: str, ext: str) -> Path:
     """Generate a unique, safe vault file path."""
-    VAULT_DIR.mkdir(parents=True, exist_ok=True)
+    vault_dir = _vault_outputs_dir()
+    vault_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:20]
     safe_name = re.sub(r"[^\w]", "_", tool_name)[:40]
-    return VAULT_DIR / f"{safe_name}_{timestamp}.{ext}"
+    # The timestamp is to 100 µs, and agents run side by side — a Parallel's
+    # branches (F255), sub-agents, other chats. Two that vaulted one tool's
+    # output in the same instant wrote one file, and one read the other's.
+    return vault_dir / f"{safe_name}_{timestamp}_{secrets.token_hex(3)}.{ext}"
 
 
-def maybe_vault(tool_name: str, raw_output: str) -> str:
+def _documents(parsed) -> tuple[dict, list[dict], str] | None:
+    """A result that is a list of documents — a crawl's pages, a search's hits, a list endpoint's records — as
+    (the result's other fields, the documents, the field each holds its text in); None for anything else.
+
+    A list of at least two objects, held at the root or under one key (`_LIST_KEYS` first), where most hold a text
+    field (`_TEXT_KEYS`) of real length."""
+    if isinstance(parsed, list):
+        rest, items = {}, parsed
+    elif isinstance(parsed, dict):
+        lists = [k for k, v in parsed.items() if isinstance(v, list)]
+        key = next((k for k in _LIST_KEYS if k in lists), lists[0] if len(lists) == 1 else None)
+        if key is None:
+            return None
+        rest, items = {k: v for k, v in parsed.items() if k != key}, parsed[key]
+    else:
+        return None
+    if len(items) < 2 or not all(isinstance(i, dict) for i in items):
+        return None
+    for text_key in _TEXT_KEYS:
+        long = sum(1 for i in items if isinstance(i.get(text_key), str) and len(i[text_key]) > 200)
+        if long * 2 >= len(items):
+            return rest, items, text_key
+    return None
+
+
+def _named(item: dict) -> dict:
+    return {k: str(item[k])[:200] for k in _NAME_KEYS if isinstance(item.get(k), (str, int)) and str(item[k]).strip()}
+
+
+def _slug(item: dict, i: int) -> str:
+    name = next((str(item[k]) for k in _NAME_KEYS if isinstance(item.get(k), (str, int)) and str(item[k]).strip()), "")
+    name = re.sub(r"^https?://", "", name)
+    words = re.sub(r"[^\w]+", "-", unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()).strip("-")
+    return f"{i:02d}-{words[:60].lower() or 'item'}"
+
+
+def outline(value, depth: int = 1) -> object:
+    """What a JSON value holds, without its contents: each key's type and size, a list's length and its first item's
+    outline. Said beside a vaulted JSON file and by `json_slice` for a part too big to show."""
+    size = len(json.dumps(value, ensure_ascii=False, default=str))
+    if isinstance(value, dict):
+        if depth <= 0:
+            return f"object, {len(value)} keys, {size:,} chars"
+        return {k: outline(v, depth - 1) for k, v in list(value.items())[:30]} | (
+            {"…": f"{len(value) - 30} more keys"} if len(value) > 30 else {})
+    if isinstance(value, list):
+        first = outline(value[0], depth - 1) if value and depth > 0 else None
+        return f"list of {len(value)}, {size:,} chars" + (f"; each like {json.dumps(first)}" if first else "")
+    if isinstance(value, str):
+        return f"text, {len(value):,} chars"
+    return type(value).__name__
+
+
+def _vault_documents(tool_name: str, raw_size: int, rest: dict, items: list[dict], text_key: str) -> str:
+    """A list of documents into the vault as a reader wants it (D339 P2): each document's text its own file,
+    `index.json` naming each with its size and file, and `items.json` the documents with their text replaced by
+    its file — nothing dropped. The reference shows the index, so the model picks what to read."""
+    vault = get_vault()
+    folder = _make_vault_path(tool_name, "d").with_suffix("")
+    index, kept = [], []
+    for i, item in enumerate(items):
+        text = item.get(text_key)
+        entry = {"i": i, **_named(item)}
+        if isinstance(text, str):
+            path = folder / f"{_slug(item, i)}.md"
+            vault.write(path, text)
+            ref = path.relative_to(vault.root).as_posix() if vault.materialises else str(path)
+            entry |= {"chars": len(text), "file": ref}
+            item = {**item, text_key: {"file": ref, "chars": len(text)}}
+        index.append(entry)
+        kept.append(item)
+    index_path, items_path = folder / "index.json", folder / "items.json"
+    vault.write(index_path, json.dumps({"tool": tool_name, "fields": rest, "count": len(items), "documents": index},
+                                       indent=2, ensure_ascii=False, default=str))
+    vault.write(items_path, json.dumps(kept, indent=2, ensure_ascii=False, default=str))
+    as_ref = (lambda p: p.relative_to(vault.root).as_posix()) if vault.materialises else str
+    shown, room = [], _INDEX_SHOWN
+    for entry in index:
+        line = json.dumps(entry, ensure_ascii=False)
+        if len(line) > room:
+            break
+        shown.append(entry)
+        room -= len(line)
+    reader = ("read_file with its path (each read is capped; `next` says where to go on)" if vault.materialises
+              else "read_file_by_lines with its path")
+    message = (f"{len(items)} documents ({raw_size:,} chars in all), each saved as its own file; the index is "
+               f"{as_ref(index_path)}. Read one with {reader}. Their other fields (links, metadata) are in "
+               f"{as_ref(items_path)}" + (", by read_json with json_path, e.g. '3'." if vault.materialises else "."))
+    return json.dumps({
+        "vault_file": as_ref(index_path),
+        "file_type": "documents",
+        "size_chars": raw_size,
+        "count": len(items),
+        "fields": rest if len(json.dumps(rest, default=str)) <= 1_000 else outline(rest),
+        "documents": shown,
+        **({"documents_not_shown": len(index) - len(shown)} if len(shown) < len(index) else {}),
+        "items_file": as_ref(items_path),
+        "content_preview": str(items[0].get(text_key) or "")[:500],
+        "message": message,
+    }, ensure_ascii=False, default=str)
+
+
+def maybe_vault(tool_name: str, raw_output: str, *, threshold: int | None = None) -> str:
     """
     If raw_output exceeds the vault threshold (from settings), persist it to vault and return a
     compact JSON reference the LLM can act on with the vault read/search tools.
@@ -38,48 +205,70 @@ def maybe_vault(tool_name: str, raw_output: str) -> str:
     settings = load_settings()
     if not settings.get("vault_enabled", True):
         return raw_output
-    threshold = settings.get("vault_threshold", VAULT_THRESHOLD)
+    # The step's spill line when the engine gives one (D339 P1: from its model's window), else the workspace's.
+    threshold = threshold or settings.get("vault_threshold", VAULT_THRESHOLD)
     if len(raw_output) <= threshold:
         return raw_output
 
+    # What the vault keeps holds the run's secrets by name (F1474), as a chat turn and a compaction archive do: a
+    # member who opens the Vault, or Knowledge, which follows it, reads this file. Here, before both writes (the
+    # documents below and the one file after), and never in a backend's `write`, so cloud's object store gets the
+    # same. JSON is scrubbed value by value, so a secret JSON escapes is still found; then its text, for a key.
+    from core.secret_scrub import scrub_secrets, scrub_secrets_in
+
     # Decide extension: JSON gets pretty-validated, everything else is text.
     try:
-        parsed = json.loads(raw_output)
+        parsed = scrub_secrets_in(json.loads(raw_output))
         ext = "json"
-        content = json.dumps(parsed, indent=2, ensure_ascii=False)
+        content = scrub_secrets(json.dumps(parsed, indent=2, ensure_ascii=False))
     except (json.JSONDecodeError, ValueError):
+        parsed = None
         ext = "txt"
-        content = raw_output
+        content = scrub_secrets(raw_output)
+    # A list of documents is saved a document a file, with an index (D339 P2): pretty JSON held each page on one
+    # line, so no slice by lines was smaller than a page.
+    if (docs := _documents(parsed)) is not None:
+        return _vault_documents(tool_name, len(raw_output), *docs)
 
+    # One write, and the backend decides what durable means. On a plain install
+    # that is the file. On object storage it is the object, and a failure to
+    # store it raises rather than being swallowed — the reference below tells
+    # the model the output is saved, and it has to be true.
+    vault = get_vault()
     path = _make_vault_path(tool_name, ext)
-    path.write_text(content, encoding="utf-8")
-    try:
-        path.chmod(0o644)
-    except Exception:
-        pass
-
-    # Upload to S3 for durability in scale mode (fire-and-forget; local path still used by tools)
-    try:
-        from core.s3_storage import get_s3
-        s3 = get_s3()
-        if s3:
-            s3_rel_key = f"vault/tool_outputs/{path.name}"
-            s3.upload_text(s3_rel_key, content)
-    except Exception:
-        pass  # S3 upload failure must never break local execution
+    vault.write(path, content)
 
     total_lines = content.count("\n") + 1
+    size = f"Output too large ({len(raw_output):,} chars, {total_lines:,} lines)."
+    if vault.materialises:
+        # On a fleet the model's tools are `tools/vault_fs.py`, which take a
+        # path relative to the vault — the same form `@[path]` uses in a
+        # prompt. The replica's scratch path this used to hand out is a key no
+        # tool accepts, and `read_file_by_lines`/`grep` exist on no worker.
+        reference = path.relative_to(vault.root).as_posix()
+        message = (
+            f"{size} Saved to the vault as {reference}. Instead: read_file with "
+            f"start_line/end_line for a slice (each read is capped; `next` says where to go on), read_json with "
+            f"json_path for one part of a JSON file (its outline is below), or search_files for a value — "
+            f"path \"{reference}\"."
+        )
+    else:
+        # A plain install's agents have the Filesystem tools, which take paths.
+        reference = str(path)
+        message = (
+            f"{size} Saved to vault at: {path}. "
+            f"Instead: use read_file_by_lines with start_line/end_line to read a slice, "
+            f"or grep_file to search for specific values."
+        )
     return json.dumps({
-        "vault_file": str(path),
+        "vault_file": reference,
         "file_type": ext,
         "size_chars": len(raw_output),
         "total_lines": total_lines,
+        # What the JSON holds, so a read can go straight to the part it wants (D339 P2).
+        **({"outline": outline(parsed)} if isinstance(parsed, (dict, list)) else {}),
         "content_preview": content[:500],
-        "message": (
-            f"Output too large ({len(raw_output):,} chars, {total_lines:,} lines). Saved to vault at: {path}. "
-            f"Instead: use read_file_by_lines with start_line/end_line to read a slice, "
-            f"or grep to search for specific values."
-        ),
+        "message": message,
     })
 
 
@@ -87,53 +276,303 @@ def maybe_vault(tool_name: str, raw_output: str) -> str:
 # Vault tool implementations — called directly by react_engine.py
 # ---------------------------------------------------------------------------
 
-_VAULT_USER_DIR = Path(DATA_DIR) / "vault"
 
 
-def expand_vault_mentions(message: str) -> str:
+
+#: The longest name a mention is read with, in characters: no vault path comes near it (F1481).
+MENTION_MAX = 1024
+
+
+def mention_spans(text: str):
+    """Each mention in `text` as (start, end): `@[`, then up to MENTION_MAX characters up to the closing bracket on the
+    same line. The name may hold `@` or `[` (`@[exports/user@example.csv]`), as it could before.
+
+    In one pass, never a regex (F1481, CodeQL py/polynomial-redos): `@\\[([^\\]\\n]+)\\]` scanned from every `@[` to the
+    end of its line, so a message of `@[` and no `]` took time by the square of its length (17.6 s for 100,000
+    characters), on the server's own loop. Here the next `]` and the next line break are each found once and kept
+    until a mention passes them.
     """
-    Replace every @[relative/path] vault mention in the user message with the
-    file's actual content, so the LLM receives the data inline.
+    end = len(text)
+    bracket = newline = -1          # the next `]` and line break at or after the last name's start; `end` for none
+    i = 0
+    while (i := text.find("@[", i)) >= 0:
+        body = i + 2
+        if bracket < body:
+            bracket = text.find("]", body)
+            bracket = end if bracket < 0 else bracket
+        if newline < body:
+            newline = text.find("\n", body)
+            newline = end if newline < 0 else newline
+        if bracket < newline and 1 <= bracket - body <= MENTION_MAX:
+            yield i, bracket + 1
+            i = bracket + 1
+        else:
+            i += 1
 
-    Example:
-        "Log a job. Config: @[jobs-filepath.json]"
-        →
-        "Log a job. Config: @[jobs-filepath.json]\n<file content here>"
+#: A prompt may inline this many times the per-mention cap in total.
+MENTION_TOTAL_FACTOR = 2
+
+#: What the vault stores that no tool reads (download-only, D94). Known by
+#: extension, so a 10 MB PDF is never downloaded to find out that it is one.
+_BINARY_KINDS = {
+    ".pdf": "a PDF",
+    ".png": "a PNG image",
+    ".jpg": "a JPEG image",
+    ".jpeg": "a JPEG image",
+    ".webp": "a WebP image",
+}
+
+#: A private-use character brackets a masked mention. It carries no brace, so
+#: `templating.render` can't touch one;
+#: and `mention_key` refuses the private-use range, so no vault path holds one.
+_MARK = ""
+_MASKED = re.compile(f"{_MARK}(\\d+){_MARK}")
+
+#: Unicode categories a vault path may not contain: control, format, surrogate,
+#: private-use, unassigned, and the line and paragraph separators.
+_REFUSED_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+
+
+def binary_kind(rel: str) -> str | None:
+    """What a download-only file is ("a PDF", "a PNG image"), or None for text."""
+    return _BINARY_KINDS.get(PurePosixPath(rel).suffix.lower())
+
+
+def mention_key(rel: str) -> str | None:
+    """The blob key for a mention, or None when the text is not a vault path.
+
+    NFC first, so `café.md` typed on a Mac finds the file the vault page
+    saved. Then the refusals: empty, a backslash, a leading slash, an empty or
+    `.` or `..` segment, a bracket (it would have ended the mention), and any
+    control, format, surrogate, private-use, unassigned or line-separator
+    character. What passes is placed under the vault prefix; the store adds
+    the tenant.
     """
-    def _replace(match: re.Match) -> str:
-        rel = match.group(1).strip()
+    rel = unicodedata.normalize("NFC", (rel or "").strip())
+    if not rel or "\\" in rel or "[" in rel or "]" in rel or rel.startswith("/"):
+        return None
+    if any(unicodedata.category(ch) in _REFUSED_CATEGORIES for ch in rel):
+        return None
+    if any(part in ("", ".", "..") for part in rel.split("/")):
+        return None
+    return f"{VAULT_PREFIX}/{rel}"
 
-        # Prevent path traversal
+
+
+@dataclass
+class Mention:
+    """One `@[path]` in a prompt, and what became of it."""
+
+    raw: str                    # as typed, brackets included — what stays when nothing else can
+    rel: str                    # the path, NFC
+    key: str | None             # the blob key, or None when the path was refused
+    outcome: str = "missing"    # inlined | referenced | missing | invalid | unreadable
+    chars: int = 0
+    reason: str = ""
+    text: str | None = field(default=None, repr=False)
+
+    def summary(self) -> dict:
+        """What a run log records about the mention — never its content."""
+        return {"path": self.rel, "chars": self.chars, "outcome": self.outcome, "reason": self.reason}
+
+    def line(self) -> str:
+        """One line for a human reading the log."""
+        return mention_line(self.summary())
+
+    def warning(self) -> str | None:
+        """Why the mention was left as typed, or None when it was not."""
+        if self.outcome in ("missing", "invalid", "unreadable"):
+            return f"@[{self.rel}] — {self.reason}; left as typed"
+        return None
+
+
+def mention_line(summary: dict) -> str:
+    """The log line for a mention's `summary()` — the loggers see the event, not the object."""
+    path = summary.get("path", "")
+    outcome = summary.get("outcome", "")
+    reason = summary.get("reason", "")
+    if outcome == "inlined":
+        if reason == "above":
+            return f"@[{path}] — inlined above"
+        return f"@[{path}] — {int(summary.get('chars') or 0):,} chars inlined"
+    return f"@[{path}] — {outcome}: {reason}"
+
+
+class MentionReader:
+    """Resolves the `@[path]` mentions of one prompt, chat turn or system prompt.
+
+    It reads the blob store, on a thread — never the materialised working copy
+    that `S3Vault.ensure_local` serves for as long as it exists, which is how
+    an edit made on the vault page was never seen by a warm replica.
+
+    Two shapes. `expand` is for text that is not templated: a chat message.
+    `mask` → render → `fill` is for text that is: each mention becomes a
+    placeholder, the caller renders `{{ … }}`, and only then
+    does the file's text go in. So a file that says `{{ global.KEY }}` reaches
+    the model as those words rather than as the secret, and a state value that
+    happens to contain `@[x]` is a value, not a mention.
+
+    Caps: a mention up to `per_mention` characters (the tenant's
+    `vault_threshold`) and a prompt up to `total`; past either, the model gets a
+    reference line naming the file, its size, and the tool that can read it. A
+    binary is a reference line without a download. A file that is missing,
+    unreadable, or not a vault path at all stays exactly as typed — see
+    `Mention.warning`.
+
+    The reads are cached for the reader's life and the budget is counted per
+    call: an orchestration run keeps one reader, so a file ten steps mention is
+    read once, while each step's prompt gets the whole inline budget and the
+    same file twice in one prompt is shown once.
+    """
+
+    def __init__(self, *, per_mention: int | None = None, total: int | None = None):
+        if per_mention is None or total is None:
+            from core.config import load_settings
+            threshold = int(load_settings().get("vault_threshold") or VAULT_THRESHOLD)
+        self.per_mention = per_mention if per_mention is not None else threshold
+        self.total = total if total is not None else threshold * MENTION_TOTAL_FACTOR
+        #: What each key read as, before any cap — kept for the reader's life.
+        self._reads: dict[str, Mention] = {}
+
+    # ── the two shapes ───────────────────────────────────────────────────────
+
+    def mask(self, text: str) -> tuple[str, list[str]]:
+        """Every mention replaced by a placeholder; the mentions, as typed, in order."""
+        raws: list[str] = []
+
+        text = text or ""
+        parts: list[str] = []
+        last = 0
+        for start, end in mention_spans(text):
+            parts.append(text[last:start])
+            raws.append(text[start:end])
+            parts.append(f"{_MARK}{len(raws) - 1}{_MARK}")
+            last = end
+        parts.append(text[last:])
+        return "".join(parts), raws
+
+    async def fill(self, masked: str, raws: list[str]) -> tuple[str, list[Mention]]:
+        """The placeholders of `mask` swapped for what each mention resolved to."""
+        used = 0
+        shown: set[str] = set()
+        mentions: list[Mention] = []
+        blocks: list[str] = []
+        for raw in raws:
+            m = await self._resolve(raw)
+            if m.outcome == "inlined":
+                if m.key in shown:
+                    m.reason = "above"
+                elif m.chars > self.per_mention:
+                    m.outcome, m.reason = "referenced", f"over the {self.per_mention:,}-char inline limit"
+                elif used + m.chars > self.total:
+                    m.outcome, m.reason = "referenced", f"the prompt's {self.total:,}-char inline budget is used up"
+                else:
+                    used += m.chars
+                    shown.add(m.key)
+                if m.outcome == "referenced":
+                    m.text = None
+            mentions.append(m)
+            blocks.append(self._render(m))
+
+        # One pass, so a file whose text happens to contain a placeholder is
+        # not scanned again once it has been put in.
+        def _sub(match: re.Match) -> str:
+            i = int(match.group(1))
+            return blocks[i] if i < len(blocks) else match.group(0)
+
+        return _MASKED.sub(_sub, masked), mentions
+
+    async def expand(self, text: str) -> tuple[str, list[Mention]]:
+        """`text` with its mentions resolved, for text that is not templated."""
+        masked, raws = self.mask(text)
+        if not raws:
+            return text or "", []
+        return await self.fill(masked, raws)
+
+    # ── resolving ────────────────────────────────────────────────────────────
+
+    async def _resolve(self, raw: str) -> Mention:
+        rel = unicodedata.normalize("NFC", raw[2:-1].strip())
+        key = mention_key(rel)
+        if key is None:
+            return Mention(raw, rel, None, "invalid", reason="not a vault path")
+        cached = self._reads.get(key)
+        if cached is not None:
+            return replace(cached, raw=raw)
+        mention = await self._read(raw, rel, key)
+        # A store that could not be reached is asked again next time; the
+        # other outcomes are what the file is, and hold for the reader's life.
+        if mention.outcome != "unreadable":
+            self._reads[key] = mention
+        return replace(mention)
+
+    async def _read(self, raw: str, rel: str, key: str) -> Mention:
+        from core.storage import get_blob_store
+
+        store = get_blob_store()
+        kind = binary_kind(rel)
         try:
-            resolved = (_VAULT_USER_DIR / rel).resolve()
-            if not str(resolved).startswith(str(_VAULT_USER_DIR.resolve())):
-                return match.group(0)
-        except Exception:
-            return match.group(0)
-
-        content: str | None = None
-
-        # Try S3 first in scale mode
-        try:
-            from core.s3_storage import get_s3
-            s3 = get_s3()
-            if s3:
-                content = s3.download_text(f"vault/{rel}")
-        except Exception:
-            pass
-
-        # Fall back to local filesystem
+            if kind is not None:
+                if not await asyncio.to_thread(store.exists, key):
+                    return Mention(raw, rel, key, "missing", reason="no such vault file")
+                return Mention(raw, rel, key, "referenced",
+                               reason=f"{kind}; binary, download-only, not readable by tools")
+            content = await asyncio.to_thread(store.get, key)
+        except ValueError:
+            # A decode error (`UnicodeDecodeError` is one) — the object is not
+            # text. The store's own key guard also raises ValueError, but a key
+            # from `mention_key` cannot trip it.
+            return Mention(raw, rel, key, "referenced", reason="not a text file; not readable by tools")
+        except Exception as exc:  # noqa: BLE001 — the reason reaches the log, the text stays as typed
+            return Mention(raw, rel, key, "unreadable", reason=f"could not be read: {exc}")
         if content is None:
-            if not resolved.exists() or not resolved.is_file():
-                return match.group(0)
-            try:
-                content = resolved.read_text(encoding="utf-8")
-            except Exception:
-                return match.group(0)
+            return Mention(raw, rel, key, "missing", reason="no such vault file")
+        return Mention(raw, rel, key, "inlined", chars=len(content), text=content)
 
-        return f"@[{rel}]\n```\n{content}\n```"
+    # ── rendering ────────────────────────────────────────────────────────────
 
-    return re.sub(r"@\[([^\]]+)\]", _replace, message)
+    def _render(self, m: Mention) -> str:
+        if m.outcome in ("missing", "invalid", "unreadable"):
+            return m.raw
+        on_disk = _on_disk(m.key)
+        if m.outcome == "referenced":
+            if m.chars:
+                return (f"[vault: {m.rel} — {m.chars:,} chars, {m.reason}; read it with "
+                        f"read_file / read_json / search_files (path \"{m.rel}\"){on_disk}]")
+            return f"[vault: {m.rel} — {m.reason}{on_disk}]"
+        if m.reason == "above":
+            return f"[vault: {m.rel} — inlined above]"
+        fence = _fence_for(m.text or "")
+        return f"[vault: {m.rel} — {m.chars:,} chars{on_disk}]\n{fence}{_info(m.rel)}\n{m.text}\n{fence}"
+
+
+def _on_disk(key: str | None) -> str:
+    """Where the file is on disk, when the vault is a directory.
+
+    An install whose vault is a real directory gives its agents the Filesystem
+    tools, which take paths; the fleet's vault tool takes the key form already
+    in the line. Nothing on an object store.
+    """
+    if not key:
+        return ""
+    from core.storage import get_blob_store
+
+    try:
+        path = get_blob_store().path_for(key)
+    except Exception:  # noqa: BLE001
+        return ""
+    return f"; on disk at {path}" if path is not None else ""
+
+
+def _fence_for(text: str) -> str:
+    """A code fence longer than any run of backticks inside the file."""
+    longest = max((len(m.group(0)) for m in re.finditer(r"`{3,}", text)), default=0)
+    return "`" * max(3, longest + 1)
+
+
+def _info(rel: str) -> str:
+    ext = PurePosixPath(rel).suffix[1:].lower()
+    return ext if ext.isalnum() and ext != "txt" else "text"
 
 
 def _safe_path(path: str) -> Path:
@@ -143,42 +582,117 @@ def _safe_path(path: str) -> Path:
 
 
 def _ensure_local_path(path: str) -> str:
-    """
-    If path doesn't exist locally but the file is a user vault file, try to download
-    it from S3 (scale mode) to a temp location and return the temp path.
-    Returns the original path if no S3 download is needed or possible.
-    """
-    p = Path(path)
-    if p.exists():
-        return path
+    """Materialise a vault file this replica does not have yet.
 
-    vault_root = _VAULT_USER_DIR.resolve()
+    A no-op on a plain install, where the file is simply there. On object
+    storage the backend pulls it into the working copy — **at its real path**,
+    not into a mangled name under the system temp directory as this used to do.
+    That matters: the path is handed to the model and to the Filesystem MCP
+    server, and one that has been flattened to `tool_outputs_thing.json` in
+    /tmp is not a path any of the vault's own guards will accept afterwards.
+    """
     try:
-        resolved = p.resolve()
-        if not str(resolved).startswith(str(vault_root)):
-            return path  # not a vault file; leave as-is (will 404 below)
-        rel = str(resolved.relative_to(vault_root))
+        return str(get_vault().ensure_local(Path(path)))
     except Exception:
         return path
 
-    try:
-        from core.s3_storage import get_s3
-        s3 = get_s3()
-        if not s3:
-            return path
-        content = s3.download_text(f"vault/{rel}")
-        if content is None:
-            return path
-        # Write to a temp file alongside the vault directory
-        import tempfile
-        tmp_dir = Path(tempfile.gettempdir()) / "synapse_vault_cache"
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-        safe = re.sub(r"[/\\]", "_", rel)
-        tmp_path = tmp_dir / safe
-        tmp_path.write_text(content, encoding="utf-8")
-        return str(tmp_path)
-    except Exception:
-        return path
+
+def slice_lines(text: str, start_line: int, end_line: int, *, max_chars: int | None = None,
+                start_char: int = 0) -> dict:
+    """Lines [start_line, end_line], 1-indexed and inclusive, as a result dict.
+
+    Pure: takes the content, never a path. Extracted so the same slicing serves
+    a file on disk (below) and an object read straight out of the blob store
+    (`tools/vault_fs.py`), which has no local path to offer and should not be
+    made to invent one.
+
+    At most `max_chars` of content (D339 P2; None: uncapped, for callers that
+    cap themselves): a range that holds more is cut, a line itself if need be,
+    and `next` says where the following read starts — `start_line` and, for a
+    line cut part-way, `start_char` into it.
+    """
+    lines = text.splitlines()
+    total = len(lines)
+    s = max(1, start_line) - 1      # 0-indexed
+    e = min(end_line, total)
+    if max_chars is None:
+        chunk = lines[s:e]
+        if chunk and start_char > 0:
+            chunk[0] = chunk[0][start_char:]
+        return {"start_line": s + 1, "end_line": e, "total_lines": total, "content": "\n".join(chunk)}
+    out: list[str] = []
+    room, nxt, last = max_chars, None, s
+    for i in range(s, e):
+        offset = start_char if i == s else 0
+        line = lines[i][offset:]
+        sep = 1 if out else 0
+        if len(line) + sep > room:
+            # This line does not fit: as much of it as does, and the next read starts where it was cut.
+            take = max(0, room - sep)
+            if take:
+                out.append(line[:take])
+                last = i + 1
+            nxt = {"start_line": i + 1, **({"start_char": offset + take} if offset + take else {})}
+            break
+        out.append(line)
+        room -= len(line) + sep
+        last = i + 1
+    result = {"start_line": s + 1, "end_line": last, "total_lines": total, "content": "\n".join(out)}
+    if nxt is not None:
+        result["next"] = nxt
+        result["note"] = (f"Cut at {max_chars:,} characters. Go on with start_line={nxt['start_line']}"
+                          + (f", start_char={nxt['start_char']}" if nxt.get("start_char") else "") + ".")
+    return result
+
+
+def _parts(json_path: str) -> list[str | int]:
+    """`results[3].markdown`, `results.3.markdown` or `3` as the keys and indexes it names."""
+    out: list[str | int] = []
+    for token in re.findall(r"[^.\[\]]+|\[\d+\]", (json_path or "").strip()):
+        token = token.strip("[]")
+        out.append(int(token) if token.isdigit() else token)
+    return out
+
+
+def json_slice(doc, json_path: str = "", offset: int = 0, limit: int = 50, *, max_chars: int) -> dict:
+    """One part of a JSON document, at most `max_chars` of it (D339 P2): the value at `json_path` (keys and
+    indexes, `results[3].markdown`; empty, the root) — a list's items [offset:offset+limit], an object's keys from
+    `offset`, a text's characters from `offset` — and `next_offset` when the answer was cut. A part too big to show
+    whole is shown as its outline, to be read deeper by its own path."""
+    value = doc
+    for part in _parts(json_path):
+        if isinstance(value, list) and isinstance(part, int) and part < len(value):
+            value = value[part]
+        elif isinstance(value, dict) and str(part) in value:
+            value = value[str(part)]
+        else:
+            return {"error": f"Nothing at {json_path!r}: {part!r} is not in it. Its outline: "
+                             f"{json.dumps(outline(value), ensure_ascii=False)[:2000]}"}
+    at = {"json_path": json_path or ""}
+    if isinstance(value, str):
+        end = offset + max_chars
+        return {**at, "root": "text", "total_chars": len(value), "offset": offset, "value": value[offset:end],
+                **({"next_offset": end} if end < len(value) else {})}
+    if not isinstance(value, (list, dict)):
+        return {**at, "root": "scalar", "value": value}
+    pairs = list(enumerate(value)) if isinstance(value, list) else list(value.items())
+    shown, room, nxt = [], max_chars, None
+    for n, (key, item) in enumerate(pairs[offset:offset + max(1, limit)], start=offset):
+        text = json.dumps(item, ensure_ascii=False, default=str)
+        if len(text) > room:
+            if not shown and len(text) > max_chars:
+                shown.append((key, {"outline": outline(item), "read_it_with": f"{json_path + '.' if json_path else ''}{key}"}))
+                nxt = n + 1 if n + 1 < len(pairs) else None
+            else:
+                nxt = n
+            break
+        shown.append((key, item))
+        room -= len(text)
+    else:
+        nxt = offset + max(1, limit) if offset + max(1, limit) < len(pairs) else None
+    items = [v for _, v in shown] if isinstance(value, list) else dict(shown)
+    return {**at, "root": "array" if isinstance(value, list) else "object", "total": len(pairs), "offset": offset,
+            "items": items, **({"next_offset": nxt} if nxt is not None else {})}
 
 
 def tool_read_file_chunk(path: str, start_line: int, end_line: int) -> str:
@@ -188,20 +702,67 @@ def tool_read_file_chunk(path: str, start_line: int, end_line: int) -> str:
         p = _safe_path(path)
         if not p.exists():
             return json.dumps({"error": f"File not found: {path}"})
-        lines = p.read_text(encoding="utf-8").splitlines()
-        total = len(lines)
-        s = max(1, start_line) - 1      # 0-indexed
-        e = min(end_line, total)
-        chunk = lines[s:e]
         return json.dumps({
             "path": path,
-            "start_line": s + 1,
-            "end_line": e,
-            "total_lines": total,
-            "content": "\n".join(chunk),
+            **slice_lines(p.read_text(encoding="utf-8"), start_line, end_line),
         })
     except Exception as ex:
         return json.dumps({"error": str(ex)})
+
+
+def _around(line: str, q: str, cap: int = SEARCH_LINE_CAP) -> str:
+    """`line` as a search shows it: whole when short, else `cap` characters around the match (a page on one line)."""
+    if len(line) <= cap:
+        return line
+    at = max(0, line.lower().find(q))
+    start = max(0, min(at - cap // 2, len(line) - cap))
+    return ("…" if start else "") + line[start:start + cap] + ("…" if start + cap < len(line) else "")
+
+
+def search_text(text: str, query: str, context_lines: int = 5, *, max_chars: int | None = None) -> dict:
+    """Grep-like search over content, with surrounding context. Pure — see `slice_lines`.
+
+    Each line shown is cut around the match (`SEARCH_LINE_CAP`), and with `max_chars` the matches stop once their
+    context holds that much, said as `truncated` (D339 P2): a search of a crawl answered 168k characters."""
+    lines = text.splitlines()
+    q = query.lower()
+    results = []
+    covered: set[int] = set()
+    room, truncated = max_chars, False
+
+    for i, line in enumerate(lines):
+        if q not in line.lower():
+            continue
+        start = max(0, i - context_lines)
+        end = min(len(lines), i + context_lines + 1)
+        if i in covered:
+            continue
+        covered.update(range(start, end))
+        block = []
+        for j in range(start, end):
+            prefix = ">>>" if j == i else "   "
+            block.append(f"{prefix} [L{j + 1}] {_around(lines[j], q)}")
+        found = {
+            "match_line": i + 1,
+            "match": _around(line, q),
+            "context": "\n".join(block),
+        }
+        if room is not None:
+            cost = len(found["match"]) + len(found["context"])
+            if cost > room and results:
+                truncated = True
+                break
+            room -= cost
+        results.append(found)
+        if len(results) >= 20:
+            break
+
+    return {
+        "query": query,
+        "matches_found": len(results),
+        "results": results,
+        **({"truncated": True} if truncated else {}),
+    }
 
 
 def tool_search_file(path: str, query: str, context_lines: int = 5) -> str:
@@ -211,36 +772,9 @@ def tool_search_file(path: str, query: str, context_lines: int = 5) -> str:
         p = _safe_path(path)
         if not p.exists():
             return json.dumps({"error": f"File not found: {path}"})
-        lines = p.read_text(encoding="utf-8").splitlines()
-        q = query.lower()
-        results = []
-        covered: set[int] = set()
-
-        for i, line in enumerate(lines):
-            if q not in line.lower():
-                continue
-            start = max(0, i - context_lines)
-            end = min(len(lines), i + context_lines + 1)
-            if i in covered:
-                continue
-            covered.update(range(start, end))
-            block = []
-            for j in range(start, end):
-                prefix = ">>>" if j == i else "   "
-                block.append(f"{prefix} [L{j + 1}] {lines[j]}")
-            results.append({
-                "match_line": i + 1,
-                "match": line,
-                "context": "\n".join(block),
-            })
-            if len(results) >= 20:
-                break
-
         return json.dumps({
             "path": path,
-            "query": query,
-            "matches_found": len(results),
-            "results": results,
+            **search_text(p.read_text(encoding="utf-8"), query, context_lines),
         })
     except Exception as ex:
         return json.dumps({"error": str(ex)})

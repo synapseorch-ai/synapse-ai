@@ -9,11 +9,49 @@ import re
 import time
 from pathlib import Path
 
-LOGS_DIR = Path(__file__).parent.parent / "logs" / "schedule_logs"
+from core.run_ids import new_run_id
+
+#: Blob key prefix for finished logs. The blob store applies the tenant
+#: prefix itself; this used to be a flat prefix on a shared bucket.
+_BLOB_PREFIX = "logs/schedule"
 
 
-def _ensure_logs_dir():
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+def _logs_dir() -> Path:
+    """Where a log is appended while its run is still going."""
+    from core.storage.scratch import scratch_dir
+    return scratch_dir("schedule_logs")
+
+
+def _blob_key(run_id: str) -> str:
+    return f"{_BLOB_PREFIX}/{run_id}.log"
+
+
+def _meta_key(run_id: str) -> str:
+    """Sidecar holding what list_logs() shows, so listing reads no log bodies."""
+    return f"{_BLOB_PREFIX}/{run_id}.meta.json"
+
+def _head_fields(head: str) -> dict:
+    """The summary fields list_logs() shows, parsed from a log's banner.
+
+    S3 object metadata carried these before. BlobStore has no metadata API, so
+    they go in a sidecar blob — same behaviour on every backend, and it comes
+    back in the same list() call as the log itself.
+    """
+    def _extract(label: str) -> str:
+        for line in head.split("\n"):
+            if label in line:
+                return line.split(":", 1)[1].strip()
+        return ""
+
+    return {
+        "schedule_name": _extract("Schedule Name   :"),
+        "schedule_id": _extract("Schedule ID     :"),
+        "target_type": _extract("Target Type     :"),
+        "target_id": _extract("Target ID       :"),
+        "started_at": _extract("Started at      :"),
+        "prompt": _extract("Prompt          :")[:200],
+    }
+
 
 
 def _ts() -> str:
@@ -37,15 +75,38 @@ class ScheduleLogger:
         target_type: str,
         target_id: str,
         prompt: str,
+        continues: str | None = None,
+        note: str = "",
     ):
-        _ensure_logs_dir()
+        """`continues` is the run id of a run this log carries on — a scheduled
+        turn resumed after a person answered its tool call (F268). The same file
+        gets a RESUMED banner with `note` instead of a new header."""
+
+        self._start_time = time.time()
+        #: Set when the run stops on a human step, so it is logged paused, not completed.
+        self.paused = False
+        if continues and re.match(r"^[a-zA-Z0-9_\-\.]+$", continues):
+            self.run_id = continues
+            self.path = _logs_dir() / f"{self.run_id}.log"
+            if not self.path.exists():
+                # Finished on another process, or its local copy is gone: the
+                # blob holds it whole, so the continuation starts from that.
+                earlier = ScheduleLogger.get_log(continues) or ""
+                if earlier:
+                    self._write(earlier)
+            self._write(f"""
+{'='*80}
+  RESUMED at {_ts()}
+  {note}
+{'='*80}
+""")
+            return
 
         # Sanitize schedule_id to prevent taint in self.path
         clean_sched_id = re.sub(r"[^a-zA-Z0-9_\-]", "", schedule_id)
         short_id = clean_sched_id.replace("sched_", "") if clean_sched_id.startswith("sched_") else clean_sched_id
-        self.run_id = f"schedulerun_{short_id}_{int(time.time() * 1000)}"
-        self.path = LOGS_DIR / f"{self.run_id}.log"
-        self._start_time = time.time()
+        self.run_id = new_run_id(short_id, prefix="schedulerun")
+        self.path = _logs_dir() / f"{self.run_id}.log"
 
         prompt_preview = prompt[:300] + "..." if len(prompt) > 300 else prompt
         self._write(f"""
@@ -65,17 +126,33 @@ class ScheduleLogger:
     # -- Core write -----------------------------------------------------
 
     def _write(self, text: str):
-        """Sync write -- only call from a thread (via _write_bg) or startup."""
+        """Sync write -- only call from the writer thread (via _write_bg) or startup."""
+        from core.secret_scrub import for_storage
+
+        # The startup banner's prompt (F854), kept as a chat turn is (F1185); stable on the writer thread.
+        text = for_storage(text)
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(text)
 
     def _write_bg(self, text: str):
-        """Fire-and-forget write that offloads to a thread so the event loop isn't blocked."""
+        """Fire-and-forget write, off the event loop, in the order it was asked for.
+
+        Through the journal's one writer thread, as the orchestration logger
+        writes: the default executor has several workers, and a slow line
+        landed after a later one — "AGENT RESPONSE" after the FINISHED banner.
+        """
+        from core.orchestration.journal import _executor
+        from core.secret_scrub import for_storage
+
+        # In the caller's task, where its secrets are held; the writer thread has none (F854). Card numbers masked
+        # too (F1185).
+        text = for_storage(text)
         try:
-            loop = asyncio.get_running_loop()
-            loop.run_in_executor(None, self._write, text)
+            asyncio.get_running_loop()
         except RuntimeError:
             self._write(text)
+            return
+        _executor().submit(self._write, text)
 
     # -- Run lifecycle ---------------------------------------------------
 
@@ -96,37 +173,26 @@ class ScheduleLogger:
         Writes a final sync marker to ensure the run_end text (queued via executor)
         has been flushed before uploading.
         """
-        # Sync write acts as a barrier — the executor pool is FIFO so this waits
-        # for any pending _write_bg tasks to drain (they run in the same default
-        # thread pool as this blocking call).
+        # Wait for every line already handed to the writer thread: it runs them
+        # in order, so a no-op queued behind them finishes after the last. The
+        # empty write this used to be ran on the caller's thread and waited for
+        # nothing, so the upload below could miss the last lines.
+        from core.orchestration.journal import _executor
         try:
-            self._write("")  # zero-length write, flushes preceding executor tasks
+            _executor().submit(lambda: None).result(timeout=30)
         except Exception:
             pass
         try:
-            from core.s3_storage import get_s3
-            s3 = get_s3()
-            if s3 and self.path.exists():
-                head = self.path.read_text(encoding="utf-8", errors="replace")[:1000]
+            if not self.path.exists():
+                return
+            from core.storage import get_blob_store
 
-                def _extract(label: str) -> str:
-                    for line in head.split("\n"):
-                        if label in line:
-                            return line.split(":", 1)[1].strip()
-                    return ""
-
-                s3.upload_text(
-                    f"logs/schedule/{self.path.name}",
-                    self.path.read_text(encoding="utf-8"),
-                    metadata={
-                        "schedule_name": _extract("Schedule Name   :"),
-                        "schedule_id": _extract("Schedule ID     :"),
-                        "target_type": _extract("Target Type     :"),
-                        "target_id": _extract("Target ID       :"),
-                        "started_at": _extract("Started at      :"),
-                        "prompt": _extract("Prompt          :")[:200],
-                    },
-                )
+            text = self.path.read_text(encoding="utf-8")
+            store = get_blob_store()
+            # One put() at the end, not a write per line: put() replaces the
+            # whole object, so appending through it would be quadratic.
+            store.put(_blob_key(self.run_id), text)
+            store.put(_meta_key(self.run_id), json.dumps(_head_fields(text[:1000])))
         except Exception:
             pass
 
@@ -135,6 +201,15 @@ class ScheduleLogger:
     def log_event(self, event: dict):
         """Process an SSE event and write relevant info to the log."""
         etype = event.get("type", "")
+        if etype == "human_input_required":
+            self.paused = True
+            if event.get("kind") == "tool_approval":
+                self._write_bg(f"""
+  WAITING FOR APPROVAL: {event.get("tool_name", "")}
+     Arguments:
+{self._indent(_fmt_args(event.get("tool_args") or {}), 6)}
+     Asked in the bell; it expires unrun if nobody answers.
+""")
 
         if etype == "_log_prompt":
             prompt = event.get("prompt", "")
@@ -176,6 +251,14 @@ class ScheduleLogger:
         elif etype == "error":
             self._write_bg(f"\n  ERROR: {event.get('message', '')}\n")
 
+        elif etype in ("knowledge_search", "knowledge_read", "knowledge_citations",
+                       "knowledge_retrieve", "knowledge_ingest"):
+            # An agent's Knowledge calls and its answer's citations (B1b), and a
+            # workflow's Retrieve and Ingest steps (R1): labels, paths, counts and
+            # ids — never the passages themselves.
+            from core.knowledge.tools import run_log_text
+            self._write_bg(run_log_text(event, icons=False))
+
         elif etype == "thinking":
             pass  # skip noise
 
@@ -203,7 +286,7 @@ class ScheduleLogger:
         # 2. Iterate and match (Taint-severing strategy)
         try:
             target_filename = f"{run_id}.log"
-            for entry in LOGS_DIR.iterdir():
+            for entry in _logs_dir().iterdir():
                 if entry.is_file() and entry.name == target_filename:
                     return entry
         except Exception:
@@ -220,17 +303,14 @@ class ScheduleLogger:
         if path and path.exists():
             return path.read_text(encoding="utf-8")
         try:
-            from core.s3_storage import get_s3
-            s3 = get_s3()
-            if s3:
-                return s3.download_text(f"logs/schedule/{run_id}.log")
+            from core.storage import get_blob_store
+            return get_blob_store().get(_blob_key(run_id))
         except Exception:
             pass
         return None
 
     @staticmethod
     def list_logs(limit: int = 100, offset: int = 0) -> list[dict]:
-        _ensure_logs_dir()
 
         def _parse_head(head: str, run_id: str, size_kb: float) -> dict:
             def _extract(label: str) -> str:
@@ -251,7 +331,7 @@ class ScheduleLogger:
 
         local_ids: set[str] = set()
         logs: list[dict] = []
-        files = sorted(LOGS_DIR.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+        files = sorted(_logs_dir().glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
         for f in files:
             run_id = f.stem
             local_ids.add(run_id)
@@ -262,32 +342,23 @@ class ScheduleLogger:
                 logs.append({"run_id": run_id, "file_size_kb": 0})
 
         try:
-            from core.s3_storage import get_s3
-            s3 = get_s3()
-            if s3:
-                from concurrent.futures import ThreadPoolExecutor
-                s3_keys = s3.list_keys("logs/schedule/")
-                missing_keys = [k for k in s3_keys if k.endswith(".log") and Path(k).stem not in local_ids]
-
-                def _fetch_meta(rel_key: str) -> dict:
-                    run_id = Path(rel_key).stem
-                    try:
-                        meta = s3.get_metadata(rel_key) or {}
-                        return {
-                            "run_id": run_id,
-                            "schedule_name": meta.get("schedule_name", ""),
-                            "schedule_id": meta.get("schedule_id", ""),
-                            "target_type": meta.get("target_type", ""),
-                            "target_id": meta.get("target_id", ""),
-                            "started_at": meta.get("started_at", ""),
-                            "prompt": meta.get("prompt", "")[:200],
-                            "file_size_kb": 0,
-                        }
-                    except Exception:
-                        return {"run_id": run_id}
-
-                with ThreadPoolExecutor(max_workers=10) as pool:
-                    logs.extend(pool.map(_fetch_meta, missing_keys))
+            from core.storage import get_blob_store
+            store = get_blob_store()
+            for key in store.list(f"{_BLOB_PREFIX}/"):
+                if not key.endswith(".log"):
+                    continue
+                run_id = Path(key).stem
+                if run_id in local_ids:
+                    continue
+                local_ids.add(run_id)
+                entry = {}
+                try:
+                    raw = store.get(_meta_key(run_id))
+                    if raw:
+                        entry = json.loads(raw)
+                except (ValueError, OSError):
+                    pass
+                logs.append({"run_id": run_id, "file_size_kb": 0, **entry})
         except Exception:
             pass
 
@@ -304,10 +375,11 @@ class ScheduleLogger:
             path.unlink()
             deleted = True
         try:
-            from core.s3_storage import get_s3
-            s3 = get_s3()
-            if s3:
-                s3.delete(f"logs/schedule/{run_id}.log")
+            from core.storage import get_blob_store
+            store = get_blob_store()
+            if store.exists(_blob_key(run_id)):
+                store.delete(_blob_key(run_id))
+                store.delete(_meta_key(run_id))
                 deleted = True
         except Exception:
             pass

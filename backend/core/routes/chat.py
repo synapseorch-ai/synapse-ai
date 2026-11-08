@@ -1,30 +1,154 @@
 """
 Chat endpoints: /chat and /chat/stream
 Thin wrappers around the shared ReAct engine (core.react_engine).
+
+A turn is started by the route *handler* and runs in a task of its own
+(`core.chat_turns`); the response only reads it. So a reader leaving — a closed
+tab, a reload, a laptop waking up — ends that reader, never the turn (F49). Stop
+is `/chat/{id}/cancel`, and `GET /chat/{id}/events` reads a turn again from a
+cursor.
 """
 import json
 import asyncio
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
+from core import chat_turns
+from core.events_public import public_event
 from core.models import ChatRequest, ChatResponse
+from pydantic import BaseModel, Field
 from core.react_engine import run_react_loop, parse_tool_call, iter_with_heartbeat  # noqa: F401 — re-export for backwards compat
 
 router = APIRouter()
 
+#: What a second message gets while a turn is still running on its conversation.
+TURN_RUNNING = "A reply is still being written in this conversation."
 
-def _resolve_agent(request: ChatRequest):
+
+async def _resolve_agent(request: ChatRequest):
     """Return the agent dict for the request's agent_id (or the active agent)."""
-    from core.routes.agents import load_user_agents, get_active_agent_data
+    from core.routes.agents import get_active_agent_data
+    from core.scale.context import resolve_agent
+
     agent_id = getattr(request, "agent_id", None)
     if agent_id:
-        agents = load_user_agents()
-        return next((a for a in agents if a["id"] == agent_id), None)
+        return await resolve_agent(agent_id)
     try:
-        return get_active_agent_data()
+        return await get_active_agent_data()
     except RuntimeError:
         return None
+
+
+async def _refuse_unread_images(request: ChatRequest) -> None:
+    """422 for images this turn's agent would not read (F396), before a turn is claimed."""
+    if not request.images:
+        return
+    from core.config import load_settings
+    from core.images import refusal_for
+
+    said = await refusal_for(await _resolve_agent(request), load_settings().get("model", "mistral"))
+    if said:
+        raise HTTPException(status_code=422, detail=said)
+
+
+def _start(request: ChatRequest, resume_state: dict | None = None, *,
+           expand_mentions: bool) -> chat_turns.ChatTurn:
+    """Start the turn from the handler. Raises `TurnAlreadyRunning`.
+
+    `expand_mentions` has no default on purpose: every caller says whose text
+    this is — a member's (`@[path]` reads the vault) or a widget visitor's (it
+    never does).
+    """
+    import core.server as _server
+
+    with chat_turns.claim(request.session_id, message=request.message or "",
+                          agent_key=request.agent_id or "default") as turn:
+        turn.start(_event_stream(request, _server, resume_state,
+                                 expand_mentions=expand_mentions))
+    return turn
+
+
+async def _refuse_card_for_browser(request: ChatRequest) -> None:
+    """A card number never reaches a Browser agent in a message (F1100): the person types it in the
+    browser, in their turn. Other agents are untouched."""
+    from core.browser.gate import CARD_WORDS, looks_like_card
+    if not request.agent_id or not looks_like_card(request.message or ""):
+        return
+    from core.store.resources import get_agent
+    agent = await get_agent(request.agent_id)
+    if agent and (agent.get("type") == "browser" or agent.get("browser")):
+        raise HTTPException(status_code=422, detail=CARD_WORDS)
+
+
+def _read(turn: chat_turns.ChatTurn, after: int = 0):
+    """The turn's events for one reader, each with its cursor."""
+    async def body():
+        # A comment first, so the response opens at once. Nothing is flushed —
+        # headers included — before the first byte, and a reader joining a turn
+        # inside a long model call would otherwise wait out a heartbeat to learn
+        # it had reconnected.
+        yield chat_turns.HEARTBEAT
+        async for item in chat_turns.read(turn, after):
+            yield item if isinstance(item, str) else chat_turns.frame(turn, item)
+    return body()
+
+
+def _summarize(turn: chat_turns.ChatTurn) -> ChatResponse:
+    """A finished turn as the one-shot `/chat` answer."""
+    pause = None
+    for entry in turn.entries:
+        event = entry.event
+        kind = event.get("type")
+        if kind == "response":
+            return ChatResponse(
+                response=event.get("content", ""), intent=event.get("intent", "chat"),
+                data=event.get("data"), tool_name=event.get("tool_name"),
+            )
+        if kind == "error":
+            return ChatResponse(response=event.get("message", ""), intent="chat", data=None, tool_name=None)
+        if kind == "orchestration_error":
+            # An orchestrator agent failed — same outcome, different event shape.
+            return ChatResponse(response=event.get("error", ""), intent="chat", data=None, tool_name=None)
+        if kind == "cancelled":
+            return ChatResponse(response=event.get("message") or "Stopped.", intent="cancelled",
+                                data=None, tool_name=None)
+        if kind == "human_input_required" and pause is None:
+            from core.routes.api_v1 import _pause_of
+            pause = _pause_of(event)
+
+    if pause:
+        # Stopped for a person, not finished (F68): a tool call awaiting approval
+        # or an orchestration paused on a human step.
+        status = pause.pop("status")
+        prompt = pause.pop("prompt")
+        return ChatResponse(response=prompt, intent=status, data=pause, tool_name=None)
+    return ChatResponse(response="I completed the requested actions.", intent="chat", data=None, tool_name=None)
+
+
+def _redeem_retry(request: ChatRequest):
+    """A pressed "Try again on a stronger model" (F1018): the failed turn's offer puts this one turn on the model the
+    server picked. Refused (422, its sentence the page shows; 409 is "a turn is running") when that turn is not this
+    chat's last, failed one. Returns the failed turn, whose offer `try_stronger.spend` takes once this turn has
+    started; None for an ordinary message."""
+    if not request.retry_of:
+        return None
+    from core import try_stronger
+
+    found = try_stronger.chat_offer(request.session_id, request.retry_of, request.agent_id or "default")
+    if isinstance(found, str):
+        raise HTTPException(status_code=422, detail=found)
+    held, kept = found
+    request._model_override, request._retried_from = kept["model"], request.retry_of
+    request._retried_name = kept.get("name") or kept["model"]
+    return held
+
+
+def _spend(held) -> None:
+    if held is not None:
+        from core import try_stronger
+
+        try_stronger.spend(held)
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -32,131 +156,57 @@ async def chat(request: ChatRequest):
     import core.server as _server
     if not _server.agent_sessions:
         raise HTTPException(status_code=500, detail="No agents connected")
-
-    final_event = None
-    async for event in run_react_loop(request, _server):
-        if event["type"] == "final":
-            final_event = event
-        elif event["type"] == "error":
-            return ChatResponse(response=event["message"], intent="chat", data=None, tool_name=None)
-        elif event["type"] == "orchestration_error":
-            # An orchestrator agent failed — same outcome, different event shape.
-            return ChatResponse(response=event["error"], intent="chat", data=None, tool_name=None)
-
-    if not final_event:
-        return ChatResponse(response="I completed the requested actions.", intent="chat", data=None, tool_name=None)
-
-    return ChatResponse(
-        response=final_event["response"],
-        intent=final_event["intent"],
-        data=final_event.get("data"),
-        tool_name=final_event.get("tool_name"),
-    )
+    await _refuse_unread_images(request)
+    held = _redeem_retry(request)
+    try:
+        turn = _start(request, expand_mentions=True)
+    except chat_turns.TurnAlreadyRunning:
+        raise HTTPException(status_code=409, detail=TURN_RUNNING)
+    _spend(held)
+    # Waiting is not owning: this request going away leaves the turn running.
+    await turn.wait()
+    return _summarize(turn)
 
 
 @router.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
     """Real-time streaming endpoint with SSE"""
+    await _refuse_unread_images(request)
+    await _refuse_card_for_browser(request)
+    # The app's chat (SUB1a): this turn's helpers may work in the background, and report back to it.
+    request._app_chat = True
+    held = _redeem_retry(request)
+    try:
+        turn = _start(request, expand_mentions=True)
+    except chat_turns.TurnAlreadyRunning:
+        raise HTTPException(status_code=409, detail=TURN_RUNNING)
+    _spend(held)
+    return _sse(_read(turn))
 
-    async def event_generator():
-        import core.server as _server
 
-        # Route builder agents to the dedicated builder stream
-        agent = _resolve_agent(request)
-        if agent and agent.get("type") == "builder":
-            from core.routes.builder import run_builder_stream_compat
-            async for chunk in run_builder_stream_compat(request, _server):
-                yield chunk
-            return
+@router.get("/chat/{session_id}/events")
+async def chat_events(session_id: str, request: Request, after: str | None = None):
+    """Read a conversation's turn again — the live one, or the one just ended.
 
-        try:
-            async for event in iter_with_heartbeat(run_react_loop(request, _server)):
-                # Heartbeat comments are yielded as raw SSE strings — pass through.
-                if isinstance(event, str):
-                    yield event
-                    continue
-                etype = event["type"]
+    `after` (or `Last-Event-ID`) is the cursor of the last event already seen;
+    without it the turn is read from its start. 404 when the conversation has no
+    turn held here (it finished long ago, or never ran in this process — its
+    answer is in the conversation); 410 when the cursor belongs to a turn that
+    has since been replaced.
+    """
+    turn = chat_turns.find(session_id)
+    if turn is None:
+        return JSONResponse(status_code=404, content={"detail": "No turn is running in this conversation."})
+    try:
+        after_seq = chat_turns.parse_cursor(turn, after or request.headers.get("last-event-id"))
+    except chat_turns.TurnGone:
+        return JSONResponse(status_code=410, content={"detail": "That turn has ended; read the conversation instead."})
+    return _sse(_read(turn, after_seq))
 
-                if etype == "status":
-                    yield f"data: {json.dumps({'type': 'status', 'message': event['message']})}\n\n"
 
-                elif etype == "thinking":
-                    yield f"data: {json.dumps({'type': 'thinking', 'message': event.get('message', ''), 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')})}\n\n"
-
-                elif etype == "tool_execution":
-                    yield f"data: {json.dumps({'type': 'tool_execution', 'tool_name': event['tool_name'], 'args': event['args'], 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')})}\n\n"
-
-                elif etype == "tool_result":
-                    yield f"data: {json.dumps({'type': 'tool_result', 'tool_name': event['tool_name'], 'preview': event['preview'], 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')})}\n\n"
-
-                elif etype == "llm_reasoning":
-                    # Private chain-of-thought extracted from [REASONING] blocks.
-                    # Rendered as a dedicated "thinking" panel above the tool call
-                    # in the chat UI / orchestration step view.
-                    yield f"data: {json.dumps({'type': 'llm_reasoning', 'reasoning': event['reasoning'], 'turn': event.get('turn', 1), 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}, default=str)}\n\n"
-
-                elif etype == "llm_thought":
-                    # Action text (tool-call JSON or final-response prose) with
-                    # reasoning already stripped — carries orch_step_id & step_name
-                    # when inside orchestration.
-                    yield f"data: {json.dumps({'type': 'llm_thought', 'thought': event['thought'], 'turn': event.get('turn', 1), 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}, default=str)}\n\n"
-
-                elif etype == "final":
-                    # Sub-agent step final (inside orchestration) → agent_step_result
-                    # Distinguished by the presence of orch_step_id (added by AgentStepExecutor)
-                    if event.get("orch_step_id"):
-                        yield f"data: {json.dumps({'type': 'agent_step_result', 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name', ''), 'content': event.get('response', ''), 'intent': event.get('intent', 'chat'), 'data': event.get('data'), 'tool_name': event.get('tool_name')}, default=str)}\n\n"
-                    else:
-                        # Top-level final (single agent or orchestration summary) → response + done
-                        yield f"data: {json.dumps({'type': 'response', 'content': event.get('response', ''), 'intent': event.get('intent', 'chat'), 'data': event.get('data'), 'tool_name': event.get('tool_name')}, default=str)}\n\n"
-                        yield f"data: {json.dumps({'type': 'done'})}\n\n"
-
-                elif etype == "error":
-                    yield f"data: {json.dumps({'type': 'error', 'message': event['message']})}\n\n"
-
-                # ── Orchestration lifecycle events ────────────────────────────────
-                elif etype == "orchestration_start":
-                    yield f"data: {json.dumps({'type': 'orchestration_start', 'run_id': event.get('run_id'), 'orchestration_name': event.get('orchestration_name'), 'orchestration_id': event.get('orchestration_id')}, default=str)}\n\n"
-
-                elif etype == "step_start":
-                    yield f"data: {json.dumps({'type': 'step_start', 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name'), 'step_type': event.get('step_type')}, default=str)}\n\n"
-
-                elif etype == "step_complete":
-                    yield f"data: {json.dumps({'type': 'step_complete', 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name'), 'duration_seconds': event.get('duration_seconds')}, default=str)}\n\n"
-
-                elif etype == "step_error":
-                    yield f"data: {json.dumps({'type': 'step_error', 'orch_step_id': event.get('orch_step_id'), 'error': event.get('error')}, default=str)}\n\n"
-
-                elif etype == "orchestration_complete":
-                    yield f"data: {json.dumps({'type': 'orchestration_complete', 'run_id': event.get('run_id'), 'status': event.get('status')}, default=str)}\n\n"
-
-                elif etype == "orchestration_error":
-                    yield f"data: {json.dumps({'type': 'orchestration_error', 'error': event.get('error')}, default=str)}\n\n"
-
-                elif etype == "human_input_required":
-                    yield f"data: {json.dumps(event, default=str)}\n\n"
-                    # Send done so the loading spinner stops — user must submit the form
-                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
-                    return
-
-                elif etype in (
-                    "parallel_start", "parallel_complete", "branch_start",
-                    "loop_iteration", "loop_complete", "merge_complete",
-                    "transform_result", "routing_decision",
-                    "loop_limit_reached", "step_warning",
-                ):
-                    yield f"data: {json.dumps(event, default=str)}\n\n"
-
-                await asyncio.sleep(0)
-
-        except Exception as e:
-            print(f"ERROR in SSE stream: {e}")
-            import traceback
-            traceback.print_exc()
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
-
+def _sse(generator):
     return StreamingResponse(
-        event_generator(),
+        generator,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -164,3 +214,539 @@ async def chat_stream(request: ChatRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+async def _event_stream(request, _server, resume_state: dict | None = None, *,
+                        expand_mentions: bool = False):
+    """One chat turn's events as SSE frames — the producer a turn's task drives."""
+    agent = await _resolve_agent(request)
+    turn = chat_turns.current_turn.get()
+    # A follow-up nobody typed (a helper's result, SUB1a): its question keeps that mark wherever it is saved.
+    automated = getattr(request, "_automated", None) or None
+    if resume_state is None and not automated:
+        # A new message in a conversation waiting on a tool call refuses that
+        # call (F247): it is not run, the turn that asked is saved in its own
+        # place marked expired, and nothing can allow it afterwards. Before the
+        # loop starts, so the new turn's history already says so. An answer's
+        # own resume (`resume_state`) is not a new message.
+        from core.chat_approval import settle_moved_past
+        # What the turn it moves past kept from its helpers, this one reads first (SUB1a). An
+        # automated follow-up never moves past a question: the person did not move on.
+        carried: list = []
+        await settle_moved_past(
+            request.session_id or "", getattr(request, "agent_id", None) or "default",
+            save_as=(agent or {}).get("id") or getattr(request, "agent_id", None) or "default",
+            redis=getattr(_server, "redis_client", None), carried=carried,
+        )
+        if carried:
+            request._inbox_seed = [*(getattr(request, "_inbox_seed", None) or []), *carried]
+    # What the turn did before a Stop (F242): the calls its last snapshot holds,
+    # and the ones made since, read from their events.
+    latest_progress: dict | None = None
+    events_since_progress: list[dict] = []
+    # What it thought, for the same save (U60): every one this request saw.
+    thinking_events: list[dict] = []
+    # The helpers it sent, started and finished (SUB1a), for the same save.
+    helper_events: list[dict] = []
+    # What its inbox kept when it parked (SUB1a), parked with the question.
+    inbox_parked: dict | None = None
+    if turn is not None and agent:
+        # Stopped before it answered, a turn still keeps its question — as the
+        # fleet's chat job does. Otherwise Stop destroyed the exchange rather
+        # than ending it, and a reopened conversation lost what was asked.
+        # Saved under the id the engine saves a finished turn under. Every
+        # agent type: an orchestrator's or a builder's finished turn is saved
+        # like any other since F115, so its stopped one is too. With the calls
+        # it made: saved with none, the next turn redid them (F242).
+        async def _save_stopped(agent_id=agent.get("id"), session_id=request.session_id,
+                                message=request.message or ""):
+            from core.session import (_save_conversation_turn, helpers_from_events, image_notes,
+                                      members_from_events, thinking_from_events, turn_calls, tools_from_calls)
+            calls = turn_calls(latest_progress, events_since_progress, resumed=resume_state)
+            reasoning, thoughts = thinking_from_events(thinking_events, resumed=resume_state)
+            helpers = helpers_from_events(helper_events, resumed=latest_progress or resume_state)
+            members = members_from_events(helper_events, resumed=latest_progress or resume_state)
+            await _save_conversation_turn(session_id=session_id or "default", agent_id=agent_id,
+                                          user=message, assistant=chat_turns.STOPPED_ANSWER,
+                                          tools=tools_from_calls(calls), calls=calls,
+                                          images=image_notes(getattr(request, "images", None)),
+                                          reasoning=reasoning, thoughts=thoughts, helpers=helpers,
+                                          automated=automated, members=members)
+        turn.on_stop = _save_stopped
+
+    # Route builder agents to the dedicated builder stream
+    if agent and agent.get("type") == "builder":
+        from core.routes.builder import run_builder_stream_compat
+        async for chunk in run_builder_stream_compat(request, _server):
+            yield chunk
+        return
+
+    async def _stopped() -> bool:
+        # The turn's own flag: a Stop that arrived after an earlier turn ended
+        # must not end this one.
+        return bool(turn is not None and turn.stop_requested)
+
+    # "Try again on a stronger model" (F1018): what this turn called, its helpers' and members' calls included, and
+    # the offer a failed turn ends with.
+    from core.try_stronger import TurnCalls
+
+    calls = TurnCalls()
+
+    async def _offer_after(final: dict | None, error: dict | None) -> dict | None:
+        from core import try_stronger
+
+        if turn is None or getattr(request, "_retried_from", None) or not try_stronger.offers_for(agent):
+            return None  # a turn tried again is not offered again
+        if not try_stronger.chat_failed(final, error) or calls.still_working \
+                or await try_stronger.wrote(calls.names, _server):
+            return None
+        made = await try_stronger.offer(try_stronger.model_of(agent), has_tools=bool(agent.get("tools")),
+                                        vision=bool(getattr(request, "images", None)), retry_of=turn.id)
+        turn.retry_offer = made
+        return made
+
+    if getattr(request, "_retried_from", None):
+        yield f"data: {json.dumps({'type': 'status', 'message': f'Trying again on {request._retried_name}…'})}\n\n"
+
+    try:
+        # The last turn-boundary snapshot. Kept so a pause can be resumed from
+        # it rather than from the top: without it, allowing a gated call means
+        # re-running every tool that already succeeded this turn, side effects
+        # and all. Never forwarded — it is engine state, not an event.
+        # (Declared above, where a Stop's save reads it too.)
+
+        async for event in iter_with_heartbeat(
+            run_react_loop(request, _server, should_stop=_stopped,
+                           progress_events=True, resume_state=resume_state,
+                           expand_mentions=expand_mentions, stream_answer=True)
+        ):
+            # Heartbeat comments are yielded as raw SSE strings — pass through.
+            if isinstance(event, str):
+                yield event
+                continue
+            etype = event["type"]
+
+            # Whose event this is. The engine tags everything a delegate
+            # produces (`react_engine`, the delegate_to_agent branch); rebuilt
+            # without these the browser cannot tell a sub-agent's work from the
+            # work of the agent the person actually asked (F7). Absent for the
+            # main agent's own events, so the keys stay off those entirely.
+            def whose(payload: dict) -> dict:
+                if event.get("delegate_from"):
+                    payload["delegate_from"] = event["delegate_from"]
+                    payload["delegate_agent_name"] = event.get("delegate_agent_name")
+                return payload
+
+            if etype == "_step_progress":
+                latest_progress = {k: v for k, v in event.items() if k != "type"}
+                events_since_progress.clear()
+                continue
+            if etype == "_inbox_parked":
+                inbox_parked = event.get("state") or None
+                continue
+            # What is left is a client's: only what it may see, a finished run's state without
+            # the engine's own keys (F854).
+            event = public_event(event)
+            if event is None:
+                continue
+            calls.see(event)
+            if etype in ("tool_execution", "tool_result"):
+                events_since_progress.append(event)
+            elif etype in ("llm_reasoning", "llm_thought"):
+                thinking_events.append(event)
+            elif etype in ("helper_started", "helper_finished", "member_started", "member_finished"):
+                helper_events.append(event)
+
+            if etype == "status":
+                yield f"data: {json.dumps(whose({'type': 'status', 'message': event['message']}))}\n\n"
+
+            elif etype == "thinking":
+                yield f"data: {json.dumps(whose({'type': 'thinking', 'message': event.get('message', ''), 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}))}\n\n"
+
+            elif etype == "tool_execution":
+                yield f"data: {json.dumps(whose({'type': 'tool_execution', 'tool_name': event['tool_name'], 'args': event['args'], 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}))}\n\n"
+
+            elif etype == "tool_result":
+                frame = {'type': 'tool_result', 'tool_name': event['tool_name'], 'preview': event['preview'],
+                         'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}
+                if event.get('refused'):
+                    # Not run (U68): the page marks it rather than ticking it.
+                    frame.update(refused=True, reason=event.get('reason'))
+                if event.get('subtask_name'):
+                    # Which helper's result this is (the page names it).
+                    frame['subtask_name'] = event['subtask_name']
+                yield f"data: {json.dumps(whose(frame))}\n\n"
+
+            elif etype == "llm_reasoning":
+                # Private chain-of-thought extracted from [REASONING] blocks.
+                # Rendered as a dedicated "thinking" panel above the tool call
+                # in the chat UI / orchestration step view.
+                yield f"data: {json.dumps(whose({'type': 'llm_reasoning', 'reasoning': event['reasoning'], 'turn': event.get('turn', 1), 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}), default=str)}\n\n"
+
+            elif etype in ("answer_delta", "answer_reset"):
+                # The answer as the model writes it (U72): the page grows it in
+                # place until `response` puts the answer of record there, and
+                # drops it on a reset — narration before a tool call, which the
+                # thinking panel carries, or a call sent again.
+                yield f"data: {json.dumps(event)}\n\n"
+
+            elif etype == "llm_thought":
+                # Action text (tool-call JSON or final-response prose) with
+                # reasoning already stripped — carries orch_step_id & step_name
+                # when inside orchestration.
+                yield f"data: {json.dumps(whose({'type': 'llm_thought', 'thought': event['thought'], 'turn': event.get('turn', 1), 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}), default=str)}\n\n"
+
+            elif etype == "final":
+                # Sub-agent step final (inside orchestration) → agent_step_result
+                # Distinguished by the presence of orch_step_id (added by AgentStepExecutor)
+                if event.get("orch_step_id"):
+                    yield f"data: {json.dumps({'type': 'agent_step_result', 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name', ''), 'content': event.get('response', ''), 'intent': event.get('intent', 'chat'), 'data': event.get('data'), 'tool_name': event.get('tool_name')}, default=str)}\n\n"
+                else:
+                    # Top-level final (single agent or orchestration summary) → response + done
+                    answer = {'type': 'response', 'content': event.get('response', ''), 'intent': event.get('intent', 'chat'), 'data': event.get('data'), 'tool_name': event.get('tool_name')}
+                    # A Team agent's summary and its members' records (TEAM1b): the page's task list,
+                    # its kept lanes and "answered alone". Only here: a widget or OAI1 never reads them.
+                    for key in ("team", "members"):
+                        if event.get(key) is not None:
+                            answer[key] = event[key]
+                    yield f"data: {json.dumps(answer, default=str)}\n\n"
+                    if (offered := await _offer_after(event, None)) is not None:
+                        yield f"data: {json.dumps(offered)}\n\n"
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+            elif etype == "error":
+                yield f"data: {json.dumps({'type': 'error', 'message': event['message']})}\n\n"
+
+            # ── Orchestration lifecycle events ────────────────────────────────
+            elif etype == "orchestration_start":
+                yield f"data: {json.dumps({'type': 'orchestration_start', 'run_id': event.get('run_id'), 'orchestration_name': event.get('orchestration_name'), 'orchestration_id': event.get('orchestration_id')}, default=str)}\n\n"
+
+            elif etype == "step_start":
+                yield f"data: {json.dumps({'type': 'step_start', 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name'), 'step_type': event.get('step_type')}, default=str)}\n\n"
+
+            elif etype == "step_complete":
+                yield f"data: {json.dumps({'type': 'step_complete', 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name'), 'duration_seconds': event.get('duration_seconds')}, default=str)}\n\n"
+
+            elif etype == "step_error":
+                # `reason` is the step's own words (F195). This stream is the
+                # member's chat page; the widget reads the turn through its own
+                # allowlist, which drops `step_error` altogether.
+                yield f"data: {json.dumps({'type': 'step_error', 'orch_step_id': event.get('orch_step_id'), 'error': event.get('error'), 'reason': event.get('reason')}, default=str)}\n\n"
+
+            elif etype == "orchestration_complete":
+                yield f"data: {json.dumps({'type': 'orchestration_complete', 'run_id': event.get('run_id'), 'status': event.get('status')}, default=str)}\n\n"
+
+            elif etype == "orchestration_error":
+                yield f"data: {json.dumps({'type': 'orchestration_error', 'error': event.get('error')}, default=str)}\n\n"
+
+            elif etype == "human_input_required":
+                # A tool call waiting on a person is the one pause a chat turn
+                # can hit and never come back from: an orchestration run
+                # resumes from its own row, and a chat turn has no run. Park
+                # the call and the snapshot so `/chat/{id}/approve` can pick
+                # the turn up where it stopped.
+                if event.get("kind") == "tool_approval":
+                    from core.chat_approval import parked_payload
+                    from core.store import sessions as _sessions
+                    progress = latest_progress
+                    if inbox_parked and (inbox_parked.get("pending") or inbox_parked.get("in_flight")):
+                        progress = {**(latest_progress or {}), "inbox": inbox_parked}
+                    await _sessions.set_pending_approval(
+                        getattr(request, "session_id", "") or "",
+                        getattr(request, "agent_id", None) or "default",
+                        parked_payload(
+                            event,
+                            message=getattr(request, "message", "") or "",
+                            progress=progress,
+                            automated=automated,
+                        ),
+                    )
+                yield f"data: {json.dumps(event, default=str)}\n\n"
+                # Send done so the loading spinner stops — user must submit the form
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                return
+
+            elif etype in (
+                "parallel_start", "parallel_complete", "branch_start",
+                "loop_iteration", "loop_complete", "merge_complete",
+                "transform_result", "routing_decision", "evaluator_decision",
+                "loop_limit_reached", "step_warning",
+                # Things the loop does to keep going, which the person is
+                # entitled to know about. All four were emitted by the
+                # engine and dropped here, so the only visible trace of a
+                # truncated answer or a discarded middle was that the reply
+                # read oddly.
+                "truncated_output", "context_trimmed",
+                "tool_call_unparsed", "tool_approval_replay",
+                "cancelled",
+                # An agent's Knowledge calls and its answer's Sources (B1b):
+                # ids, labels, paths and citations, never passage text.
+                "knowledge_search", "knowledge_read", "knowledge_citations",
+                # The helpers it sent (SUB1a): each one started, what it does
+                # (wrapped, from the engine's allowlist), and its record.
+                "helper_started", "helper_event", "helper_finished",
+                # A Team's members (TEAM1a): each one started, what it does (wrapped), its
+                # record; and the team's task list.
+                "member_started", "member_event", "member_finished", "team_tasks",
+                # The browser inside Synapse (BRW1): a session opened, and each agent action
+                # with its screenshot's ref; the pane opens on the first.
+                "browser_session", "browser_action",
+            ):
+                yield f"data: {json.dumps(event, default=str)}\n\n"
+
+            await asyncio.sleep(0)
+
+    except Exception as e:
+        print(f"ERROR in SSE stream: {e}")
+        import traceback
+        traceback.print_exc()
+        from core.llm_providers import LLMError
+        frame = {'type': 'error', 'message': str(e)}
+        if isinstance(e, LLMError):
+            # The model failed, not the app: the page points at Settings →
+            # Models rather than only offering the same turn again (F182).
+            frame['kind'] = 'model'
+        # The offer before the error: a page stops reading a turn at its error (F1018).
+        if (offered := await _offer_after(None, frame)) is not None:
+            yield f"data: {json.dumps(offered)}\n\n"
+        yield f"data: {json.dumps(frame)}\n\n"
+
+
+@router.post("/chat/{session_id}/cancel")
+async def cancel_chat(session_id: str):
+    """Stop the turn running for this chat session.
+
+    Answers `"cancelling"`, never `"cancelled"` — the same word
+    `/orchestrations/runs/{id}/cancel` uses, for the same reason. The request
+    asks; what it cannot do is promise the turn has already noticed. A turn
+    inside a long provider call stops when that call returns.
+
+    `stopped` says whether anything was found to stop: false means the turn had
+    already finished, which is not an error and should not read as one.
+    """
+    # In-process (single-process product): the turn's task is right here. Only
+    # a live turn is flagged — a flag left for a turn that had already ended
+    # used to end the conversation's *next* turn at its first boundary.
+    stopped = await chat_turns.stop(session_id)
+
+    # Scale mode: the turn is on a worker, so the signal goes through Redis.
+    # Both paths run — a deployment can be serving chat in-process while the
+    # queue is enabled, and the caller should not have to know which one ran
+    # this turn.
+    try:
+        import core.server as _server
+        redis = getattr(_server, "redis_client", None)
+        if redis is not None:
+            from core.scale.pubsub import publish_chat_cancellation
+            await publish_chat_cancellation(redis, session_id)
+            stopped = True
+    except Exception:  # noqa: BLE001 — no Redis is not a failure to cancel
+        pass
+
+    return {"status": "cancelling", "session_id": session_id, "stopped": stopped}
+
+
+class ApprovalDecision(BaseModel):
+    """A person's answer to "may this tool call run?"."""
+    approve: bool
+    reason: str = ""
+    agent_id: str | None = None
+    #: The question this answers. A card left open in another tab must not
+    #: answer a newer question asked after it (F247) — as v1's approve does.
+    approval_id: str | None = None
+    #: Which of a team's questions (TEAM1c): each member's has its own id, and two members may ask the
+    #: same call. Not needed while the call's `approval_id` names one question.
+    question_id: str | None = None
+
+
+#: The answers this process holds for a turn that was starting or pausing, each awaiting that turn's end.
+_HELD_ANSWERS: set[asyncio.Task] = set()
+
+
+@router.post("/chat/{session_id}/approve")
+async def approve_chat_tool(session_id: str, decision: ApprovalDecision):
+    """Answer the tool-call question this conversation is waiting on.
+
+    The gate itself has existed since tool policies landed, but only
+    orchestration runs could answer it: a run resumes from its own row, and a
+    chat turn has no run. So in chat the pause was a dead end — the turn
+    stopped with a question, and nothing in the product could reply to it.
+
+    The turn is picked up from its last turn-boundary snapshot rather than
+    started again, which is the whole reason the snapshot is kept. Starting
+    again would re-run every tool that already succeeded before the pause, and
+    those are the calls with side effects.
+
+    An approval is spent on the exact call it was given for — `approval_id` is
+    derived from the tool *and its arguments* — so allowing `ls` does not also
+    allow `rm`.
+
+    A team's question (TEAM1c, Q6) is answered by its `question_id`, live or paused:
+
+    * a team working here whose member waits on it: that member carries on now, the
+      others untouched — a JSON reply (`live`), the turn's own stream shows the rest;
+    * a paused turn asking it: the turn resumes with that member, and any other answer
+      held for its questions — the resumed stream, as for any question;
+    * a turn starting or pausing here: the answer is held (`sent`), for the team as it
+      starts, or taken up with the paused turn as soon as that turn ends.
+    """
+    agent_key = decision.agent_id or "default"
+    verdict = {"question_id": decision.question_id, "approve": decision.approve, "reason": decision.reason}
+    if decision.question_id:
+        from core import team
+        working = team.find(session_id)
+        if working is not None and working.agent_key == agent_key and working.answer(
+                decision.question_id, approve=decision.approve, reason=decision.reason):
+            return _answered_live(session_id, decision, "allowed" if decision.approve else "refused")
+    try:
+        return _sse(_read(await _resume_parked(session_id, agent_key, decision)))
+    except chat_turns.TurnAlreadyRunning:
+        if not decision.question_id:
+            raise HTTPException(status_code=409, detail=TURN_RUNNING)
+        from core.chat_approval import post_answer
+        if post_answer(session_id, agent_key, verdict) == "applied":
+            return _answered_live(session_id, decision, "allowed" if decision.approve else "refused")
+        held = asyncio.create_task(_answer_when_free(session_id, agent_key, decision),
+                                   name=f"held-answer-{session_id}")
+        _HELD_ANSWERS.add(held)
+        held.add_done_callback(_HELD_ANSWERS.discard)
+        return _answered_live(session_id, decision, "sent")
+
+
+def _answered_live(session_id: str, decision: ApprovalDecision, status: str) -> JSONResponse:
+    return JSONResponse({"status": status, "live": True, "session_id": session_id,
+                         "question_id": decision.question_id})
+
+
+async def _answer_when_free(session_id: str, agent_key: str, decision: ApprovalDecision) -> None:
+    """A held answer, once the turn it waited for has ended: still held, it answers that turn's paused
+    question — unless the team took it as it started, or the turn ended without asking it."""
+    from core.chat_approval import take_answers
+    try:
+        await asyncio.wait_for(chat_turns.until_free(session_id), timeout=3600)
+        if not take_answers(session_id, agent_key, [decision.question_id or ""]):
+            return
+        turn = await _resume_parked(session_id, agent_key, decision)
+        await turn.wait()
+    except HTTPException:
+        pass   # nothing asks it any more: it was moved past, or the turn ended without pausing on it
+    except Exception as exc:  # noqa: BLE001 — a held answer never fails the request that held it
+        print(f"WARNING held answer for {session_id}: {exc}")
+
+
+async def _resume_parked(session_id: str, agent_key: str, decision: ApprovalDecision) -> chat_turns.ChatTurn:
+    """Take the paused turn's question this answers and resume the turn, server-owned (F49). Raises 409 when
+    nothing here waits on it, `TurnAlreadyRunning` while a turn holds the conversation."""
+    from core.chat_approval import find_question, take_answers
+    from core.store import sessions as _sessions
+    import core.server as _server
+
+    # The conversation is claimed before the question is spent: answering while
+    # another turn runs here is refused with the question still open, rather
+    # than cleared and then refused.
+    with chat_turns.claim(session_id, agent_key=agent_key) as turn:
+        # Taken in one write, so what a helper keeps with the question (SUB1a) is either
+        # in what this took or never written into it (`add_to_parked`). Cleared before
+        # the turn runs, not after: a resume that crashed with the row still set would
+        # re-open a question the person has already answered.
+        pending = await _sessions.take_pending_approval(session_id, agent_key)
+        if not pending:
+            raise HTTPException(status_code=409, detail="This conversation is not waiting on an approval.")
+        asked = find_question(pending, question=decision.question_id, approval_id=decision.approval_id)
+        if asked is None:
+            # Not this question's answer: it stays as it was.
+            await _sessions.set_pending_approval(session_id, agent_key, pending)
+            raise HTTPException(status_code=409,
+                                detail="That approval is not the one this conversation is waiting on.")
+        # This answer, and any other held for this turn's questions while it paused (TEAM1c).
+        others = [q["question_id"] for q in pending.get("questions") or [] if q["question_id"] != asked["question_id"]]
+        verdicts = [{"question_id": asked["question_id"], "approve": decision.approve, "reason": decision.reason},
+                    *take_answers(session_id, agent_key, others)]
+
+        if pending.get("schedule"):
+            # A scheduled run's call, answered from its conversation: the
+            # same resume the bell's Approve runs — the schedule's run, log
+            # and source — not a chat turn that forgets it was one (F268).
+            manager = getattr(_server, "schedule_manager", None)
+            if manager is None:
+                from core.scheduler import ScheduleManager
+                manager = ScheduleManager()
+                manager._server_module = _server
+            turn.message = pending.get("message") or ""
+            turn.start(manager.resumed_turn(pending, agent_key, approve=decision.approve,
+                                            reason=decision.reason, verdicts=verdicts))
+            return turn
+
+        from core.chat_approval import resume_state_for
+        resume_state = resume_state_for(pending, approve=decision.approve, reason=decision.reason,
+                                        verdicts=verdicts)
+
+        resumed = ChatRequest(
+            message=pending.get("message") or "",
+            session_id=session_id,
+            agent_id=None if agent_key == "default" else agent_key,
+        )
+        # The app's chat, resumed: its inbox comes back with what was kept (SUB1a). A follow-up's
+        # question is still automated, and a helper's words never read the vault (no @[path]).
+        resumed._app_chat = True
+        resumed._automated = pending.get("automated") or None
+        turn.message = resumed.message
+        turn.automated = resumed._automated
+        turn.start(_event_stream(resumed, _server, resume_state,
+                                 expand_mentions=not resumed._automated))
+        return turn
+
+
+class MemberMessage(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+
+@router.post("/chat/{session_id}/members/{member_id}/stop")
+async def stop_member(session_id: str, member_id: str):
+    """Stop one member of a Team working in this conversation (TEAM1a, Q5): its lane's Stop.
+
+    It ends at its next turn and its lead reads that it was stopped; the rest of the team
+    works on. Answers `stopped` false when nothing was working — it may have just finished.
+    """
+    from core import team
+
+    working = team.find(session_id)
+    stopped = bool(working is not None and working.stop_member(member_id))
+    return {"status": "stopping", "session_id": session_id, "member_id": member_id, "stopped": stopped}
+
+
+@router.post("/chat/{session_id}/members/{member_id}/message")
+async def message_member(session_id: str, member_id: str, body: MemberMessage):
+    """The person's message to one working member (TEAM1a, Q5): read between its steps, as the
+    person's own words. `delivered` false when that member is not working."""
+    from core import team
+
+    working = team.find(session_id)
+    delivered = bool(working is not None and working.message_from_person(member_id, body.text))
+    return {"session_id": session_id, "member_id": member_id, "delivered": delivered}
+
+
+@router.post("/chat/{session_id}/lead/message")
+async def message_lead(session_id: str, body: MemberMessage):
+    """The person's message to a working team's lead (TEAM1b, "To: the lead"): read before its next model
+    call, as the person's own words. `delivered` false when no team works in this conversation."""
+    from core import team
+
+    working = team.find(session_id)
+    delivered = bool(working is not None and working.message_lead_from_person(body.text))
+    return {"session_id": session_id, "delivered": delivered}
+
+
+@router.post("/chat/{session_id}/helpers/{helper_id}/stop")
+async def stop_helper(session_id: str, helper_id: str):
+    """Stop one helper working in this conversation (SUB1a, S7): its lane's Stop.
+
+    One its agent waits for ends at its next turn and its agent carries on with
+    what it had; one in the background ends as its own turn's Stop ends it. Like
+    `/cancel`, it answers `"stopping"`, and `stopped` false when nothing was
+    working — not an error: it may have just finished.
+    """
+    from core import helpers
+
+    stopped = await helpers.stop(session_id, helper_id)
+    return {"status": "stopping", "session_id": session_id, "helper_id": helper_id, "stopped": stopped}

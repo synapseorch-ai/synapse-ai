@@ -13,7 +13,12 @@ No API key needed — tool calling is emulated via system prompt injection + <to
 import os
 import re
 import json
-import tempfile
+import signal
+import subprocess
+import hashlib
+import hmac
+from collections import OrderedDict
+from typing import NamedTuple
 import asyncio
 import base64
 import threading
@@ -24,10 +29,48 @@ from botocore import UNSIGNED as _BEDROCK_UNSIGNED
 from botocore.config import Config
 
 from core.config import LLM_REQUEST_TIMEOUT
+from core.telemetry import spans as _spans
+from core.providers import cli_invocation as _cli_invocation
+from core.providers import registry as _providers
 
-# Lock to guard the process-level AWS_BEARER_TOKEN_BEDROCK env var.
-# Multiple threads (via asyncio.to_thread) could otherwise race on set/clear.
-_aws_env_lock = threading.Lock()
+from core.log import get_logger
+from core import model_availability as _model_availability
+
+_log = get_logger(__name__)
+
+
+def _attempts(n: int) -> str:
+    """"1 attempt", "5 attempts" — for a provider's final error message."""
+    return f"{n} attempt" if n == 1 else f"{n} attempts"
+
+
+def _retry_notice(provider: str, reason: str, attempt: int, max_retries: int, backoff: float) -> None:
+    """Say, out loud, that a model call failed and is being tried again.
+
+    Every retry loop below used to log "Retrying in Ns" at `debug` and nothing
+    else — invisible at a worker's INFO level, and printed on the final attempt
+    too, promising a retry that never came. A call that timed out and was
+    retried was therefore a stretch of silence on the run page: 187 seconds of
+    it in one report, on a run that then finished normally.
+
+    Now a warning, and a notice for whoever is waiting (`core.model_wait`), but
+    only when another attempt is actually coming.
+    """
+    if attempt >= max_retries:
+        return
+    _spans.model_retry(attempt, reason)
+    _log.warning(f"⏳ {provider} {reason} on attempt {attempt}/{max_retries}; retrying in {backoff}s")
+    from core.model_wait import report
+
+    report(f"The model {reason} — retrying ({attempt + 1} of {max_retries}) in {backoff}s.")
+
+# No process-level AWS_BEARER_TOKEN_BEDROCK. It used to be set here and never
+# cleared, so one tenant's Bedrock key stayed in the environment of a worker
+# that then ran another tenant's job — visible in /proc/<pid>/environ and
+# inherited by every stdio MCP server and sandbox the worker spawned. The
+# bearer token is attached per client instead, by the request handler at
+# `_bedrock_bearer_auth` below, which was already the mechanism for the
+# non-boto3 path.
 
 
 # ─── CLI auth-failure detection ──────────────────────────────────────────────
@@ -53,6 +96,9 @@ _AUTH_RE = re.compile(
     r"|\bunauthorized\b"
     r"|\b401\b"
     r"|/login"
+    # Codex 0.137.0 on a stale sign-in: "Please log out and sign in again" (CLIM1).
+    r"|sign in again"
+    r"|log in again"
     r")",
     re.IGNORECASE,
 )
@@ -72,15 +118,19 @@ def _match_auth(text: str) -> bool:
 def _parse_data_uri(data_uri: str) -> tuple[str, str]:
     """Parse a data URI into (mime_type, raw_base64).
 
-    Accepts:
-      - "data:image/png;base64,iVBOR..."
-      - plain base64 string (assumes image/png)
+    Delegates to `core.images`, which is where the rules live now. What this
+    used to do: take the header's word for the type and hand it to Anthropic as
+    `media_type` — a caller-controlled string reaching a provider unchecked —
+    assume `image/png` for anything without a header, and raise `ValueError`
+    from inside the ReAct loop on a `data:` string with no comma.
+
+    Requests arriving through `ChatRequest` are validated before they get here,
+    so in practice this is the second lock rather than the first.
     """
-    if data_uri.startswith("data:"):
-        header, b64 = data_uri.split(",", 1)
-        mime = header.split(";")[0].replace("data:", "")
-        return mime, b64
-    return "image/png", data_uri
+    from core.images import ALLOWED_MIME, parse_data_uri
+
+    mime, b64 = parse_data_uri(data_uri)
+    return (mime if mime in ALLOWED_MIME else "image/png"), b64
 
 
 def _build_openai_image_content(text: str, images: list[str] | None) -> list[dict] | str:
@@ -91,7 +141,10 @@ def _build_openai_image_content(text: str, images: list[str] | None) -> list[dic
     """
     if not images:
         return text
-    parts: list[dict] = [{"type": "text", "text": text}]
+    # An image on its own is a message. Every provider here rejects an empty
+    # text block, so the part is omitted rather than sent blank — which is what
+    # made the old "[Images attached]" placeholder necessary.
+    parts: list[dict] = [{"type": "text", "text": text}] if text and text.strip() else []
     for img in images[:5]:
         mime, b64 = _parse_data_uri(img)
         parts.append({
@@ -115,8 +168,408 @@ def _build_anthropic_image_content(text: str, images: list[str] | None) -> list[
             "type": "image",
             "source": {"type": "base64", "media_type": mime, "data": b64}
         })
-    parts.append({"type": "text", "text": text})
+    if text and text.strip():
+        parts.append({"type": "text", "text": text})
     return parts
+
+
+#: Cap on a single response. 4096 was hardcoded per provider; a long final
+#: answer or a big tool-call argument hit it and came back truncated, which the
+#: loop could not see. Overridable per tenant via the `max_output_tokens`
+#: setting, read in `generate_response`.
+DEFAULT_MAX_OUTPUT_TOKENS = 8192
+
+
+#: Providers spell "why the model stopped" four different ways. The loop cares
+#: about one distinction — was this response complete? — so they are normalised
+#: to: "stop" (finished), "max_tokens" (cut off mid-sentence), "tool_use"
+#: (stopped to call a tool), or None (the provider did not say).
+_STOP_REASONS = {
+    # Anthropic
+    "end_turn": "stop", "stop_sequence": "stop", "refusal": "stop",
+    "max_tokens": "max_tokens", "tool_use": "tool_use",
+    # OpenAI-compatible (openai, grok, deepseek, v1, gateway) + Ollama
+    "stop": "stop", "length": "max_tokens", "tool_calls": "tool_use",
+    "content_filter": "stop", "function_call": "tool_use",
+    # Gemini (upper-cased in the SDK)
+    "MAX_TOKENS": "max_tokens", "STOP": "stop", "SAFETY": "stop", "RECITATION": "stop",
+    # Bedrock Converse
+    "end_turn ": "stop", "max_tokens ": "max_tokens",
+}
+
+
+#: Stop reasons that mean "the provider withheld this reply", across all five
+#: vocabularies. They normalise to "stop" above, because the agent loop only
+#: acts on "max_tokens" — but an empty reply that stopped for one of these was
+#: blocked, not empty, and the difference is the whole of the error message
+#: somebody reads (F137).
+_BLOCKED_STOP_REASONS = frozenset({
+    "refusal", "content_filter", "content_filtered",
+    "safety", "recitation", "guardrail_intervened",
+})
+
+
+def _empty_answer(provider: str, *, reasoning: str = "", stop_reason=None) -> "EmptyAnswer":
+    """The exception for a reply that arrived carrying nothing usable (F137).
+
+    Every provider had its own way of saying nothing: Bedrock and Ollama
+    returned `""`, the OpenAI-compatible extractor returned `""` for a
+    content-filtered reply, and the refusal stop reasons normalise to "stop" —
+    a finished answer. The agent loop then reported "I completed the requested
+    actions." for a turn where the model said nothing at all, and an LLM step
+    wrote the empty string into its output key.
+
+    Anthropic and Gemini already raised (F133); this is that behaviour, worded
+    once for the rest.
+    """
+    blocked = str(getattr(stop_reason, "name", None) or stop_reason or "").strip().lower()
+    if blocked in _BLOCKED_STOP_REASONS:
+        return EmptyAnswer(
+            f"Error: {provider} withheld this reply ({blocked}).", reasoning=reasoning)
+    if reasoning:
+        return EmptyAnswer(
+            f"Error: {provider} returned only reasoning, no answer.", reasoning=reasoning)
+    return EmptyAnswer(f"Error: Empty {provider} response.")
+
+
+def _normalise_stop_reason(raw) -> str | None:
+    """One vocabulary for every provider's stop reason. Unknown values map to
+    None rather than a guess: the loop only acts on "max_tokens"."""
+    if raw is None:
+        return None
+    name = getattr(raw, "name", None) or str(raw)
+    return _STOP_REASONS.get(name) or _STOP_REASONS.get(name.strip().lower())
+
+
+def _apply_openai_reasoning(payload: dict, reasoning) -> dict:
+    """Put `reasoning_effort` on an OpenAI-shaped payload, if there is one.
+
+    Every OpenAI-compatible endpoint spells this the same way, so one helper
+    serves openai, grok, deepseek, the v1-compatible providers and our gateway.
+    """
+    if reasoning is not None:
+        payload["reasoning_effort"] = reasoning.openai_effort
+    return payload
+
+
+def _retry_without_reasoning(payload: dict, resp) -> bool:
+    """Drop `reasoning_effort` after a 400 that complained about it.
+
+    "OpenAI-compatible" is a claim about a URL shape, not a guarantee about a
+    parameter list — and the same is true of a model behind that URL: a proxy
+    may accept the field for one model and refuse it for the next. There is no
+    capability endpoint to consult, so the refusal is the discovery. Drop the
+    field and try once more, rather than failing a turn over a knob the person
+    only expressed a preference with.
+
+    Narrow on purpose: only a 400, only when we actually sent the field, and
+    only when the body names it. A 400 about anything else must still surface
+    as the error it is.
+    """
+    if "reasoning_effort" not in payload:
+        return False
+    try:
+        body = resp.text or ""
+    except Exception:  # noqa: BLE001 — a body we cannot read is not a verdict
+        return False
+    if "reasoning" not in body.lower():
+        return False
+    payload.pop("reasoning_effort", None)
+    _log.debug("provider refused reasoning_effort — retrying without it")
+    return True
+
+
+def _retry_without_fields(payload: dict, resp, fields: dict | None) -> bool:
+    """`_retry_without_reasoning` for a hosted API's own thinking fields (PROV1).
+
+    The same narrow rule: a 400, fields we actually sent, a body that names
+    reasoning or thinking. The model then runs at its own default.
+    """
+    sent = [key for key in (fields or {}) if key in payload]
+    if not sent:
+        return False
+    try:
+        body = (resp.text or "").lower()
+    except Exception:  # noqa: BLE001 — a body we cannot read is not a verdict
+        return False
+    if "reasoning" not in body and "thinking" not in body:
+        return False
+    for key in sent:
+        payload.pop(key, None)
+    _log.debug(f"provider refused {', '.join(sent)} — retrying without")
+    return True
+
+
+# ─── Streaming an OpenAI-shaped call (U72) ──────────────────────────────────
+# Only when the engine streams the answer (`model_wait.streaming_wanted()`);
+# every other call is the POST it always was. A streamed call is put back
+# together into the body a non-streamed one returns, so the status handling,
+# the retries and every extraction below it read the same response either way.
+
+
+def _refuses_streaming(resp) -> bool:
+    """A 400 whose body names streaming: the endpoint (or this model) takes none."""
+    try:
+        return "stream" in (resp.text or "").lower()
+    except Exception:  # noqa: BLE001 — a body we cannot read is not a verdict
+        return False
+
+
+def _content_text(content) -> tuple[str, str]:
+    """A message's `content` as (answer, thinking).
+
+    A string almost everywhere. Mistral, asked to reason, sends a list of chunks
+    instead — `{"type": "thinking", "thinking": [...]}` beside `{"type": "text"}`
+    (PROV1, D245) — and so does its stream, delta by delta.
+    """
+    if isinstance(content, str):
+        return content, ""
+    if not isinstance(content, list):
+        return "", ""
+    answer: list[str] = []
+    thought: list[str] = []
+    for chunk in content:
+        if isinstance(chunk, str):
+            answer.append(chunk)
+        elif isinstance(chunk, dict) and chunk.get("type") == "thinking":
+            inner = chunk.get("thinking")
+            for part in (inner if isinstance(inner, list) else [inner]):
+                text = part.get("text") if isinstance(part, dict) else part
+                if isinstance(text, str):
+                    thought.append(text)
+        elif isinstance(chunk, dict) and isinstance(chunk.get("text"), str):
+            answer.append(chunk["text"])
+    return "".join(answer), "".join(thought)
+
+
+class _StreamedChat:
+    """A streamed chat completion, read whole: what `client.post` would have returned.
+
+    `json()` rebuilds the non-streamed body, outside the caller's retry `try`
+    as F138 requires: a stream that cannot be put back together fails the call
+    once rather than paying for it four more times.
+    """
+
+    status_code = 200
+
+    def __init__(self, resp, chunks: list):
+        self._resp = resp
+        self._chunks = chunks          # parsed dicts, or the raw line that did not parse
+        self.headers = resp.headers
+        self.request = resp.request
+
+    @property
+    def text(self) -> str:
+        return "\n".join(c if isinstance(c, str) else json.dumps(c) for c in self._chunks)
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        content: list[str] = []
+        reasoning: list[str] = []
+        refusal: list[str] = []
+        calls: dict[int, dict] = {}
+        finish = None
+        usage = None
+        for chunk in self._chunks:
+            if isinstance(chunk, str):
+                raise LLMError(f"The provider streamed a line that is not JSON: {chunk[:200]}")
+            if chunk.get("error"):
+                err = chunk["error"]
+                raise LLMError(f"The provider failed mid-answer: "
+                               f"{(err.get('message') if isinstance(err, dict) else err) or err}")
+            if chunk.get("usage"):
+                usage = chunk["usage"]
+            for choice in chunk.get("choices") or ():
+                delta = choice.get("delta") or {}
+                if isinstance(delta.get("content"), str):
+                    content.append(delta["content"])
+                elif isinstance(delta.get("content"), list):
+                    text, inline = _content_text(delta["content"])
+                    content.append(text)
+                    if inline:
+                        reasoning.append(inline)
+                thought = delta.get("reasoning_content") or delta.get("reasoning")
+                if isinstance(thought, str):
+                    reasoning.append(thought)
+                if isinstance(delta.get("refusal"), str):
+                    refusal.append(delta["refusal"])
+                for tc in delta.get("tool_calls") or ():
+                    call = calls.setdefault(int(tc.get("index") or 0),
+                                            {"type": "function", "function": {"name": "", "arguments": ""}})
+                    if tc.get("id"):
+                        call["id"] = tc["id"]
+                    fn = tc.get("function") or {}
+                    if fn.get("name"):
+                        call["function"]["name"] += fn["name"]
+                    args = fn.get("arguments")
+                    if isinstance(args, dict):
+                        args = json.dumps(args)
+                    if args:
+                        call["function"]["arguments"] += args
+                if choice.get("finish_reason"):
+                    finish = choice["finish_reason"]
+        message: dict = {"role": "assistant", "content": "".join(content) or None}
+        if reasoning:
+            message["reasoning_content"] = "".join(reasoning)
+        if refusal:
+            message["refusal"] = "".join(refusal)
+        if calls:
+            message["tool_calls"] = [calls[i] for i in sorted(calls)]
+        return {"choices": [{"index": 0, "message": message, "finish_reason": finish}],
+                "usage": usage or {}}
+
+
+def _content_of(chunk) -> str:
+    """The answer text one parsed stream chunk carries, or ""; never raises."""
+    try:
+        choices = chunk.get("choices") or ()
+        piece = (choices[0].get("delta") or {}).get("content") if choices else None
+        return _content_text(piece)[0]
+    except Exception:  # noqa: BLE001 — a chunk we cannot read shows nothing
+        return ""
+
+
+async def _post_chat(client, url: str, *, headers: dict, payload: dict):
+    """POST an OpenAI-shaped chat completion: streamed when the answer is (U72).
+
+    Streamed, each piece of `content` goes to `model_wait.emit_delta` as it
+    arrives (never reasoning or a tool call's arguments: the engine filters
+    what is the answer). A refusal (any status but 200) is read whole and
+    returned as itself, so the caller's status checks see what they always
+    saw. A 400 that names streaming is asked once more without it: an endpoint
+    that takes no stream still answers. A transport failure mid-stream raises
+    as a non-streamed one would, into the caller's retry loop; the attempt that
+    follows says the text so far is void (`restart_stream`).
+    """
+    from core.model_wait import emit_delta, restart_stream, streaming_wanted
+
+    if not streaming_wanted():
+        return await client.post(url, headers=headers, json=payload)
+    restart_stream()
+    body = dict(payload, stream=True, stream_options={"include_usage": True})
+    chunks: list = []
+    async with client.stream("POST", url, headers=headers, json=body) as resp:
+        if resp.status_code != 200:
+            await resp.aread()
+            if resp.status_code == 400 and _refuses_streaming(resp):
+                _log.debug("provider refused stream — asking once without it")
+                return await client.post(url, headers=headers, json=payload)
+            return resp
+        async for line in resp.aiter_lines():
+            line = line.strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+            except ValueError:
+                chunks.append(data)
+                continue
+            chunks.append(chunk)
+            piece = _content_of(chunk)
+            if piece:
+                emit_delta(piece)
+    return _StreamedChat(resp, chunks)
+
+
+class LLMResult(NamedTuple):
+    """One provider call's outcome.
+
+    The first five fields keep the order and meaning of the tuple every
+    ``call_*`` used to return, so ``text, *_ = await call_x(...)`` and
+    ``result[0]`` still read correctly. What is new is `stop_reason` — without
+    it a response cut off at the token limit was indistinguishable from a
+    finished one, and the loop treated it as the agent's final answer — and
+    `tool_calls`, which is populated but not yet read (the loop still parses
+    them out of the text; see the plan's Phase C).
+
+    `reasoning` is the model's own thinking, from the provider's own channel —
+    not the `[REASONING]` markers the system prompt asks for. Those still work
+    and are still parsed, for the models that have nothing better; see
+    `core.reasoning` for which models do. Carrying it as a field rather than
+    splicing it back into `text` is the point: the marker round-trip meant the
+    loop had to find the thinking again in a string it had just built, and on a
+    model that ignored the convention there was nothing to find.
+
+    `charged_microusd` is what our model gateway charged the wallet for this
+    call, as it reports in `usage.charged_microusd`; None from every other
+    endpoint. It is last, and readers take the first eight fields by name or by
+    slice, so nothing that unpacked eight is broken by it (CR1, D180).
+    """
+    text: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    stop_reason: str | None = None
+    tool_calls: tuple = ()
+    reasoning: str = ""
+    charged_microusd: int | None = None
+
+
+#: What a model failure was, as a caller can act on it (F275). Stable: the API
+#: returns these, and an integration branches on them.
+QUOTA_EXHAUSTED = "quota_exhausted"          # out of credit or quota — top up; a retry never helps
+PROVIDER_REFUSED = "provider_refused"        # the key, the model or the request refused — fix the setting
+RATE_LIMITED = "rate_limited"                # too many requests for now — retry later
+PROVIDER_UNAVAILABLE = "provider_unavailable"  # down, overloaded, timed out, unreachable — retry
+MODEL_NO_ANSWER = "model_no_answer"          # answered with nothing usable (empty, blocked, all reasoning)
+MODEL_ERROR = "model_error"                  # anything else
+
+RETRYABLE = frozenset({RATE_LIMITED, PROVIDER_UNAVAILABLE})
+
+#: Words a refusal uses when the account, not the request, is the problem:
+#: Gemini's "prepayment credits are depleted", OpenAI's `insufficient_quota`,
+#: Anthropic's "credit balance is too low". A 429 saying one of these is not a
+#: rate limit — it never clears. Not "quota" or "billing" alone: Gemini's
+#: free-tier per-minute 429 says "You exceeded your current quota, please check
+#: your plan and billing details" and clears in a minute, which the retry covers.
+#: An account out of money, in each provider's words: OpenAI's code, a credit or
+#: prepaid balance, and (F442) Moonshot's "suspended due to insufficient balance,
+#: please recharge" (a 429), Z.ai's "Insufficient balance", Qwen's "Arrearage".
+_QUOTA_WORDS = re.compile(r"insufficient_quota|credit|prepay|insufficient[ _]balance|recharge|arrearage",
+                          re.IGNORECASE)
+_TRANSIENT_WORDS = re.compile(r"timed out|timeout|not reachable|unreachable|connect|overloaded", re.IGNORECASE)
+#: Where each adapter's message states the provider's status: "HTTP 429:" (the
+#: OpenAI-shaped ones), "API error 400:" (Anthropic), "402 RESOURCE_EXHAUSTED"
+#: (Gemini's code and status name), "Client error '402 …'" (httpx). Only these
+#: shapes: a bare number in the provider's prose ("max 500 tokens") is not one.
+_STATUS_IN_MESSAGE = re.compile(
+    r"HTTP ([45]\d\d)\b|API error ([45]\d\d)\b|Client error '([45]\d\d)\b|\b([45]\d\d) [A-Z][A-Z_]{2,}\b"
+)
+
+
+def _status_in(message: str) -> int | None:
+    match = _STATUS_IN_MESSAGE.search(message or "")
+    if not match:
+        return None
+    return int(next(g for g in match.groups() if g))
+
+
+def is_quota_refusal(status: int | None, text: str) -> bool:
+    """A refusal about the account's credit or quota, which no retry clears."""
+    if status == 402:
+        return True
+    return status in (400, 403, 429) and bool(_QUOTA_WORDS.search(text or ""))
+
+
+def classify_failure(status: int | None, text: str) -> str:
+    """The `code` for a failed model call, from its status and its words (F275)."""
+    if is_quota_refusal(status, text):
+        return QUOTA_EXHAUSTED
+    if status == 429:
+        return RATE_LIMITED
+    if status is not None and (status >= 500 or status in (408, 499)):
+        return PROVIDER_UNAVAILABLE
+    if status is not None and 400 <= status < 500:
+        return PROVIDER_REFUSED
+    if _TRANSIENT_WORDS.search(text or ""):
+        return PROVIDER_UNAVAILABLE
+    return MODEL_ERROR
 
 
 class LLMError(Exception):
@@ -124,15 +577,180 @@ class LLMError(Exception):
 
     This propagates through the orchestration engine so it can stop execution
     instead of silently passing error strings to the next node.
+
+    It says what kind of failure it was (F275): `code` (one of the constants
+    above), whether a retry can help, and — where the adapter knows them — the
+    provider and its HTTP status. A caller that only reads `str(e)` sees no
+    change. The status is read from the message when not given: every retrying
+    adapter already writes it there.
     """
-    pass
+
+    #: The call went through the deployment's own model gateway (`synapse.*`): a model the deployment serves, not one
+    #: on the customer's own key. Set where the call is dispatched (F1012).
+    via_gateway: bool = False
+
+    def __init__(self, message: str = "", *, provider: str | None = None,
+                 status: int | None = None, code: str | None = None, detail: str | None = None):
+        super().__init__(message)
+        self.provider = provider
+        #: The provider's own sentence, read from its whole answer (`_body_message`): the message above keeps only
+        #: the start of a body, and a longer sentence was cut there (F782).
+        self.detail = detail
+        self.status = status if status is not None else _status_in(str(message))
+        self.code = code or classify_failure(self.status, str(message))
+
+    @property
+    def retryable(self) -> bool:
+        return self.code in RETRYABLE
 
 
-# Configuration — read at call time so OLLAMA_BASE_URL set after import is respected
-def _ollama_base_url() -> str:
-    return os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+#: The failures of a model the deployment serves that are the deployment's, not the customer's (F1012): its server,
+#: its stream or a timeout, its throttling. A refusal of what was sent, an empty wallet and an empty answer are not.
+_OURS = frozenset({PROVIDER_UNAVAILABLE, RATE_LIMITED, MODEL_ERROR})
+
+
+def failure_is_ours(err: BaseException) -> bool:
+    """Whether a model call's failure is the deployment's own: a model it serves failed on its side (F1012; Naveen
+    2026-10-24). A host need not charge for such a step or turn; one on the customer's own key is theirs."""
+    return isinstance(err, LLMError) and err.via_gateway and err.code in _OURS
+
+
+def _body_message(text: str) -> str | None:
+    """An error answer's own sentence: `error.message` (or `error` as a string, or a top-level `message`) of a JSON
+    body, read whole; None for anything else (F782)."""
+    try:
+        data = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    error = data.get("error")
+    said = error.get("message") if isinstance(error, dict) else error if isinstance(error, str) else data.get("message")
+    return said.strip() if isinstance(said, str) and said.strip() else None
+
+
+def _refusal_said(response: "httpx.Response") -> str:
+    """A refused call's own words (F1318, prod-14): the provider's sentence (`_body_message`), else its text, kept as
+    a stored run error is (held secrets named, key-shaped tokens marked) and capped; "" when there is no body to read.
+    So `model_availability.model_gone` reads "The model … does not exist", not httpx's "Client error … for url"."""
+    from core.secret_scrub import for_storage, scrub_credentials
+
+    try:
+        text = str(response.text or "")
+    except Exception:  # noqa: BLE001 — a body never read (a stream's): httpx's own sentence, as before
+        return ""
+    said = " ".join((_body_message(text) or text).split())
+    return scrub_credentials(for_storage(said))[0][:300]
+
+
+class EmptyAnswer(LLMError):
+    """A provider answered, and the answer holds nothing usable (F133).
+
+    Empty, blocked by a safety filter, or all reasoning and no answer. Each was
+    returned as the reply's text — "Error: Empty Anthropic response." — so an
+    agent said it and a step stored it. It carries what the call spent
+    (`usage`: input, output, cache-read and cache-write tokens), because those
+    tokens were billed, and why the reply stopped: one cut off at the output
+    cap while still thinking is a reply the agent loop asks to continue, not a
+    failure.
+    """
+
+    def __init__(self, message: str, *, reasoning: str = ""):
+        super().__init__(message, code=MODEL_NO_ANSWER)
+        self.reasoning = reasoning
+        self.stop_reason: str | None = None
+        self.usage: tuple[int, int, int, int] = (0, 0, 0, 0)
+
+
+# Configuration — read at call time. `settings` wins over the environment so a
+# tenant's own ollama_base_url is used; the env var stays as the deployment-wide
+# default. This used to be the other way round, with server startup copying one
+# tenant's setting into os.environ for every tenant to pick up.
+def _ollama_base_url(settings: dict | None = None) -> str:
+    configured = (settings or {}).get("ollama_base_url") or ""
+    return configured.strip() or os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+
+
+class _OllamaRefused(Exception):
+    """Ollama answered, and not with a reply. Wrapped as an LLMError below."""
+
+
+def _ollama_refusal(response, base: str) -> "_OllamaRefused | None":
+    """Ollama's own sentence for a call it refused (F182).
+
+    Ollama explains itself in a JSON body — `{"error": "model 'mistral' not
+    found, try pulling it first"}` — and `raise_for_status` threw that away for
+    httpx's text: "Server error '500 …' for url … For more information check:
+    https://developer.mozilla.org/…", which is what a fresh install's first
+    message showed.
+    """
+    if response.status_code < 400:
+        return None
+    said = ""
+    try:
+        body = response.json()
+        if isinstance(body, dict):
+            said = str(body.get("error") or "").strip()
+    except Exception:
+        pass
+    if not said:
+        said = (response.text or "").strip()[:300]
+    return _OllamaRefused(
+        f"Ollama at {base} answered {response.status_code}" + (f": {said}" if said else "."))
 
 OLLAMA_MODEL = "llama3"
+
+
+def _is_openai_model(m: str) -> bool:
+    """`gpt*`, `chatgpt*`, and the o-series reasoning models (`o1`, `o3-mini`,
+    `o4-mini`…) — the provider table's OpenAI entry (F62)."""
+    return _providers.provider("openai").matches(m)
+
+
+#: OpenAI ids that are not chat-completions models. Audio, image, realtime,
+#: speech, transcription, moderation, search and embedding models have their own
+#: endpoints, and the `-pro`, `codex` and `deep-research` models are served only
+#: by the Responses API — `call_openai` posts to chat/completions, so listing one
+#: offers a model that fails on every call.
+_OPENAI_NOT_CHAT_RE = re.compile(
+    r"tts|transcribe|whisper|realtime|audio|image|dall-e|embedding|moderation|search"
+    r"|instruct|codex|deep-research|(?:^|-)pro(?:-|$)"
+)
+
+
+def is_openai_chat_model(model_id: str) -> bool:
+    """An OpenAI model this engine can chat with — what the model list offers (F62).
+
+    The same family test the router uses, so a listed model is always routed to
+    OpenAI, minus the ids chat-completions cannot serve.
+    """
+    m = model_id.lower()
+    return _is_openai_model(m) and not _OPENAI_NOT_CHAT_RE.search(m)
+
+
+def _is_gemini_model(m: str) -> bool:
+    """Gemini, Gemma and Lyria ids — the ones the router sends to Google."""
+    return _providers.provider("gemini").matches(m)
+
+
+#: Gemini ids that list `generateContent` but are not chat models (F187):
+#: speech, image and music generation, transcription and computer use. Google's
+#: own list offers all of them beside the chat models.
+_GEMINI_NOT_CHAT_RE = re.compile(
+    r"(?:^|-)(?:tts|image|transcribe|computer-use)(?:-|$)|^lyria|embedding|aqa|imagen|veo"
+)
+
+
+def is_gemini_chat_model(model_id: str) -> bool:
+    """A Gemini model this engine can chat with — what the model list offers (F187).
+
+    The same family test the router uses, so a listed model is always routed to
+    Google (the list used to offer `nano-banana-*`, `deep-research-*` and
+    `antigravity-*`, which the router sent to Ollama), minus the ids that
+    `generateContent` serves but a chat cannot use.
+    """
+    m = model_id.lower()
+    return _is_gemini_model(m) and not _GEMINI_NOT_CHAT_RE.search(m)
 
 
 def detect_mode_from_model(model_name: str) -> str:
@@ -141,72 +759,19 @@ def detect_mode_from_model(model_name: str) -> str:
     Returns 'cloud' for OpenAI/Anthropic/Gemini/Grok/DeepSeek models,
     'bedrock' for Bedrock, 'cli' for local CLI session models (cli.*),
     and 'local' for anything else (assumed to be Ollama).
+
+    A mode is the branch of `generate_response_ex` that dispatches the model,
+    not where its server runs: 'local' *is* the Ollama branch. An OpenAI v1
+    server on this machine (`locv1.`, LM Studio / vLLM) is dispatched by the
+    'cloud' branch, as `oaic.` is — answering 'local' for it sent every call to
+    Ollama with the literal `locv1.<model>` as its name (F114).
     """
-    if not model_name:
-        return "local"
-    m = model_name.lower()
-    if m.startswith("cli."):
-        return "cli"
-    if m.startswith("gpt"):
-        return "cloud"
-    if m.startswith("claude"):
-        return "cloud"
-    if m.startswith("gemini") or m.startswith("gemma") or m.startswith("lyria"):
-        return "cloud"
-    if m.startswith("bedrock"):
-        return "bedrock"
-    if m.startswith("grok"):
-        return "cloud"
-    if m.startswith("deepseek"):
-        return "cloud"
-    if m.startswith("oaic."):
-        return "cloud"
-    if m.startswith("locv1."):
-        return "local"
-    if m.startswith("ollama."):
-        return "local"
-    if m.startswith("hf."):
-        return "hf"
-    return "local"
+    return _providers.provider_for(model_name).mode
 
 
 def detect_provider_from_model(model_name: str) -> str:
-    """Detect the provider name from a model name prefix."""
-    if not model_name:
-        return "ollama"
-    m = model_name.lower()
-    # CLI session providers
-    if m.startswith("cli.claude"):
-        return "anthropic_cli"
-    if m.startswith("cli.gemini"):
-        return "gemini_cli"
-    if m.startswith("cli.codex"):
-        return "codex_cli"
-    if m.startswith("cli.copilot"):
-        return "github_copilot_cli"
-    if m.startswith("cli."):
-        return "cli"
-    if m.startswith("gpt"):
-        return "openai"
-    if m.startswith("claude"):
-        return "anthropic"
-    if m.startswith("gemini") or m.startswith("gemma") or m.startswith("lyria"):
-        return "gemini"
-    if m.startswith("bedrock"):
-        return "bedrock"
-    if m.startswith("grok"):
-        return "grok"
-    if m.startswith("deepseek"):
-        return "deepseek"
-    if m.startswith("oaic."):
-        return "openai_compatible"
-    if m.startswith("locv1."):
-        return "local_compatible"
-    if m.startswith("ollama."):
-        return "ollama"
-    if m.startswith("hf."):
-        return "huggingface"
-    return "ollama"
+    """Detect the provider name from a model name prefix (`core.providers.registry`)."""
+    return _providers.provider_for(model_name).id
 
 
 
@@ -275,43 +840,196 @@ def _make_aws_client(service_name: str, region: str, settings: dict):
     # Standard retries are often insufficient for high-concurrency Bedrock usage.
     # Adaptive mode allows standard retry logic to dynamically adjust for
     # optimal request rates.
-    retry_config = Config(
-        retries={
-            'max_attempts': 10,
-            'mode': 'adaptive'
-        },
-        read_timeout=900,
-        connect_timeout=900,
-    )
-    kwargs["config"] = retry_config
+    config_kwargs: dict = {
+        "retries": {"max_attempts": 10, "mode": "adaptive"},
+        "read_timeout": 900,
+        "connect_timeout": 900,
+    }
+    if bedrock_api_key:
+        # UNSIGNED, not merely "no credentials configured". botocore would
+        # otherwise run SigV4 and raise NoCredentialsError *before* the
+        # before-send hook that attaches the bearer token ever fires — which is
+        # precisely the deployment this change is for, where no AWS credentials
+        # exist in the environment at all. Matches the pre-existing bearer path
+        # at `_invoke_bedrock_with_bearer`.
+        config_kwargs["signature_version"] = _BEDROCK_UNSIGNED
+    kwargs["config"] = Config(**config_kwargs)
 
-    # Guard the process-level env var with a lock so concurrent threads don't
-    # race on set/clear (AWS_BEARER_TOKEN_BEDROCK is read by botocore at client
-    # creation time for the bedrock-runtime bearer-token auth path).
-    with _aws_env_lock:
-        if bedrock_api_key:
-            os.environ["AWS_BEARER_TOKEN_BEDROCK"] = bedrock_api_key
-        else:
-            os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
-        return boto3.client(**kwargs)
+    client = boto3.client(**kwargs)
+
+    if bedrock_api_key:
+        # Sign this client's requests with the tenant's bearer token, rather
+        # than putting it in the process environment for botocore to find.
+        # Scoped to the client, so two tenants' clients cannot see each other's
+        # key no matter how their calls interleave.
+        client.meta.events.register(
+            "before-send.bedrock-runtime.*",
+            _bearer_auth_handler(bedrock_api_key),
+        )
+    return client
+
+
+def _bearer_auth_handler(api_key: str):
+    """A botocore before-send hook that replaces SigV4 with a bearer token."""
+    def _handler(request, **_kwargs):
+        request.headers["Authorization"] = f"Bearer {api_key}"
+        return None
+    return _handler
 
 
 # ─── CLI Session Providers ──────────────────────────────────────────────────────
 
-# Maps cli.* model names to their CLI binary + flags
-_CLI_COMMANDS: dict[str, list[str]] = {
-    "cli.claude":   ["claude", "-p", "--allowedTools", ""],
-    "cli.gemini":   ["gemini", "--prompt", ""],
-    # `instructions` (codex's system-prompt slot) is set per-call in
-    # call_cli_provider — never left empty, since some accounts reject an empty
-    # value with 400 "Instructions are required".
-    "cli.codex":    ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox",
-                     "-c", "features.shell_tool=false"],
-    "cli.copilot":  ["copilot", "-p"],
-}
+# Each CLI is run for its model and nothing else of its own — no tools, MCP
+# servers, hooks, skills, memory files, project or transcript. Its command,
+# environment and working directory are decided in
+# `core.providers.cli_invocation` (CLIM1, D299).
 
-# Seconds to wait for a CLI process before giving up
+_CLI_LABELS = {"cli.claude": "Claude Code", "cli.gemini": "Gemini CLI", "cli.codex": "Codex",
+               "cli.copilot": "Copilot CLI"}
+_CLI_UPDATE = {"cli.claude": "claude update", "cli.gemini": "npm install -g @google/gemini-cli",
+               "cli.codex": "npm install -g @openai/codex", "cli.copilot": "npm install -g @github/copilot"}
+_CLI_SIGN_IN = {
+    "cli.claude": "Run `claude` in a terminal and sign in",
+    "cli.gemini": "Run `gemini` in a terminal and sign in with Google, or set GEMINI_API_KEY",
+    "cli.codex": "Run `codex login` in a terminal",
+    "cli.copilot": "Run `copilot` in a terminal and `/login`, or `gh auth login`",
+}
+# A flag this version of the CLI does not know (commander, yargs, clap).
+_CLI_UNKNOWN_FLAG = re.compile(r"unknown option|unknown argument|unexpected argument|unrecognized (?:option|argument)"
+                               r"|unknown feature flag",
+                               re.IGNORECASE)
+# What Codex may report with an answer; any other item is a tool of its own.
+_CODEX_ANSWER_ITEMS = frozenset({"agent_message", "reasoning", "todo_list", "error"})
+_CLI_RATE_LIMIT = ("429", "rate limit", "ratelimit", "quota", "too many requests", "capacity",
+                   "resource_exhausted", "ratelimitexceeded")
+_STACK_FRAME = re.compile(r"^\s+at \S")
+_ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+#: The CLIs that take an effort level. Only Claude Code has one (`--effort`,
+#: below); the others take none. Served by the Models route, so the agent
+#: editor offers a reasoning control for exactly these models (F65).
+CLI_EFFORT_BASES = ("cli.claude",)
+
+
+def cli_takes_effort(model: str) -> bool:
+    """Whether an agent's reasoning effort reaches this CLI model at all.
+
+    Such a CLI has no "off" either — `call_cli_provider` runs off as low — so
+    the route also serves these as the models whose control has no Off.
+    """
+    name = (model or "").strip().lower()
+    return any(name == base or name.startswith(base + ".") for base in CLI_EFFORT_BASES)
+
+
+# Seconds to wait for a CLI process before giving up: the floor of a CLI call's deadline (F1320, `cli_deadline`).
 _CLI_TIMEOUT = 300.0
+
+
+def cli_deadline() -> float:
+    """How long a CLI provider's call may run (F1320): SYNAPSE_LLM_TIMEOUT, read when the call is made, never under
+    the CLI's own floor (a CLI call is slower than an API's: it starts a process and reads its whole prompt)."""
+    from core import config
+
+    return max(float(config.LLM_REQUEST_TIMEOUT), _CLI_TIMEOUT)
+
+
+class CliRun(NamedTuple):
+    """What one CLI process did: its exit code, what it printed, and whether its deadline ended it."""
+    returncode: int | None
+    stdout: bytes
+    stderr: bytes
+    timed_out: bool
+
+
+def _kill_cli_tree(proc: "subprocess.Popen | None", *, posix: bool = os.name == "posix") -> None:
+    """End a CLI and everything it started (F1320): its process group on POSIX (it runs in a session of its own), its
+    tree on Windows (`taskkill /T /F`; where that cannot run, the CLI itself, as before). Never raises."""
+    if proc is None:
+        return
+    if posix:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        return
+    try:
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=10)
+    except Exception:  # noqa: BLE001 — no taskkill: the CLI alone, as before
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _run_cli_blocking(argv: list[str], stdin_path: str | None, cwd: str, env: dict, deadline: float,
+                      holder: dict) -> CliRun:
+    """One CLI process, in a thread of its own (F1320): its own process group, its deadline held here whatever the
+    server's loop does; at the deadline the group is killed, and after a finish what the CLI left running is too.
+    `holder` shares the process with the loop, which kills it when the awaiting call is cancelled."""
+    posix = os.name == "posix"
+    group = {"start_new_session": True} if posix else {
+        "creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    stdin = open(stdin_path, "rb") if stdin_path else subprocess.DEVNULL
+    try:
+        proc = subprocess.Popen(argv, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd,
+                                env=env, **group)
+    finally:
+        if stdin is not subprocess.DEVNULL:
+            stdin.close()
+    holder["proc"] = proc
+    if holder.get("cancelled"):
+        _kill_cli_tree(proc, posix=posix)
+    try:
+        out, err = proc.communicate(timeout=deadline)
+    except subprocess.TimeoutExpired:
+        _kill_cli_tree(proc, posix=posix)
+        try:
+            out, err = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:  # something left its own group and holds the pipes: it is let go
+            out, err = b"", b""
+        return CliRun(proc.returncode, out or b"", err or b"", True)
+    if posix:
+        _kill_cli_tree(proc, posix=True)  # a helper it started and left behind ends with the call
+    return CliRun(proc.returncode, out or b"", err or b"", False)
+
+
+async def _run_cli(argv: list[str], *, stdin_path: str | None, cwd: str, env: dict, deadline: float) -> CliRun:
+    """Run a CLI off the server's event loop (F1320): the loop only awaits a thread of the call's own (never the
+    shared pool, which the loop's DNS lookups wait on), so it serves while the CLI works, and a cancelled call (its
+    run stopped, a shutdown) kills the CLI's whole group at once, then re-raises."""
+    loop = asyncio.get_running_loop()
+    done: asyncio.Future = loop.create_future()
+    holder: dict = {}
+
+    def settle(result: CliRun | None, error: BaseException | None) -> None:
+        if done.done():
+            return
+        if error is not None:
+            done.set_exception(error)
+        else:
+            done.set_result(result)
+
+    def work() -> None:
+        try:
+            result, error = _run_cli_blocking(argv, stdin_path, cwd, env, deadline, holder), None
+        except BaseException as e:  # noqa: BLE001 — handed to the awaiting call
+            result, error = None, e
+        try:
+            loop.call_soon_threadsafe(settle, result, error)
+        except RuntimeError:  # the loop closed while the CLI ran: nobody is waiting
+            pass
+
+    threading.Thread(target=work, name="synapse-cli", daemon=True).start()
+    try:
+        return await done
+    except asyncio.CancelledError:
+        holder["cancelled"] = True
+        _kill_cli_tree(holder.get("proc"))
+        raise
+
+
+def _within(seconds: float) -> str:
+    return f"{seconds / 60:g} min" if seconds >= 60 and seconds % 60 == 0 else f"{seconds:g} s"
 
 
 def _build_cli_prompt(
@@ -366,319 +1084,309 @@ async def call_cli_provider(
     full_prompt: str,
     sys_prompt: str | None = None,
     messages: list[dict] | None = None,
-    timeout: float = _CLI_TIMEOUT,
-    cli_session_id: str | None = None,
-) -> tuple[str, int, int, str | None]:
-    """Spawn a local CLI binary, feed it the full context, and return the response.
+    timeout: float | None = None,
+    effort: str | None = None,
+    tools: list[dict] | None = None,
+) -> tuple[str, int, int]:
+    """Run an installed CLI for its model alone, and return its answer.
+
+    Every call is a fresh CLI session in a fresh, empty directory of its own,
+    removed afterwards (CLIM1). The whole transcript is already in
+    `full_prompt`, so resuming the CLI's own session would send the history
+    twice; the resume code that tried never worked anyway (F65).
 
     Args:
-        cli_model: One of 'cli.claude', 'cli.gemini', 'cli.codex', 'cli.copilot'
+        cli_model: 'cli.claude', 'cli.gemini', 'cli.codex' or 'cli.copilot', with an optional '.<model>'
         full_prompt: Complete flat-text prompt (system + tools + transcript)
-        timeout: Seconds before we kill the process and raise LLMError
-        cli_session_id: Existing CLI session ID to resume (passed via --resume).
+        timeout: Seconds before we kill the process and raise LLMError; `cli_deadline()` when not given (F1320)
+        effort: The agent's or workspace's `reasoning_effort` — `cli.claude`
+            sends it as `--effort`. The CLI has no "off", so off and None are low.
+        tools: The agent's tools. A bridged CLI (Codex) is offered them as real
+            tools; a call it makes comes back as the engine's own tool call (F753).
 
     Returns:
-        (response_text, estimated_input_tokens, estimated_output_tokens, new_session_id)
+        (response_text, estimated_input_tokens, estimated_output_tokens)
 
     Raises:
-        LLMError: on timeout, auth failure, binary not found, or empty output
+        LLMError: on timeout, a sign-in or rate-limit failure, a missing or too
+        old binary, empty output, or an answer reached through a tool of the CLI's own
     """
-    from core import usage_tracker
-
-    ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-    # Auth-failure detection uses the module-level _match_auth() helper (specific
-    # phrases only). Rate-limit detection keeps its broad substring list below.
-    RATE_LIMIT_PATTERNS = ["429", "rate limit", "ratelimit", "quota", "too many requests", "capacity", "resource_exhausted", "ratelimitexceeded"]
-
-    # Split into base ("cli.<provider>") + variant, preserving dots in the
-    # variant (e.g. "cli.codex.gpt-5.4" → variant "gpt-5.4"). The base is matched
-    # case-insensitively; the variant is kept verbatim since model names can be
-    # case-sensitive and are passed straight through to the CLI's -m/--model flag.
-    parts = cli_model.split(".", 2)
-    if len(parts) >= 2:
-        base_cli = f"{parts[0]}.{parts[1]}".lower()
-    else:
-        base_cli = cli_model.lower()
-    variant = parts[2] if len(parts) > 2 else None
-
-    base_cmd = _CLI_COMMANDS.get(base_cli)
-    if not base_cmd:
-        raise LLMError(f"Unknown CLI base '{base_cli}'. Supported: {list(_CLI_COMMANDS.keys())}")
-
-    cmd = base_cmd.copy()
-
-    # ── Session Resume ──
-    # If a previous CLI session ID exists for this agent+session, continue it.
-    if cli_session_id:
-        cmd.extend(["--resume", cli_session_id])
-
-    # ── Dynamic Model & Options Parsing ──
-    if variant:
-        if base_cli == "cli.claude":
-            # Extract base model by removing any thinking suffixes
-            clean_variant = variant.replace('-thinking', '').replace('-max', '').replace('-high', '')
-            cmd.extend(["--model", clean_variant])
-
-            # Thinking / Effort overrides
-            if "-thinking" in variant or "-max" in variant:
-                cmd.extend(["--effort", "medium"])
-            elif "-high" in variant:
-                cmd.extend(["--effort", "high"])
-            else:
-                cmd.extend(["--effort", "low"])
-
-        elif base_cli == "cli.gemini":
-            if "pro" in variant:
-                cmd.extend(["--model", "pro"])
-            elif "flash" in variant:
-                cmd.extend(["--model", "flash"])
-
-        elif base_cli == "cli.codex":
-            # Pass the variant directly as the model name (e.g. o3, o4-mini, gpt-4o)
-            cmd.extend(["-m", variant])
-
-        elif base_cli == "cli.copilot":
-            # Pass the variant directly as the model name (e.g. claude-sonnet-4-5, gpt-4o)
-            cmd.extend(["--model", variant])
-
-    # codex exec requires "-" as the positional PROMPT arg to signal stdin input.
-    # Append it after all option flags are resolved so it stays last.
-    if base_cli == "cli.codex":
-        cmd.append("-")
-
     import shutil
-    executable = shutil.which(cmd[0])
+    from pathlib import Path
+    from core import usage_tracker
+    from core.providers import cli_invocation as _inv
+    from core.providers import cli_status as _cli_status
+
+    base, variant = _inv.split_cli_model(cli_model)
+    binary = _inv.CLI_BINARIES.get(base)
+    if not binary:
+        raise LLMError(f"Unknown CLI base '{base}'. Supported: {list(_inv.CLI_BINARIES)}")
+    executable = shutil.which(binary)
     if not executable:
-        raise LLMError(f"CLI binary '{cmd[0]}' exactly resolved by shutil.which not found. Check your PATH.")
+        raise LLMError(f"CLI binary '{binary}' was not found in PATH. Install {_CLI_LABELS[base]} and sign in to it first.")
 
-    env = os.environ.copy()
-    temp_sys_prompt_file = None
-    temp_input_file = None
-    temp_output_file = None
-
-    # Use backend/data/tmp for temp files — avoids cross-OS permission issues
-    # with the system temp dir and keeps all runtime files under the project root.
-    _tmp_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "tmp")
-    os.makedirs(_tmp_dir, exist_ok=True)
-
+    catalog = await _cli_status.codex_catalog() if base == "cli.codex" else None
+    token = await _cli_status.github_token() if base == "cli.copilot" else None
+    root = os.environ.get("SYNAPSE_CLI_WORKDIR_ROOT")
+    workdir = _inv.new_workdir(Path(root) if root else None)
     try:
-        if base_cli == "cli.copilot":
-            # copilot -p takes the full prompt inline as a CLI argument; stdin is not used.
-            # System prompt is already embedded in full_prompt by _build_cli_prompt().
-            cmd.append(full_prompt)
-            stdin_source = asyncio.subprocess.DEVNULL
-        else:
-            if base_cli == "cli.claude" and sys_prompt:
-                # Write sys_prompt to a temp file and pass via --system-prompt-file.
-                # --no-tools (added above) ensures Claude Code's native tools are stripped so
-                # only our XML emulation is active.
-                temp_sys_prompt_file = tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".md", prefix="claude_sys_prompt_", delete=False,
-                    encoding="utf-8", dir=_tmp_dir
-                )
-                temp_sys_prompt_file.write(sys_prompt)
-                temp_sys_prompt_file.flush()
-                temp_sys_prompt_file.close()
-                cmd.extend(["--system-prompt-file", temp_sys_prompt_file.name])
-
-                # stdin carries only the content after the sys_prompt (tools + messages).
-                # full_prompt = sys_prompt.strip() + "\n\n" + rest, so strip the prefix.
-                prefix = sys_prompt.strip()
-                stdin_payload = full_prompt[len(prefix):].lstrip("\n") if full_prompt.startswith(prefix) else full_prompt
-
-            elif base_cli == "cli.gemini" and sys_prompt:
-                # Gemini CLI reads GEMINI_SYSTEM_MD env var as the path to a markdown file
-                # containing the system prompt, overriding its native default system prompt.
-                temp_sys_prompt_file = tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".md", prefix="gemini_sys_prompt_", delete=False,
-                    encoding="utf-8", dir=_tmp_dir
-                )
-                temp_sys_prompt_file.write(sys_prompt)
-                temp_sys_prompt_file.flush()
-                temp_sys_prompt_file.close()
-                env["GEMINI_SYSTEM_MD"] = temp_sys_prompt_file.name
-
-                # stdin carries only the content after the sys_prompt (tools + messages).
-                prefix = sys_prompt.strip()
-                stdin_payload = full_prompt[len(prefix):].lstrip("\n") if full_prompt.startswith(prefix) else full_prompt
-
-            elif base_cli == "cli.codex":
-                # Codex's `instructions` config is its system-prompt slot and must be
-                # non-empty — an empty value 400s with "Instructions are required" on
-                # some accounts. The agent's real (ReAct) system prompt continues to
-                # ride in stdin via full_prompt, exactly as before; this just
-                # satisfies the API with a neutral non-empty value.
-                cmd.extend(["-c", "instructions=You are a helpful assistant."])
-                stdin_payload = full_prompt
-
-            else:
-                stdin_payload = full_prompt
-
-            # Write stdin payload to a temp file and feed it as stdin (like `< file`),
-            # avoiding large string pipes and keeping content out of the process list.
-            temp_input_file = tempfile.NamedTemporaryFile(
-                mode="w", suffix=".txt", prefix="cli_input_", delete=False,
-                encoding="utf-8", dir=_tmp_dir
-            )
-            temp_input_file.write(stdin_payload)
-            temp_input_file.flush()
-            temp_input_file.close()
-
-            # codex exec: use -o to capture only the final agent message, avoiding TUI noise
-            if base_cli == "cli.codex":
-                temp_output_file = tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".txt", prefix="codex_output_", delete=False,
-                    encoding="utf-8", dir=_tmp_dir
-                )
-                temp_output_file.close()
-                cmd.extend(["-o", temp_output_file.name])
-
-            stdin_source = open(temp_input_file.name, "rb")
-
-        print(f"DEBUG: 🖥️  CLI provider '{cli_model}' — spawning subprocess: {' '.join(str(a) for a in cmd)}", flush=True)
-
-        process = await asyncio.create_subprocess_exec(
-            executable,
-            *cmd[1:],
-            stdin=stdin_source,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env
-        )
-
-        if temp_input_file:
-            stdin_source.close()
-
-        try:
-            stdout_b, stderr_b = await asyncio.wait_for(
-                process.communicate(),
-                timeout=timeout,
-            )
-        except asyncio.TimeoutError:
-            try:
-                process.kill()
-                await process.wait()
-            except Exception:
-                pass
+        inv = _inv.build_cli_invocation(base, variant, workdir=workdir, system_prompt=sys_prompt,
+                                        prompt=full_prompt, effort=effort, codex_catalog=catalog,
+                                        github_token=token, tools=tools)
+        # Fed from a file (like `< file`), keeping the prompt out of the process list.
+        stdin_path = None
+        if inv.stdin is not None:
+            stdin_path = workdir / "stdin.txt"
+            stdin_path.write_text(inv.stdin, encoding="utf-8")
+        deadline = cli_deadline() if timeout is None else float(timeout)
+        _log.debug(f"🖥️  CLI provider '{cli_model}' — spawning {binary} in {inv.cwd}")
+        # Off the loop, its deadline held by its own thread, its whole group killed at the deadline or a cancel (F1320).
+        run = await _run_cli([executable, *inv.argv[1:]], stdin_path=str(stdin_path) if stdin_path else None,
+                             cwd=str(inv.cwd), env=inv.env, deadline=deadline)
+        if run.timed_out:
             raise LLMError(
-                f"CLI provider '{cli_model}' timed out after {timeout}s. "
-                "Is the CLI authenticated and responsive?"
+                f"CLI provider '{cli_model}' timed out: the model didn't answer within {_within(deadline)}, so "
+                "Synapse stopped it and everything it started. Is the CLI signed in and responsive?"
             )
 
-        stderr_text = stderr_b.decode("utf-8", errors="replace").strip()
-        if stderr_text:
-            # Scan only the tail of stderr for error patterns — Codex (and some other CLIs)
-            # echo the stdin/banner to stderr, which can contain words like "capacity" that
-            # would falsely trigger rate-limit detection. Real API errors appear at the end.
-            lower_err = stderr_text[-600:].lower()
-            if any(p in lower_err for p in RATE_LIMIT_PATTERNS):
-                raise LLMError(
-                    f"CLI provider '{cli_model}' rate limit / capacity error.\n"
-                    f"Details: {stderr_text[:400]}"
-                )
-            if _match_auth(stderr_text[-600:]):
-                raise LLMError(
-                    f"CLI provider '{cli_model}' authentication failure detected.\n"
-                    f"Run the CLI in your terminal to re-authenticate.\n"
-                    f"Details: {stderr_text[:400]}"
-                )
-            print(f"DEBUG: 🖥️  CLI stderr: {stderr_text[:300]}", flush=True)
-
-        # codex exec writes just the final agent message to the -o file; use that
-        # to avoid parsing the TUI header/footer noise from stdout.
-        if base_cli == "cli.codex" and temp_output_file:
-            try:
-                with open(temp_output_file.name, "r", encoding="utf-8", errors="replace") as f:
-                    raw = f.read()
-            except Exception:
-                raw = stdout_b.decode("utf-8", errors="replace")
-        else:
-            raw = stdout_b.decode("utf-8", errors="replace")
-        clean = ANSI_ESCAPE.sub("", raw).strip()
-
-        # ── Session ID extraction & response unwrapping ──
-        new_session_id: str | None = None
-        if base_cli == "cli.claude":
-            # Claude CLI with --output-format json returns a structured object.
-            # Extract result text and session_id from it.
-            try:
-                import json as _json
-                obj = _json.loads(clean)
-                new_session_id = obj.get("session_id")
-                extracted = obj.get("result", "")
-                if isinstance(extracted, str) and extracted.strip():
-                    clean = extracted.strip()
-                # Propagate JSON-level auth errors before the generic check below.
-                # Gate on the structured is_error flag and scan only the message
-                # fields — not the stringified whole object — so unrelated keys
-                # can't trip a false positive.
-                err_text = " ".join(str(obj.get(k, "")) for k in ("result", "error", "subtype"))
-                if obj.get("is_error") and _match_auth(err_text):
-                    raise LLMError(
-                        f"CLI provider '{cli_model}' authentication failure.\n"
-                        f"Run 'claude' in your terminal to re-authenticate.\n"
-                        f"Details: {str(obj)[:300]}"
-                    )
-            except LLMError:
-                raise
-            except Exception:
-                pass  # not JSON or parse error — treat clean as plain text
-        else:
-            # Best-effort session ID extraction for gemini, codex, copilot
-            sid_match = re.search(r"session[_\-]?id[:\s]+([a-zA-Z0-9_\-]{8,})", clean, re.IGNORECASE)
-            new_session_id = sid_match.group(1) if sid_match else None
-
-        # Auth failure check (also catches plain-text "Not logged in" from claude).
-        # `clean` is the model's normal stdout on success, so only treat it as an
-        # auth failure when the process ALSO exited non-zero — a successful (exit-0)
-        # response is a valid answer, never an auth error, even if it happens to
-        # mention words like "authorization". Genuine auth failures exit non-zero
-        # (or, for claude JSON, are caught by the is_error block above).
-        if process.returncode != 0 and _match_auth(clean):
-            raise LLMError(
-                f"CLI provider '{cli_model}' is not authenticated.\n"
-                f"Run the CLI in your terminal and complete the login flow, then retry.\n"
-                f"Details: {clean[:300]}"
-            )
-
-        if not clean:
-            # Report the TAIL of stderr, not the head. CLIs like codex echo a
-            # startup banner (version/workdir/model) to the head of stderr and
-            # write the actual failure (e.g. an invalid_request_error for an
-            # unsupported model) at the tail — so [:200] would hide the real cause.
-            raise LLMError(
-                f"CLI provider '{cli_model}' returned empty output. "
-                f"Return code: {process.returncode}. "
-                f"stderr: {stderr_text[-600:]}"
-            )
-
-        print(f"DEBUG: ✅ CLI '{cli_model}' response ({len(clean)} chars)", flush=True)
-
-        input_est = usage_tracker.estimate_tokens_from_text(full_prompt)
-        output_est = usage_tracker.estimate_tokens_from_text(clean)
-        return clean, input_est, output_est, new_session_id
+        stdout_text = _ANSI_ESCAPE.sub("", run.stdout.decode("utf-8", errors="replace")).strip()
+        stderr_text = run.stderr.decode("utf-8", errors="replace").strip()
+        answer = _read_cli_answer(base, cli_model, run.returncode, stdout_text, stderr_text, inv.output_file,
+                                  bridge_calls=inv.bridge_calls)
+        _log.debug(f"✅ CLI '{cli_model}' response ({len(answer)} chars)")
+        return (answer, usage_tracker.estimate_tokens_from_text(full_prompt),
+                usage_tracker.estimate_tokens_from_text(answer))
 
     except LLMError:
         raise
     except FileNotFoundError:
-        raise LLMError(
-            f"CLI binary for '{cli_model}' not found in PATH. "
-            f"Install and authenticate the CLI first: {cmd[0]}"
-        )
+        raise LLMError(f"CLI binary for '{cli_model}' not found in PATH. Install and authenticate the CLI first: {binary}")
     except Exception as e:
         raise LLMError(f"CLI provider '{cli_model}' unexpected error: {e}")
     finally:
-        for f in [temp_sys_prompt_file, temp_input_file, temp_output_file]:
-            if f:
-                try:
-                    os.unlink(f.name)
-                except Exception:
-                    pass
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _bridged_calls(path) -> list[dict]:
+    """The tool calls the bridge recorded for this call (F753), in order."""
+    if path is None:
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    calls = []
+    for line in lines:
+        try:
+            call = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(call, dict) and isinstance(call.get("tool"), str):
+            call = {"tool": call["tool"], "arguments": call.get("arguments") or {}}
+            # Made again as written in the same turn, it is one call: Codex called
+            # get_order three times for one order though each was answered "stop now".
+            if call not in calls:
+                calls.append(call)
+    return calls
+
+
+def _cli_failure(base: str, cli_model: str, text: str, *, auth: bool = False) -> LLMError:
+    """The error a CLI's failure text (its tail) stands for.
+
+    Stack frames (Node's "    at …" lines) and repeated lines are left out, so
+    the message is what is left: Gemini CLI prints its reason above 30 frames.
+    """
+    lines, seen = [], set()
+    for line in (text or "").splitlines():
+        if _STACK_FRAME.match(line) or not line.strip() or line in seen:
+            continue
+        seen.add(line)
+        lines.append(line)
+    tail = "\n".join(lines)[-600:]
+    if any(p in tail.lower() for p in _CLI_RATE_LIMIT):
+        return LLMError(f"CLI provider '{cli_model}' rate limit / capacity error.\nDetails: {tail[-400:]}")
+    if auth or _match_auth(tail):
+        return LLMError(f"CLI provider '{cli_model}' is not signed in. {_CLI_SIGN_IN[base]}, then retry.\n"
+                        f"Details: {tail[-300:]}")
+    return LLMError(f"CLI provider '{cli_model}' failed: {tail[-400:]}")
+
+
+def _refuse_own_tools(cli_model: str, tools: list[str], said: str = "") -> LLMError:
+    """An answer reached through a tool of the CLI's own is not the model's
+    answer to Synapse's prompt: the CLI was to run no tool at all (CLIM1).
+    `said`: what the CLI said of it, its own words after ours (F1320)."""
+    told = f" ({said})" if said else ""
+    return LLMError(f"CLI provider '{cli_model}' ran its own tool ({', '.join(sorted(set(tools)))}) instead of "
+                    f"answering{told}; Synapse runs these CLIs for their model only, so its answer was refused.")
+
+
+def _cli_said(base: str, text: object) -> str:
+    """A CLI's own words for an error, as a refusal carries them (F1320): its held secrets named, key shapes taken
+    out, one line, capped; empty when it said nothing."""
+    from core.secret_scrub import for_storage, scrub_credentials
+
+    words = " ".join(str(text or "").split())
+    if not words:
+        return ""
+    return f"{_CLI_LABELS.get(base, base)} said: {scrub_credentials(for_storage(words))[0][:200]}"
+
+
+def _read_cli_answer(base: str, cli_model: str, returncode: int | None, stdout: str, stderr: str,
+                     output_file, bridge_calls=None) -> str:
+    """The model's answer from what a CLI printed, or the LLMError it stands for."""
+    if returncode not in (0, None) and _CLI_UNKNOWN_FLAG.search(stderr or stdout or ""):
+        return_err = (stderr or stdout)[-300:]
+        raise LLMError(f"{_CLI_LABELS[base]} is too old for how Synapse runs it ({return_err.strip()}). "
+                       f"Update it (`{_CLI_UPDATE[base]}`) and retry.")
+
+    if base == "cli.claude":
+        # `--output-format json` is one result object: the answer is `result`,
+        # and `is_error` says whether it is one (F65).
+        try:
+            obj = json.loads(stdout)
+        except Exception:
+            obj = None
+        if isinstance(obj, dict):
+            err_text = " ".join(str(obj.get(k, "")) for k in ("result", "error", "subtype"))
+            if obj.get("subtype") == "error_max_turns":
+                # It runs with --max-turns 1 (F1320): the model reached for a turn of its own and the CLI stopped it.
+                raise _refuse_own_tools(cli_model, [f"{obj.get('num_turns') or 2} turns"],
+                                        _cli_said(base, obj.get("result") or obj.get("error")))
+            if obj.get("is_error"):
+                # An error is not an answer: returned as one, the run would carry
+                # on with the error text as the model's reply.
+                if _match_auth(err_text):
+                    raise _cli_failure(base, cli_model, err_text, auth=True)
+                raise LLMError(f"CLI provider '{cli_model}' failed: {err_text.strip()[:300]}")
+            denied = [str(d.get("tool_name") or d) for d in obj.get("permission_denials") or [] if d]
+            if denied:
+                raise _refuse_own_tools(cli_model, denied)
+            if isinstance(obj.get("num_turns"), int) and obj["num_turns"] > 1:
+                raise _refuse_own_tools(cli_model, [f"{obj['num_turns']} turns"])
+            answer = obj.get("result")
+            if isinstance(answer, str) and answer.strip():
+                return answer.strip()
+        elif returncode not in (0, None):
+            raise _cli_failure(base, cli_model, stderr or stdout)
+        if stdout and not isinstance(obj, dict):
+            # Plain text (also catches "Not logged in" from claude).
+            if returncode not in (0, None) and _match_auth(stdout):
+                raise _cli_failure(base, cli_model, stdout, auth=True)
+            return stdout
+
+    elif base == "cli.gemini":
+        # `-o json`: {"response", "stats"} on stdout; an error is {"error": …} on
+        # stderr, and exit code 41 is a missing sign-in.
+        err = None
+        for line in reversed((stderr or "").splitlines()):
+            try:
+                cand = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(cand, dict) and isinstance(cand.get("error"), dict):
+                err = cand["error"]
+                break
+        if returncode == 41:
+            raise _cli_failure(base, cli_model, (err or {}).get("message") or stderr, auth=True)
+        try:
+            obj = json.loads(stdout[stdout.index("{"):]) if "{" in stdout else None
+        except Exception:
+            obj = None
+        if isinstance(obj, dict):
+            tools = ((obj.get("stats") or {}).get("tools") or {})
+            if (tools.get("totalCalls") or 0) > 0:
+                raise _refuse_own_tools(cli_model, list((tools.get("byName") or {}).keys()) or ["a tool"])
+            if isinstance(obj.get("response"), str) and obj["response"].strip():
+                return obj["response"].strip()
+        if err:
+            raise _cli_failure(base, cli_model, str(err.get("message") or err))
+        if returncode not in (0, None):
+            raise _cli_failure(base, cli_model, stderr or stdout)
+
+    elif base == "cli.codex":
+        # `--json` events on stdout: what it did, and why a turn failed. Its
+        # answer is the last message, written to `-o`.
+        used, errors, last_message = [], [], ""
+        for line in (stdout or "").splitlines():
+            try:
+                event = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(event, dict):
+                continue
+            kind = event.get("type")
+            if kind in ("item.started", "item.completed"):
+                item = event.get("item") or {}
+                if (bridge_calls is not None and item.get("type") == "mcp_tool_call"
+                        and item.get("server") == _cli_invocation.BRIDGE_SERVER_NAME):
+                    continue                  # the agent's own tool, through the bridge (F753)
+                if item.get("type") not in _CODEX_ANSWER_ITEMS:
+                    used.append(str(item.get("type")))
+                elif item.get("type") == "agent_message" and isinstance(item.get("text"), str):
+                    last_message = item["text"]
+            elif kind == "error":
+                errors.append(str(event.get("message") or ""))
+            elif kind == "turn.failed":
+                errors.append(str((event.get("error") or {}).get("message") or ""))
+        if used:
+            raise _refuse_own_tools(cli_model, used)
+        bridged = _bridged_calls(bridge_calls)
+        if bridged:
+            # The model's tool calls, for the engine to run like any model's: its
+            # policy, approvals and guards. What the CLI wrote after them is not an
+            # answer; the result comes back on its next turn.
+            return "\n".join(f"<tool_call>{json.dumps(c)}</tool_call>" for c in bridged)
+        answer = ""
+        if output_file is not None:
+            try:
+                answer = output_file.read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                answer = ""
+        answer = answer or last_message.strip()
+        if errors and not answer:
+            raise _cli_failure(base, cli_model, "\n".join(errors))
+        if answer:
+            return answer
+        if returncode not in (0, None):
+            raise _cli_failure(base, cli_model, stderr or stdout)
+
+    elif base == "cli.copilot":
+        # `--output-format json`: JSONL events. Its answer is the last assistant
+        # message; a tool it asked for or ran is a tool of its own.
+        used, answer = [], ""
+        for line in (stdout or "").splitlines():
+            try:
+                event = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(event, dict):
+                continue
+            kind = str(event.get("type") or "")
+            data = event.get("data") if isinstance(event.get("data"), dict) else {}
+            if kind.startswith("tool."):
+                used.append(str(data.get("toolName") or data.get("name") or kind))
+            elif kind == "assistant.message":
+                for req in data.get("toolRequests") or []:
+                    used.append(str((req or {}).get("name") or "a tool") if isinstance(req, dict) else "a tool")
+                if isinstance(data.get("content"), str) and data["content"].strip():
+                    answer = data["content"].strip()
+        if used:
+            raise _refuse_own_tools(cli_model, used)
+        if answer:
+            return answer
+        if returncode not in (0, None):
+            raise _cli_failure(base, cli_model, stderr or stdout)
+
+    # Report the TAIL of stderr: CLIs echo a startup banner at its head and the
+    # actual failure at its end.
+    raise LLMError(f"CLI provider '{cli_model}' returned empty output. Return code: {returncode}. "
+                   f"stderr: {stderr[-600:]}")
 
 
 # ────────────────────────────────────────────────────────────────────────────────
 
-async def call_openai(model, messages, api_key, tools=None, images=None, prompt_cache: bool = True):
+async def call_openai(model, messages, api_key, tools=None, images=None, prompt_cache: bool = True,
+                      reasoning=None, max_tokens: int | None = None):
     """Call OpenAI with 5-attempt exponential backoff retry loop.
 
     OpenAI prompt caching is automatic for stable prefixes ≥1024 tokens; we
@@ -703,71 +1411,97 @@ async def call_openai(model, messages, api_key, tools=None, images=None, prompt_
     BACKOFF_SCHEDULE = [5, 10, 20, 40, 80]
 
     payload: dict = {"model": model, "messages": messages}
+    _apply_openai_reasoning(payload, reasoning)
+    # Only a cap someone set (F263): OpenAI was never sent one, and an answer
+    # longer than the engine's default works today. `max_completion_tokens` is
+    # the one field every OpenAI chat model takes; the reasoning models refuse
+    # `max_tokens`.
+    if max_tokens:
+        payload["max_completion_tokens"] = int(max_tokens)
     if tools:
         # OpenAI uses the same format as our internal Ollama tool spec
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
 
     last_error = None
+    response = None
     for attempt in range(1, MAX_RETRIES + 1):
         backoff = BACKOFF_SCHEDULE[attempt - 1]
         try:
-            print(f"DEBUG: 🔄 OpenAI call start (attempt {attempt}/{MAX_RETRIES})", flush=True)
+            _log.debug(f"🔄 OpenAI call start (attempt {attempt}/{MAX_RETRIES})")
             async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT) as client:
-                resp = await client.post(
-                    "https://api.openai.com/v1/chat/completions",
+                resp = await _post_chat(
+                    client, "https://api.openai.com/v1/chat/completions",
                     headers={"Authorization": f"Bearer {api_key}"},
-                    json=payload,
+                    payload=payload,
                 )
             if resp.status_code in (429, 499, 500, 502, 503, 529):
                 last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
-                print(f"DEBUG: ⏳ OpenAI {resp.status_code} on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...", flush=True)
+                if is_quota_refusal(resp.status_code, resp.text):
+                    break   # out of credit or quota: no retry clears it (F275)
+                _retry_notice("OpenAI", f"answered {resp.status_code}", attempt, MAX_RETRIES, backoff)
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(backoff)
                     continue
+            if resp.status_code == 400 and _retry_without_reasoning(payload, resp):
+                continue
             resp.raise_for_status()
-            data = resp.json()
-            # Extract actual token usage from the API response
-            usage = data.get("usage", {})
-            input_tokens = usage.get("prompt_tokens", 0)
-            output_tokens = usage.get("completion_tokens", 0)
-            from core.cache.prompt_cache import extract_openai_cache_tokens
-            cache_read, cache_write = extract_openai_cache_tokens(usage) if prompt_cache else (0, 0)
-            # OpenAI reports prompt_tokens INCLUSIVE of cached tokens; subtract so
-            # `input_tokens` is cache-miss only for consistent billing math.
-            if cache_read:
-                input_tokens = max(0, input_tokens - cache_read)
-            # Handle tool_calls response
-            choice = data["choices"][0]
-            msg = choice.get("message", {})
-            text = _openai_compat_extract(msg)
-            if msg.get("tool_calls"):
-                return text, input_tokens, output_tokens, cache_read, cache_write
-            print(f"DEBUG: ✅ OpenAI call complete (attempt {attempt})", flush=True)
-            return text, input_tokens, output_tokens, cache_read, cache_write
+            _log.debug(f"✅ OpenAI call complete (attempt {attempt})")
+            # Read outside this `try` (F138): anything raised while reading an
+            # answer that arrived landed in the catch-all below and sent the
+            # call again, up to four more times, paying for each.
+            response = resp
+            break
         except httpx.TimeoutException:
             last_error = f"Request timed out ({OPENAI_TIMEOUT}s)"
-            print(f"DEBUG: ⏱️ OpenAI timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...", flush=True)
+            _retry_notice("OpenAI", f"did not answer within {OPENAI_TIMEOUT:g}s", attempt, MAX_RETRIES, backoff)
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
         except httpx.HTTPStatusError as e:
-            last_error = f"HTTP {e.response.status_code}: {str(e)[:200]}"
-            print(f"DEBUG: ❌ OpenAI HTTP error on attempt {attempt}/{MAX_RETRIES}: {e}", flush=True)
+            # The provider's own words, not httpx's (F1318): a gone model's refusal says so in its body.
+            last_error = f"HTTP {e.response.status_code}: {_refusal_said(e.response) or str(e)[:200]}"
+            _log.warning(f"❌ OpenAI HTTP error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES and e.response.status_code in (429, 499, 500, 502, 503, 529):
                 await asyncio.sleep(backoff)
                 continue
             break
         except Exception as e:
             last_error = str(e)
-            print(f"DEBUG: ⚠️ OpenAI error on attempt {attempt}/{MAX_RETRIES}: {e}", flush=True)
+            _log.warning(f"⚠️ OpenAI error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
 
-    error_msg = f"OpenAI LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
-    print(f"DEBUG: ❌ {error_msg}", flush=True)
-    raise LLMError(error_msg)
+    if response is None:
+        error_msg = f"OpenAI LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
+        _log.warning(f"❌ {error_msg}")
+        raise LLMError(error_msg)
+
+    data = response.json()
+    # Extract actual token usage from the API response
+    usage = data.get("usage", {})
+    input_tokens = usage.get("prompt_tokens", 0)
+    output_tokens = usage.get("completion_tokens", 0)
+    from core.cache.prompt_cache import extract_openai_cache_tokens
+    cache_read, cache_write = extract_openai_cache_tokens(usage) if prompt_cache else (0, 0)
+    # OpenAI reports prompt_tokens INCLUSIVE of cached tokens; subtract so
+    # `input_tokens` is cache-miss only for consistent billing math.
+    if cache_read:
+        input_tokens = max(0, input_tokens - cache_read)
+    # Handle tool_calls response
+    choice = data["choices"][0]
+    msg = choice.get("message", {})
+    stop_reason = _normalise_stop_reason(choice.get("finish_reason"))
+    try:
+        text, _reasoning = _openai_compat_extract(msg, "OpenAI", choice.get("finish_reason"))
+    except EmptyAnswer as empty:
+        # The call was made and billed; only its answer was empty or withheld.
+        empty.usage = (input_tokens, output_tokens, cache_read, cache_write)
+        empty.stop_reason = stop_reason
+        raise
+    return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
+                     stop_reason, (), _reasoning)
 
 def _convert_tools_for_anthropic(ollama_tools: list[dict] | None) -> list[dict] | None:
     """Convert Ollama-format tool list to Anthropic tool format.
@@ -796,63 +1530,137 @@ def _convert_tools_for_anthropic(ollama_tools: list[dict] | None) -> list[dict] 
     return tools if tools else None
 
 
-def _openai_compat_extract(msg: dict) -> str:
-    """Normalize an OpenAI-compatible chat-completion message into the
-    `{"tool": ..., "arguments": ...}` shape (or plain text).
+def _openai_compat_extract(msg: dict, provider: str = "The model",
+                           finish_reason=None) -> tuple[str, str]:
+    """Normalize an OpenAI-compatible chat-completion message into
+    `({"tool": ..., "arguments": ...}` shape or plain text, reasoning)`.
 
-    When the model emits BOTH content text and tool_calls in the same response
-    (newer reasoning models, some Claude-compat APIs), the text is preserved as
-    a `[REASONING]...[/REASONING]` preamble so the ReAct loop can project it
-    into the llm_reasoning event for the UI and orchestration log.
+    **`reasoning_content` was being dropped, and it is the interesting half.**
+    Every reasoning model behind an OpenAI-compatible endpoint — DeepSeek-R1,
+    anything on vLLM, gpt-oss through our own gateway — returns its thinking in
+    a sibling field to `content`, unprompted. This function read `content` and
+    nothing else, so on those models the thinking panel was empty while the
+    model was demonstrably thinking. Some endpoints spell it `reasoning`
+    instead, so both are read.
+
+    Narration beside a tool call is still treated as reasoning, as before, and
+    appended after the real thinking when a model sends both.
     """
+    content, inline = _content_text(msg.get("content"))
+    reasoning = (msg.get("reasoning_content") or msg.get("reasoning") or inline or "").strip()
     tool_calls = msg.get("tool_calls") or []
+    refusal = (msg.get("refusal") or "").strip()
     if tool_calls:
-        tc = tool_calls[0]
-        call_json = json.dumps({
+        # Every call, as consecutive JSON objects: the ReAct loop parses all of
+        # them and executes them in order. Only `tool_calls[0]` used to
+        # survive, so a model that answered with two parallel calls ran one.
+        call_json = "\n".join(json.dumps({
             "tool": tc["function"]["name"],
             "arguments": json.loads(tc["function"].get("arguments") or "{}"),
-        })
-        reasoning = (msg.get("content") or "").strip()
-        if reasoning:
-            return f"[REASONING]\n{reasoning}\n[/REASONING]\n{call_json}"
-        return call_json
-    return msg.get("content", "") or ""
+        }) for tc in tool_calls)
+        narration = content.strip()
+        if narration:
+            reasoning = f"{reasoning}\n\n{narration}".strip() if reasoning else narration
+        return call_json, reasoning
+
+    answer = content
+    if answer.strip():
+        return answer, reasoning
+    # Nothing usable came back. It used to be returned as the reply (F137).
+    if refusal:
+        raise EmptyAnswer(f"Error: {provider} refused this request: {refusal}",
+                          reasoning=reasoning)
+    raise _empty_answer(provider, reasoning=reasoning, stop_reason=finish_reason)
 
 
-def _extract_anthropic_response(response) -> str:
-    """Extract text and/or tool call from an Anthropic SDK response.
+def _only_reasoning(provider: str, stop_reason) -> str:
+    """The words for a reply of thinking and nothing else, naming the control that fits why it stopped (F863).
 
-    When the model emits a text block before a tool_use block (Claude does this
-    routinely), preserve the text as a [REASONING]...[/REASONING] preamble so
-    the downstream ReAct loop can project it into the llm_reasoning event.
-    Without this, native tool calling silently drops the model's pre-call
-    reasoning.
+    Cut off at the cap, a bigger cap is the fix. A model that ended its own reply after thinking was not short of
+    room: QA1c's Haiku 4.5 had 4,096 tokens left for its answer, was told to raise the cap, and the raised cap is
+    what then priced a Team step out of its run (F865). Unknown stays as it was, cap first.
+    """
+    if _normalise_stop_reason(getattr(stop_reason, "name", None) or stop_reason) == "stop":
+        return (f"Error: {provider} returned only reasoning — it ended its reply after thinking, with no answer. "
+                "Lower the reasoning effort (Settings → Models, or the agent's own).")
+    return (f"Error: {provider} returned only reasoning — it spent its whole response thinking. Raise "
+            "Max response length (Settings → Models, or the agent's own) or lower the reasoning effort.")
+
+
+def _extract_anthropic_response(response) -> tuple[str, str]:
+    """Split an Anthropic SDK response into (text, reasoning).
+
+    Two sources of reasoning, and they are not the same thing. A `thinking`
+    block is extended thinking — the model's real scratchpad, returned because
+    the request asked for it. A `text` block sitting before a `tool_use` block
+    is Claude narrating its call, which it does routinely with or without
+    extended thinking enabled.
+
+    Both belong in the thinking panel, and when both are present the real
+    thinking comes first. `redacted_thinking` is deliberately skipped rather
+    than shown: it is an encrypted blob, not prose, and rendering it would put
+    a wall of base64 where an explanation should be.
     """
     if not response.content:
-        return "Error: Empty Anthropic response."
+        raise EmptyAnswer("Error: Empty Anthropic response.")
 
+    thinking_parts: list[str] = []
     text_parts: list[str] = []
-    tool_use_call: dict | None = None
+    tool_use_calls: list[dict] = []
     for block in response.content:
-        if block.type == "tool_use" and tool_use_call is None:
-            tool_use_call = {"tool": block.name, "arguments": block.input or {}}
+        if block.type == "tool_use":
+            tool_use_calls.append({"tool": block.name, "arguments": block.input or {}})
+        elif block.type == "thinking":
+            thought = getattr(block, "thinking", "")
+            if thought:
+                thinking_parts.append(thought)
         elif block.type == "text" and block.text:
             text_parts.append(block.text)
 
-    if tool_use_call is not None:
-        call_json = json.dumps(tool_use_call)
-        reasoning = "\n".join(t for t in text_parts if t and t.strip()).strip()
-        if reasoning:
-            return f"[REASONING]\n{reasoning}\n[/REASONING]\n{call_json}"
-        return call_json
+    reasoning = "\n".join(t for t in thinking_parts if t and t.strip()).strip()
+    answer = "\n".join(t for t in text_parts if t and t.strip()).strip()
 
-    if text_parts:
-        return "\n".join(text_parts)
+    if tool_use_calls:
+        # Every call, as consecutive JSON objects — the loop executes them in
+        # order. Only the first tool_use block used to survive.
+        call_json = "\n".join(json.dumps(c) for c in tool_use_calls)
+        if answer:
+            # Narration beside a call is reasoning, and it reads after the real
+            # thinking rather than replacing it.
+            reasoning = f"{reasoning}\n\n{answer}".strip() if reasoning else answer
+        return call_json, reasoning
 
-    return "Error: Anthropic returned no usable content."
+    if answer:
+        return answer, reasoning
+
+    if reasoning:
+        raise EmptyAnswer(_only_reasoning("Anthropic", getattr(response, "stop_reason", None)), reasoning=reasoning)
+
+    raise EmptyAnswer("Error: Anthropic returned no usable content.")
 
 
-async def call_anthropic(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True):
+async def _anthropic_create(client, kwargs: dict):
+    """`messages.create`, or the same call streamed when the answer is (U72).
+
+    Streamed, each text delta goes to `model_wait.emit_delta` as it arrives
+    (thinking and tool input never do), and the SDK's final message is the very
+    object `create` returns, so everything read from it below is unchanged.
+    """
+    from core.model_wait import emit_delta, restart_stream, streaming_wanted
+
+    if not streaming_wanted():
+        return await client.messages.create(**kwargs)
+    restart_stream()
+    async with client.messages.stream(**kwargs) as stream:
+        async for event in stream:
+            if event.type == "content_block_delta" and getattr(event.delta, "type", "") == "text_delta":
+                emit_delta(event.delta.text)
+        return await stream.get_final_message()
+
+
+async def call_anthropic(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True,
+                         prompt_blocks: list[str] | None = None, volatile_tail: str | None = None,
+                         max_tokens: int | None = None, reasoning=None):
     """Call Anthropic using the official SDK with native tool calling.
 
     Args:
@@ -865,20 +1673,44 @@ async def call_anthropic(model, messages, system, api_key, tools=None, images=No
         prompt_cache: When True (default), mark the system prompt + tools as a cache
                       breakpoint via cache_control. Adds ~25% to write cost but yields
                       ~90% off subsequent reads.
+        prompt_blocks: The last user message as one text block per transcript turn.
+                      When given, the last block carries a third cache marker and
+                      `volatile_tail` (per-turn text) follows it unmarked, so the
+                      transcript itself is a cache hit turn over turn. The joined
+                      text of blocks + tail is what `messages[-1]["content"]`
+                      already holds; this is the same text, structured.
 
     Returns:
         (response_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
         — `input_tokens` is the cache-miss prompt tokens only; cache reads/writes are
         separated so usage_tracker can apply the correct pricing tier.
     """
+    # The last user message as content blocks: transcript turns, the cache
+    # marker on the last of them, then the volatile tail. Built before the
+    # images so an image-bearing first turn prepends to the block list rather
+    # than stringifying it.
+    if prompt_blocks and messages and messages[-1].get("role") == "user":
+        from core.cache.prompt_cache import build_anthropic_user_content
+        tools_chars = len(str(tools)) if tools else 0
+        prefix_chars = len(str(system or "")) + tools_chars + sum(len(b) for b in prompt_blocks)
+        messages = list(messages)
+        messages[-1] = dict(messages[-1])
+        messages[-1]["content"] = build_anthropic_user_content(
+            prompt_blocks, volatile_tail,
+            prefix_chars=prefix_chars if prompt_cache else 0,
+        )
+
     # Inject images into the last user message
     if images:
         for i in range(len(messages) - 1, -1, -1):
             if messages[i].get("role") == "user":
                 messages[i] = dict(messages[i])  # shallow copy
-                messages[i]["content"] = _build_anthropic_image_content(
-                    str(messages[i].get("content", "")), images
-                )
+                existing = messages[i].get("content", "")
+                if isinstance(existing, list):
+                    image_blocks = _build_anthropic_image_content("", images)
+                    messages[i]["content"] = [b for b in image_blocks if b.get("type") == "image"] + existing
+                else:
+                    messages[i]["content"] = _build_anthropic_image_content(str(existing), images)
                 break
     import anthropic
 
@@ -905,12 +1737,25 @@ async def call_anthropic(model, messages, system, api_key, tools=None, images=No
     kwargs = {
         "model": model,
         "messages": clean_messages,
-        "max_tokens": 4096,
+        "max_tokens": max_tokens or DEFAULT_MAX_OUTPUT_TOKENS,
     }
     if system and str(system).strip():
         kwargs["system"] = str(system).strip()
     if anthropic_tools:
         kwargs["tools"] = anthropic_tools
+    if reasoning is not None:
+        from core import reasoning as _reasoning_policy
+        if _reasoning_policy.anthropic_thinking(model) == _reasoning_policy.ADAPTIVE:
+            # Claude 5 and Opus/Sonnet 4.6+ (F9): a budget is a 400 or
+            # deprecated there. "summarized", because the default display on
+            # the newer models is an empty thinking block.
+            kwargs["thinking"] = {"type": "adaptive", "display": "summarized"}
+            kwargs["output_config"] = {"effort": reasoning.effort}
+        else:
+            # `max_tokens` above already carries the raised cap from
+            # `core.reasoning.plan_for`, which is what keeps this valid: the API
+            # refuses a budget that is not strictly below it.
+            kwargs["thinking"] = {"type": "enabled", "budget_tokens": reasoning.budget}
 
     # Decorate with prompt cache markers when enabled and the prefix is large enough.
     if prompt_cache:
@@ -925,44 +1770,62 @@ async def call_anthropic(model, messages, system, api_key, tools=None, images=No
 
     BACKOFF_SCHEDULE = [5, 10, 20, 40, 80]  # seconds between retries
     last_error = None
+    response = None
     for attempt in range(1, MAX_RETRIES + 1):
         backoff = BACKOFF_SCHEDULE[attempt - 1]
         try:
-            print(f"DEBUG: 🔄 Anthropic call start (attempt {attempt}/{MAX_RETRIES})", flush=True)
-            response = await client.messages.create(**kwargs)
-            print(f"DEBUG: ✅ Anthropic call complete (attempt {attempt})", flush=True)
-            # Extract actual token usage from the SDK response object
-            input_tokens = getattr(getattr(response, 'usage', None), 'input_tokens', 0) or 0
-            output_tokens = getattr(getattr(response, 'usage', None), 'output_tokens', 0) or 0
-            from core.cache.prompt_cache import extract_anthropic_cache_tokens
-            cache_read, cache_write = extract_anthropic_cache_tokens(response)
-            return _extract_anthropic_response(response), input_tokens, output_tokens, cache_read, cache_write
+            _log.debug(f"🔄 Anthropic call start (attempt {attempt}/{MAX_RETRIES})")
+            response = await _anthropic_create(client, kwargs)
+            _log.debug(f"✅ Anthropic call complete (attempt {attempt})")
+            # Read outside this `try` (F133): anything raised while reading an
+            # answer that arrived landed in the catch-all below and sent the
+            # call again, up to five times, paying for each.
+            break
         except anthropic.APITimeoutError:
             last_error = f"Request timed out ({ANTHROPIC_TIMEOUT}s)"
-            print(f"DEBUG: ⏱️ Anthropic timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...", flush=True)
+            _retry_notice("Anthropic", f"did not answer within {ANTHROPIC_TIMEOUT:g}s", attempt, MAX_RETRIES, backoff)
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
         except anthropic.APIStatusError as e:
             last_error = f"API error {e.status_code}: {str(e)[:200]}"
-            print(f"DEBUG: ❌ Anthropic API error {e.status_code} on attempt {attempt}/{MAX_RETRIES}: {str(e)[:500]}", flush=True)
+            _log.warning(f"❌ Anthropic API error {e.status_code} on attempt {attempt}/{MAX_RETRIES}: {str(e)[:500]}")
             # Retry on transient/rate-limit errors (429 rate limit, 499 client disconnect, 5xx server errors, 529 overloaded)
             if attempt < MAX_RETRIES and e.status_code in (429, 499, 500, 502, 503, 529):
-                print(f"DEBUG: ⏳ Retrying in {backoff}s...", flush=True)
+                _retry_notice("Anthropic", f"answered {e.status_code}", attempt, MAX_RETRIES, backoff)
                 await asyncio.sleep(backoff)
                 continue
             # Non-retryable error (400, 401, 403, etc.) or last attempt
             break
         except Exception as e:
             last_error = str(e)
-            print(f"DEBUG: ⚠️ Anthropic error on attempt {attempt}/{MAX_RETRIES}: {e}", flush=True)
+            _log.warning(f"⚠️ Anthropic error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
 
-    error_msg = f"Claude LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
-    print(f"DEBUG: ❌ {error_msg}", flush=True)
-    raise LLMError(error_msg)
+    if response is None:
+        # How many attempts were made, not how many were allowed: a refused
+        # request (a 400) stops at the first, and "All 5 attempts failed" read
+        # as five retries that never happened (F133, measured on cloud).
+        error_msg = f"Claude LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
+        _log.warning(f"❌ {error_msg}")
+        raise LLMError(error_msg)
+
+    # Extract actual token usage from the SDK response object
+    input_tokens = getattr(getattr(response, 'usage', None), 'input_tokens', 0) or 0
+    output_tokens = getattr(getattr(response, 'usage', None), 'output_tokens', 0) or 0
+    from core.cache.prompt_cache import extract_anthropic_cache_tokens
+    cache_read, cache_write = extract_anthropic_cache_tokens(response)
+    stop_reason = _normalise_stop_reason(getattr(response, "stop_reason", None))
+    try:
+        _text, _reasoning = _extract_anthropic_response(response)
+    except EmptyAnswer as empty:
+        empty.usage = (input_tokens, output_tokens, cache_read, cache_write)
+        empty.stop_reason = stop_reason
+        raise
+    return LLMResult(_text, input_tokens, output_tokens,
+                     cache_read, cache_write, stop_reason, (), _reasoning)
 
 def _convert_tools_for_gemini(ollama_tools: list[dict] | None):
     """Convert Ollama-format tool list to Gemini FunctionDeclaration list.
@@ -985,43 +1848,312 @@ def _convert_tools_for_gemini(ollama_tools: list[dict] | None):
             continue
         # Clean up the parameters schema — Gemini doesn't accept 'default' in properties
         params = func.get("parameters", {})
-        cleaned_params = _clean_schema_for_gemini(params) if params else None
-        declarations.append(types.FunctionDeclaration(
-            name=name,
-            description=func.get("description", ""),
-            parameters=cleaned_params,
-        ))
+        # Building the declaration is where validation lives, and it is validation
+        # of the *whole list*: one tool the cleaner failed to tame used to raise
+        # here and cost the agent every other tool it had, on every turn. The
+        # cleaner has been rewritten four times by MCP servers declaring keywords
+        # nobody had listed — `oneOf`, non-string `enum`, `exclusiveMinimum`, then
+        # type unions — so there will be a fifth. Losing one capability quietly
+        # beats losing all of them loudly.
+        try:
+            cleaned_params = _clean_schema_for_gemini(params) if params else None
+            declarations.append(types.FunctionDeclaration(
+                name=name,
+                description=func.get("description", ""),
+                parameters=cleaned_params,
+            ))
+        except Exception as e:
+            _log.warning(
+                f"⚠️ Gemini: dropping tool {name!r} — its schema could not be "
+                f"converted: {str(e)[:300]}",
+            )
+            continue
 
     if not declarations:
         return None
     return [types.Tool(function_declarations=declarations)]
 
 
-def _clean_schema_for_gemini(schema: dict) -> dict:
-    """Remove fields from JSON schema that Gemini doesn't support."""
-    UNSUPPORTED_KEYS = {
-        "default", "$schema", "additionalProperties",
-        "propertyNames", "patternProperties",
-        "minProperties", "maxProperties",
-        "dependentRequired", "dependentSchemas",
-        "examples", "$id", "$comment",
-        "if", "then", "else",
-        "unevaluatedProperties", "unevaluatedItems",
-        "readOnly", "writeOnly",
-        "deprecated",
+#: JSON Schema keywords `google.genai`'s `Schema` has no field for. Anything
+#: here is dropped; the composition keywords are handled separately below,
+#: because dropping one leaves a node with no type and Gemini rejects that too.
+def _gemini_json_type(value) -> str:
+    """The JSON Schema type name for a literal. `bool` before `int` — it is one."""
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return "string"
+
+
+def _gemini_fixed_value(value) -> dict:
+    """`const`, expressed in what Gemini's `Schema` can hold.
+
+    A string const becomes a one-value `enum`, which says exactly what `const`
+    says. Anything else keeps its type and states the fixed value in prose,
+    because `enum` here is `list[str]` and coercing `true` into `"true"` changes
+    what the model sends the tool.
+    """
+    if isinstance(value, str):
+        return {"type": "string", "enum": [value]}
+    return {
+        "type": _gemini_json_type(value),
+        "description": f"Must be {json.dumps(value)}.",
     }
+
+
+#: Keys whose value is a map of name → schema rather than a schema.
+_SCHEMA_MAPS = {"properties", "$defs", "definitions"}
+
+#: Exactly what `google.genai`'s `Schema` accepts, by its JSON name.
+#:
+#: A whitelist, not a list of things to strip, and that is the point. The strip
+#: list was rewritten three times in one sitting — `oneOf`, then non-string
+#: `enum` values, then `exclusiveMinimum` — each time because a real server
+#: declared something nobody had thought of, and each time the whole tool list
+#: was rejected and the customer's agent answered with a pydantic traceback.
+#: JSON Schema has a long tail and MCP servers use it; `Schema`'s fields are
+#: finite and knowable. Filtering to what is accepted cannot be surprised.
+#:
+#: Regenerate the candidate set with:
+#:     [f.alias or n for n, f in types.Schema.model_fields.items()]
+#: then subtract `_GEMINI_NOT_IN_FUNCTION_SCHEMA` — see below, it is not the
+#: same list.
+_GEMINI_SCHEMA_KEYS = {
+    "anyOf", "description", "enum", "example", "format", "items",
+    "maxItems", "maxLength", "maximum", "minItems", "minLength", "minimum",
+    "nullable", "pattern", "properties", "propertyOrdering", "required",
+    "title", "type",
+}
+
+#: Fields `types.Schema` has and the **function-calling API** refuses.
+#:
+#: Kept as its own named set because the difference is not guessable and cost a
+#: round to learn. `Schema` is the SDK's general schema type, used for structured
+#: output as well; `FunctionDeclaration.parameters` is validated server-side
+#: against something narrower. So a key can pass pydantic locally and come back
+#:
+#:     Unknown name "additional_properties" at
+#:     'tools[0].function_declarations[0].parameters.properties[3].value'
+#:
+#: which is a 400 on every call that agent makes, not a warning.
+#:
+#: `defs`/`ref` are here for a different reason: nothing resolves a `$ref` on
+#: this path, and a reference the model cannot follow is worse than the loose
+#: schema left behind without it.
+_GEMINI_NOT_IN_FUNCTION_SCHEMA = {
+    "additionalProperties", "default", "minProperties", "maxProperties",
+    "defs", "ref",
+}
+
+#: Bounds Gemini has no exclusive form of. Carried into the description rather
+#: than dropped: the model cannot honour a bound it is never told about.
+_GEMINI_EXCLUSIVE_BOUNDS = {
+    "exclusiveMinimum": "greater than",
+    "exclusiveMaximum": "less than",
+}
+
+#: The type names `types.Type` has, lowercased. Mirrors
+#: `[m.value.lower() for m in types.Type]`, kept as a literal so cleaning a
+#: schema does not have to import the SDK.
+#:
+#: Needed because `type` is the one whitelisted keyword whose *value* is also
+#: constrained, and the two ways it goes wrong fail differently:
+#:
+#: * A name off this list — `"bool"`, `"int"`, `"any"` — is *accepted* by
+#:   pydantic with only a `UserWarning`, then shipped as `{"type": "bool"}` and
+#:   refused by the API. A warning nobody reads, then a 400 on every call.
+#: * A JSON Schema type *union*, `{"type": ["boolean", "string"]}`, is refused
+#:   locally, which takes the whole tool list down with it.
+_GEMINI_TYPE_NAMES = {
+    "type_unspecified", "string", "number", "integer",
+    "boolean", "array", "object", "null",
+}
+
+
+def _gemini_normalise_type(cleaned: dict) -> None:
+    """Force `cleaned["type"]` into the single name Gemini's `Schema` accepts.
+
+    `Schema.type` is a one-valued enum. JSON Schema's is a name *or a list of
+    names*, and MCP servers do use the list form: zod's `z.union([z.boolean(),
+    z.string()])` serialises to `{"type": ["boolean", "string"]}`. The official
+    sequential-thinking server declares three fields that way, and the whole
+    tool list came back as
+
+        3 validation errors for FunctionDeclaration
+        parameters.properties.nextThoughtNeeded.type
+          Input should be 'TYPE_UNSPECIFIED', 'STRING', ...
+
+    — which every agent with that server attached gave as its answer, on every
+    turn, because the tool list is declared up front and validated as a whole.
+
+    A union becomes, in order of preference:
+
+    * `null` dropped from the members and `nullable` set instead — `["string",
+      "null"]` is how JSON Schema spells optional, and `nullable` says it
+      exactly.
+    * one member left → that name, plainly.
+    * several left → `anyOf` branches, the same translation `oneOf` already
+      gets. The node's own `type` goes, because the branches carry it.
+    * nothing left (`["null"]`) → `null`, which `Type.NULL` accepts.
+
+    An unrecognised name is dropped rather than passed through, leaving the
+    caller's typeless-node fallback to supply one. A loose type beats a 400.
+    """
+    declared = cleaned.get("type")
+
+    if isinstance(declared, str):
+        if declared.lower() not in _GEMINI_TYPE_NAMES:
+            cleaned.pop("type")
+        return
+
+    if not isinstance(declared, list):
+        # A dict, a number, anything else: no field to land in.
+        if declared is not None:
+            cleaned.pop("type")
+        return
+
+    members = [t for t in declared if isinstance(t, str) and t.lower() in _GEMINI_TYPE_NAMES]
+    nullable = any(t.lower() == "null" for t in members)
+    members = [t for t in members if t.lower() != "null"]
+
+    if nullable and members:
+        cleaned["nullable"] = True
+
+    if len(members) == 1:
+        cleaned["type"] = members[0]
+    elif members:
+        # `anyOf` from a real `oneOf` already describes this node fully; a
+        # second opinion on the type would only contradict it.
+        if "anyOf" not in cleaned:
+            cleaned["anyOf"] = [{"type": t} for t in members]
+        cleaned.pop("type")
+    elif nullable:
+        cleaned["type"] = "null"
+    else:
+        cleaned.pop("type")
+
+
+def _clean_schema_for_gemini(schema: dict) -> dict:
+    """Rewrite a JSON schema into the subset Gemini's `Schema` accepts.
+
+    ## Why this is more than a key filter
+
+    It was one, and it worked until a real MCP server arrived. Vercel's
+    `update_project_deployment_protection` declares a `passwordProtection`
+    property as `oneOf`, and the whole call failed with
+
+        3 validation errors for FunctionDeclaration
+        parameters.properties.passwordProtection.oneOf
+          Extra inputs are not permitted
+
+    — which the customer saw as their agent's answer. One property on one tool
+    of one server takes down every turn that agent makes, because the tool list
+    is declared up front and validated as a whole.
+
+    Simply adding `oneOf` to the drop list is worse than leaving it: what
+    remains is a property with no `type`, and Gemini rejects *that* with a
+    different error. The composition keywords have to be translated.
+
+    ## The translation
+
+    * `oneOf` → `anyOf`, which `Schema` does have. The distinction — exactly one
+      branch versus at least one — is not something a model choosing a call
+      shape acts on, and a slightly loose schema is worth far more than a tool
+      the model cannot see at all.
+    * `allOf` → merged into the parent. Members are almost always object
+      fragments contributing properties, which is exactly what a merge produces.
+    * `const` → a single-value `enum`, which is what `const` means.
+    * `not` → dropped. There is no expressing it, and a schema that cannot say
+      "not this" is still usable for choosing arguments.
+    * A node left with no `type` gets one, because Gemini requires it: `object`
+      when it has properties, `string` otherwise. `anyOf` nodes are exempt —
+      they carry their type in their branches.
+    """
     if not isinstance(schema, dict):
         return schema
-    cleaned = {}
+
+    cleaned: dict = {}
+
+    # `allOf` first: it contributes keys the rest of this node may override.
+    for member in schema.get("allOf", []) or []:
+        if isinstance(member, dict):
+            merged = _clean_schema_for_gemini(member)
+            for key, value in merged.items():
+                if key == "properties" and isinstance(value, dict):
+                    cleaned.setdefault("properties", {}).update(value)
+                elif key == "required" and isinstance(value, list):
+                    cleaned["required"] = [*cleaned.get("required", []), *value]
+                else:
+                    cleaned.setdefault(key, value)
+
+    notes: list[str] = []
     for k, v in schema.items():
-        if k in UNSUPPORTED_KEYS:
+        if k in _GEMINI_EXCLUSIVE_BOUNDS:
+            notes.append(f"{_GEMINI_EXCLUSIVE_BOUNDS[k]} {json.dumps(v)}")
             continue
-        if isinstance(v, dict):
+        # `oneOf`, `allOf`, `const` and `not` are translated below or dropped;
+        # everything else outside the whitelist has no field to land in.
+        if k not in _GEMINI_SCHEMA_KEYS:
+            continue
+        if k in _SCHEMA_MAPS and isinstance(v, dict):
+            # A map of *name → schema*, not a schema. Recursing into it as one
+            # is how `properties` acquired a `type` of its own and Gemini
+            # answered `properties.type: Input should be a valid dictionary`.
+            cleaned[k] = {
+                name: _clean_schema_for_gemini(sub) if isinstance(sub, dict) else sub
+                for name, sub in v.items()
+            }
+        elif isinstance(v, dict):
             cleaned[k] = _clean_schema_for_gemini(v)
         elif isinstance(v, list):
             cleaned[k] = [_clean_schema_for_gemini(i) if isinstance(i, dict) else i for i in v]
         else:
             cleaned[k] = v
+
+    branches = schema.get("oneOf") or schema.get("anyOf")
+    if isinstance(branches, list) and branches:
+        cleaned["anyOf"] = [
+            _clean_schema_for_gemini(b) for b in branches if isinstance(b, dict)
+        ]
+
+    if "const" in schema:
+        cleaned.update(_gemini_fixed_value(schema["const"]))
+
+    # Gemini's `enum` is `list[str]`. A numeric or boolean enum has to keep its
+    # *type* instead — stringifying `true` to `"true"` would have the model send
+    # a string where the tool wants a boolean, which is a worse failure than a
+    # slightly looser schema because it happens at call time, inside the tool.
+    values = cleaned.get("enum")
+    if isinstance(values, list) and values and not all(isinstance(v, str) for v in values):
+        cleaned.pop("enum")
+        cleaned["type"] = _gemini_json_type(values[0])
+        allowed = ", ".join(json.dumps(v) for v in values)
+        cleaned["description"] = (
+            f"{cleaned.get('description', '')} (one of: {allowed})".strip()
+        )
+
+    # After the `const` and numeric-`enum` branches above, which assign `type`
+    # themselves, and before the fallback below, which is what a dropped name
+    # falls back *to*.
+    _gemini_normalise_type(cleaned)
+
+    if "type" not in cleaned and "anyOf" not in cleaned:
+        cleaned["type"] = "object" if "properties" in cleaned else "string"
+
+    if notes:
+        cleaned["description"] = (
+            f"{cleaned.get('description', '')} (must be {', '.join(notes)})".strip()
+        )
+
+    # A merged `allOf` can repeat a required name.
+    if isinstance(cleaned.get("required"), list):
+        cleaned["required"] = list(dict.fromkeys(cleaned["required"]))
+
     return cleaned
 
 
@@ -1061,28 +2193,95 @@ def _convert_messages_for_gemini(messages: list[dict], images: list[str] | None 
     return contents
 
 
-def _extract_gemini_response(response) -> str:
-    """Extract text and/or function call from a Gemini response.
+def _malformed_call(response) -> bool:
+    """Gemini stopped on a function call it could not form, and said nothing else."""
+    try:
+        candidate = response.candidates[0]
+        finish = candidate.finish_reason
+        return (finish is not None and finish.name == "MALFORMED_FUNCTION_CALL"
+                and not (candidate.content and candidate.content.parts))
+    except (AttributeError, IndexError, TypeError):
+        return False
 
-    When the model emits BOTH text and a function_call in the same response,
-    the text is preserved as a [REASONING]...[/REASONING] preamble so the
-    downstream ReAct loop can project it into the llm_reasoning event for the
-    chat UI and orchestration log. Without this, native function calling
-    silently drops the model's pre-call reasoning.
+
+def _gemini_streamed(client, **kwargs):
+    """`generate_content_stream`, read whole into one response (U72). Runs in a worker thread.
+
+    Each chunk's answer text (never a thought) goes to `emit_delta`. Its parts
+    are put back together — neighbouring text of one kind as one part, since
+    `_extract_gemini_response` joins parts with a newline — and the last
+    finish reason and usage are kept, so the response reads as a whole one.
+    """
+    from google.genai import types
+
+    from core.model_wait import emit_delta, stream_abandoned
+
+    parts: list = []
+    finish = None
+    usage = None
+    for chunk in client.models.generate_content_stream(**kwargs):
+        if stream_abandoned():
+            break
+        if getattr(chunk, "usage_metadata", None) is not None:
+            usage = chunk.usage_metadata
+        for candidate in (getattr(chunk, "candidates", None) or [])[:1]:
+            if getattr(candidate, "finish_reason", None):
+                finish = candidate.finish_reason
+            content = getattr(candidate, "content", None)
+            for part in (getattr(content, "parts", None) or []):
+                text = getattr(part, "text", None)
+                thought = bool(getattr(part, "thought", None))
+                if text and not getattr(part, "function_call", None):
+                    if not thought:
+                        emit_delta(text)
+                    prev = parts[-1] if parts else None
+                    if (prev is not None and getattr(prev, "text", None) is not None
+                            and not getattr(prev, "function_call", None)
+                            and bool(getattr(prev, "thought", None)) == thought):
+                        parts[-1] = types.Part(text=prev.text + text, thought=thought or None)
+                    else:
+                        parts.append(types.Part(text=text, thought=thought or None))
+                else:
+                    parts.append(part)
+    candidate = types.Candidate(content=types.Content(role="model", parts=parts) if parts else None,
+                                finish_reason=finish)
+    return types.GenerateContentResponse(candidates=[candidate], usage_metadata=usage)
+
+
+def _extract_gemini_response(response) -> tuple[str, str]:
+    """Split a Gemini response into (text, reasoning).
+
+    Gemini marks a thought part with `thought=True` — but only when the request
+    asked for thoughts (`include_thoughts`), which is what `call_gemini` now
+    does. When that flag is present the split is exact, and this is the whole
+    reason Gemini's thinking used to read so badly:
+
+    **Everything used to be a guess based on position.** Text alongside a
+    function call was assumed to be reasoning and wrapped in `[REASONING]`;
+    text on its own was assumed to be the answer. Both assumptions are wrong
+    half the time. A model that explained itself before answering had the
+    explanation shown as the answer, and a model that wrote its answer next to
+    a tool call had the answer filed away as thinking and dropped.
+
+    With no thought parts — an older model, or thoughts turned off — the
+    fallback is the old positional rule, so nothing regresses. What it no
+    longer does is *invent* `[REASONING]` markers: the reasoning comes back as
+    its own return value, and `core.react_engine` puts it on the event.
     """
     if not response.candidates:
-        return "Error: No response candidates from Gemini."
+        raise EmptyAnswer("Error: No response candidates from Gemini.")
 
     candidate = response.candidates[0]
 
     if candidate.finish_reason and candidate.finish_reason.name == "SAFETY":
-        return "Error: Response blocked by Gemini safety filters."
+        raise EmptyAnswer("Error: Response blocked by Gemini safety filters.")
 
     if not candidate.content or not candidate.content.parts:
         reason = candidate.finish_reason.name if candidate.finish_reason else "UNKNOWN"
-        return f"Error: Empty Gemini response. Finish Reason: {reason}"
+        raise EmptyAnswer(f"Error: Empty Gemini response. Finish Reason: {reason}")
 
-    # Walk parts in order, collecting text (reasoning) and function calls.
+    # Walk parts in order, keeping thoughts, answer text and calls apart.
+    thought_parts: list[str] = []
     text_parts: list[str] = []
     function_calls: list[dict] = []
     for p in candidate.content.parts:
@@ -1091,28 +2290,92 @@ def _extract_gemini_response(response) -> str:
             args = dict(fc.args) if fc.args else {}
             function_calls.append({"tool": fc.name, "arguments": args})
         elif p.text:
-            text_parts.append(p.text)
+            # `getattr`, not `p.thought`: the attribute is absent on an older
+            # SDK's Part and on anything shim-shaped, and an AttributeError
+            # here is not a small failure — it is raised inside the retry loop,
+            # so it costs five attempts with backoff before surfacing as
+            # "Gemini is down".
+            (thought_parts if getattr(p, "thought", None) else text_parts).append(p.text)
+
+    reasoning = "\n".join(t for t in thought_parts if t and t.strip()).strip()
+    answer = "\n".join(t for t in text_parts if t and t.strip()).strip()
 
     if function_calls:
-        if len(function_calls) > 1:
-            names = [fc["tool"] for fc in function_calls]
-            print(f"DEBUG: ⚠️ Gemini returned {len(function_calls)} function calls: {names}. Using first: {names[0]}")
-        call_json = json.dumps(function_calls[0])
-        reasoning = "\n".join(t for t in text_parts if t and t.strip()).strip()
-        if reasoning:
-            return f"[REASONING]\n{reasoning}\n[/REASONING]\n{call_json}"
-        return call_json
+        # Every call, in order; this used to keep the first and log the rest.
+        call_json = "\n".join(json.dumps(fc) for fc in function_calls)
+        if not reasoning and answer:
+            # No thought parts came back, so fall back to the positional rule:
+            # prose sitting beside a call is the model explaining the call.
+            reasoning, answer = answer, ""
+        return call_json, reasoning
 
-    if text_parts:
-        return "\n".join(text_parts)
+    if answer:
+        return answer, reasoning
 
-    return "Error: Gemini returned no usable content."
+    # Thoughts but no answer. The model spent its whole budget thinking, which
+    # is a real outcome at a low cap — say so rather than returning nothing,
+    # because an empty string reads to the loop as a finished final response.
+    # And say so as a failure, not as the answer (F133).
+    if reasoning:
+        raise EmptyAnswer(_only_reasoning("Gemini", candidate.finish_reason), reasoning=reasoning)
 
-# Global singleton Gemini client — reuses connection pool, prevents socket exhaustion
-_gemini_client = None
+    raise EmptyAnswer("Error: Gemini returned no usable content.")
+
+# One Gemini client per credential (F321). A client is kept so its connection
+# pool is reused, but it was kept once per process, built with whichever call's
+# key came first: every later key was ignored, so in a worker shared by many
+# tenants one tenant's key served everyone's Gemini calls. Now each credential
+# has its own, in a small LRU cache keyed by a salted HMAC of the credential —
+# never the key itself. An evicted client is not closed: another thread may
+# still be in a call on it, and the SDK closes it when the last reference goes.
+# Only the sync SDK is used (through `asyncio.to_thread`); `client.aio` would
+# bind a cached client to one event loop, and code indexing runs each call on
+# a fresh one.
+_GEMINI_CLIENTS_MAX = 32
+_GEMINI_CLIENT_SALT = os.urandom(16)
+#: Chat's timeout, and since F321 embeddings' too: one key, one client. It is
+#: the client's only timeout — 5 s above the request timeout.
+_GEMINI_CLIENT_TIMEOUT_MS = int((LLM_REQUEST_TIMEOUT + 5) * 1000)
+_gemini_clients: "OrderedDict[str, object]" = OrderedDict()
+_gemini_clients_lock = threading.Lock()
 
 
-async def call_gemini(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True):
+def _gemini_client_key(api_key: str, base_url: str | None, timeout_ms: int) -> str:
+    material = "\0".join((api_key, base_url or "", str(timeout_ms))).encode()
+    return hmac.new(_GEMINI_CLIENT_SALT, material, hashlib.sha256).hexdigest()
+
+
+def _gemini_client_for(api_key: str | None, *, timeout_ms: int, base_url: str | None = None):
+    """The `genai.Client` for this credential, built on first use.
+
+    A call with no key is built fresh and not kept: the SDK then decides what a
+    missing key means, as it did for a first call before there was a cache.
+    """
+    from google import genai
+    from google.genai import types
+
+    def _build():
+        options = {"timeout": timeout_ms, **({"base_url": base_url} if base_url else {})}
+        return genai.Client(api_key=api_key, http_options=types.HttpOptions(**options))
+
+    if not api_key:
+        return _build()
+    key = _gemini_client_key(api_key, base_url, timeout_ms)
+    with _gemini_clients_lock:
+        client = _gemini_clients.get(key)
+        if client is not None:
+            _gemini_clients.move_to_end(key)
+            return client
+        # Built under the lock: two threads asking for a new key at once get
+        # one client between them, and building one does no I/O.
+        client = _gemini_clients[key] = _build()
+        while len(_gemini_clients) > _GEMINI_CLIENTS_MAX:
+            _gemini_clients.popitem(last=False)
+        return client
+
+
+async def call_gemini(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True,
+                     max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS, reasoning=None):
     """Call Gemini using the google-genai SDK with native function calling.
 
     Gemini implicit caching (Gemini 2.5 and newer) auto-applies on the server
@@ -1120,78 +2383,90 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
     `usage_metadata.cached_content_token_count`. We do not (yet) use the
     explicit `cached_content` API since it requires lifecycle management.
 
-    Returns:
-        (response_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+    `max_tokens` arrives here for the first time. Every other provider was
+    given the tenant's `max_output_tokens` when the four hardcoded 4096s were
+    replaced; Gemini was skipped because it had no hardcoded cap to replace —
+    which left it as the one provider still generating without a bound.
+
+    `reasoning` is a `core.reasoning.ReasoningPlan` or None. Gemini changed
+    knobs between generations: 2.5 takes a token budget, 3.x takes a named
+    level. Sending the wrong one is not an error, it is silence, so the
+    generation is chosen from the model name rather than tried and caught.
     """
     _ = prompt_cache  # reserved for future explicit cached_content support
-    global _gemini_client
-    from google import genai
+    from google.genai import errors as _genai_errors
     from google.genai import types
 
-    GEMINI_TIMEOUT = LLM_REQUEST_TIMEOUT   # seconds per attempt
     MAX_RETRIES = 5
 
-    if _gemini_client is None:
-        _gemini_client = genai.Client(
-            api_key=api_key,
-            # HTTP timeout 5s above wait_for so wait_for fires first for clean handling
-            http_options=types.HttpOptions(timeout=int((GEMINI_TIMEOUT+5) * 1000)),  # seconds
-        )
+    # This call's own key's client (F321). Its HTTP timeout, the call's only
+    # one, sits 5 s above LLM_REQUEST_TIMEOUT.
+    client = _gemini_client_for(api_key, timeout_ms=_GEMINI_CLIENT_TIMEOUT_MS)
 
     contents = _convert_messages_for_gemini(messages, images=images)
     gemini_tools = _convert_tools_for_gemini(tools)
 
-    config = types.GenerateContentConfig(
-        system_instruction=system,
-    )
-    if gemini_tools:
-        config.tools = gemini_tools
+    def _build_config(with_tools: bool):
+        """One builder for both configs.
+
+        The MALFORMED_FUNCTION_CALL retry below used to construct a second
+        `GenerateContentConfig` by hand, carrying only `system_instruction` —
+        so the retry silently ran without whatever the first config had set.
+        That was survivable when there was nothing else to set. With a response
+        cap and a thinking budget on it, a retry that drops them is a different
+        call answering a different question.
+        """
+        cfg = types.GenerateContentConfig(
+            system_instruction=system,
+            max_output_tokens=max_tokens,
+        )
+        if with_tools and gemini_tools:
+            cfg.tools = gemini_tools
+        if reasoning is not None:
+            # Built in one constructor call rather than assigned field by
+            # field: pydantic validates constructor arguments and does not
+            # validate assignments, so `thinking_level = "HIHG"` would sail
+            # through as a plain string and reach the wire unchecked.
+            knob = ({"thinking_level": reasoning.level} if model.lower().startswith("gemini-3")
+                    else {"thinking_budget": reasoning.budget})
+            cfg.thinking_config = types.ThinkingConfig(include_thoughts=True, **knob)
+        return cfg
+
+    config = _build_config(with_tools=True)
 
     async def _call(cfg, attempt_label=""):
-        print(f"DEBUG: 🔄 Gemini _call start ({attempt_label})", flush=True)
-        result = await asyncio.to_thread(
-            _gemini_client.models.generate_content,
-            model=model,
-            contents=contents,
-            config=cfg,
-        )
-        print(f"DEBUG: ✅ Gemini _call complete ({attempt_label})", flush=True)
+        _log.debug(f"🔄 Gemini _call start ({attempt_label})")
+        from core.model_wait import restart_stream, streaming_wanted
+        if streaming_wanted():
+            # Streamed when the answer is (U72), read whole into one response.
+            restart_stream()
+            result = await asyncio.to_thread(_gemini_streamed, client, model=model, contents=contents, config=cfg)
+        else:
+            result = await asyncio.to_thread(
+                client.models.generate_content,
+                model=model,
+                contents=contents,
+                config=cfg,
+            )
+        _log.debug(f"✅ Gemini _call complete ({attempt_label})")
         return result
 
     BACKOFF_SCHEDULE = [5, 10, 20, 40, 80]  # seconds between retries
     last_error = None
+    refused = False
+    response = None
     for attempt in range(1, MAX_RETRIES + 1):
         backoff = BACKOFF_SCHEDULE[attempt - 1]
         try:
             response = await _call(config, f"attempt {attempt}")
-            result = _extract_gemini_response(response)
 
-            # If MALFORMED_FUNCTION_CALL, retry once without tools (forces text response)
-            if "MALFORMED_FUNCTION_CALL" in result and gemini_tools:
-                print("DEBUG: Gemini MALFORMED_FUNCTION_CALL — retrying without tools")
-                config_no_tools = types.GenerateContentConfig(
-                    system_instruction=system,
-                )
-                response = await _call(config_no_tools, "no-tools retry")
-                result = _extract_gemini_response(response)
-
-            # Extract actual token usage from Gemini response metadata
-            input_tokens = 0
-            output_tokens = 0
-            cache_read = 0
-            cache_write = 0
-            try:
-                um = getattr(response, 'usage_metadata', None)
-                if um:
-                    input_tokens = getattr(um, 'prompt_token_count', 0) or 0
-                    output_tokens = getattr(um, 'candidates_token_count', 0) or 0
-                    cache_read = int(getattr(um, 'cached_content_token_count', 0) or 0)
-                    # Gemini's prompt_token_count is INCLUSIVE of cached tokens.
-                    if cache_read:
-                        input_tokens = max(0, input_tokens - cache_read)
-            except Exception:
-                pass
-            return result, input_tokens, output_tokens, cache_read, cache_write
+            # If MALFORMED_FUNCTION_CALL, retry once without tools (forces text
+            # response). Read off the finish reason: the answer is read outside
+            # this `try` now, and an empty one raises (F133).
+            if _malformed_call(response) and gemini_tools:
+                _log.debug("Gemini MALFORMED_FUNCTION_CALL — retrying without tools")
+                response = await _call(_build_config(with_tools=False), "no-tools retry")
+            break
 
         # except asyncio.TimeoutError:
         #     last_error = f"Request timed out ({GEMINI_TIMEOUT}s)"
@@ -1201,18 +2476,73 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
         #         continue
         except Exception as e:
             last_error = str(e)
-            print(f"DEBUG: ⚠️ Unexpected {type(e).__name__}: {vars(e) if hasattr(e, '__dict__') else e}", flush=True)
-            print(f"DEBUG: ⚠️ Gemini error on attempt {attempt}/{MAX_RETRIES}: {e}", flush=True)
+            _log.warning(f"⚠️ Unexpected {type(e).__name__}: {vars(e) if hasattr(e, '__dict__') else e}")
+            _log.warning(f"⚠️ Gemini error on attempt {attempt}/{MAX_RETRIES}: {e}")
+            # A request Gemini refuses (400 malformed, 401/403 key, 404 model) is
+            # refused the same way every time; retrying it cost 79s of backoff
+            # before the person saw the first answer. Same rule as the other
+            # providers: only rate limits, cancellations and server errors retry.
+            # Anything that is not an API answer at all (a dropped connection)
+            # still does.
+            code = getattr(e, "code", None) if isinstance(e, _genai_errors.APIError) else None
+            # Out of credit (a 402, or a 429 naming its prepayment) never clears
+            # on a retry either (F275).
+            if isinstance(code, int) and (is_quota_refusal(code, str(e))
+                                          or (code not in (408, 429, 499) and code < 500)):
+                refused = True
+                break
             if attempt < MAX_RETRIES:
-                print(f"DEBUG: ⏳ Retrying in {backoff}s...", flush=True)
+                _retry_notice("Gemini", f"failed ({type(e).__name__})", attempt, MAX_RETRIES, backoff)
                 await asyncio.sleep(backoff)
                 continue
 
-    error_msg = f"Gemini LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
-    print(f"DEBUG: ❌ {error_msg}", flush=True)
-    raise LLMError(error_msg)
+    if response is None:
+        error_msg = (
+            f"Gemini LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
+            if not refused
+            else f"Gemini LLM Error: the request was refused. {last_error}"
+        )
+        _log.warning(f"❌ {error_msg}")
+        raise LLMError(error_msg)
 
-async def call_grok(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True):
+    # Read outside the retried `try` (F133): an answer that arrived is never
+    # sent for again because reading it raised — an empty or blocked one raises
+    # on purpose now, and five paid attempts would not change it.
+    input_tokens = 0
+    output_tokens = 0
+    cache_read = 0
+    cache_write = 0
+    try:
+        um = getattr(response, 'usage_metadata', None)
+        if um:
+            input_tokens = getattr(um, 'prompt_token_count', 0) or 0
+            output_tokens = getattr(um, 'candidates_token_count', 0) or 0
+            # Thinking is billed as output and is reported separately —
+            # so leaving it out did not merely under-report the count,
+            # it under-charged the call. At `high` that is most of it.
+            output_tokens += int(getattr(um, 'thoughts_token_count', 0) or 0)
+            cache_read = int(getattr(um, 'cached_content_token_count', 0) or 0)
+            # Gemini's prompt_token_count is INCLUSIVE of cached tokens.
+            if cache_read:
+                input_tokens = max(0, input_tokens - cache_read)
+    except Exception:
+        pass
+    _finish = None
+    try:
+        _finish = response.candidates[0].finish_reason
+    except (AttributeError, IndexError, TypeError):
+        pass
+    try:
+        result, reasoning_text = _extract_gemini_response(response)
+    except EmptyAnswer as empty:
+        empty.usage = (input_tokens, output_tokens, cache_read, cache_write)
+        empty.stop_reason = _normalise_stop_reason(_finish)
+        raise
+    return LLMResult(result, input_tokens, output_tokens, cache_read, cache_write,
+                     _normalise_stop_reason(_finish), (), reasoning_text)
+
+async def call_grok(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True,
+                    max_tokens: int | None = None, reasoning=None):
     """Call xAI Grok via its OpenAI-compatible API with 5-attempt exponential backoff.
 
     Returns:
@@ -1238,70 +2568,92 @@ async def call_grok(model, messages, system, api_key, tools=None, images=None, p
                 )
                 break
 
-    payload: dict = {"model": model, "messages": full_messages, "max_tokens": 4096}
+    payload: dict = {"model": model, "messages": full_messages,
+                     "max_tokens": max_tokens or DEFAULT_MAX_OUTPUT_TOKENS}
+    _apply_openai_reasoning(payload, reasoning)
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
 
     last_error = None
+    response = None
     for attempt in range(1, MAX_RETRIES + 1):
         backoff = BACKOFF_SCHEDULE[attempt - 1]
         try:
-            print(f"DEBUG: 🔄 Grok call start (attempt {attempt}/{MAX_RETRIES})", flush=True)
+            _log.debug(f"🔄 Grok call start (attempt {attempt}/{MAX_RETRIES})")
             async with httpx.AsyncClient(timeout=GROK_TIMEOUT) as client:
-                resp = await client.post(
-                    "https://api.x.ai/v1/chat/completions",
+                resp = await _post_chat(
+                    client, "https://api.x.ai/v1/chat/completions",
                     headers={"Authorization": f"Bearer {api_key}"},
-                    json=payload,
+                    payload=payload,
                 )
             if resp.status_code in (429, 499, 500, 502, 503, 529):
                 last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
-                print(f"DEBUG: ⏳ Grok {resp.status_code} on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...", flush=True)
+                if is_quota_refusal(resp.status_code, resp.text):
+                    break   # out of credit or quota: no retry clears it (F275)
+                _retry_notice("Grok", f"answered {resp.status_code}", attempt, MAX_RETRIES, backoff)
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(backoff)
                     continue
+            if resp.status_code == 400 and _retry_without_reasoning(payload, resp):
+                continue
             resp.raise_for_status()
-            data = resp.json()
-            usage = data.get("usage", {})
-            input_tokens = usage.get("prompt_tokens", 0)
-            output_tokens = usage.get("completion_tokens", 0)
-            from core.cache.prompt_cache import extract_openai_cache_tokens
-            cache_read, cache_write = extract_openai_cache_tokens(usage) if prompt_cache else (0, 0)
-            if cache_read:
-                input_tokens = max(0, input_tokens - cache_read)
-            choice = data["choices"][0]
-            msg = choice.get("message", {})
-            text = _openai_compat_extract(msg)
-            if msg.get("tool_calls"):
-                return text, input_tokens, output_tokens, cache_read, cache_write
-            print(f"DEBUG: ✅ Grok call complete (attempt {attempt})", flush=True)
-            return text, input_tokens, output_tokens, cache_read, cache_write
+            _log.debug(f"✅ Grok call complete (attempt {attempt})")
+            # Read outside this `try` (F138): anything raised while reading an
+            # answer that arrived landed in the catch-all below and sent the
+            # call again, up to four more times, paying for each.
+            response = resp
+            break
         except httpx.TimeoutException:
             last_error = f"Request timed out ({GROK_TIMEOUT}s)"
-            print(f"DEBUG: ⏱️ Grok timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...", flush=True)
+            _retry_notice("Grok", f"did not answer within {GROK_TIMEOUT:g}s", attempt, MAX_RETRIES, backoff)
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
         except httpx.HTTPStatusError as e:
-            last_error = f"HTTP {e.response.status_code}: {str(e)[:200]}"
-            print(f"DEBUG: ❌ Grok HTTP error on attempt {attempt}/{MAX_RETRIES}: {e}", flush=True)
+            # The provider's own words, not httpx's (F1318): a gone model's refusal says so in its body.
+            last_error = f"HTTP {e.response.status_code}: {_refusal_said(e.response) or str(e)[:200]}"
+            _log.warning(f"❌ Grok HTTP error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES and e.response.status_code in (429, 499, 500, 502, 503, 529):
                 await asyncio.sleep(backoff)
                 continue
             break
         except Exception as e:
             last_error = str(e)
-            print(f"DEBUG: ⚠️ Grok error on attempt {attempt}/{MAX_RETRIES}: {e}", flush=True)
+            _log.warning(f"⚠️ Grok error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
 
-    error_msg = f"Grok LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
-    print(f"DEBUG: ❌ {error_msg}", flush=True)
-    raise LLMError(error_msg)
+    if response is None:
+        error_msg = f"Grok LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
+        _log.warning(f"❌ {error_msg}")
+        raise LLMError(error_msg)
+
+    data = response.json()
+    usage = data.get("usage", {})
+    input_tokens = usage.get("prompt_tokens", 0)
+    output_tokens = usage.get("completion_tokens", 0)
+    from core.cache.prompt_cache import extract_openai_cache_tokens
+    cache_read, cache_write = extract_openai_cache_tokens(usage) if prompt_cache else (0, 0)
+    if cache_read:
+        input_tokens = max(0, input_tokens - cache_read)
+    choice = data["choices"][0]
+    msg = choice.get("message", {})
+    stop_reason = _normalise_stop_reason(choice.get("finish_reason"))
+    try:
+        text, _reasoning = _openai_compat_extract(msg, "Grok", choice.get("finish_reason"))
+    except EmptyAnswer as empty:
+        # The call was made and billed; only its answer was empty or withheld.
+        empty.usage = (input_tokens, output_tokens, cache_read, cache_write)
+        empty.stop_reason = stop_reason
+        raise
+    return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
+                     stop_reason, (), _reasoning)
 
 
-async def call_deepseek(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True):
+async def call_deepseek(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True,
+                        max_tokens: int | None = None, reasoning=None):
     """Call DeepSeek via its OpenAI-compatible API with 5-attempt exponential backoff.
 
     DeepSeek prompt caching is automatic server-side. It surfaces hit/miss as
@@ -1313,7 +2665,7 @@ async def call_deepseek(model, messages, system, api_key, tools=None, images=Non
     """
     # DeepSeek does not support vision — drop images with a warning
     if images:
-        print(f"DEBUG: ⚠️ DeepSeek does not support images. {len(images)} image(s) will be dropped.", flush=True)
+        _log.warning(f"⚠️ DeepSeek does not support images. {len(images)} image(s) will be dropped.")
     DEEPSEEK_TIMEOUT = LLM_REQUEST_TIMEOUT
     MAX_RETRIES = 5
     BACKOFF_SCHEDULE = [5, 10, 20, 40, 80]
@@ -1324,68 +2676,89 @@ async def call_deepseek(model, messages, system, api_key, tools=None, images=Non
         full_messages.append({"role": "system", "content": str(system).strip()})
     full_messages.extend(messages or [])
 
-    payload: dict = {"model": model, "messages": full_messages, "max_tokens": 4096}
+    payload: dict = {"model": model, "messages": full_messages,
+                     "max_tokens": max_tokens or DEFAULT_MAX_OUTPUT_TOKENS}
+    _apply_openai_reasoning(payload, reasoning)
     # DeepSeek-Reasoner does not support function calling
     if tools and "reasoner" not in model.lower():
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
 
     last_error = None
+    response = None
     for attempt in range(1, MAX_RETRIES + 1):
         backoff = BACKOFF_SCHEDULE[attempt - 1]
         try:
-            print(f"DEBUG: 🔄 DeepSeek call start (attempt {attempt}/{MAX_RETRIES})", flush=True)
+            _log.debug(f"🔄 DeepSeek call start (attempt {attempt}/{MAX_RETRIES})")
             async with httpx.AsyncClient(timeout=DEEPSEEK_TIMEOUT) as client:
-                resp = await client.post(
-                    "https://api.deepseek.com/v1/chat/completions",
+                resp = await _post_chat(
+                    client, "https://api.deepseek.com/v1/chat/completions",
                     headers={"Authorization": f"Bearer {api_key}"},
-                    json=payload,
+                    payload=payload,
                 )
             if resp.status_code in (429, 499, 500, 502, 503, 529):
                 last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
-                print(f"DEBUG: ⏳ DeepSeek {resp.status_code} on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...", flush=True)
+                if is_quota_refusal(resp.status_code, resp.text):
+                    break   # out of credit or quota: no retry clears it (F275)
+                _retry_notice("DeepSeek", f"answered {resp.status_code}", attempt, MAX_RETRIES, backoff)
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(backoff)
                     continue
+            if resp.status_code == 400 and _retry_without_reasoning(payload, resp):
+                continue
             resp.raise_for_status()
-            data = resp.json()
-            usage = data.get("usage", {})
-            input_tokens = usage.get("prompt_tokens", 0)
-            output_tokens = usage.get("completion_tokens", 0)
-            from core.cache.prompt_cache import extract_deepseek_cache_tokens
-            cache_read, cache_write = extract_deepseek_cache_tokens(usage) if prompt_cache else (0, 0)
-            # DeepSeek's prompt_tokens already separates hit/miss via prompt_cache_*_tokens,
-            # so input_tokens here is the MISS count already; do NOT subtract again.
-            choice = data["choices"][0]
-            msg = choice.get("message", {})
-            text = _openai_compat_extract(msg)
-            if msg.get("tool_calls"):
-                return text, input_tokens, output_tokens, cache_read, cache_write
-            print(f"DEBUG: ✅ DeepSeek call complete (attempt {attempt})", flush=True)
-            return text, input_tokens, output_tokens, cache_read, cache_write
+            _log.debug(f"✅ DeepSeek call complete (attempt {attempt})")
+            # Read outside this `try` (F138): anything raised while reading an
+            # answer that arrived landed in the catch-all below and sent the
+            # call again, up to four more times, paying for each.
+            response = resp
+            break
         except httpx.TimeoutException:
             last_error = f"Request timed out ({DEEPSEEK_TIMEOUT}s)"
-            print(f"DEBUG: ⏱️ DeepSeek timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...", flush=True)
+            _retry_notice("DeepSeek", f"did not answer within {DEEPSEEK_TIMEOUT:g}s", attempt, MAX_RETRIES, backoff)
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
         except httpx.HTTPStatusError as e:
-            last_error = f"HTTP {e.response.status_code}: {str(e)[:200]}"
-            print(f"DEBUG: ❌ DeepSeek HTTP error on attempt {attempt}/{MAX_RETRIES}: {e}", flush=True)
+            # The provider's own words, not httpx's (F1318): a gone model's refusal says so in its body.
+            last_error = f"HTTP {e.response.status_code}: {_refusal_said(e.response) or str(e)[:200]}"
+            _log.warning(f"❌ DeepSeek HTTP error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES and e.response.status_code in (429, 499, 500, 502, 503, 529):
                 await asyncio.sleep(backoff)
                 continue
             break
         except Exception as e:
             last_error = str(e)
-            print(f"DEBUG: ⚠️ DeepSeek error on attempt {attempt}/{MAX_RETRIES}: {e}", flush=True)
+            _log.warning(f"⚠️ DeepSeek error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
 
-    error_msg = f"DeepSeek LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
-    print(f"DEBUG: ❌ {error_msg}", flush=True)
-    raise LLMError(error_msg)
+    if response is None:
+        error_msg = f"DeepSeek LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
+        _log.warning(f"❌ {error_msg}")
+        raise LLMError(error_msg)
+
+    data = response.json()
+    usage = data.get("usage", {})
+    input_tokens = usage.get("prompt_tokens", 0)
+    output_tokens = usage.get("completion_tokens", 0)
+    from core.cache.prompt_cache import extract_deepseek_cache_tokens
+    cache_read, cache_write = extract_deepseek_cache_tokens(usage) if prompt_cache else (0, 0)
+    # DeepSeek's prompt_tokens already separates hit/miss via prompt_cache_*_tokens,
+    # so input_tokens here is the MISS count already; do NOT subtract again.
+    choice = data["choices"][0]
+    msg = choice.get("message", {})
+    stop_reason = _normalise_stop_reason(choice.get("finish_reason"))
+    try:
+        text, _reasoning = _openai_compat_extract(msg, "DeepSeek", choice.get("finish_reason"))
+    except EmptyAnswer as empty:
+        # The call was made and billed; only its answer was empty or withheld.
+        empty.usage = (input_tokens, output_tokens, cache_read, cache_write)
+        empty.stop_reason = stop_reason
+        raise
+    return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
+                     stop_reason, (), _reasoning)
 
 
 def _normalize_v1_base_url(base_url: str) -> str:
@@ -1396,7 +2769,9 @@ def _normalize_v1_base_url(base_url: str) -> str:
     return url
 
 
-async def call_v1_compatible(model, messages, system, base_url, api_key, tools=None, images=None, prompt_cache: bool = True):
+async def call_v1_compatible(model, messages, system, base_url, api_key, tools=None, images=None, prompt_cache: bool = True,
+                             reasoning=None, max_tokens: int | None = None, *, chat_url: str | None = None,
+                             label: str = "V1-compatible", reasoning_body: dict | None = None):
     """Call any OpenAI v1-compatible endpoint with 5-attempt exponential backoff.
 
     Used for both cloud OpenAI-compatible providers (OpenRouter, Together, etc.)
@@ -1413,12 +2788,17 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
         api_key: API key (may be empty for local servers with no auth)
         tools: Ollama-format tool list (forwarded as OpenAI function definitions)
         images: List of base64 data-URI image strings to attach to the last user message
+        chat_url: The whole chat address, for a hosted API whose base is not `…/v1`
+            (Z.ai's is `…/api/paas/v4`); `base_url` is then not read (PROV1).
+        label: Who is named in retry notices and errors ("Groq answered 429").
+        reasoning_body: Fields that ask a hosted API to think, in its own spelling
+            (`thinking`, `enable_thinking`), sent in place of `reasoning_effort`.
 
     Returns:
         (response_text, input_tokens, output_tokens)
     """
-    if not base_url or not base_url.strip():
-        raise LLMError("V1-compatible provider: base URL is not configured.")
+    if not chat_url and (not base_url or not base_url.strip()):
+        raise LLMError(f"{label} provider: base URL is not configured.")
 
     V1_TIMEOUT = LLM_REQUEST_TIMEOUT
     MAX_RETRIES = 5
@@ -1439,71 +2819,240 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
                 break
 
     payload: dict = {"model": model, "messages": full_messages}
+    if reasoning_body is not None:
+        payload.update(reasoning_body)
+    else:
+        _apply_openai_reasoning(payload, reasoning)
+    # Only a cap someone set (F263). A local server checks prompt + max_tokens
+    # against its context, so a default this endpoint was never sent would turn
+    # a 4k-context model's every call into a 400.
+    if max_tokens:
+        payload["max_tokens"] = int(max_tokens)
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
 
-    endpoint = f"{_normalize_v1_base_url(base_url)}/v1/chat/completions"
+    endpoint = chat_url or f"{_normalize_v1_base_url(base_url)}/v1/chat/completions"
     headers = {}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
     last_error = None
+    last_detail = None   # the answer's own sentence, whole (F782)
+    response = None
     for attempt in range(1, MAX_RETRIES + 1):
         backoff = BACKOFF_SCHEDULE[attempt - 1]
         try:
             async with httpx.AsyncClient(timeout=V1_TIMEOUT) as client:
-                resp = await client.post(endpoint, headers=headers, json=payload)
+                resp = await _post_chat(client, endpoint, headers=headers, payload=payload)
             if resp.status_code in (429, 499, 500, 502, 503, 529):
                 last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
-                print(f"DEBUG: ⏳ V1-compatible {resp.status_code} on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...", flush=True)
+                last_detail = _body_message(resp.text)
+                if is_quota_refusal(resp.status_code, resp.text):
+                    break   # out of credit or quota: no retry clears it (F275)
+                _retry_notice(label, f"answered {resp.status_code}", attempt, MAX_RETRIES, backoff)
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(backoff)
                     continue
+            if resp.status_code == 400 and (_retry_without_reasoning(payload, resp)
+                                            or _retry_without_fields(payload, resp, reasoning_body)):
+                continue
             resp.raise_for_status()
-            data = resp.json()
-            usage = data.get("usage", {})
-            input_tokens = usage.get("prompt_tokens", 0)
-            output_tokens = usage.get("completion_tokens", 0)
-            from core.cache.prompt_cache import extract_openai_cache_tokens
-            cache_read, cache_write = extract_openai_cache_tokens(usage) if prompt_cache else (0, 0)
-            if cache_read:
-                input_tokens = max(0, input_tokens - cache_read)
-            choice = data["choices"][0]
-            msg = choice.get("message", {})
-            text = _openai_compat_extract(msg)
-            if msg.get("tool_calls"):
-                return text, input_tokens, output_tokens, cache_read, cache_write
-            print(f"DEBUG: ✅ V1-compatible call complete (attempt {attempt})", flush=True)
-            return text, input_tokens, output_tokens, cache_read, cache_write
+            _log.debug(f"✅ {label} call complete (attempt {attempt})")
+            # Read outside this `try` (F138): anything raised while reading an
+            # answer that arrived landed in the catch-all below and sent the
+            # call again, up to four more times, paying for each.
+            response = resp
+            break
         except httpx.TimeoutException:
             last_error = f"Request timed out ({V1_TIMEOUT}s)"
-            print(f"DEBUG: ⏱️ V1-compatible timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...", flush=True)
+            last_detail = None
+            _retry_notice(label, f"did not answer within {V1_TIMEOUT:g}s", attempt, MAX_RETRIES, backoff)
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
         except httpx.HTTPStatusError as e:
-            last_error = f"HTTP {e.response.status_code}: {str(e)[:200]}"
-            print(f"DEBUG: ❌ V1-compatible HTTP error on attempt {attempt}/{MAX_RETRIES}: {e}", flush=True)
+            # The body, not str(e): a gateway's refusal carries its reason (and
+            # figures) in the response body, and the URL alone explains nothing.
+            last_error = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
+            last_detail = _body_message(e.response.text)
+            _log.warning(f"❌ {label} HTTP error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES and e.response.status_code in (429, 499, 500, 502, 503, 529):
                 await asyncio.sleep(backoff)
                 continue
             break
         except Exception as e:
             last_error = str(e)
-            print(f"DEBUG: ⚠️ V1-compatible error on attempt {attempt}/{MAX_RETRIES}: {e}", flush=True)
+            last_detail = None
+            _log.warning(f"⚠️ {label} error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
 
-    error_msg = f"V1-compatible LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
-    print(f"DEBUG: ❌ {error_msg}", flush=True)
-    raise LLMError(error_msg)
+    if response is None:
+        error_msg = f"{label} LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
+        _log.warning(f"❌ {error_msg}")
+        raise LLMError(error_msg, detail=last_detail)
+
+    data = response.json()
+    usage = data.get("usage", {})
+    input_tokens = usage.get("prompt_tokens", 0)
+    output_tokens = usage.get("completion_tokens", 0)
+    from core.cache.prompt_cache import extract_openai_cache_tokens
+    cache_read, cache_write = extract_openai_cache_tokens(usage) if prompt_cache else (0, 0)
+    if prompt_cache:
+        # Our model gateway also says what it wrote to the cache (F349); no other endpoint does.
+        cache_write = int((usage.get("prompt_tokens_details") or {}).get("cache_write_tokens") or 0)
+    if cache_read or cache_write:
+        # `prompt_tokens` is the whole input; what was read or written from the cache is kept apart.
+        input_tokens = max(0, input_tokens - cache_read - cache_write)
+    charged = usage.get("charged_microusd")
+    # Only our model gateway sends it; anything that is not a whole, non-negative count is not one.
+    charged = charged if type(charged) is int and charged >= 0 else None
+    choice = data["choices"][0]
+    msg = choice.get("message", {})
+    stop_reason = _normalise_stop_reason(choice.get("finish_reason"))
+    try:
+        text, _reasoning = _openai_compat_extract(msg, "The provider" if label == "V1-compatible" else label,
+                                                choice.get("finish_reason"))
+    except EmptyAnswer as empty:
+        # The call was made and billed; only its answer was empty or withheld.
+        empty.usage = (input_tokens, output_tokens, cache_read, cache_write)
+        empty.stop_reason = stop_reason
+        raise
+    return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
+                     stop_reason, (), _reasoning, charged)
+
+
+async def call_model_gateway(model, messages, system, settings, tools=None, images=None, prompt_cache: bool = True,
+                             reasoning=None, max_tokens: int | None = None):
+    """Call the configured model gateway (synapse.* models).
+
+    A first-class provider like `call_openai`, except the endpoint belongs to
+    the deployment rather than to a vendor: `model_gateway_base_url` and
+    `model_gateway_key` name a v1-compatible service the operator runs —
+    LiteLLM, a proxy, or a hosted platform's own model service.
+
+    Delegates the HTTP work to `call_v1_compatible` — the gateway speaks the
+    OpenAI v1 shape precisely so a second client does not exist to drift —
+    and adds the one behaviour the generic caller cannot: a 402 (the gateway
+    refusing over quota or balance) is re-raised carrying the gateway's own
+    sentence, which is where the figures are. A refusal with no number in it
+    is unanswerable from a run log.
+    """
+    real_model = model[len("synapse."):] if model.startswith("synapse.") else model
+    try:
+        return await call_v1_compatible(
+            real_model,
+            messages,
+            system,
+            settings.get("model_gateway_base_url", ""),
+            settings.get("model_gateway_key", ""),
+            tools=tools,
+            images=images,
+            # The gateway caches a long system prompt itself, whatever the workspace's own setting, and
+            # settles the uncached input apart from the cache: its counts are always read (F349).
+            prompt_cache=True,
+            reasoning=reasoning,
+            max_tokens=max_tokens,
+        )
+    except LLMError as e:
+        # Any refusal the gateway made itself (a 4xx) says why in a sentence:
+        # the figures for a 402, the reason otherwise — a model that cannot read
+        # images, say (F317). Kept with its status and code, so the retry and
+        # the classification stay as they were; the gateway's JSON never reaches
+        # a person's chat.
+        if e.status is None or not 400 <= e.status < 500:
+            raise
+        # The sentence from the whole body (F782): the message keeps only its first 200 characters, and a longer
+        # sentence (the context window's, an image's reason, F689's) lost its closing quote there.
+        found = re.search(r'"message"\s*:\s*"([^"]+)"', str(e))
+        detail = e.detail or (found.group(1) if found else None)
+        if detail is None:
+            raise
+        from core.model_failures import GATEWAY_REFUSED
+
+        raise LLMError(f"{GATEWAY_REFUSED}{detail}",
+                       provider="gateway", status=e.status, code=e.code) from e
+
+
+def _converse_streamed(client, **kwargs) -> dict:
+    """`converse_stream`, read whole into what `converse` returns (U72). Runs in a worker thread.
+
+    Text deltas go to `model_wait.emit_delta` as they arrive (never reasoning or
+    a tool's input). Tool input, reasoning text and its signature are put back
+    together, so `_extract_bedrock_content` and the usage and cache readers see
+    the same response. A waiter that has gone (`stream_abandoned`) stops the
+    read: a thread cannot be cancelled, and a call nobody hears is not paid to
+    its end.
+    """
+    from core.model_wait import emit_delta, stream_abandoned
+
+    resp = client.converse_stream(**kwargs)
+    stream = resp.get("stream") or ()
+    blocks: dict[int, dict] = {}
+    stop_reason = None
+    usage: dict = {}
+    metrics = None
+    for event in stream:
+        if stream_abandoned():
+            close = getattr(stream, "close", None)
+            if close is not None:
+                close()
+            break
+        if "contentBlockStart" in event:
+            start = event["contentBlockStart"]
+            tool = (start.get("start") or {}).get("toolUse")
+            if tool:
+                blocks[int(start.get("contentBlockIndex") or 0)] = {
+                    "toolUse": {"toolUseId": tool.get("toolUseId"), "name": tool.get("name"), "input": ""}}
+        elif "contentBlockDelta" in event:
+            body = event["contentBlockDelta"]
+            index = int(body.get("contentBlockIndex") or 0)
+            delta = body.get("delta") or {}
+            if "text" in delta:
+                block = blocks.setdefault(index, {"text": ""})
+                block["text"] = block.get("text", "") + delta["text"]
+                emit_delta(delta["text"])
+            elif "toolUse" in delta:
+                block = blocks.setdefault(index, {"toolUse": {"input": ""}})
+                block["toolUse"]["input"] += (delta["toolUse"] or {}).get("input") or ""
+            elif "reasoningContent" in delta:
+                rc = delta["reasoningContent"] or {}
+                block = blocks.setdefault(index, {"reasoningContent": {"reasoningText": {"text": ""}}})
+                text_part = block["reasoningContent"].setdefault("reasoningText", {"text": ""})
+                if "text" in rc:
+                    text_part["text"] = text_part.get("text", "") + rc["text"]
+                if "signature" in rc:
+                    text_part["signature"] = rc["signature"]
+                if "redactedContent" in rc:
+                    block["reasoningContent"]["redactedContent"] = rc["redactedContent"]
+        elif "messageStop" in event:
+            stop_reason = event["messageStop"].get("stopReason")
+        elif "metadata" in event:
+            usage = event["metadata"].get("usage") or {}
+            metrics = event["metadata"].get("metrics")
+    content = []
+    for index in sorted(blocks):
+        block = blocks[index]
+        if "toolUse" in block:
+            raw = block["toolUse"].get("input") or ""
+            try:
+                block["toolUse"]["input"] = json.loads(raw) if raw else {}
+            except ValueError:
+                block["toolUse"]["input"] = {}
+        content.append(block)
+    out = {"output": {"message": {"role": "assistant", "content": content}},
+           "stopReason": stop_reason, "usage": usage}
+    if metrics is not None:
+        out["metrics"] = metrics
+    return out
 
 
 async def _bedrock_converse_direct(
     region: str, api_key: str, model_id: str,
     messages: list, system_blocks: list, max_tokens: int,
+    additional: dict | None = None,
 ) -> dict:
     """Call Bedrock Converse via boto3 with UNSIGNED auth + before-send bearer injection.
 
@@ -1525,6 +3074,10 @@ async def _bedrock_converse_direct(
             'before-send.bedrock-runtime.Converse',
             _inject_auth,
         )
+        session.events.register(
+            'before-send.bedrock-runtime.ConverseStream',
+            _inject_auth,
+        )
 
         return session.client(
             'bedrock-runtime',
@@ -1534,28 +3087,192 @@ async def _bedrock_converse_direct(
             config=Config(signature_version=_BEDROCK_UNSIGNED),
         )
 
+    from core.model_wait import restart_stream, streaming_wanted
+    streamed = streaming_wanted()
+    if streamed:
+        restart_stream()
+
     def _run():
         client = _make_client()
         try:
-            return client.converse(
+            return (_converse_streamed if streamed else lambda c, **kw: c.converse(**kw))(
+                client,
                 modelId=model_id,
                 messages=messages,
                 system=system_blocks,
                 inferenceConfig={'maxTokens': max_tokens},
+                **({'additionalModelRequestFields': additional} if additional else {}),
             )
         except botocore.exceptions.ClientError as e:
-            status = e.response.get('ResponseMetadata', {}).get('HTTPStatusCode', 0)
-            msg = e.response.get('Error', {}).get('Message', str(e))
-            raise RuntimeError(f"HTTP {status}: {msg}") from e
+            # Re-raised as it came: the error code is what `call_bedrock` decides
+            # on (F6). This used to become `RuntimeError(f"HTTP {status}: …")`,
+            # which no rule could tell apart.
+            raise
 
     return await asyncio.to_thread(_run)
 
 
-async def call_bedrock(model_id, messages, system, region, settings, images=None, prompt_cache: bool = True):
+#: A pair, whichever of the two names each end uses.
+_THINK_TAG_RE = re.compile(r"<think(?:ing)?>(.*?)</think(?:ing)?>\s*", re.DOTALL | re.IGNORECASE)
+_THINK_OPEN_RE = re.compile(r"<think(?:ing)?>", re.IGNORECASE)
+_THINK_CLOSE_RE = re.compile(r"</think(?:ing)?>\s*", re.IGNORECASE)
+#: Any tag token, with the spaces beside it on its own line.
+_THINK_TOKEN_RE = re.compile(r"[ \t]*</?think(?:ing)?>[ \t]*", re.IGNORECASE)
+_A_TOOL_CALL_RE = re.compile(r'<tool_call>|"tool"\s*:', re.IGNORECASE)
+
+
+def _unwrap_think_tags(text: str) -> str:
+    """`text` without a single `<think>`/`<thinking>` tag, its words kept.
+
+    For what is already known to be thinking: a provider keeps the narration
+    beside a tool call as reasoning, and Nova writes that narration inside
+    `<thinking>` — so chat showed `<thinking> I need to scrape the URL …
+    </thinking>` in its thinking panel and live line (F303).
+    """
+    if not text or "think" not in text.lower():
+        return text
+    return _THINK_TOKEN_RE.sub("", text).strip()
+
+
+def _split_think_tags(text: str) -> tuple[str, str]:
+    """Pull `<think>...</think>` and `<thinking>...</thinking>` out of a reply
+    into (text, reasoning).
+
+    Local reasoning models — qwen3, deepseek-r1, anything served raw by Ollama
+    or llama.cpp — write their thinking inline in `<think>`; Amazon Nova writes
+    it in `<thinking>`. Nothing parsed them, so the tags and everything in them
+    were shown to the person as the agent's answer. Ollama's own `thinking`
+    field is preferred where the server is new enough to send it; this is the
+    fallback for where it is not.
+
+    `generate_response_ex` applies it once, after every provider, not per branch
+    (F32): Nova reaches the engine through the model gateway and through an
+    own-key Bedrock, and the per-branch version covered neither.
+
+    A tag without its partner is thinking too (F303), not text to show: a
+    closing tag whose opening was cut off (a reply continued past the output
+    cap starts mid-thought) ends the thinking before it; an opening tag never
+    closed starts thinking that runs to the end — unless a tool call follows,
+    which is kept and only the tag goes. A mismatched pair is a pair.
+    """
+    if not text or ("<think" not in text.lower() and "</think" not in text.lower()):
+        return text, ""
+    thoughts: list[str] = []
+
+    def _pair(match) -> str:
+        thoughts.append(match.group(1))
+        return ""
+
+    text = _THINK_TAG_RE.sub(_pair, text)
+    closes = list(_THINK_CLOSE_RE.finditer(text))
+    if closes:
+        thoughts.insert(0, text[:closes[-1].start()])
+        text = text[closes[-1].end():]
+    opened = _THINK_OPEN_RE.search(text)
+    if opened:
+        rest = text[opened.end():]
+        if _A_TOOL_CALL_RE.search(rest):
+            text = text[:opened.start()] + rest
+        else:
+            thoughts.append(rest)
+            text = text[:opened.start()]
+    thoughts = [_unwrap_think_tags(t) for t in thoughts]
+    return _unwrap_think_tags(text).strip(), "\n".join(t for t in thoughts if t).strip()
+
+
+def _extract_bedrock_content(message: dict, stop_reason=None) -> tuple[str, str]:
+    """Split a Converse output message into (text, reasoning).
+
+    This used to be `content[0].get("text", "")` — the first block, assumed to
+    be the answer. With reasoning enabled that assumption inverts: the first
+    block is `reasoningContent` and the answer is the second, so taking the
+    first would have returned the thinking as the reply and dropped the reply.
+    Walking the list costs nothing and is correct either way.
+    """
+    blocks = message.get("content") or []
+    if not isinstance(blocks, list):
+        raise _empty_answer("Bedrock", stop_reason=stop_reason)
+    text_parts, thought_parts = [], []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        if block.get("text"):
+            text_parts.append(block["text"])
+        elif "reasoningContent" in block:
+            # `reasoningText.text` is the prose; a `redactedContent` sibling is
+            # an encrypted blob with nothing to show a person.
+            thought = ((block.get("reasoningContent") or {}).get("reasoningText") or {}).get("text")
+            if thought:
+                thought_parts.append(thought)
+    answer = "\n".join(text_parts).strip()
+    reasoning = "\n".join(thought_parts).strip()
+    if not answer:
+        # Returned as the reply until F137 — so an agent said nothing and an
+        # LLM step stored nothing, both reported as success.
+        raise _empty_answer("Bedrock", reasoning=reasoning, stop_reason=stop_reason)
+    return answer, reasoning
+
+
+#: Bedrock errors worth another attempt — the model gateway's own set
+#: (`api/gateway/bedrock.py`), so the two paths to the same service agree.
+#: Decided by **error code**, never by HTTP status: throttling and quota errors
+#: do not share one status, and a 400 is as often a refusal as a quota.
+_BEDROCK_RETRYABLE_CODES = frozenset({
+    "ThrottlingException",
+    "TooManyRequestsException",
+    "ServiceQuotaExceededException",
+    "ModelNotReadyException",
+    "ServiceUnavailableException",
+    "InternalServerException",
+})
+
+
+def _bedrock_error(exc: BaseException) -> tuple[str, str]:
+    """(code, message) of a Bedrock client error, or ("", "") for anything else
+    — a dropped connection, a timeout — which stays retryable."""
+    response = getattr(exc, "response", None)
+    if not isinstance(response, dict):
+        return "", ""
+    error = response.get("Error") or {}
+    return str(error.get("Code") or ""), str(error.get("Message") or "")
+
+
+def _converse_unsupported(code: str, message: str) -> bool:
+    """Bedrock's answer for a model with no Converse API — the one case the
+    InvokeModel fallback exists for. The wording is Bedrock's and not a contract,
+    so it is matched loosely."""
+    return code == "ValidationException" and "support" in message.lower()
+
+
+def _bedrock_needs_profile(model_id: str, settings: dict) -> str:
+    """The on-demand refusal, saying what to pick — and naming a workspace's stored profile.
+
+    `bedrock_inference_profile` stopped being applied (F66). A workspace that
+    relied on it gets this error on its next call, so the message names the
+    profile it had stored as the model to pick instead.
+    """
+    message = (
+        f"Bedrock model '{model_id}' has no on-demand throughput: pick an inference profile as the "
+        "model instead (the us./eu./apac./global. variant, or an application profile's ARN)."
+    )
+    stored = (settings.get("bedrock_inference_profile") or "").strip().removeprefix("bedrock.")
+    if stored:
+        message += (
+            f" This workspace has the inference profile '{stored}' stored, which is no longer applied "
+            f"to every Bedrock model — bedrock.{stored} is the model to pick."
+        )
+    return message
+
+
+async def call_bedrock(model_id, messages, system, region, settings, images=None, prompt_cache: bool = True,
+                       max_tokens: int | None = None, reasoning=None):
     """Call AWS Bedrock with 5-attempt exponential backoff retry loop.
 
-    Prefers the Converse API (standardized); falls back to InvokeModel for older models.
-    Raises LLMError on final failure after all retries.
+    Prefers the Converse API (standardized); falls back to InvokeModel only for a
+    model Bedrock says has no Converse API. Retries only what
+    `_BEDROCK_RETRYABLE_CODES` names, plus errors with no code at all (a dropped
+    connection); anything Bedrock refused raises `LLMError` at once, naming the
+    code (F6).
 
     Returns:
         (response_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
@@ -1568,18 +3285,32 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
     # We strip the 'bedrock.' prefix if present
     real_model_id = model_id.replace("bedrock.", "")
 
-    # Some Bedrock models require an inference profile (no on-demand throughput).
+    # The model picked is the model called. An inference profile is picked as
+    # a model (`bedrock.us.anthropic.…`, or an application profile's ARN) —
+    # discovery lists them. The workspace `bedrock_inference_profile` used to
+    # replace every Bedrock model with itself, whatever the agent picked, and
+    # with the picked model's reasoning payload (F66). It is no longer applied;
+    # a stored value is only named in the on-demand refusal below.
     invocation_model_id = real_model_id
-    inference_profile = (settings.get("bedrock_inference_profile") or "").strip()
-    if inference_profile:
-        if inference_profile.startswith("bedrock."):
-            inference_profile = inference_profile.replace("bedrock.", "", 1)
-        invocation_model_id = inference_profile
 
     bedrock = _make_aws_client("bedrock-runtime", region, settings)
     bedrock_api_key = _normalize_bedrock_api_key(settings)
     effective_region = (region or settings.get("aws_region") or "us-east-1").strip()
-    max_tokens = int(settings.get("bedrock_max_tokens") or 4096)
+    # `bedrock_max_tokens` stays the explicit per-tenant override; what changed
+    # is the floor under it. Bedrock kept a 4096 default of its own when the
+    # other providers moved to `max_output_tokens`, so a Bedrock model was
+    # still truncating at half the cap every other provider had.
+    max_tokens = int(settings.get("bedrock_max_tokens") or max_tokens or DEFAULT_MAX_OUTPUT_TOKENS)
+
+    # Reasoning travels outside the Converse schema, in the passthrough field
+    # each model family defines for itself.
+    _additional: dict = {}
+    if reasoning is not None:
+        max_tokens = max(max_tokens, reasoning.max_output_tokens)
+        _additional["reasoning_config"] = {
+            "type": "enabled",
+            "budget_tokens": reasoning.budget,
+        }
 
     # Normalize messages to Bedrock Converse content-block format
     normalized_messages = []
@@ -1613,8 +3344,11 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
             for img in images[:5]:
                 mime, b64 = _parse_data_uri(img)
                 # Map MIME to Bedrock format name
-                fmt_map = {"image/png": "png", "image/jpeg": "jpeg", "image/gif": "gif", "image/webp": "webp"}
-                fmt = fmt_map.get(mime, "png")
+                # No `.get(mime, "png")` fallback any more. It labelled a
+                # HEIC as a PNG and let Bedrock discover the lie; the mime is
+                # now one of four by the time it reaches here.
+                fmt = {"image/png": "png", "image/jpeg": "jpeg",
+                       "image/gif": "gif", "image/webp": "webp"}[mime]
                 blocks.append({"image": {"format": fmt, "source": {"bytes": base64.b64decode(b64)}}})
 
         normalized_messages.append({"role": role, "content": blocks})
@@ -1627,13 +3361,21 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
         system_blocks = decorate_bedrock_system_blocks(system_blocks, str(system) if system else None)
 
     async def _converse_call():
+        from core.model_wait import restart_stream, streaming_wanted
+        streamed = streaming_wanted()
+        if streamed:
+            restart_stream()
+
         def _run():
-            return bedrock.converse(
+            kwargs = dict(
                 modelId=invocation_model_id,
                 messages=normalized_messages,
                 system=system_blocks,
                 inferenceConfig={"maxTokens": max_tokens},
+                **({"additionalModelRequestFields": _additional} if _additional else {}),
             )
+            # Streamed when the answer is (U72), read whole into converse's shape.
+            return _converse_streamed(bedrock, **kwargs) if streamed else bedrock.converse(**kwargs)
         return await asyncio.to_thread(_run)
 
     async def _invoke_model_call():
@@ -1659,39 +3401,37 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
         return await asyncio.to_thread(_run)
 
     last_error = None
+    converse_resp = None
+    invoke_resp = None
     for attempt in range(1, MAX_RETRIES + 1):
         backoff = BACKOFF_SCHEDULE[attempt - 1]
         try:
-            print(f"DEBUG: 🔄 Bedrock call start (attempt {attempt}/{MAX_RETRIES})", flush=True)
+            _log.debug(f"🔄 Bedrock call start (attempt {attempt}/{MAX_RETRIES})")
             if hasattr(bedrock, "converse") or bedrock_api_key:
                 try:
                     if bedrock_api_key:
                         resp = await _bedrock_converse_direct(
                             effective_region, bedrock_api_key, invocation_model_id,
                             normalized_messages, system_blocks, max_tokens,
+                            _additional or None,
                         )
                     else:
                         resp = await _converse_call()
-                    msg = (((resp or {}).get("output") or {}).get("message") or {})
-                    content = msg.get("content") or []
-                    text = content[0].get("text", "") if (content and isinstance(content, list) and isinstance(content[0], dict)) else ""
-                    usage = (resp or {}).get("usage") or {}
-                    inp = int(usage.get("inputTokens") or 0)
-                    out = int(usage.get("outputTokens") or 0)
-                    from core.cache.prompt_cache import extract_bedrock_cache_tokens
-                    cache_read, cache_write = extract_bedrock_cache_tokens(resp or {})
-                    # Bedrock inputTokens may include cache hits; subtract for consistent billing math.
-                    if cache_read:
-                        inp = max(0, inp - cache_read)
-                    print(f"DEBUG: ✅ Bedrock (converse) complete (attempt {attempt})", flush=True)
-                    return text, inp, out, cache_read, cache_write
+                    _log.debug(f"✅ Bedrock (converse) complete (attempt {attempt})")
+                    # Read outside this `try` (F138): anything raised while
+                    # reading an answer that arrived was taken for a Converse
+                    # failure, which falls through to InvokeModel in the same
+                    # attempt and then to the outer retry — a second and a
+                    # third paid call to read a reply already in hand.
+                    converse_resp = resp
+                    break
                 except Exception as converse_err:
                     msg_str = str(converse_err)
+                    code, message = _bedrock_error(converse_err)
+                    # Before `_converse_unsupported`: this refusal's text says
+                    # "supported", which would send it to the InvokeModel fallback.
                     if "on-demand throughput" in msg_str:
-                        raise LLMError(
-                            "Bedrock model requires an inference profile (no on-demand throughput). "
-                            "Set Bedrock Inference Profile in settings, or pick a different model."
-                        )
+                        raise LLMError(_bedrock_needs_profile(real_model_id, settings))
                     # Auth failures: raise immediately — InvokeModel also requires SigV4
                     # and won't help when bearer token auth fails.
                     if "AccessDeniedException" in msg_str or "HTTP 403" in msg_str or "Invalid API Key" in msg_str:
@@ -1699,34 +3439,65 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
                             f"Bedrock authentication failed: {converse_err}. "
                             "Check your API key or IAM credentials in Settings."
                         )
-                    print(f"DEBUG: Bedrock converse failed (attempt {attempt}), falling back to invoke_model: {converse_err}")
-                    # Fall through to InvokeModel (for older models not on Converse API)
-                    resp = await _invoke_model_call()
-                    response_body = json.loads(resp.get("body").read()) if resp and resp.get("body") else {}
-                    content = response_body.get("content") or []
-                    text = content[0].get("text", "") if (content and isinstance(content, list) and isinstance(content[0], dict)) else ""
-                    print(f"DEBUG: ✅ Bedrock (invoke_model) complete (attempt {attempt})", flush=True)
-                    return text, 0, 0, 0, 0
+                    if not _converse_unsupported(code, message):
+                        # Retryable or refused, the outer handler decides — but
+                        # never by trying an Anthropic-shaped InvokeModel payload
+                        # against a model that has Converse. That turned a
+                        # throttle into a second request and replaced the real
+                        # error with the fallback's.
+                        raise
+                    _log.debug(f"Bedrock model has no Converse API (attempt {attempt}), using invoke_model: {converse_err}")
+                    invoke_resp = await _invoke_model_call()
+                    _log.debug(f"✅ Bedrock (invoke_model) complete (attempt {attempt})")
+                    break
             else:
-                resp = await _invoke_model_call()
-                response_body = json.loads(resp.get("body").read()) if resp and resp.get("body") else {}
-                content = response_body.get("content") or []
-                text = content[0].get("text", "") if (content and isinstance(content, list) and isinstance(content[0], dict)) else ""
-                print(f"DEBUG: ✅ Bedrock (invoke_model) complete (attempt {attempt})", flush=True)
-                return text, 0, 0, 0, 0
+                invoke_resp = await _invoke_model_call()
+                _log.debug(f"✅ Bedrock (invoke_model) complete (attempt {attempt})")
+                break
         except LLMError:
             raise  # Non-retryable (config error)
         except Exception as e:
+            code, message = _bedrock_error(e)
+            if code and code not in _BEDROCK_RETRYABLE_CODES:
+                raise LLMError(f"Bedrock refused the request ({code}): {message or e}") from e
             last_error = str(e)
-            print(f"DEBUG: ⚠️ Bedrock error on attempt {attempt}/{MAX_RETRIES}: {e}", flush=True)
+            _log.warning(f"⚠️ Bedrock error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES:
-                print(f"DEBUG: ⏳ Retrying Bedrock in {backoff}s...", flush=True)
+                _log.debug(f"⏳ Retrying Bedrock in {backoff}s...")
                 await asyncio.sleep(backoff)
                 continue
 
-    error_msg = f"Bedrock LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
-    print(f"DEBUG: ❌ {error_msg}", flush=True)
-    raise LLMError(error_msg)
+    if converse_resp is None and invoke_resp is None:
+        error_msg = f"Bedrock LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
+        _log.warning(f"❌ {error_msg}")
+        raise LLMError(error_msg)
+
+    if converse_resp is not None:
+        msg = (((converse_resp or {}).get("output") or {}).get("message") or {})
+        usage = (converse_resp or {}).get("usage") or {}
+        inp = int(usage.get("inputTokens") or 0)
+        out = int(usage.get("outputTokens") or 0)
+        from core.cache.prompt_cache import extract_bedrock_cache_tokens
+        cache_read, cache_write = extract_bedrock_cache_tokens(converse_resp or {})
+        # `inputTokens` is the uncached part already: input = inputTokens + read + write (measured on
+        # Nova Lite, F381 — subtracting the read again recorded 0 input tokens on every hit).
+        raw_stop = (converse_resp or {}).get("stopReason")
+        try:
+            text, _reasoning = _extract_bedrock_content(msg, raw_stop)
+        except EmptyAnswer as empty:
+            # The call was made and billed; only its answer was empty or withheld.
+            empty.usage = (inp, out, cache_read, cache_write)
+            empty.stop_reason = _normalise_stop_reason(raw_stop)
+            raise
+        return LLMResult(text, inp, out, cache_read, cache_write,
+                         _normalise_stop_reason(raw_stop), (), _reasoning)
+
+    response_body = json.loads(invoke_resp.get("body").read()) if invoke_resp.get("body") else {}
+    content = response_body.get("content") or []
+    text = content[0].get("text", "") if (content and isinstance(content, list) and isinstance(content[0], dict)) else ""
+    if not text.strip():
+        raise _empty_answer("Bedrock", stop_reason=response_body.get("stop_reason"))
+    return LLMResult(text)
 
 
 # ─── HuggingFace local-model provider ───────────────────────────────────────────
@@ -1781,7 +3552,7 @@ def _load_hf_model(model_id: str, hf_token: str | None = None):
         if hf_token:
             load_kwargs["token"] = hf_token
 
-        print(f"DEBUG: 🤗 Loading HF model '{model_id}' on {device} — first call pays 20-60s load cost...", flush=True)
+        _log.debug(f"🤗 Loading HF model '{model_id}' on {device} — first call pays 20-60s load cost...")
 
         tok_kwargs: dict = {"token": hf_token} if hf_token else {}
         tokenizer = AutoTokenizer.from_pretrained(model_id, **tok_kwargs)
@@ -1793,7 +3564,7 @@ def _load_hf_model(model_id: str, hf_token: str | None = None):
         model.eval()
 
         _hf_model_cache[model_id] = (tokenizer, model)
-        print(f"DEBUG: ✅ HF model '{model_id}' loaded and cached.", flush=True)
+        _log.debug(f"✅ HF model '{model_id}' loaded and cached.")
         return tokenizer, model
 
 
@@ -1813,8 +3584,10 @@ async def call_huggingface(
         system: System instruction text.
         settings: User settings dict. Reads `huggingface_token` (for gated models)
                   and `huggingface_max_new_tokens` (default 1024).
-        tools: Ignored with a warning — native tool calling varies by model and
-               is left to the caller to inject via prompt text if needed.
+        tools: Not passed to the model — native tool calling varies by model.
+               The engine describes the tools in the system prompt instead
+               (`inject_tools_in_prompt` in react_engine) and parses the calls
+               from the reply, as for Bedrock and the CLIs.
         images: Ignored — vision is model-specific and not supported in this MVP.
 
     Returns:
@@ -1825,17 +3598,10 @@ async def call_huggingface(
     if not model_id:
         raise LLMError("HuggingFace provider: empty model name after 'hf.' prefix.")
 
-    if tools:
-        print(
-            f"DEBUG: ⚠️ HF provider received {len(tools)} tool(s) but does not support "
-            f"native tool calling. Inject tool descriptions into the system prompt if needed.",
-            flush=True,
-        )
     if images:
-        print(
-            f"DEBUG: ⚠️ HF provider received {len(images)} image(s) but vision is not "
+        _log.warning(
+            f"⚠️ HF provider received {len(images)} image(s) but vision is not "
             f"supported in this MVP — they will be dropped.",
-            flush=True,
         )
 
     hf_token = (settings.get("huggingface_token") or "").strip() or None
@@ -1859,7 +3625,7 @@ async def call_huggingface(
                 return_tensors="pt",
             )
         except Exception as e:
-            print(f"DEBUG: ⚠️ HF chat template unavailable ({e}); using transcript fallback.", flush=True)
+            _log.warning(f"⚠️ HF chat template unavailable ({e}); using transcript fallback.")
             transcript_parts: list[str] = []
             if system and system.strip():
                 transcript_parts.append(f"System: {system.strip()}")
@@ -1887,10 +3653,10 @@ async def call_huggingface(
         return text, prompt_token_count, output_token_count
 
     try:
-        print(f"DEBUG: 🔄 HF call start (model={model_id})", flush=True)
+        _log.debug(f"🔄 HF call start (model={model_id})")
         text, input_tokens, output_tokens = await asyncio.to_thread(_run)
-        print(f"DEBUG: ✅ HF call complete (model={model_id}, out_tokens={output_tokens})", flush=True)
-        return text, input_tokens, output_tokens, 0, 0
+        _log.debug(f"✅ HF call complete (model={model_id}, out_tokens={output_tokens})")
+        return LLMResult(text, input_tokens, output_tokens)
     except LLMError:
         raise
     except Exception as e:
@@ -1932,7 +3698,468 @@ def _messages_to_transcript(messages: list[dict] | None) -> str:
     return "\n".join(lines)
 
 
-async def generate_response(
+class ChatCall(NamedTuple):
+    """One chat call, as every provider adapter receives it.
+
+    What `generate_response_ex` has worked out before dispatch — the system
+    prompt with memory folded in, the reasoning plan, the caps — so an adapter
+    only puts it in its provider's shape.
+    """
+    model: str
+    prompt: object
+    history: list | None
+    system: str
+    settings: dict
+    tools: list | None
+    images: list[str] | None
+    prompt_cache: bool
+    reasoning: object  # core.reasoning.ReasoningPlan | None
+    #: The planned response cap, sent to the providers that always take one.
+    max_out: int
+    #: A cap someone set (this call's, else the workspace's), or None: the
+    #: providers that were never sent a default get one only then (F263).
+    sent_cap: int | None
+    #: This call's own cap (an agent's), which beats Bedrock's own override.
+    agent_cap: int | None
+    prompt_blocks: list[str] | None
+    volatile_tail: str | None
+    reasoning_effort: str | None
+
+    def messages(self) -> list[dict]:
+        """The history and this turn's message — a new list for each call."""
+        messages = list(self.history or [])
+        messages.append({"role": "user", "content": self.prompt})
+        return messages
+
+    def cap_kwargs(self) -> dict:
+        """`max_tokens` only when someone set a cap: an unset call keeps today's shape."""
+        return {"max_tokens": self.sent_cap} if self.sent_cap else {}
+
+
+# ─── Chat adapters, named by the provider table ─────────────────────────────
+# Each puts a `ChatCall` in its provider's shape and calls it by its module
+# name, so a test that patches `call_openai` and friends still reaches them.
+
+async def _chat_openai(call: ChatCall, spec) -> LLMResult:
+    return await call_openai(
+        call.model,
+        [{"role": "system", "content": call.system}] + call.messages(),
+        call.settings.get("openai_key"),
+        tools=call.tools,
+        images=call.images,
+        prompt_cache=call.prompt_cache,
+        reasoning=call.reasoning,
+        **call.cap_kwargs(),
+    )
+
+
+async def _chat_anthropic(call: ChatCall, spec) -> LLMResult:
+    return await call_anthropic(
+        call.model,
+        call.messages(),
+        call.system,
+        call.settings.get("anthropic_key"),
+        tools=call.tools,
+        images=call.images,
+        prompt_cache=call.prompt_cache,
+        reasoning=call.reasoning,
+        max_tokens=call.max_out,
+        prompt_blocks=call.prompt_blocks,
+        volatile_tail=call.volatile_tail,
+    )
+
+
+async def _chat_gemini(call: ChatCall, spec) -> LLMResult:
+    return await call_gemini(
+        call.model,
+        call.messages(),
+        call.system,
+        call.settings.get("gemini_key"),
+        tools=call.tools,
+        images=call.images,
+        prompt_cache=call.prompt_cache,
+        reasoning=call.reasoning,
+        max_tokens=call.max_out,
+    )
+
+
+async def _chat_bedrock(call: ChatCall, spec) -> LLMResult:
+    from core import usage_tracker
+
+    messages = call.messages()
+    text, input_tokens, output_tokens, cache_read, cache_write, stop_reason, tool_calls, reasoning = (await call_bedrock(
+        call.model,
+        messages,
+        call.system,
+        call.settings.get("aws_region"),
+        # `bedrock_max_tokens` is the tenant's own Bedrock override and beats
+        # the workspace cap; an agent's cap is more specific than either (F263).
+        ({**call.settings, "bedrock_max_tokens": None} if call.agent_cap else call.settings),
+        images=call.images,
+        prompt_cache=call.prompt_cache,
+        reasoning=call.reasoning,
+        max_tokens=call.max_out,
+    ))[:8]
+    # Bedrock's invoke_model fallback path returns zero tokens; estimate from text.
+    if input_tokens == 0 and output_tokens == 0:
+        input_tokens = usage_tracker.estimate_tokens_from_text(
+            call.system + " ".join(str(m.get("content", "")) for m in messages)
+        )
+        output_tokens = usage_tracker.estimate_tokens_from_text(text)
+    return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write, stop_reason, tool_calls,
+                     reasoning)
+
+
+async def _chat_grok(call: ChatCall, spec) -> LLMResult:
+    return await call_grok(
+        call.model,
+        call.messages(),
+        call.system,
+        call.settings.get("grok_key"),
+        tools=call.tools,
+        images=call.images,
+        prompt_cache=call.prompt_cache,
+        reasoning=call.reasoning,
+        max_tokens=call.max_out,
+    )
+
+
+async def _chat_deepseek(call: ChatCall, spec) -> LLMResult:
+    return await call_deepseek(
+        call.model,
+        call.messages(),
+        call.system,
+        call.settings.get("deepseek_key"),
+        tools=call.tools,
+        images=call.images,
+        prompt_cache=call.prompt_cache,
+        reasoning=call.reasoning,
+        max_tokens=call.max_out,
+    )
+
+
+async def _chat_model_gateway(call: ChatCall, spec) -> LLMResult:
+    return await call_model_gateway(
+        call.model,
+        call.messages(),
+        call.system,
+        call.settings,
+        tools=call.tools,
+        images=call.images,
+        prompt_cache=call.prompt_cache,
+        reasoning=call.reasoning,
+        **call.cap_kwargs(),
+    )
+
+
+async def _chat_v1_compatible(call: ChatCall, spec) -> LLMResult:
+    """`oaic.` and `locv1.`: the same client, each with its own server and key."""
+    return await call_v1_compatible(
+        spec.bare(call.model),
+        call.messages(),
+        call.system,
+        call.settings.get(spec.address, ""),
+        call.settings.get(spec.keys[0], ""),
+        tools=call.tools,
+        images=call.images,
+        prompt_cache=call.prompt_cache,
+        reasoning=call.reasoning,
+        **call.cap_kwargs(),
+    )
+
+
+async def _chat_hosted_v1(call: ChatCall, spec) -> LLMResult:
+    """A hosted OpenAI-style API with its own key and a fixed address (PROV1, D245).
+
+    `call_v1_compatible`'s client — its retries, U72's streaming, the quota
+    rule (F275), the read outside the retry (F138) — at the table's address,
+    named for the provider, and sent the response cap as Grok and DeepSeek are.
+    How it is asked to think is `core.reasoning`'s to say, in that provider's
+    spelling; a model that always thinks gets room for it under the cap.
+    """
+    from core import reasoning as _policy
+
+    cap = call.max_out
+    if _policy.hosted_always_thinks(call.model):
+        cap = max(cap, _policy.HOSTED_CEILING)
+    return await call_v1_compatible(
+        spec.bare(call.model),
+        call.messages(),
+        call.system,
+        "",
+        call.settings.get(spec.keys[0], ""),
+        tools=call.tools,
+        images=call.images,
+        prompt_cache=call.prompt_cache,
+        reasoning=call.reasoning,
+        max_tokens=cap,
+        chat_url=f"{spec.base_url}/chat/completions",
+        label=spec.label,
+        reasoning_body=_policy.hosted_fields(call.model, call.reasoning),
+    )
+
+
+async def _chat_cli(call: ChatCall, spec) -> LLMResult:
+    # CLI session providers: build a flat prompt and spawn the local binary.
+    # No API key required — uses the user's existing CLI authentication.
+    messages = call.messages()
+    cli_full_prompt = _build_cli_prompt(sys_prompt=call.system, messages=messages, tools=call.tools)
+    text, input_tokens, output_tokens = await call_cli_provider(
+        cli_model=call.model,
+        full_prompt=cli_full_prompt,
+        sys_prompt=call.system,
+        messages=messages,
+        effort=call.reasoning_effort,
+        tools=call.tools,
+    )
+    return LLMResult(text, input_tokens, output_tokens)
+
+
+async def _chat_huggingface(call: ChatCall, spec) -> LLMResult:
+    return await call_huggingface(
+        call.model,
+        call.messages(),
+        call.system,
+        call.settings,
+        tools=call.tools,
+        images=call.images,
+    )
+
+
+class _OllamaStreamed:
+    """A streamed Ollama answer, read whole into the body `stream: false` returns (U72)."""
+
+    status_code = 200
+    text = ""
+
+    def __init__(self, data: dict):
+        self._data = data
+
+    def json(self) -> dict:
+        return self._data
+
+
+async def _ollama_post(client, url: str, body: dict, *, field: str):
+    """POST to Ollama: streamed when the answer is (U72), else the call it always was.
+
+    `field` is where the answer's text is: `message` (/api/chat) or `response`
+    (/api/generate). Streamed, each piece of it goes to `emit_delta`, and the
+    NDJSON lines are put back together — content, thinking, tool calls and the
+    last line's counts and done reason — so everything below reads one body.
+    """
+    from core.model_wait import emit_delta, stream_abandoned, streaming_wanted
+
+    if not streaming_wanted():
+        return await client.post(url, json=body, timeout=180.0)
+    content: list[str] = []
+    thinking: list[str] = []
+    tool_calls: list = []
+    last: dict = {}
+    async with client.stream("POST", url, json={**body, "stream": True}, timeout=180.0) as resp:
+        if resp.status_code != 200:
+            await resp.aread()
+            return resp
+        async for line in resp.aiter_lines():
+            if not line.strip():
+                continue
+            chunk = json.loads(line)
+            if chunk.get("error"):
+                raise LLMError(f"Ollama failed mid-answer: {chunk['error']}")
+            last = chunk
+            if field == "message":
+                msg = chunk.get("message") or {}
+                piece = msg.get("content") or ""
+                thinking.append(msg.get("thinking") or "")
+                tool_calls.extend(msg.get("tool_calls") or [])
+            else:
+                piece = chunk.get("response") or ""
+                thinking.append(chunk.get("thinking") or "")
+            if piece:
+                content.append(piece)
+                emit_delta(piece)
+            if stream_abandoned():
+                break
+    data = {k: v for k, v in last.items() if k not in ("message", "response", "thinking")}
+    if field == "message":
+        message = {"role": "assistant", "content": "".join(content)}
+        if any(thinking):
+            message["thinking"] = "".join(thinking)
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+        data["message"] = message
+    else:
+        data["response"] = "".join(content)
+        if any(thinking):
+            data["thinking"] = "".join(thinking)
+    return _OllamaStreamed(data)
+
+
+async def _chat_ollama(call: ChatCall, spec) -> LLMResult:
+    from core import usage_tracker
+
+    current_model, current_settings, tools, images = call.model, call.settings, call.tools, call.images
+    augmented_system, history_messages, prompt_msg = call.system, call.history, call.prompt
+    _sent_cap, _reasoning_plan = call.sent_cap, call.reasoning
+    result_text, _reasoning, stop_reason = "", "", None
+    input_tokens = output_tokens = 0
+
+    # Local Ollama
+    # Strip the ollama. prefix — the Ollama API expects bare model names
+    _ollama_model = current_model[len("ollama."):] if current_model.startswith("ollama.") else current_model
+    _ollama_base = _ollama_base_url(current_settings)
+    async with httpx.AsyncClient() as client:
+        try:
+            # Try specific Ollama Tool Call format if tools are provided
+            if tools:
+                _log.debug(f"Calling Ollama /api/chat with tools...")
+
+                # Construct full message history
+                # 1. System Prompt
+                messages = [{"role": "system", "content": augmented_system}]
+
+                # 2. History (if available)
+                if history_messages:
+                    messages.extend(history_messages)
+
+                # 3. Current User Message
+                user_msg: dict = {"role": "user", "content": prompt_msg}
+                # Ollama supports images as base64 strings (no data URI prefix)
+                if images:
+                    user_msg["images"] = [_parse_data_uri(img)[1] for img in images[:5]]
+                messages.append(user_msg)
+
+                _chat_body: dict = {
+                    "model": _ollama_model,
+                    "messages": messages,
+                    "tools": tools,
+                    "stream": False,
+                }
+                if _sent_cap:
+                    # Only a cap someone set (F263); Ollama was never sent one.
+                    _chat_body["options"] = {"num_predict": _sent_cap}
+                if _reasoning_plan is not None:
+                    # Ollama 0.9+ takes a bare boolean here and answers in a
+                    # `thinking` field. An older server ignores the key
+                    # rather than refusing it, and the `<think>` fallback
+                    # below covers that case, so this is safe to send blind.
+                    _chat_body["think"] = _reasoning_plan.enabled
+                response = await _ollama_post(client, f"{_ollama_base}/api/chat", _chat_body,
+                                              field="message")
+                if (refused := _ollama_refusal(response, _ollama_base)) is not None:
+                    raise refused
+                data = response.json()
+                msg = data.get("message", {})
+
+                # Check for native tool calls
+                if "tool_calls" in msg and msg["tool_calls"]:
+                    # Convert Ollama native tool call to our internal JSON format.
+                    # Preserve any text content the model emitted alongside the
+                    # call as a [REASONING] preamble (some Ollama models emit
+                    # both — qwen3, deepseek-r1 routinely do).
+                    _log.debug(f"Native tool call(s) received: {[tc['function']['name'] for tc in msg['tool_calls']]}")
+                    call_json = "\n".join(json.dumps({
+                        "tool": tc["function"]["name"],
+                        "arguments": tc["function"]["arguments"]
+                    }) for tc in msg["tool_calls"])
+                    narration, _narration_thoughts = _split_think_tags(
+                        (msg.get("content") or "").strip())
+                    result_text = call_json
+                    _reasoning = "\n\n".join(
+                        t for t in (msg.get("thinking") or "", _narration_thoughts, narration)
+                        if t and t.strip()).strip()
+                else:
+                    result_text, _inline_thoughts = _split_think_tags(msg.get("content", ""))
+                    _reasoning = "\n\n".join(
+                        t for t in (msg.get("thinking") or "", _inline_thoughts)
+                        if t and t.strip()).strip()
+                    if not result_text.strip():
+                        # Returned as the reply until F137.
+                        raise _empty_answer("Ollama", reasoning=_reasoning,
+                                            stop_reason=data.get("done_reason"))
+
+                stop_reason = _normalise_stop_reason(data.get("done_reason"))
+
+                # Ollama eval_count / prompt_eval_count (available when stream=False)
+                input_tokens = data.get("prompt_eval_count", 0) or usage_tracker.estimate_tokens_from_text(prompt_msg)
+                output_tokens = data.get("eval_count", 0) or usage_tracker.estimate_tokens_from_text(result_text)
+
+            else:
+                # Fallback to generate if no tools or tools failed (Old behavior)
+                _log.debug(f"Calling Ollama /api/generate (Legacy Mode)...")
+
+                prompt_for_generate = prompt_msg
+                if history_messages:
+                    prior = _messages_to_transcript(history_messages)
+                    if prior:
+                        prompt_for_generate = f"Conversation so far:\n{prior}\n\nUser: {prompt_msg}".strip()
+
+                response = await _ollama_post(client, f"{_ollama_base}/api/generate", {
+                    "model": _ollama_model,
+                    "prompt": prompt_for_generate,
+                    "system": augmented_system,
+                    "stream": False,
+                    **({"options": {"num_predict": _sent_cap}} if _sent_cap else {}),
+                }, field="response")
+                if (refused := _ollama_refusal(response, _ollama_base)) is not None:
+                    raise refused
+                data = response.json()
+                result_text, _reasoning = _split_think_tags(data.get("response", ""))
+                if not result_text.strip():
+                    raise _empty_answer("Ollama", reasoning=_reasoning,
+                                        stop_reason=data.get("done_reason"))
+                input_tokens = data.get("prompt_eval_count", 0) or usage_tracker.estimate_tokens_from_text(prompt_for_generate)
+                output_tokens = data.get("eval_count", 0) or usage_tracker.estimate_tokens_from_text(result_text)
+
+        except EmptyAnswer:
+            # Already the right exception, carrying its reasoning and stop
+            # reason; re-wrapping would lose both (F137).
+            raise
+        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+            # httpx says "All connection attempts failed"; the person needs
+            # to know it was Ollama, and where it was looked for (F182).
+            raise LLMError(f"Local Agent Error: Ollama is not reachable at {_ollama_base}.") from e
+        except Exception as e:
+            raise LLMError(f"Local Agent Error: {e}") from e
+
+    return LLMResult(result_text, input_tokens, output_tokens, 0, 0, stop_reason, (), _reasoning)
+
+
+@_spans.traced_coroutine("gen_ai.chat", _spans.model_call_attributes, model_call=True)
+async def generate_response_ex(prompt_msg, sys_prompt, mode, current_model, current_settings, *args, **kwargs):
+    """Unified LLM dispatch (`_generate_response_once`), and once, for a model its provider refused as gone, the same
+    call from a stand-in of the same provider and pool (F1369, cap-04: `models_menu.stand_in`). The refused call wrote
+    no usage, so only the call that answered is billed, on either host; the run says so (`said_stand_in`) and the
+    agent or step keeps its model. Any other failure, a local model, no stand-in, or the stand-in's own failure is
+    raised as before."""
+    try:
+        return await _generate_response_once(prompt_msg, sys_prompt, mode, current_model, current_settings,
+                                             *args, **kwargs)
+    except LLMError as failed:
+        tools = kwargs["tools"] if "tools" in kwargs else (args[0] if args else None)
+        instead = await _stand_in_for(current_model, failed, current_settings, tools)
+        if instead is None:
+            raise
+    answered = await _generate_response_once(prompt_msg, sys_prompt, mode, instead, current_settings, *args, **kwargs)
+    _model_availability.said_stand_in(current_model, instead)
+    return answered
+
+
+async def _stand_in_for(model, failed: LLMError, settings, tools) -> str | None:
+    """The stand-in for a call refused because its model is gone, or None (never for a local model)."""
+    if not model or not _model_availability.model_gone(failed):
+        return None
+    if _model_availability.is_local(detect_provider_from_model(model), settings):
+        return None
+    try:
+        from core.native_builder import models_menu
+
+        return await models_menu.stand_in(model, has_tools=bool(tools))
+    except Exception:  # noqa: BLE001 — no menu to read: the refusal stands, as before
+        _log.warning("no stand-in read for %s", model, exc_info=True)
+        return None
+
+
+async def _generate_response_once(
     prompt_msg,
     sys_prompt,
     mode,
@@ -1955,11 +4182,28 @@ async def generate_response(
     cache_response_ttl: int = 3600,
     cache_response_step_id: str | None = None,
     cache_response_threshold: float = 0.95,
+    # Prompt-cache layout — see core.cache.prompt_cache. Additive: `prompt_msg`
+    # remains the full text every provider, the char counter and the response
+    # cache see; these are the same text structured for a provider that can
+    # mark a breakpoint inside the conversation. Only Anthropic reads them.
+    prompt_blocks: list[str] | None = None,
+    volatile_tail: str | None = None,
+    # Reasoning effort — "off" | "low" | "medium" | "high", or None to take the
+    # workspace default. Resolved against `core.reasoning`, which decides
+    # whether this model has a native channel at all; a model that has none
+    # keeps the `[REASONING]` prompt convention and ignores this entirely.
+    reasoning_effort: str | None = None,
+    # This call's own response cap — an agent's `max_output_tokens` (F263). None
+    # takes the workspace's, and with neither each provider keeps its default.
+    max_output_tokens: int | None = None,
 ):
     """
-    Unified LLM dispatch function. Routes to the appropriate provider
-    based on mode and current_model. Logs token usage and cost after
-    every successful call via usage_tracker.
+    Unified LLM dispatch. Routes to the provider for `mode`/`current_model`,
+    logs usage, and returns the full `LLMResult`.
+
+    `generate_response` below returns just the text and is what most callers
+    want. This one exists for the ReAct loop, which has to know whether a
+    response finished or was cut off at the token limit.
     """
     import time as _time
     from core import usage_tracker
@@ -1985,6 +4229,34 @@ async def generate_response(
     output_tokens = 0
     cache_read_tokens = 0
     cache_write_tokens = 0
+    stop_reason = None
+    _tool_calls: tuple = ()
+    _reasoning = ""
+    # The cap someone set — this call's (an agent's own), else the workspace's
+    # (F263). Only a set one reaches the providers that were never sent a
+    # default (OpenAI, the v1-compatible ones, the gateway, Ollama): left unset,
+    # every provider behaves as it always has (Naveen, 2026-09-28).
+    _set_cap = max_output_tokens or current_settings.get("max_output_tokens") or None
+    _max_out = int(_set_cap or DEFAULT_MAX_OUTPUT_TOKENS)
+
+    # One plan for this call, built before dispatch so every branch below asks
+    # the same question of the same table. None means "send nothing" — either
+    # the model has no reasoning channel, or the person turned it off; both
+    # read the same way to a provider adapter.
+    from core import reasoning as _reasoning_policy
+    _reasoning_plan = _reasoning_policy.plan_for(
+        current_model, reasoning_effort, _max_out, current_settings.get("reasoning_models")
+    )
+    if _reasoning_plan is not None:
+        # A budget that does not fit under the response cap is refused by
+        # Anthropic and Bedrock outright, so the plan may have raised it.
+        _max_out = _reasoning_plan.max_output_tokens
+    _ceiling = _reasoning_policy.output_ceiling(current_model)
+    if _ceiling is not None:
+        _max_out = min(_max_out, _ceiling)
+    # What the providers with no default of their own are sent: nothing, unless
+    # someone set a cap (then the planned one, which clears the thinking).
+    _sent_cap = _max_out if _set_cap else None
 
     # ── Response cache (opt-in per call) ─────────────────────────────────────
     # Built BEFORE dispatch so a hit short-circuits the entire LLM round-trip.
@@ -2001,16 +4273,16 @@ async def generate_response(
             current_model, augmented_system, _cache_messages, tools,
         )
         if _hit is None and cache_response_semantic and cache_response_step_id:
-            _hit = _resp_cache.get_semantic(
+            _hit = await _resp_cache.get_semantic_routed(
                 cache_response_step_id, current_model,
                 augmented_system, str(prompt_msg),
                 threshold=cache_response_threshold,
             )
         if _hit is not None:
-            print(f"DEBUG: ⚡ response_cache hit ({current_model}) — skipping LLM call", flush=True)
+            _log.debug(f"⚡ response_cache hit ({current_model}) — skipping LLM call")
             try:
                 provider = detect_provider_from_model(current_model)
-                usage_tracker.log_usage(
+                await usage_tracker.log_usage(
                     model=current_model,
                     provider=provider,
                     input_tokens=0,
@@ -2025,268 +4297,89 @@ async def generate_response(
                     response_cache_hit=True,
                 )
             except Exception as _track_err:
-                print(f"DEBUG usage_tracker: log_usage (cache hit) failed: {_track_err}", flush=True)
-            return _hit.get("text", "")
+                _log.warning(f"usage_tracker: log_usage (cache hit) failed: {_track_err}")
+            return LLMResult(_hit.get("text", ""))
 
-    if mode in ["cloud", "bedrock"]:
-        try:
-            # Construct messages list for cloud providers that support it
-            messages = []
-            if history_messages:
-                messages.extend(history_messages)
-            messages.append({"role": "user", "content": prompt_msg})
-
-            if current_model.startswith("gpt"):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_openai(
-                    current_model,
-                    [{"role": "system", "content": augmented_system}] + messages,
-                    current_settings.get("openai_key"),
-                    tools=tools,
-                    images=images,
-                    prompt_cache=_prompt_cache,
-                )
-            elif current_model.startswith("claude"):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_anthropic(
-                    current_model,
-                    messages,
-                    augmented_system,
-                    current_settings.get("anthropic_key"),
-                    tools=tools,
-                    images=images,
-                    prompt_cache=_prompt_cache,
-                )
-            elif current_model.startswith("gemini") or current_model.startswith("gemma") or current_model.startswith("lyria"):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_gemini(
-                    current_model,
-                    messages,
-                    augmented_system,
-                    current_settings.get("gemini_key"),
-                    tools=tools,
-                    images=images,
-                    prompt_cache=_prompt_cache,
-                )
-            elif current_model.startswith("bedrock"):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_bedrock(
-                    current_model,
-                    messages,
-                    augmented_system,
-                    current_settings.get("aws_region"),
-                    current_settings,
-                    images=images,
-                    prompt_cache=_prompt_cache,
-                )
-                # Bedrock's invoke_model fallback path returns zero tokens; estimate from text.
-                if input_tokens == 0 and output_tokens == 0:
-                    input_tokens = usage_tracker.estimate_tokens_from_text(
-                        augmented_system + " ".join(str(m.get("content", "")) for m in messages)
-                    )
-                    output_tokens = usage_tracker.estimate_tokens_from_text(result_text)
-            elif current_model.startswith("grok"):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_grok(
-                    current_model,
-                    messages,
-                    augmented_system,
-                    current_settings.get("grok_key"),
-                    tools=tools,
-                    images=images,
-                    prompt_cache=_prompt_cache,
-                )
-            elif current_model.startswith("deepseek"):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_deepseek(
-                    current_model,
-                    messages,
-                    augmented_system,
-                    current_settings.get("deepseek_key"),
-                    tools=tools,
-                    images=images,
-                    prompt_cache=_prompt_cache,
-                )
-            elif current_model.startswith("oaic."):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_v1_compatible(
-                    current_model[len("oaic."):],
-                    messages,
-                    augmented_system,
-                    current_settings.get("openai_compatible_base_url", ""),
-                    current_settings.get("openai_compatible_key", ""),
-                    tools=tools,
-                    images=images,
-                    prompt_cache=_prompt_cache,
-                )
-            elif current_model.startswith("locv1."):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_v1_compatible(
-                    current_model[len("locv1."):],
-                    messages,
-                    augmented_system,
-                    current_settings.get("local_compatible_base_url", ""),
-                    current_settings.get("local_compatible_key", ""),
-                    tools=tools,
-                    images=images,
-                    prompt_cache=_prompt_cache,
-                )
-            else:
-                return "Error: Unknown cloud model selected."
-        except LLMError:
-            # LLM errors must propagate — do NOT swallow them.
-            # Orchestration engine will catch this and stop execution.
-            raise
-        except Exception as e:
-            return f"Cloud API Error: {str(e)}"
-
-    elif mode == "cli":
-        # CLI session providers: build a flat prompt and spawn the local binary.
-        # No API key required — uses the user's existing CLI authentication.
-        try:
-            messages_for_cli = []
-            if history_messages:
-                messages_for_cli.extend(history_messages)
-            messages_for_cli.append({"role": "user", "content": prompt_msg})
-
-            cli_full_prompt = _build_cli_prompt(
-                sys_prompt=augmented_system,
-                messages=messages_for_cli,
-                tools=tools,
-            )
-
-            # Load the existing CLI session ID for this agent+session (if any)
-            from core.session import get_cli_session_id, save_cli_session_id
-            _provider_key = detect_provider_from_model(current_model)
-            _existing_cli_sid = get_cli_session_id(
-                session_id or "default", agent_id, _provider_key
-            ) if session_id else None
-
-            result_text, input_tokens, output_tokens, new_cli_sid = await call_cli_provider(
-                cli_model=current_model,
-                full_prompt=cli_full_prompt,
-                sys_prompt=augmented_system,
-                messages=messages_for_cli,
-                cli_session_id=_existing_cli_sid,
-            )
-
-            # Persist the CLI session ID so the next turn resumes the same session
-            if new_cli_sid and session_id:
-                save_cli_session_id(session_id, agent_id, _provider_key, new_cli_sid)
-
-        except LLMError:
-            raise
-        except Exception as e:
-            return f"CLI Provider Error: {str(e)}"
-
-    elif mode == "hf":
-        try:
-            messages_for_hf = []
-            if history_messages:
-                messages_for_hf.extend(history_messages)
-            messages_for_hf.append({"role": "user", "content": prompt_msg})
-
-            result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_huggingface(
-                current_model,
-                messages_for_hf,
-                augmented_system,
-                current_settings,
-                tools=tools,
-                images=images,
-            )
-        except LLMError:
-            raise
-        except Exception as e:
-            return f"HuggingFace Provider Error: {str(e)}"
-
-    else:
-        # Local Ollama
-        # Strip the ollama. prefix — the Ollama API expects bare model names
-        _ollama_model = current_model[len("ollama."):] if current_model.startswith("ollama.") else current_model
-        async with httpx.AsyncClient() as client:
+    # ── Dispatch: the provider table picks the adapter ───────────────────────
+    call = ChatCall(
+        model=current_model, prompt=prompt_msg, history=history_messages, system=augmented_system,
+        settings=current_settings, tools=tools, images=images, prompt_cache=_prompt_cache,
+        reasoning=_reasoning_plan, max_out=_max_out, sent_cap=_sent_cap, agent_cap=max_output_tokens,
+        prompt_blocks=prompt_blocks, volatile_tail=volatile_tail, reasoning_effort=reasoning_effort,
+    )
+    spec = _providers.branch_for(mode, current_model)
+    if spec is None:
+        raise LLMError(f"Error: Unknown cloud model selected ({current_model}).")
+    try:
+        _answer = await _providers.resolve(spec.chat)(call, spec)
+        (result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+         stop_reason, _tool_calls, _reasoning) = tuple(_answer)[:8]
+        _charged = getattr(_answer, "charged_microusd", None)
+    except EmptyAnswer as empty:
+        # The call was made and billed; only its answer was empty or blocked
+        # (F133). Logged as any call is, then raised as the failure it is.
+        empty.via_gateway = spec.id == "model_gateway"
+        if spec.mode in _providers.CLOUD_MODES:
             try:
-                # Try specific Ollama Tool Call format if tools are provided
-                if tools:
-                    print(f"DEBUG: Calling Ollama /api/chat with tools...", flush=True)
+                input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = empty.usage
+                await usage_tracker.log_usage(
+                    model=current_model,
+                    provider=detect_provider_from_model(current_model),
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    context_chars=context_chars,
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    source=source,
+                    run_id=run_id,
+                    tool_name=tool_name,
+                    latency_seconds=_time.time() - _t0,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
+                )
+            except Exception as _track_err:
+                _log.warning(f"usage_tracker: log_usage (empty answer) failed: {_track_err}")
+        from core import turn_usage
+        turn_usage.add(*(getattr(empty, "usage", None) or ()))
+        # Billed all the same: it counts toward a team's spend (F657).
+        from core import team as _team
+        _team.note_cost(current_model, *(getattr(empty, "usage", None) or ()),
+                        charged_microusd=getattr(empty, "charged_microusd", None))
+        raise
+    except LLMError as failed:
+        # LLM errors must propagate — do NOT swallow them.
+        # Orchestration engine will catch this and stop execution.
+        failed.via_gateway = spec.id == "model_gateway"
+        # A provider that says the model is gone: never offered to this workspace again (F1213).
+        await _model_availability.note_failure(current_model, failed, provider=spec.id, settings=current_settings)
+        raise
+    except Exception as e:
+        if spec.error is None:
+            raise  # the adapter words its own (Ollama's)
+        # Any other failure is one too (F132). Returned as the reply, it was
+        # written into an LLM step's output key and the run completed, and
+        # an evaluator took its fallback route on it.
+        failed = LLMError(f"{spec.error}: {str(e)}")
+        failed.via_gateway = spec.id == "model_gateway"
+        await _model_availability.note_failure(current_model, failed, provider=spec.id, settings=current_settings)
+        raise failed from e
+    # It answered: a mark saying its provider no longer serves it is wrong now (F1213).
+    await _model_availability.note_success(current_model)
 
-                    # Construct full message history
-                    # 1. System Prompt
-                    messages = [{"role": "system", "content": augmented_system}]
-
-                    # 2. History (if available)
-                    if history_messages:
-                        messages.extend(history_messages)
-
-                    # 3. Current User Message
-                    user_msg: dict = {"role": "user", "content": prompt_msg}
-                    # Ollama supports images as base64 strings (no data URI prefix)
-                    if images:
-                        user_msg["images"] = [_parse_data_uri(img)[1] for img in images[:5]]
-                    messages.append(user_msg)
-
-                    response = await client.post(
-                        f"{_ollama_base_url()}/api/chat",
-                        json={
-                            "model": _ollama_model,
-                            "messages": messages,
-                            "tools": tools,
-                            "stream": False
-                        },
-                        timeout=180.0
-                    )
-                    response.raise_for_status()
-                    data = response.json()
-                    msg = data.get("message", {})
-
-                    # Check for native tool calls
-                    if "tool_calls" in msg and msg["tool_calls"]:
-                        # Convert Ollama native tool call to our internal JSON format.
-                        # Preserve any text content the model emitted alongside the
-                        # call as a [REASONING] preamble (some Ollama models emit
-                        # both — qwen3, deepseek-r1 routinely do).
-                        tc = msg["tool_calls"][0]
-                        print(f"DEBUG: Native Tool Call received: {tc['function']['name']}", flush=True)
-                        call_json = json.dumps({
-                            "tool": tc["function"]["name"],
-                            "arguments": tc["function"]["arguments"]
-                        })
-                        reasoning = (msg.get("content") or "").strip()
-                        if reasoning:
-                            result_text = f"[REASONING]\n{reasoning}\n[/REASONING]\n{call_json}"
-                        else:
-                            result_text = call_json
-                    else:
-                        result_text = msg.get("content", "")
-
-                    # Ollama eval_count / prompt_eval_count (available when stream=False)
-                    input_tokens = data.get("prompt_eval_count", 0) or usage_tracker.estimate_tokens_from_text(prompt_msg)
-                    output_tokens = data.get("eval_count", 0) or usage_tracker.estimate_tokens_from_text(result_text)
-
-                else:
-                    # Fallback to generate if no tools or tools failed (Old behavior)
-                    print(f"DEBUG: Calling Ollama /api/generate (Legacy Mode)...", flush=True)
-
-                    prompt_for_generate = prompt_msg
-                    if history_messages:
-                        prior = _messages_to_transcript(history_messages)
-                        if prior:
-                            prompt_for_generate = f"Conversation so far:\n{prior}\n\nUser: {prompt_msg}".strip()
-
-                    response = await client.post(
-                        f"{_ollama_base_url()}/api/generate",
-                        json={
-                            "model": _ollama_model,
-                            "prompt": prompt_for_generate,
-                            "system": augmented_system,
-                            "stream": False
-                        },
-                        timeout=180.0
-                    )
-                    response.raise_for_status()
-                    data = response.json()
-                    result_text = data.get("response", "")
-                    input_tokens = data.get("prompt_eval_count", 0) or usage_tracker.estimate_tokens_from_text(prompt_for_generate)
-                    output_tokens = data.get("eval_count", 0) or usage_tracker.estimate_tokens_from_text(result_text)
-
-            except Exception as e:
-                return f"Local Agent Error: {e}"
+    # ── Inline thinking tags, whichever provider answered (F32) ──────────────
+    # Folded into `reasoning` rather than dropped: the loop shows it as the
+    # model's thinking, and a step never writes it into state as the answer.
+    result_text, _inline_reasoning = _split_think_tags(result_text)
+    if _inline_reasoning:
+        _reasoning = f"{_reasoning}\n{_inline_reasoning}".strip() if _reasoning else _inline_reasoning
+    # ...and none in the reasoning either: the narration a provider keeps
+    # beside a tool call arrives there with its tags (F303).
+    _reasoning = _unwrap_think_tags(_reasoning)
 
     # ── Log usage (fire-and-forget, never raises) ────────────────────────────
     try:
         provider = detect_provider_from_model(current_model)
-        usage_tracker.log_usage(
+        await usage_tracker.log_usage(
             model=current_model,
             provider=provider,
             input_tokens=input_tokens,
@@ -2302,7 +4395,25 @@ async def generate_response(
             cache_write_tokens=cache_write_tokens,
         )
     except Exception as _track_err:
-        print(f"DEBUG usage_tracker: log_usage failed (non-fatal): {_track_err}", flush=True)
+        _log.warning(f"usage_tracker: log_usage failed (non-fatal): {_track_err}")
+    # The turn's own count, for a caller that reports usage (the OpenAI endpoint).
+    from core import turn_usage
+    turn_usage.add(input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+    # And to a team's spend, for its check before every model call (TEAM1a, Q8).
+    from core import team as _team
+    _team.note_cost(current_model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+                    charged_microusd=_charged)
+
+    # ── All of it was thinking (F305) ────────────────────────────────────────
+    # Each provider checks its reply for emptiness before the split above, so
+    # a reply of nothing but `<thinking>` passed that check and came back here
+    # as an empty answer — which the agent loop took for its final one. Raised
+    # after the usage log: the call was made and billed.
+    if not str(result_text or "").strip() and not _tool_calls:
+        empty = _empty_answer("The model", reasoning=_reasoning, stop_reason=stop_reason)
+        empty.stop_reason = stop_reason
+        empty.usage = (input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+        raise empty
 
     # ── Populate response cache on successful call ───────────────────────────
     if cache_response and result_text and not str(result_text).startswith("Error"):
@@ -2321,7 +4432,7 @@ async def generate_response(
                 step_id=cache_response_step_id,
             )
             if cache_response_semantic and cache_response_step_id:
-                _resp_cache.set_semantic(
+                await _resp_cache.set_semantic_routed(
                     cache_response_step_id, current_model,
                     augmented_system, str(prompt_msg),
                     text=result_text,
@@ -2330,9 +4441,20 @@ async def generate_response(
                     ttl_seconds=cache_response_ttl,
                 )
         except Exception as _cache_err:
-            print(f"DEBUG response_cache: set failed (non-fatal): {_cache_err}", flush=True)
+            _log.warning(f"response_cache: set failed (non-fatal): {_cache_err}")
 
-    return result_text
+    return LLMResult(result_text, input_tokens, output_tokens,
+                     cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls,
+                     _reasoning, _charged)
+
+
+async def generate_response(*args, **kwargs) -> str:
+    """The text of one LLM call.
+
+    Kept as the whole signature's front door: every caller but the ReAct loop
+    wants the string and nothing else, and this is what the test suite patches.
+    """
+    return (await generate_response_ex(*args, **kwargs)).text
 
 
 # ─── Embedding Helpers ──────────────────────────────────────────────────────
@@ -2340,30 +4462,41 @@ async def generate_response(
 async def embed_batch(texts: list[str], model: str, settings: dict) -> list[list[float]]:
     """Unified embedding function that routes to the appropriate provider.
 
-    Optional settings key ``__embed_output_dim`` (int) is forwarded to
-    providers that support dimensionality control (currently Gemini).
+    The provider is the table's (`core.providers.registry`), whose entry names
+    its embed adapter. Optional settings key ``__embed_output_dim`` (int) is
+    forwarded to providers that support dimensionality control (currently Gemini).
     """
-    provider = detect_provider_from_model(model)
-    output_dim: int | None = settings.get("__embed_output_dim")
-
-    if provider == "openai":
-        return await _embed_openai(texts, model, settings.get("openai_key", ""))
-    elif provider == "openai_compatible":
-        clean_model = model[len("oaic."):] if model.startswith("oaic.") else model
-        return await _embed_v1_compatible(texts, clean_model, settings.get("openai_compatible_base_url", ""), settings.get("openai_compatible_key", ""))
-    elif provider == "local_compatible":
-        clean_model = model[len("locv1."):] if model.startswith("locv1.") else model
-        return await _embed_v1_compatible(texts, clean_model, settings.get("local_compatible_base_url", ""), settings.get("local_compatible_key", ""))
-    elif provider == "gemini":
-        kwargs = {} if output_dim is None else {"output_dim": output_dim}
-        return await _embed_gemini(texts, model, settings.get("gemini_key", ""), **kwargs)
-    elif provider == "bedrock":
-        return await _embed_bedrock(texts, model, settings)
-    elif provider == "ollama":
-        return await _embed_ollama(texts, model)
-    else:
-        print(f"DEBUG: Unknown provider '{provider}' for embedding model '{model}'")
+    spec = _providers.provider_for(model)
+    if spec.embed is None:
+        _log.debug(f"Unknown provider '{spec.id}' for embedding model '{model}'")
         return [[0.0] * 768 for _ in range(len(texts))]
+    return await _providers.resolve(spec.embed)(texts, model, settings, spec)
+
+
+# ─── Embed adapters, named by the provider table ────────────────────────────
+
+async def _embed_via_openai(texts: list[str], model: str, settings: dict, spec) -> list[list[float]]:
+    return await _embed_openai(texts, model, settings.get("openai_key", ""))
+
+
+async def _embed_via_v1(texts: list[str], model: str, settings: dict, spec) -> list[list[float]]:
+    """The gateway, `oaic.` and `locv1.`: one v1 client, each with its own server and key."""
+    return await _embed_v1_compatible(
+        texts, spec.bare(model), settings.get(spec.address, ""), settings.get(spec.keys[0], ""))
+
+
+async def _embed_via_gemini(texts: list[str], model: str, settings: dict, spec) -> list[list[float]]:
+    output_dim: int | None = settings.get("__embed_output_dim")
+    kwargs = {} if output_dim is None else {"output_dim": output_dim}
+    return await _embed_gemini(texts, model, settings.get("gemini_key", ""), **kwargs)
+
+
+async def _embed_via_bedrock(texts: list[str], model: str, settings: dict, spec) -> list[list[float]]:
+    return await _embed_bedrock(texts, model, settings)
+
+
+async def _embed_via_ollama(texts: list[str], model: str, settings: dict, spec) -> list[list[float]]:
+    return await _embed_ollama(texts, model, settings)
 
 
 async def _embed_openai(texts: list[str], model: str, api_key: str) -> list[list[float]]:
@@ -2381,7 +4514,7 @@ async def _embed_openai(texts: list[str], model: str, api_key: str) -> list[list
             # OpenAI returns embeddings in the same order as input
             return [item["embedding"] for item in data["data"]]
     except Exception as e:
-        print(f"ERROR: OpenAI embedding failed: {e}")
+        _log.error(f"OpenAI embedding failed: {e}")
         return [[0.0] * 1536 for _ in range(len(texts))]
 
 
@@ -2409,12 +4542,10 @@ async def _embed_gemini(
     if not api_key:
         return [[0.0] * output_dim for _ in range(len(texts))]
 
-    from google import genai
     from google.genai import types
 
-    global _gemini_client
-    if _gemini_client is None:
-        _gemini_client = genai.Client(api_key=api_key)
+    # This call's own key's client, shared with chat on the same key (F321).
+    client = _gemini_client_for(api_key, timeout_ms=_GEMINI_CLIENT_TIMEOUT_MS)
 
     try:
         # Specify output_dimensionality so Gemini returns exactly `output_dim` dims
@@ -2422,7 +4553,7 @@ async def _embed_gemini(
         # Without this, the API returns the full 3072-dim vector which exceeds
         # pgvector's 2000-dim HNSW limit.
         result = await asyncio.to_thread(
-            _gemini_client.models.embed_content,
+            client.models.embed_content,
             model=model,
             contents=texts,
             config=types.EmbedContentConfig(output_dimensionality=output_dim),
@@ -2431,7 +4562,7 @@ async def _embed_gemini(
             return [[0.0] * output_dim for _ in range(len(texts))]
         return [list(em.values) for em in result.embeddings]
     except Exception as e:
-        print(f"ERROR: Gemini embedding failed: {e}")
+        _log.error(f"Gemini embedding failed: {e}")
         return [[0.0] * output_dim for _ in range(len(texts))]
 
 
@@ -2485,28 +4616,28 @@ async def _embed_bedrock(texts: list[str], model: str, settings: dict) -> list[l
         except Exception as e:
             err_str = str(e)
             if "unknown model" in err_str.lower() or "resourcenotfound" in err_str.lower():
-                print(
-                    f"ERROR: Bedrock embedding — model '{real_model_id}' not found in "
+                _log.error(
+                    f"Bedrock embedding — model '{real_model_id}' not found in "
                     f"region '{region}'. Ensure the model is enabled in the AWS console "
-                    f"and, if it requires on-demand throughput via an inference profile, "
-                    f"set 'Bedrock Inference Profile' in Settings.\nOriginal error: {e}"
+                    f"and, if it has no on-demand throughput, pick its inference profile "
+                    f"(bedrock.us.…) as the embedding model.\nOriginal error: {e}"
                 )
             else:
-                print(f"ERROR: Bedrock embedding failed for '{real_model_id}': {e}")
+                _log.error(f"Bedrock embedding failed for '{real_model_id}': {e}")
             embeddings.append([])
 
     return embeddings
 
 
-async def _embed_ollama(texts: list[str], model: str) -> list[list[float]]:
+async def _embed_ollama(texts: list[str], model: str, settings: dict | None = None) -> list[list[float]]:
     model = model[len("ollama."):] if model.startswith("ollama.") else model
-    url = f"{_ollama_base_url()}/api/embed"
+    url = f"{_ollama_base_url(settings)}/api/embed"
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(url, json={"model": model, "input": texts})
             if resp.status_code != 200:
                 # Fallback for older Ollama versions
-                url_legacy = f"{_ollama_base_url()}/api/embeddings"
+                url_legacy = f"{_ollama_base_url(settings)}/api/embeddings"
                 embeddings = []
                 for t in texts:
                     r = await client.post(url_legacy, json={"model": model, "prompt": t})
@@ -2516,5 +4647,381 @@ async def _embed_ollama(texts: list[str], model: str) -> list[list[float]]:
             data = resp.json()
             return data.get("embeddings", [])
     except Exception as e:
-        print(f"ERROR: Ollama embedding failed: {e}")
+        _log.error(f"Ollama embedding failed: {e}")
         return [[0.0] * 768 for _ in range(len(texts))]
+
+
+# ─── Embeddings that raise (B2a, D163) ──────────────────────────────────────
+#
+# `embed_batch` above answers zeros (OpenAI, Gemini, Ollama) or `[]` (Bedrock)
+# when a call fails, and code search lives with that. Knowledge cannot: a zero
+# vector stores fine and then matches nothing, or everything. So
+# `embed_batch_ex` raises on every failure, says what the call cost, and takes
+# the two things retrieval models need: which side of a search a text is on, and
+# how wide its vectors should be. Each provider in the table names its adapter
+# (`embed_ex`), as it names `embed`.
+
+#: How long an embedding call may take. A query is one short text a person is
+#: waiting on; a document batch is not.
+EMBED_QUERY_TIMEOUT = 30.0
+EMBED_DOCUMENT_TIMEOUT = 60.0
+#: Our gateway gives a document batch up at 150 s and still charges for the
+#: texts it embedded, so its client waits longer than that (C1, D160).
+GATEWAY_EMBED_TIMEOUT = 160.0
+#: Bedrock's Titan takes one text a call; this many go at once.
+BEDROCK_EMBED_CONCURRENCY = 8
+#: Cohere on Bedrock takes at most this many texts a call.
+COHERE_EMBED_BATCH = 96
+
+
+class EmbeddingResponse(NamedTuple):
+    """What an embedding call answered. `input_tokens` is 0 when the provider
+    does not say (Gemini's API); `charged_microusd` is what a metering server
+    settled for it (our gateway), None everywhere else."""
+
+    vectors: list[list[float]]
+    model: str
+    provider: str
+    input_tokens: int = 0
+    request_id: str | None = None
+    charged_microusd: int | None = None
+
+
+class EmbeddingFailed(LLMError):
+    """An embedding call that did not answer.
+
+    `missing` names the setting that must be saved first (a key, a server's
+    address): nothing was called. `charged_microusd` is what a metering gateway
+    charged for the texts it embedded before failing (C1's
+    `error.charged_microusd`); `needed_microusd` / `available_microusd` come
+    with its 402.
+    """
+
+    def __init__(self, message: str = "", *, provider: str | None = None, status: int | None = None,
+                 code: str | None = None, missing: str | None = None, charged_microusd: int | None = None,
+                 needed_microusd: int | None = None, available_microusd: int | None = None):
+        super().__init__(message, provider=provider, status=status, code=code)
+        self.missing = missing
+        self.charged_microusd = charged_microusd
+        self.needed_microusd = needed_microusd
+        self.available_microusd = available_microusd
+
+
+async def embed_batch_ex(texts: list[str], model: str, settings: dict, *, input_type: str | None = None,
+                         dims: int | None = None) -> EmbeddingResponse:
+    """Embed `texts` with `model`, or raise `EmbeddingFailed`. Never zeros, never a short list.
+
+    `input_type` is "document" or "query" for a model whose provider takes it
+    (Cohere's `input_type`, Gemini's `task_type`, our gateway's); other
+    providers ignore it, and prefix conventions are the caller's. `dims` asks a
+    Matryoshka model for a narrower width; None is its native one.
+    """
+    if not texts:
+        raise ValueError("embed_batch_ex needs at least one text")
+    if input_type not in (None, "document", "query"):
+        raise ValueError(f"input_type is 'document' or 'query', not {input_type!r}")
+    spec = _providers.provider_for(model)
+    if spec.embed_ex is None:
+        raise EmbeddingFailed(f"{spec.label} does not embed ({model}).", provider=spec.id, code=PROVIDER_REFUSED)
+    try:
+        answer = await _providers.resolve(spec.embed_ex)(list(texts), model, settings, spec,
+                                                         input_type=input_type, dims=dims)
+    except EmbeddingFailed:
+        raise
+    except LLMError as e:
+        raise EmbeddingFailed(str(e), provider=e.provider or spec.id, status=e.status, code=e.code) from e
+    except Exception as e:  # noqa: BLE001 — an SDK's own error, worded and classified here
+        raise EmbeddingFailed(f"{spec.label} embedding failed: {e}", provider=spec.id) from e
+    try:
+        _check_embeddings(answer, len(texts), dims, spec)
+    except EmbeddingFailed as e:
+        # A metering server settled the call before its answer was refused here (F329).
+        e.charged_microusd = answer.charged_microusd
+        raise
+    return answer
+
+
+def _check_embeddings(answer: EmbeddingResponse, count: int, dims: int | None, spec) -> None:
+    """Refuse an answer that cannot be stored: short, empty, mixed widths, the wrong width, zero or non-finite."""
+    import math
+
+    def refuse(why: str):
+        raise EmbeddingFailed(f"{spec.label} answered {count} texts with {why}.", provider=spec.id, code=MODEL_ERROR)
+
+    vectors = answer.vectors
+    if len(vectors) != count:
+        refuse(f"{len(vectors)} vectors")
+    width = len(vectors[0]) if vectors else 0
+    if width == 0:
+        refuse("an empty vector")
+    if dims is not None and width != dims:
+        refuse(f"{width}-dimensional vectors, not {dims}")
+    for i, vector in enumerate(vectors):
+        if len(vector) != width:
+            refuse(f"vectors of {width} and {len(vector)} dimensions")
+        norm = math.fsum(float(x) * float(x) for x in vector)
+        if not math.isfinite(norm):
+            refuse(f"a non-finite value in vector {i}")
+        if norm == 0.0:
+            refuse(f"a zero vector at {i}")
+
+
+def _embed_timeout(input_type: str | None) -> float:
+    return EMBED_QUERY_TIMEOUT if input_type == "query" else EMBED_DOCUMENT_TIMEOUT
+
+
+def _embedding_refusal(resp, provider: str, label: str) -> EmbeddingFailed:
+    """An HTTP error answer as `EmbeddingFailed`, with what the server said it cost or needed."""
+    status = int(resp.status_code)
+    detail: dict = {}
+    try:
+        body = resp.json()
+        detail = body.get("error") if isinstance(body, dict) and isinstance(body.get("error"), dict) else {}
+        if not detail and isinstance(body, dict) and isinstance(body.get("error"), str):
+            detail = {"message": body["error"]}
+    except Exception:  # noqa: BLE001 — a body that is not JSON
+        detail = {}
+    message = str(detail.get("message") or (resp.text or "")[:200] or "no message").strip()
+    # The provider's own code says what its words may not: OpenAI's out-of-credit 429 reads "You exceeded your current
+    # quota…" — the words of Gemini's per-minute limit — and only `insufficient_quota` tells them apart (F358).
+    code = next((str(v) for v in (detail.get("code"), detail.get("type")) if isinstance(v, str) and v), None)
+    if code and code not in message:
+        message = f"{message} ({code})"
+
+    def _int(name: str) -> int | None:
+        value = detail.get(name)
+        return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+    return EmbeddingFailed(f"{label} embedding refused: HTTP {status}: {message}", provider=provider, status=status,
+                           charged_microusd=_int("charged_microusd"), needed_microusd=_int("needed_microusd"),
+                           available_microusd=_int("available_microusd"))
+
+
+async def _post_embeddings(url: str, headers: dict, body: dict, *, provider: str, label: str,
+                           timeout: float) -> tuple[dict, dict]:
+    """POST one embeddings request; its JSON and headers, or `EmbeddingFailed`."""
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(url, headers=headers, json=body)
+    except httpx.HTTPError as e:
+        raise EmbeddingFailed(f"{label} embedding failed: {type(e).__name__}: {e}", provider=provider,
+                              code=PROVIDER_UNAVAILABLE) from e
+    if resp.status_code >= 400:
+        raise _embedding_refusal(resp, provider, label)
+    try:
+        data = resp.json()
+    except ValueError as e:
+        raise EmbeddingFailed(f"{label} embedding answered something that is not JSON.", provider=provider) from e
+    return (data if isinstance(data, dict) else {}), dict(getattr(resp, "headers", None) or {})
+
+
+def _openai_shaped_vectors(data: dict, provider: str, label: str) -> list[list[float]]:
+    items = data.get("data")
+    if not isinstance(items, list):
+        raise EmbeddingFailed(f"{label} embedding answered without `data`.", provider=provider)
+    try:
+        ordered = sorted(items, key=lambda item: item.get("index", 0)) if all("index" in i for i in items) else items
+        return [list(item["embedding"]) for item in ordered]
+    except (KeyError, TypeError) as e:
+        raise EmbeddingFailed(f"{label} embedding answered a malformed item.", provider=provider) from e
+
+
+def _prompt_tokens(data: dict) -> int:
+    usage = data.get("usage") or {}
+    value = usage.get("prompt_tokens") or usage.get("total_tokens") or 0
+    return int(value) if isinstance(value, (int, float)) else 0
+
+
+def _header(headers: dict, name: str) -> str | None:
+    for key, value in headers.items():
+        if key.lower() == name:
+            return value
+    return None
+
+
+async def _embed_ex_openai(texts: list[str], model: str, settings: dict, spec, *, input_type: str | None = None,
+                           dims: int | None = None) -> EmbeddingResponse:
+    key = (settings.get("openai_key") or "").strip()
+    if not key:
+        raise EmbeddingFailed("OpenAI embeddings need an OpenAI key (Settings → Models).", provider=spec.id,
+                              code=PROVIDER_REFUSED, missing="openai_key")
+    body: dict = {"model": model, "input": texts}
+    if dims is not None:
+        if not model.lower().startswith("text-embedding-3-"):
+            raise EmbeddingFailed(f"{model} has one width; it cannot answer {dims} dimensions.", provider=spec.id,
+                                  code=PROVIDER_REFUSED)
+        body["dimensions"] = dims
+    data, headers = await _post_embeddings("https://api.openai.com/v1/embeddings",
+                                           {"Authorization": f"Bearer {key}"}, body, provider=spec.id,
+                                           label=spec.label, timeout=_embed_timeout(input_type))
+    return EmbeddingResponse(_openai_shaped_vectors(data, spec.id, spec.label), model, spec.id,
+                             _prompt_tokens(data), _header(headers, "x-request-id"))
+
+
+async def _embed_ex_v1(texts: list[str], model: str, settings: dict, spec, *, input_type: str | None = None,
+                       dims: int | None = None) -> EmbeddingResponse:
+    """Our gateway, `oaic.` and `locv1.`. Only the gateway is told the kind: it serves Cohere, and an
+    OpenAI-compatible server may refuse a field it does not know."""
+    base = (settings.get(spec.address) or "").strip()
+    if not base:
+        raise EmbeddingFailed(f"{spec.label} embeddings need the server's address ({spec.address}).",
+                              provider=spec.id, code=PROVIDER_REFUSED, missing=spec.address)
+    gateway = spec.id == "model_gateway"
+    key = (settings.get(spec.keys[0]) or "").strip() if spec.keys else ""
+    body: dict = {"model": spec.bare(model), "input": texts}
+    if dims is not None:
+        body["dimensions"] = dims
+    if gateway and input_type:
+        body["input_type"] = input_type
+    timeout = GATEWAY_EMBED_TIMEOUT if gateway and input_type != "query" else _embed_timeout(input_type)
+    data, headers = await _post_embeddings(f"{_normalize_v1_base_url(base)}/v1/embeddings",
+                                           {"Authorization": f"Bearer {key}"} if key else {}, body,
+                                           provider=spec.id, label=spec.label, timeout=timeout)
+    charged = None
+    if gateway:
+        value = (data.get("usage") or {}).get("charged_microusd")
+        charged = int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    return EmbeddingResponse(_openai_shaped_vectors(data, spec.id, spec.label), model, spec.id,
+                             _prompt_tokens(data), _header(headers, "x-request-id"), charged)
+
+
+async def _embed_ex_gemini(texts: list[str], model: str, settings: dict, spec, *, input_type: str | None = None,
+                           dims: int | None = None) -> EmbeddingResponse:
+    key = (settings.get("gemini_key") or "").strip()
+    if not key:
+        raise EmbeddingFailed("Gemini embeddings need a Gemini key (Settings → Models).", provider=spec.id,
+                              code=PROVIDER_REFUSED, missing="gemini_key")
+    from google.genai import types
+
+    config: dict = {}
+    if input_type:
+        config["task_type"] = "RETRIEVAL_QUERY" if input_type == "query" else "RETRIEVAL_DOCUMENT"
+    if dims is not None:
+        config["output_dimensionality"] = dims
+    # This key's own client, shared with chat on the same key (F321); the sync
+    # SDK in a thread, since `client.aio` binds a cached client to one loop.
+    client = _gemini_client_for(key, timeout_ms=_GEMINI_CLIENT_TIMEOUT_MS)
+    try:
+        result = await asyncio.to_thread(client.models.embed_content, model=model, contents=texts,
+                                         config=types.EmbedContentConfig(**config))
+    except Exception as e:  # noqa: BLE001 — the SDK's errors carry "429 RESOURCE_EXHAUSTED"-shaped codes
+        raise EmbeddingFailed(f"Gemini embedding failed: {e}", provider=spec.id) from e
+    vectors = [list(em.values or []) for em in (result.embeddings or [])]
+    return EmbeddingResponse(vectors, model, spec.id)
+
+
+def _bedrock_failure(e: Exception, model_id: str, region: str) -> EmbeddingFailed:
+    if isinstance(e, botocore.exceptions.NoCredentialsError):
+        return EmbeddingFailed("Bedrock embeddings need a Bedrock API key or AWS credentials (Settings → Models).",
+                               provider="bedrock", code=PROVIDER_REFUSED, missing="bedrock_api_key")
+    if isinstance(e, botocore.exceptions.ClientError):
+        error = e.response.get("Error", {}) or {}
+        status = (e.response.get("ResponseMetadata", {}) or {}).get("HTTPStatusCode")
+        code, message = error.get("Code", ""), error.get("Message", "")
+        hint = ""
+        if code == "ResourceNotFoundException" or "unknown model" in message.lower():
+            hint = (f" Is {model_id} enabled in {region}? A model with no on-demand throughput needs its "
+                    f"inference profile (bedrock.us.…).")
+        return EmbeddingFailed(f"Bedrock embedding refused: HTTP {status}: {code}: {message}.{hint}",
+                               provider="bedrock", status=int(status) if status else None)
+    return EmbeddingFailed(f"Bedrock embedding failed: {type(e).__name__}: {e}", provider="bedrock")
+
+
+async def _embed_ex_bedrock(texts: list[str], model: str, settings: dict, spec, *, input_type: str | None = None,
+                            dims: int | None = None) -> EmbeddingResponse:
+    """Titan (one text a call, several at once) and Cohere v3/v4 (up to 96 a call), in the shapes C1's gateway
+    sends (`api/gateway/bedrock.py`)."""
+    region = (settings.get("aws_region") or "us-east-1").strip() or "us-east-1"
+    client = _make_aws_client("bedrock-runtime", region, settings)
+    model_id = spec.bare(model)
+    lowered = model_id.lower()
+
+    async def invoke(body: dict) -> tuple[dict, int, str | None]:
+        def _run():
+            return client.invoke_model(body=json.dumps(body), modelId=model_id, accept="application/json",
+                                       contentType="application/json")
+        try:
+            resp = await asyncio.to_thread(_run)
+        except Exception as e:  # noqa: BLE001 — worded per kind below
+            raise _bedrock_failure(e, model_id, region) from e
+        meta = resp.get("ResponseMetadata", {}) or {}
+        tokens = (meta.get("HTTPHeaders", {}) or {}).get("x-amzn-bedrock-input-token-count")
+        try:
+            parsed = json.loads(resp["body"].read())
+        except Exception as e:  # noqa: BLE001
+            raise EmbeddingFailed(f"Bedrock embedding answered something that is not JSON ({model_id}).",
+                                  provider=spec.id) from e
+        return parsed, int(tokens) if tokens and str(tokens).isdigit() else 0, meta.get("RequestId")
+
+    if "cohere" in lowered:
+        v4 = "embed-v4" in lowered
+        if dims is not None and not v4:
+            raise EmbeddingFailed(f"{model_id} has one width; it cannot answer {dims} dimensions.",
+                                  provider=spec.id, code=PROVIDER_REFUSED)
+        vectors: list[list[float]] = []
+        tokens = 0
+        request_id = None
+        for i in range(0, len(texts), COHERE_EMBED_BATCH):
+            batch = texts[i:i + COHERE_EMBED_BATCH]
+            body: dict = {
+                # Cohere v3 on Bedrock takes at most 2,048 characters a text.
+                "texts": batch if v4 else [t[:2048] for t in batch],
+                "input_type": "search_query" if input_type == "query" else "search_document",
+                "truncate": "END",
+            }
+            if v4:
+                body["embedding_types"] = ["float"]
+                if dims is not None:
+                    body["output_dimension"] = dims
+            parsed, used, rid = await invoke(body)
+            found = parsed.get("embeddings")
+            if isinstance(found, dict):
+                found = found.get("float")
+            if not isinstance(found, list):
+                raise EmbeddingFailed(f"Cohere on Bedrock answered without embeddings ({model_id}).",
+                                      provider=spec.id)
+            vectors.extend(list(v) for v in found)
+            tokens += used
+            request_id = request_id or rid
+        return EmbeddingResponse(vectors, model, spec.id, tokens, request_id)
+
+    v2 = "titan-embed-text-v2" in lowered
+    if dims is not None and not v2:
+        raise EmbeddingFailed(f"{model_id} has one width; it cannot answer {dims} dimensions.", provider=spec.id,
+                              code=PROVIDER_REFUSED)
+    gate = asyncio.Semaphore(BEDROCK_EMBED_CONCURRENCY)
+
+    async def one(text: str) -> tuple[list[float], int, str | None]:
+        body: dict = {"inputText": text}
+        if v2:
+            body["normalize"] = True
+            if dims is not None:
+                body["dimensions"] = dims
+        async with gate:
+            parsed, used, rid = await invoke(body)
+        vector = parsed.get("embedding")
+        if not isinstance(vector, list):
+            raise EmbeddingFailed(f"Bedrock answered without an embedding ({model_id}).", provider=spec.id)
+        return list(vector), used or int(parsed.get("inputTextTokenCount") or 0), rid
+
+    answers = await asyncio.gather(*(one(t) for t in texts))
+    return EmbeddingResponse([a[0] for a in answers], model, spec.id, sum(a[1] for a in answers),
+                             next((a[2] for a in answers if a[2]), None))
+
+
+async def _embed_ex_ollama(texts: list[str], model: str, settings: dict, spec, *, input_type: str | None = None,
+                           dims: int | None = None) -> EmbeddingResponse:
+    """Ollama's batched `/api/embed` (Ollama 0.3, 2024). The one-text `/api/embeddings` that `_embed_ollama`
+    falls back to is not tried: it answers an empty list for a model it lacks."""
+    base = _ollama_base_url(settings)
+    body: dict = {"model": spec.bare(model), "input": texts}
+    if dims is not None:
+        body["dimensions"] = dims
+    data, _headers = await _post_embeddings(f"{base}/api/embed", {}, body, provider=spec.id,
+                                            label=f"Ollama at {base}", timeout=_embed_timeout(input_type))
+    vectors = data.get("embeddings")
+    if not isinstance(vectors, list):
+        raise EmbeddingFailed(f"Ollama at {base} answered without embeddings.", provider=spec.id)
+    tokens = data.get("prompt_eval_count") or 0
+    return EmbeddingResponse([list(v) for v in vectors], model, spec.id,
+                             int(tokens) if isinstance(tokens, (int, float)) else 0)

@@ -18,18 +18,6 @@ import pytest
 from core.mcp_client import check_stdio_command_allowed, stdio_mcp_allowed
 
 
-@pytest.fixture(autouse=True)
-def _restore_settings():
-    """1.9.x keeps settings in one file that the suite's per-test reset does
-    not touch, so a knob turned off here would reach every later test."""
-    from core.config import load_settings
-    from core.routes.settings import save_settings
-
-    before = dict(load_settings())
-    yield
-    save_settings(before)
-
-
 async def _get(client) -> dict:
     return (await client.get("/api/settings")).json()
 
@@ -91,9 +79,8 @@ class TestTheRouteRefusesWhatItWouldDrop:
 
     async def test_a_patch_needs_no_agent_name(self, client):
         """Every caller sent `agent_name` only because the model required it."""
-        name = (await _get(client))["agent_name"]
         resp = await client.post("/api/settings", json={"allow_stdio_mcp": False})
 
         assert resp.status_code == 200, resp.text
         assert (await _get(client))["allow_stdio_mcp"] is False
-        assert (await _get(client))["agent_name"] == name
+        assert (await _get(client))["agent_name"] == "Synapse"

@@ -1,5 +1,6 @@
 export { GeneralTab } from './GeneralTab';
 export { PersonalDetailsTab } from './PersonalDetailsTab';
+export { VariablesTab } from './VariablesTab';
 export { MemoryTab } from './MemoryTab';
 export { DatabaseTab } from './DatabaseTab';
 export { AgentsTab } from './AgentsTab';

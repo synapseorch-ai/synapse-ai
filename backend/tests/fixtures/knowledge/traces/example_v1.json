@@ -1,0 +1,96 @@
+{
+  "trace_version": 1,
+  "query_id": "kq_0000000000000000000000000000000a",
+  "created_at": "2026-09-30T12:00:00+00:00",
+  "origin": {"surface": "tool", "run_id": null, "session_id": "sess_demo", "agent_id": "agent_legal", "turn": 2},
+  "request": {
+    "query": "When can either party terminate the Acme agreement?",
+    "rewritten_query": "Acme master services agreement termination notice period",
+    "kb_ids": ["kb_00000000000a"],
+    "filters": {"doc_type": {"$eq": "contract"}},
+    "path_prefix": null,
+    "top_k": 2,
+    "rerank": true,
+    "score_threshold": null,
+    "neighbors": 0,
+    "mode": "hybrid",
+    "pinned_snapshots": {}
+  },
+  "pipeline": {
+    "kb_00000000000a": {
+      "snapshot_id": "ksnap_a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "embed_model": "synapse.titan-embed-v2",
+      "embed_dims": 1024,
+      "chunker_version": "structure-1",
+      "fusion": {"method": "rrf", "k": 60, "weights": {"lexical": 1.0, "vector": 1.0}},
+      "overfetch": 50,
+      "rerank_model": "synapse.cohere-rerank-3-5",
+      "top_k": 2,
+      "score_threshold": null,
+      "parent_expansion": "off"
+    }
+  },
+  "index": {
+    "name": "memory",
+    "version": "1",
+    "capabilities": {"name": "memory", "version": "1", "lexical": true, "vector": true, "filter_pushdown": false,
+                     "per_leg_scores": true, "search_mode": "exact", "max_dims": null, "lexical_languages": false}
+  },
+  "degraded": [{"code": "post_filtered", "detail": "the index cannot filter; 200 candidates fetched, filtered after"}],
+  "legs": [
+    {"leg": "lexical", "scopes": [{"kb_id": "kb_00000000000a", "snapshot_id": "ksnap_a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"}],
+     "requested": 200, "returned": 3, "filtered": false, "exact": true, "latency_ms": 4,
+     "candidates": [{"chunk_id": "kch_11111111111111111111111111111111", "rank": 1, "score": 7.21},
+                    {"chunk_id": "kch_22222222222222222222222222222222", "rank": 2, "score": 2.05},
+                    {"chunk_id": "kch_33333333333333333333333333333333", "rank": 3, "score": 1.12}]},
+    {"leg": "vector", "scopes": [{"kb_id": "kb_00000000000a", "snapshot_id": "ksnap_a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"}],
+     "requested": 200, "returned": 3, "filtered": false, "exact": true, "latency_ms": 11,
+     "candidates": [{"chunk_id": "kch_11111111111111111111111111111111", "rank": 1, "score": 0.82},
+                    {"chunk_id": "kch_44444444444444444444444444444444", "rank": 2, "score": 0.61},
+                    {"chunk_id": "kch_22222222222222222222222222222222", "rank": 3, "score": 0.57}]}
+  ],
+  "fusion": {
+    "method": "rrf",
+    "params": {"method": "rrf", "k": 60, "weights": {"lexical": 1.0, "vector": 1.0}},
+    "candidates": [{"chunk_id": "kch_11111111111111111111111111111111", "score": 0.032787, "ranks": {"lexical": 1, "vector": 1}},
+                   {"chunk_id": "kch_22222222222222222222222222222222", "score": 0.032002, "ranks": {"lexical": 2, "vector": 3}},
+                   {"chunk_id": "kch_44444444444444444444444444444444", "score": 0.016129, "ranks": {"vector": 2}},
+                   {"chunk_id": "kch_33333333333333333333333333333333", "score": 0.015873, "ranks": {"lexical": 3}}]
+  },
+  "rerank": {"model": "synapse.cohere-rerank-3-5", "cost_source": "platform", "input_count": 3, "latency_ms": 180,
+             "results": [{"chunk_id": "kch_11111111111111111111111111111111", "rank": 1, "score": 0.94},
+                         {"chunk_id": "kch_22222222222222222222222222222222", "rank": 2, "score": 0.41},
+                         {"chunk_id": "kch_33333333333333333333333333333333", "rank": 3, "score": 0.08}]},
+  "cuts": [{"stage": "post_filter", "dropped": ["kch_44444444444444444444444444444444"], "dropped_count": 1,
+            "rule": "doc_type = contract"},
+           {"stage": "top_k", "dropped": ["kch_33333333333333333333333333333333"], "dropped_count": 1, "rule": "top_k=2"}],
+  "hits": [
+    {"label": "[K1]", "chunk_id": "kch_11111111111111111111111111111111", "doc_id": "kdoc_00000000000000000000000000000001",
+     "doc_sha256": "5f1d0d7c5b1f0c6f2f6f1a0e5e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7d6e5", "doc_version": 1,
+     "snapshot_id": "ksnap_a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "kb_id": "kb_00000000000a", "path": "contracts/acme.pdf",
+     "page_start": 2, "page_end": 2, "heading_path": ["Master Services Agreement", "Termination"],
+     "snippet": "Termination clause: either party may terminate with ninety days notice.",
+     "score": 0.94, "scores": {"lexical": 7.21, "vector": 0.82, "fused": 0.032787, "rerank": 0.94},
+     "ranks": {"lexical": 1, "vector": 1, "fused": 1, "rerank": 1}},
+    {"label": "[K2]", "chunk_id": "kch_22222222222222222222222222222222", "doc_id": "kdoc_00000000000000000000000000000001",
+     "doc_sha256": "5f1d0d7c5b1f0c6f2f6f1a0e5e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7d6e5", "doc_version": 1,
+     "snapshot_id": "ksnap_a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "kb_id": "kb_00000000000a", "path": "contracts/acme.pdf",
+     "page_start": 2, "page_end": 2, "heading_path": ["Master Services Agreement", "Renewal"],
+     "snippet": "Renewal happens automatically each year unless cancelled.",
+     "score": 0.41, "scores": {"lexical": 2.05, "vector": 0.57, "fused": 0.032002, "rerank": 0.41},
+     "ranks": {"lexical": 2, "vector": 3, "fused": 2, "rerank": 2}}
+  ],
+  "costs": {
+    "total_est_usd": 0.0020003,
+    "total_charged_microusd": 2001,
+    "rows": [
+      {"stage": "embed", "model": "synapse.titan-embed-v2", "cost_source": "platform", "units": 15, "unit": "tokens",
+       "input_tokens": 15, "est_usd": 3e-07, "charged_microusd": 1},
+      {"stage": "rerank", "model": "synapse.cohere-rerank-3-5", "cost_source": "platform", "units": 1,
+       "unit": "search_units", "input_tokens": 0, "est_usd": 0.002, "charged_microusd": 2000}
+    ]
+  },
+  "timings_ms": {"rewrite": 0, "embed": 38, "lexical": 4, "vector": 11, "fuse": 1, "rerank": 180, "total": 241},
+  "replay": {"query_vector_sha256": "9a1f00c2d4b6e8f0a2c4e6f8a0b2c4d6e8f0a2c4e6f8a0b2c4d6e8f0a2c4e6f8", "exact_possible": true,
+             "notes": []}
+}

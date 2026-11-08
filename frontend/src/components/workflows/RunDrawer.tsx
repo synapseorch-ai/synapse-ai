@@ -1,0 +1,181 @@
+'use client';
+/**
+ * The open canvas's run drawer (M3a): the Run Log and Recent Runs that were
+ * tabs under the old canvas, above the run strip. The log follows its newest
+ * line while the reader is at its foot (F127), stops when they scroll up, and
+ * "Jump to latest" starts it again.
+ *
+ * The log is the run screens' own (M3a-2): `LogLine` draws each entry as the
+ * run page and cloud's builder panel do, the plan is their `TaskChecklist` at
+ * the log's foot, and the nested runs their `NestedRuns`, read from the same
+ * `/children` as before and named from the workflows already loaded.
+ */
+import { useEffect, useRef, useState } from 'react';
+import { ArrowDown, X } from 'lucide-react';
+import { IconButton, Spinner } from '@/components/ui';
+import { LogLine, NestedRuns, TaskChecklist, useRunTeamHandlers, type NestedRun, type RunLogState, type StepResultEntry } from '@/components/run';
+import type { RunSummary } from '@/components/runs/summary';
+import { TeamView } from '@/components/team';
+import type { RunDrawerView } from './RunStrip';
+
+/** The runs nested directly under this run — one per run of a nested step (F251). */
+function NestedRunsOf({ runId, refreshKey, names }: { runId: string; refreshKey: string; names: Record<string, string> }) {
+    const [children, setChildren] = useState<NestedRun[]>([]);
+    useEffect(() => {
+        let live = true;
+        fetch(`/api/orchestrations/runs/${encodeURIComponent(runId)}/children`)
+            .then(r => (r.ok ? r.json() : []))
+            .then(rows => { if (live) setChildren(Array.isArray(rows) ? rows : []); })
+            .catch(() => { if (live) setChildren([]); });
+        return () => { live = false; };
+    }, [runId, refreshKey]);
+    return (
+        <NestedRuns
+            runs={children.map((c) => ({ ...c, orchestration_name: c.orchestration_name ?? names[c.orchestration_id] ?? null }))}
+        />
+    );
+}
+
+export function RunDrawer({
+    view, onClose, runStatus, log, onOpenResponseModal, runId, humanPrompt, orchestrationNames,
+    pastRuns, onRestoreRun,
+}: {
+    view: RunDrawerView;
+    onClose: () => void;
+    runStatus: string;
+    /** The run's log, its plan and what the model is doing now (`applyRunEvent`'s state). */
+    log: RunLogState;
+    onOpenResponseModal: (entry: StepResultEntry) => void;
+    runId: string | null;
+    humanPrompt: string | null;
+    /** Orchestration names by id, to name a nested run (F251). */
+    orchestrationNames: Record<string, string>;
+    pastRuns: RunSummary[];
+    onRestoreRun: (run: RunSummary) => void;
+}) {
+    // A Team step's lines, answered, stopped and written to where they are drawn (TEAM1e).
+    const teamHandlers = useRunTeamHandlers(runId ?? '');
+    const scrollRef = useRef<HTMLDivElement>(null);
+    const [pinned, setPinned] = useState(true);
+    const runLog = log.entries;
+    const liveActivity = log.liveActivity;
+    if (runLog.length === 0 && !pinned) setPinned(true); // a new run starts at its foot
+
+    // Where the log last put itself at its foot: only the reader moving above it
+    // stops the following. The log growing, or the drawer reflowing (the setup
+    // card opening beside it narrows it, M3a-2), under a scroll the log made
+    // itself is not the reader leaving the foot.
+    const placed = useRef(0);
+    useEffect(() => {
+        const el = scrollRef.current;
+        if (el && pinned && view === 'run') {
+            el.scrollTop = el.scrollHeight;
+            placed.current = el.scrollTop;
+        }
+    }, [runLog, log.tasks, pinned, view]);
+
+    const onScroll = () => {
+        const el = scrollRef.current;
+        if (!el || view !== 'run') return;
+        const atFoot = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+        if (!atFoot && pinned && el.scrollTop >= placed.current - 2) {
+            el.scrollTop = el.scrollHeight;
+            placed.current = el.scrollTop;
+            return;
+        }
+        if (atFoot) placed.current = el.scrollTop;
+        setPinned(atFoot);
+    };
+
+    return (
+        <>
+            <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 pb-1.5">
+                <h2 className="flex-1 text-sm font-semibold text-text">{view === 'run' ? 'Run log' : 'Recent runs'}</h2>
+                <IconButton label={view === 'run' ? 'Close the run log' : 'Close recent runs'} icon={X} size="sm" onClick={onClose} />
+            </div>
+            <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto p-3">
+                {view === 'recent' ? (
+                    <div className="space-y-1">
+                        {pastRuns.length === 0 ? (
+                            <div className="text-text-faint italic text-xs">No runs yet.</div>
+                        ) : (
+                            pastRuns.slice(0, 20).map(r => (
+                                <div key={r.run_id} className="flex items-center gap-2 rounded-md bg-surface-2 px-2 py-1 text-[11px]">
+                                    <span className={`size-1.5 shrink-0 rounded-full ${
+                                        r.status === 'completed' ? 'bg-success' :
+                                        r.status === 'failed'    ? 'bg-danger' :
+                                        r.status === 'cancelled' ? 'bg-text-faint' :
+                                        r.status === 'paused'    ? 'bg-person' : 'bg-machine motion-safe:animate-pulse'
+                                    }`} />
+                                    <span className="min-w-0 flex-1 truncate text-text-muted" title={r.run_id}>{r.run_id}</span>
+                                    <span className="capitalize text-text-faint">{r.status}</span>
+                                    {r.started_at && (
+                                        <span className="text-[10px] text-text-faint">
+                                            {new Date(r.started_at).toLocaleTimeString()}
+                                        </span>
+                                    )}
+                                    {(r.status === 'failed' || r.status === 'cancelled') && (
+                                        <button
+                                            onClick={() => onRestoreRun(r)}
+                                            className="rounded-md border border-border-strong bg-surface px-2 py-0.5 text-[10px] text-text hover:bg-surface-2"
+                                        >
+                                            Resume
+                                        </button>
+                                    )}
+                                </div>
+                            ))
+                        )}
+                    </div>
+                ) : (
+                    <div className="space-y-2">
+                        {/* Live activity: what the model is doing right now */}
+                        {runStatus === 'running' && liveActivity && (
+                            <div className="flex items-center gap-2 rounded-md border border-border bg-machine-subtle px-2.5 py-1.5 text-[11px] text-text-muted">
+                                <Spinner size={16} className="shrink-0 text-machine" />
+                                <span className="truncate">{liveActivity}</span>
+                            </div>
+                        )}
+
+                        <div data-run-log="" className="space-y-0.5 font-mono text-[11px] text-text-muted">
+                            {runLog.length === 0 ? (
+                                <div className="italic text-text-faint">No run output yet. Click Run now to start.</div>
+                            ) : (
+                                runLog.map((entry, i) => <LogLine key={i} entry={entry} onOpen={onOpenResponseModal} />)
+                            )}
+                        </div>
+
+                        {/* The plan, as one list where the action is (it was re-drawn at the log's tail). */}
+                        {log.tasks.length > 0 && (
+                            <TaskChecklist tasks={log.tasks} className="rounded-md border border-border bg-surface-2/40 px-3 py-2" />
+                        )}
+
+                        {/* A Team agent step's task list and members' lanes (TEAM1b; fed once a step runs a team, TEAM1e). */}
+                        {log.team && <TeamView state={log.team} kept={runStatus !== 'running'} {...teamHandlers} />}
+
+                        {runId && (
+                            <NestedRunsOf
+                                runId={runId}
+                                refreshKey={`${runStatus}:${runLog.length > 0}`}
+                                names={orchestrationNames}
+                            />
+                        )}
+
+                        {/* Not while a question is up: the run is waiting, nothing new
+                            arrives, and the strip below says where it is. */}
+                        {!pinned && !humanPrompt && runLog.length > 0 && (
+                            <div className="pointer-events-none sticky bottom-0 z-10 flex justify-center pt-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setPinned(true)}
+                                    className="pointer-events-auto inline-flex items-center gap-1 rounded-full border border-border bg-surface px-2.5 py-1 text-[11px] text-text-muted shadow-md transition-colors hover:text-text"
+                                >
+                                    <ArrowDown size={11} aria-hidden /> Jump to latest
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                )}
+            </div>
+        </>
+    );
+}

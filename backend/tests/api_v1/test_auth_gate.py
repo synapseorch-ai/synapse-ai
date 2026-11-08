@@ -33,6 +33,9 @@ class TestAuthStatusGate:
         assert resp.json() == {
             "login_enabled": True,
             "login_configured": True,
+            # D124: the status also says whether login-off's access link is the
+            # gate; with a password configured it never is.
+            "access_required": False,
             "authenticated": True,
         }
 

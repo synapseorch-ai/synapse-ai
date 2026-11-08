@@ -5,6 +5,7 @@ import platform
 import shutil
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Optional
 from contextlib import asynccontextmanager, AsyncExitStack
@@ -28,6 +29,7 @@ except ImportError:
     MemoryStore = None
 
 from core.mcp_client import MCPClientManager
+from core.tool_router import ToolRouter
 from core.config import load_settings, get_or_create_jwt_secret
 from core.routes.settings import _init_memory_store
 
@@ -47,23 +49,38 @@ from core.routes.db_configs import router as db_configs_router
 from core.routes.orchestrations import router as orchestrations_router
 from core.routes.logs import router as logs_router
 from core.routes.messaging import router as messaging_router
+from core.routes.voice import router as voice_router
 from core.routes.sessions import router as sessions_router
 from core.routes.usage import router as usage_router
 from core.routes.profiling import router as profiling_router
 from core.routes.schedules import router as schedules_router
 from core.routes.import_export import router as import_export_router
 from core.routes.vault import router as vault_router
+from core.routes.knowledge import router as knowledge_router
+from core.routes.boards import router as boards_router
 from core.routes.builder import router as builder_router
+from core.routes.assistant import router as assistant_router
 from core.routes.api_keys import router as api_keys_router
+from core.routes.evals import router as evals_router
+from core.routes.skills import router as skills_router
+from core.routes.widget import router as widget_router, WidgetUpdated, widget_updated_response
+from core.routes.agent_memory import router as agent_memory_router
 from core.routes.api_v1 import router as api_v1_router
+from core.routes.openai_compat import (
+    OpenAIError, approvals_router as openai_approvals_router, handle_openai_error,
+    router as openai_compat_router,
+)
+from core.routes.api_v1_knowledge import router as api_v1_knowledge_router
 from core.routes.api_v2 import router as api_v2_router
 from core.routes.scale import router as scale_router
 from core.routes.notifications import router as notifications_router
+from core.routes.browser import router as browser_router
+from core.routes.site_sessions import router as site_sessions_router
+from core.routes.recordings import router as recordings_router
 from core.profiling import TimingMiddleware
 from core.internal_auth import InternalTokenMiddleware
 
 # Configuration
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = "llama3"
 
 # On Windows, npx is a .cmd file and must be invoked as "npx.cmd" for subprocess
@@ -74,85 +91,98 @@ _NPX_CMD = "npx.cmd" if _IS_WIN else "npx"
 TOOLS_DIR = Path(__file__).resolve().parent.parent / "tools"
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 _PROJECT_ROOT = BACKEND_ROOT.parent
-_data_dir_env = os.getenv("SYNAPSE_DATA_DIR", "")
-if _data_dir_env:
-    _data_dir_p = Path(_data_dir_env)
-    DATA_DIR = _data_dir_p if _data_dir_p.is_absolute() else _PROJECT_ROOT / _data_dir_p
-else:
-    DATA_DIR = BACKEND_ROOT / "data"
-GOOGLE_CREDENTIALS_DIR = DATA_DIR / "google-credentials"
 
-_settings = load_settings()
+# Settings are deliberately NOT read at import time. There is no store, no
+# event loop and no settings provider installed yet at import, so a module-level
+# load_settings() would capture the shipped defaults and hold them for the
+# process's life — silently discarding anything the user had configured. Every
+# reader below calls load_settings() itself, after lifespan has bound them.
 
-# Propagate ollama_base_url from settings to env so llm_providers picks it up
-if _settings.get("ollama_base_url"):
-    os.environ["OLLAMA_BASE_URL"] = _settings["ollama_base_url"]
+# ollama_base_url is NOT copied into os.environ here. Writing one tenant's
+# setting into the process environment made it the default for every tenant the
+# process later served. llm_providers._ollama_base_url() reads the setting it is
+# given and falls back to the OLLAMA_BASE_URL env var as a deployment default.
 
-from core.browser_automation import gated
 from core.tools_registry import ALL_NATIVE_TOOLS
 TOOLS_LIST = dict(ALL_NATIVE_TOOLS)
 
-REPOS_FILE = DATA_DIR / "repos.json"
+def _native_tool_args(name: str) -> list[str]:
+    """What a native tool's server is started with beyond its script. The scraper saves screenshots in its own
+    folder in the vault and nowhere else (F1066)."""
+    if name == "web_scraper":
+        from core.vault import _vault_root
 
-def _get_repo_paths() -> list[str]:
-    """Load repo paths from repos.json for filesystem MCP server permissions."""
-    if not REPOS_FILE.exists():
-        return []
-    try:
-        repos = json.loads(REPOS_FILE.read_text(encoding="utf-8"))
-        return [r["path"] for r in repos if r.get("path") and os.path.isdir(r["path"])]
-    except Exception as e:
-        print(f"Warning: Could not load repo paths: {e}")
-        return []
+        return ["--output-dir", str(_vault_root() / "tool_outputs" / "screenshots")]
+    return []
 
 
-def _get_google_oauth_env() -> dict[str, str]:
-    """Extract OAuth client_id and client_secret from credentials.json for workspace-mcp.
-    Also reads user email from token.json to pass USER_GOOGLE_EMAIL for single-user mode."""
-    creds_file = DATA_DIR / "credentials.json"
-    token_file = DATA_DIR / "token.json"
-    if not creds_file.exists():
+async def _filesystem_server_spec() -> dict:
+    """The Filesystem MCP server, rooted where agents may read.
+
+    The roots are `core/file_roots.allowed_roots()` — repositories, the
+    tenant's vault, then Settings → "Allowed Directories" — the same list the
+    engine's own file tools check against (S5), so the two cannot drift. Read
+    fresh, so a restart picks up edits without a backend reboot.
+    """
+    from core import file_roots
+
+    fs_paths = await file_roots.allowed_roots()
+    if not await file_roots.repo_paths():
+        print("Warning: No repos configured — starting filesystem MCP server with vault access only.")
+    return {
+        "name": "Filesystem",
+        "command": _NPX_CMD,
+        "args": ["-y", "@modelcontextprotocol/server-filesystem"] + fs_paths,
+    }
+
+
+async def _get_google_oauth_env() -> dict[str, str]:
+    """Build workspace-mcp's environment from the stored Google credentials.
+
+    Also materialises the credential directory the subprocess reads, which is
+    process scratch rebuilt from the store rather than durable state — see
+    services/google.google_credentials_dir.
+    """
+    from services import google as google_svc
+
+    client = await google_svc.load_client_config()
+    if not client:
         return {}
 
     # Refresh the Google token (if expired-but-refreshable) before launching
     # workspace-mcp so the subprocess inherits valid creds and doesn't emit
     # "ACTION REQUIRED: Google Authentication Needed" on the first tool call.
     try:
-        from services.google import get_google_credentials
-        get_google_credentials()
+        await google_svc.get_google_credentials()
     except Exception as e:
         print(f"Warning: Token refresh at startup failed: {e}")
+
     try:
-        creds = json.loads(creds_file.read_text(encoding="utf-8"))
-        installed = creds.get("installed", creds.get("web", {}))
+        installed = client.get("installed", client.get("web", {}))
         client_id = installed.get("client_id", "")
         client_secret = installed.get("client_secret", "")
         if not (client_id and client_secret):
+            return {}
+
+        directory = await google_svc.materialise_mcp_dir()
+        if directory is None:
             return {}
 
         env = {
             "GOOGLE_OAUTH_CLIENT_ID": client_id,
             "GOOGLE_OAUTH_CLIENT_SECRET": client_secret,
             "OAUTHLIB_INSECURE_TRANSPORT": "1",  # allow http:// redirect URIs for localhost
-            "GOOGLE_MCP_CREDENTIALS_DIR": str(GOOGLE_CREDENTIALS_DIR.resolve()),
+            "GOOGLE_MCP_CREDENTIALS_DIR": str(directory.resolve()),
         }
 
-        # Read user email from token.json so workspace-mcp can skip the email prompt
-        if token_file.exists():
-            try:
-                import base64
-                token_data = json.loads(token_file.read_text(encoding="utf-8"))
-                email = token_data.get("email")
-                if not email and token_data.get("token"):
-                    id_token = token_data["token"]
-                    payload_b64 = id_token.split(".")[1]
-                    payload_b64 += "=" * (4 - len(payload_b64) % 4)
-                    payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-                    email = payload.get("email")
-                if email:
-                    env["USER_GOOGLE_EMAIL"] = email
-            except Exception as e:
-                print(f"Warning: Could not read user email from token.json: {e}")
+        # So workspace-mcp can skip the email prompt. One implementation of
+        # "which Google account is this" now, rather than the four that had
+        # drifted apart — this one read token_data["token"] as a JWT, which it
+        # never is, so it never produced an email at all.
+        token_data = await google_svc.load_token() or {}
+        email = google_svc._email_from_token_data(token_data)
+        if email:
+            env["USER_GOOGLE_EMAIL"] = email
 
         return env
     except Exception as e:
@@ -160,85 +190,48 @@ def _get_google_oauth_env() -> dict[str, str]:
     return {}
 
 
-def _filesystem_server_spec() -> dict:
-    """The Filesystem MCP server, rooted where agents may read.
+def _native_mcp_off() -> bool:
+    """`SYNAPSE_NATIVE_MCP=off`: start none of the bundled MCP servers (filesystem, browser,
+    Google). For a headless or test instance that must not npm-install them, reach the network or
+    launch a browser — the CLI's end-to-end suite starts its scratch backend so (BF11)."""
+    return os.environ.get("SYNAPSE_NATIVE_MCP", "").strip().lower() in ("off", "0", "false", "no")
 
-    The roots are `core/file_roots.allowed_roots()` — repositories, the vault,
-    then Settings → "Allowed Directories" — the same list the engine's own file
-    tools check against (S5), so the two cannot drift. Read fresh, so a restart
-    picks up edits without a backend reboot.
+
+def _register_browser() -> None:
+    """Put the browser component where the npx Playwright server used to be.
+
+    Same server name and tool names, so saved agents keep their tools. Nothing
+    starts here: the component and each Chromium start on the first browser call.
     """
-    from core import file_roots
+    if _native_mcp_off() or not load_settings().get("browser_automation_enabled", True):
+        return
+    from core.browser import client as browser_client
+    from core.browser.gate import ALLOWED
 
-    if not file_roots.repo_paths():
-        print("Warning: No repos configured — starting filesystem MCP server with vault access only.")
-    return {
-        "name": "Filesystem",
-        "command": _NPX_CMD,
-        "args": ["-y", "@modelcontextprotocol/server-filesystem"] + file_roots.allowed_roots(),
-    }
-
-
-#: Synapse's egress proxy (`core.egress_proxy`), which Browser Automation's browser goes through; lifespan starts it.
-_browser_proxy_url: str | None = None
+    agent_sessions[browser_client.SERVER_NAME] = browser_client.tools
+    for name in ALLOWED:
+        tool_router.register(browser_client.SERVER_NAME, name)
 
 
-def _native_tool_args(name: str) -> list[str]:
-    """What a native tool's server is started with beyond its script. The scraper saves screenshots in its own
-    folder in the vault and nowhere else (F1066)."""
-    if name == "web_scraper":
-        return ["--output-dir", str((Path(DATA_DIR) / "vault" / "tool_outputs" / "screenshots").resolve())]
-    return []
-
-
-def _build_native_mcp_servers() -> list[dict]:
+async def _build_native_mcp_servers() -> list[dict]:
     """
     Build the list of native MCP servers to connect at startup.
     Returns a list of dicts with keys: name, command, args, env (optional).
+    None at all under `SYNAPSE_NATIVE_MCP=off` (`_native_mcp_off`).
     """
+    if _native_mcp_off():
+        return []
     servers = []
 
     # --- Filesystem MCP Server ---
-    servers.append(_filesystem_server_spec())
+    servers.append(await _filesystem_server_spec())
 
-    # --- Playwright MCP Server (browser automation) ---
-    if _settings.get("browser_automation_enabled", True):
-        env_dict = {}
-        pw_path = _settings.get("playwright_browsers_path")
-        if pw_path:
-            env_dict["PLAYWRIGHT_BROWSERS_PATH"] = pw_path
-        else:
-            # Fallback for old configs
-            env_dict["PLAYWRIGHT_BROWSERS_PATH"] = os.path.expanduser("~/.cache/ms-playwright")
-
-        from core.browser_automation import BROWSER_AUTOMATION, PLAYWRIGHT_MCP
-
-        if _browser_proxy_url is None:
-            # Never without its proxy: lifespan starts it before any server is spawned.
-            print("Warning: the egress proxy is not running — not starting Browser Automation.")
-        else:
-            # Its own folder is its output directory and its working directory: the server reads and writes files
-            # only inside those two. It was the relative "data/vault/playwright", resolved against the home
-            # directory it was started in.
-            folder = (Path(DATA_DIR) / "vault" / "playwright").resolve()
-            folder.mkdir(parents=True, exist_ok=True)
-            # Its browser's own flags, in a file outside that folder (its tools write there), rewritten at every start.
-            from core import egress_proxy
-
-            config = Path(DATA_DIR) / "browser_automation" / "config.json"
-            config.parent.mkdir(parents=True, exist_ok=True)
-            config.write_text(json.dumps({"browser": {"launchOptions": {"args": list(egress_proxy.CHROMIUM_ARGS)}}}))
-            servers.append({
-                "name": BROWSER_AUTOMATION,
-                "command": _NPX_CMD,
-                "args": ["-y", PLAYWRIGHT_MCP, "--browser", "chrome", "--output-dir", str(folder),
-                         "--proxy-server", _browser_proxy_url, "--config", str(config)],
-                "env": env_dict,
-                "cwd": str(folder),
-            })
+    # "Browser Automation" is no longer an npx server here: it is the browser
+    # component (core/browser, BRW1), registered by `_register_browser` below —
+    # a browser per chat or run inside the product, behind the network gate.
 
     # --- Google Workspace MCP Server (Gmail, Drive, Calendar) ---
-    google_env = _get_google_oauth_env()
+    google_env = await _get_google_oauth_env()
     if google_env:
         servers.append({
             "name": "Google Workspace",
@@ -250,21 +243,17 @@ def _build_native_mcp_servers() -> list[dict]:
         print("Warning: No Google OAuth credentials found — skipping Google Workspace MCP server.")
 
 
-    # --- Memory MCP Server ---
-    memory_file_path = DATA_DIR / "memory" / "memory.jsonl"
-    servers.append({
-        "name": "Memory",
-        "command": _NPX_CMD,
-        "args": ["-y", "@modelcontextprotocol/server-memory"],
-        "env": {"MEMORY_FILE_PATH": str(memory_file_path)},
-    })
+    # The Memory MCP server (@modelcontextprotocol/server-memory) used to be
+    # spawned here. The engine's own agent memory replaces it (F226):
+    # `remember` / `search_memory` / `read_memory` / `forget` in
+    # core/agent_memory.py, per agent, bounded, and in the blob store — so it
+    # also works with an S3 bucket, where the server's one shared
+    # `memory.jsonl` had nowhere to live (F225). Its graph file, where one
+    # exists, is left on disk unread.
 
-    # --- Sequential Thinking MCP Server ---
-    servers.append({
-        "name": "Sequential Thinking",
-        "command": _NPX_CMD,
-        "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
-    })
+    # Sequential Thinking used to be spawned here as an npx server. It is now
+    # the native task list (core/task_list.py) — engine-owned, journaled,
+    # resume-safe — and the old name survives as a dispatch alias only.
 
     return servers
 
@@ -277,9 +266,12 @@ async def _connect_filesystem_mcp(label: str = "started") -> None:
     """
     global _filesystem_stack
 
-    fs_cfg = next((c for c in _build_native_mcp_servers() if c["name"] == "Filesystem"), None)
+    fs_cfg = next((c for c in await _build_native_mcp_servers() if c["name"] == "Filesystem"), None)
     if not fs_cfg:
-        print("Warning: Could not build Filesystem MCP config — skipping.")
+        if _native_mcp_off():
+            print("Filesystem MCP server off (SYNAPSE_NATIVE_MCP=off).")
+        else:
+            print("Warning: Could not build Filesystem MCP config — skipping.")
         return
 
     cmd = fs_cfg["command"]
@@ -303,7 +295,9 @@ async def _connect_filesystem_mcp(label: str = "started") -> None:
         # log spam on every /api/tools/available poll.
         agent_sessions["Filesystem"] = session
         for tool in tools.tools:
-            tool_router[tool.name] = ("Filesystem", tool.name)
+            # Beside the vault, never over it (F79): its `read_file` and
+            # `search_files` keep their bare names.
+            tool_router.register_beside("Filesystem", tool.name)
         print(f"Filesystem MCP server {label} ({len(tools.tools)} tools registered).")
     except Exception as e:
         print(f"Failed to start Filesystem MCP server: {e}")
@@ -331,10 +325,19 @@ async def _filesystem_mcp_manager() -> None:
     """
     global _filesystem_stack
 
-    await _connect_filesystem_mcp(label="started")
-
-    if _filesystem_ready is not None:
-        _filesystem_ready.set()
+    # The lifespan waits on `_filesystem_ready`, so it is set whatever the first
+    # attempt did. An exception escaping `_connect_filesystem_mcp` — anything
+    # `_build_native_mcp_servers` raises — used to end this task before the
+    # event was set, and the backend waited for ever without a word (F177).
+    try:
+        await _connect_filesystem_mcp(label="started")
+    except Exception:
+        # Beside the line above it in the log, not on another stream.
+        print("Failed to start Filesystem MCP server:")
+        traceback.print_exc(file=sys.stdout)
+    finally:
+        if _filesystem_ready is not None:
+            _filesystem_ready.set()
 
     try:
         while True:
@@ -390,7 +393,13 @@ async def restart_filesystem_mcp() -> None:
 # The react_engine receives this module as a parameter for testability.
 # ---------------------------------------------------------------------------
 agent_sessions: dict[str, ClientSession] = {}   # client_name -> MCP session
-tool_router: dict[str, tuple[str, str]] = {}     # tool_key -> (session_name, actual_tool_name)
+tool_router: ToolRouter = ToolRouter()           # {server}__{tool} -> (session_name, actual_tool_name)
+
+#: What each session advertised, cached after the first successful list_tools().
+#: Lives beside the sessions it describes rather than in core/tools.py, because
+#: that made it process-global: a worker serving many tenants would have served
+#: them all from whichever tenant's server answered first.
+_session_tools: dict[str, list] = {}
 exit_stack: Optional[AsyncExitStack] = None
 _filesystem_stack: Optional[AsyncExitStack] = None          # owned exclusively by _filesystem_mcp_manager
 _filesystem_restart_queue: Optional[asyncio.Queue] = None   # route handlers put Futures here to request restarts
@@ -398,6 +407,66 @@ _filesystem_manager_task: Optional[asyncio.Task] = None     # the long-running m
 _filesystem_ready: Optional[asyncio.Event] = None           # set once initial FS MCP connection attempt finishes
 memory_store: Any = None
 mcp_manager: Optional[MCPClientManager] = None
+_mcp_boot_retry_task: Optional[asyncio.Task] = None
+
+#: How long the boot retry below waits for this backend to start listening.
+MCP_BOOT_RETRY_WAIT_SECONDS = 30
+
+
+async def _listening(port: int, seconds: float) -> bool:
+    """Whether 127.0.0.1:`port` accepts a connection within `seconds`."""
+    loop = asyncio.get_running_loop()
+    end = loop.time() + seconds
+    while True:
+        try:
+            _reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        except OSError:
+            if loop.time() >= end:
+                return False
+            await asyncio.sleep(0.25)
+            continue
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+        return True
+
+
+async def _retry_failed_remote_mcp(manager, register, *, port: Optional[int] = None) -> list[str]:
+    """One more try, once this backend listens, for remote MCP servers that failed at boot (F237).
+
+    `connect_all` runs in the lifespan, before uvicorn binds its port, so a
+    remote server at this install's own `/api/v1/mcp` was refused on every
+    restart and read Disconnected until someone pressed Retry. A server started
+    beside this one (a compose file, say) could lose the same race. So each
+    remote server left disconnected or waiting for re-auth is tried once more
+    after the port accepts connections (or after the wait runs out). A server
+    with no token reconnects with its cached OAuth token only; no sign-in flow
+    starts from here. Returns the names that connected.
+    """
+    failed = [
+        c["name"] for c in manager.servers_config
+        if c.get("server_type") == "remote"
+        and c.get("status") in ("disconnected", "reauth_needed")
+        and c.get("name") and c["name"] not in manager.sessions
+    ]
+    if not failed:
+        return []
+    if port is None:
+        port = int(os.getenv("SYNAPSE_BACKEND_PORT", "8765"))
+    await _listening(port, MCP_BOOT_RETRY_WAIT_SECONDS)
+    connected: list[str] = []
+    for name in failed:
+        try:
+            if await manager.reconnect_server(name):
+                await register(name)
+                connected.append(name)
+        except Exception as exc:
+            print(f"  MCP boot retry of '{name}' failed: {exc}")
+    if connected:
+        print(f"Connected external MCP server(s) on retry: {', '.join(connected)}")
+    return connected
 messaging_manager: Any = None  # MessagingManager (set in lifespan if enabled)
 schedule_manager: Any = None   # ScheduleManager (set in lifespan)
 
@@ -409,7 +478,7 @@ def _log_security_posture() -> None:
     try:
         from core.mcp_client import stdio_mcp_allowed
         no_token = not os.getenv("SYNAPSE_INTERNAL_TOKEN", "")
-        login_off = not _settings.get("login_enabled")
+        login_off = not load_settings().get("login_enabled")
         if no_token and login_off and stdio_mcp_allowed():
             print(
                 "[SECURITY] No SYNAPSE_INTERNAL_TOKEN set and login is disabled. "
@@ -424,16 +493,83 @@ def _log_security_posture() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global exit_stack, _browser_proxy_url
+    global exit_stack
     print("Starting Multi-Agent Orchestrator...")
-    _log_security_posture()
-    exit_stack = AsyncExitStack()
-    # Before any browser is started: every one goes through it.
-    from core import egress_proxy
+    # Where transforms run (F968), said once at start: the operator's host runtime, or a stored "host" from before
+    # 2.0 that no longer applies.
+    try:
+        from core.config import load_settings as _load_settings
+        from core.routes.settings import transform_runtime_notice
 
-    _browser_proxy_url = (await egress_proxy.shared()).url
-    
-    if _settings.get("coding_agent_enabled"):
+        _notice = transform_runtime_notice(_load_settings())
+        if _notice:
+            print(_notice)
+    except Exception as e:  # noqa: BLE001 — a notice never stops the server
+        print(f"Warning: transform runtime notice skipped: {e}")
+    exit_stack = AsyncExitStack()
+
+    # Synapse's own MCP endpoint (D125). Entered first, so it is closed last and
+    # answers for as long as anything else is up, a failed startup included.
+    try:
+        from core.mcp_server.endpoint import default_endpoint
+        await exit_stack.enter_async_context(default_endpoint().serve())
+    except Exception as e:
+        print(f"Warning: MCP endpoint not started: {e}")
+
+    # Bring a pre-store install's JSON files across, once, on first boot after
+    # the upgrade. No-ops when the store already holds content, so this is safe
+    # on every start. Deliberately not a command the user has to run: an upgrade
+    # step that can be missed becomes a support thread for everyone who misses it.
+    try:
+        from core.store.importer import import_legacy_data_if_present
+        await import_legacy_data_if_present()
+    except Exception as e:
+        print(f"Warning: legacy data import skipped: {e}")
+
+    # And the logs, which live in `backend/logs/` and so were never part of the
+    # DATA_DIR import above. Its own call because its triggers are different in
+    # both directions: an install that already upgraded has `data.migrated/`,
+    # and by the time anyone notices their history is missing the store is not
+    # empty. See `core/store/log_importer.py`.
+    try:
+        from core.store.log_importer import import_legacy_logs_if_present
+        await import_legacy_logs_if_present()
+    except Exception as e:
+        print(f"Warning: legacy log import skipped: {e}")
+
+    # Settings come from the store from here on. Order matters: after the
+    # importer, which is what puts an upgrading install's settings.json into the
+    # store, and before _build_native_mcp_servers() and _init_memory_store()
+    # below, both of which read settings and would otherwise see bare defaults.
+    from core import settings_runtime
+    settings_runtime.install_provider()
+    await settings_runtime.refresh()
+
+    # The blob store, once the settings that can name a bucket are readable and
+    # before anything below writes a blob (F57).
+    try:
+        from core.storage import install_configured_blob_store
+        if install_configured_blob_store():
+            print("Blob store: S3")
+    except Exception as e:
+        print(f"Warning: S3 blob store not installed, using the local directory: {e}")
+
+    # The rate card. Adds only the models the table is missing, so an edited
+    # price is never reverted by a restart — and loads the snapshot that
+    # calculate_cost() reads synchronously on the per-turn path.
+    try:
+        from core.usage_tracker import seed_pricing_table
+        await seed_pricing_table()
+    except Exception as e:
+        print(f"Warning: model pricing seed skipped: {e}")
+
+    # After the refresh, not before: this reads login_enabled and asks whether
+    # stdio MCP is allowed, and both answers are meaningless while settings are
+    # still the shipped defaults.
+    _log_security_posture()
+
+
+    if load_settings().get("coding_agent_enabled"):
         try:
             from services.code_indexer import init_cocoindex
             init_cocoindex()
@@ -467,8 +603,8 @@ async def lifespan(app: FastAPI):
                 # Register tools
                 tools = await session.list_tools()
                 for tool in tools.tools:
-                    tool_router[tool.name] = (agent_name, tool.name)
-                    print(f"  Registered tool: {tool.name} -> {agent_name}")
+                    key = tool_router.register(agent_name, tool.name)
+                    print(f"  Registered tool: {key} -> {agent_name}")
             except BaseException as e:
                 print(f"  Warning: Failed to connect agent '{agent_name}': {e}")
                 try:
@@ -489,7 +625,7 @@ async def lifespan(app: FastAPI):
         await _filesystem_ready.wait()  # wait for initial connection attempt before continuing
 
         # --- Initialize Native MCP Servers ---
-        for mcp_cfg in _build_native_mcp_servers():
+        for mcp_cfg in await _build_native_mcp_servers():
             mcp_name = mcp_cfg["name"]
 
             if mcp_name == "Filesystem":
@@ -522,17 +658,17 @@ async def lifespan(app: FastAPI):
                     ClientSession(read, write, read_timeout_seconds=_SESSION_READ_TIMEOUT)
                 )
                 await session.initialize()
-                # The Browser Automation server offers only what its gate allows (`core.browser_automation`).
-                session = gated(mcp_name, session)
 
                 agent_sessions[mcp_name] = session
 
                 tools = await session.list_tools()
                 for tool in tools.tools:
-                    tool_router[tool.name] = (mcp_name, tool.name)
-                    print(f"  Registered tool: {tool.name} -> {mcp_name}")
+                    key = tool_router.register(mcp_name, tool.name)
+                    print(f"  Registered tool: {key} -> {mcp_name}")
             except Exception as e:
                 print(f"  Failed to connect native MCP server '{mcp_name}': {e}")
+
+        _register_browser()
 
         # --- Initialize External MCP Servers ---
         global mcp_manager
@@ -550,13 +686,24 @@ async def lifespan(app: FastAPI):
                 tools = await session.list_tools()
                 print(f"  MCP Server '{name}' returned {len(tools.tools)} tools.")
                 for tool in tools.tools:
-                    tool_router[f"{name}__{tool.name}"] = (agent_key, tool.name)
-                    print(f"  Registered external tool: {name}__{tool.name} -> {agent_key}")
+                    key = tool_router.register(
+                        name, tool.name, session_key=agent_key, alias=False
+                    )
+                    print(f"  Registered external tool: {key} -> {agent_key}")
             except Exception as e:
                 print(f"  Error listing tools for {name}: {e}")
                 import traceback
                 traceback.print_exc()
-                
+
+        # A remote server that could not be reached while this backend was still
+        # starting (its own /api/v1/mcp above all) gets one more try once the
+        # port accepts connections (F237). Not awaited: startup does not wait.
+        from core.routes.tools import _register_session
+        global _mcp_boot_retry_task
+        _mcp_boot_retry_task = asyncio.create_task(
+            _retry_failed_remote_mcp(mcp_manager, _register_session), name="mcp-boot-retry",
+        )
+
         # Initialize Memory Store
         if MemoryStore:
             print("Initializing Memory Store...")
@@ -581,7 +728,7 @@ async def lifespan(app: FastAPI):
         # --- Seed the native builder orchestration (idempotent) ---
         try:
             from core.native_builder import seed_native_builder
-            seed_result = seed_native_builder()
+            seed_result = await seed_native_builder()
             if (seed_result["agents_added"] or seed_result["agents_updated"]
                     or seed_result.get("agents_removed")
                     or seed_result["orchestration"] != "unchanged"):
@@ -589,50 +736,81 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"Warning: Failed to seed native builder: {e}")
 
+        # --- An untouched old default agent becomes Synapse AI, the assistant (ASSIST1, once) ---
+        try:
+            from core.default_agent import adopt_the_assistant
+            if await adopt_the_assistant():
+                print("The default agent is now Synapse AI, the assistant.")
+        except Exception as e:
+            print(f"Warning: Failed to adopt the assistant as the default agent: {e}")
+
+        # --- An install the installer never ran (Docker, pip) starts with Synapse AI too: once (F1412) ---
+        try:
+            from core.default_agent import create_the_assistant_once
+            if await create_the_assistant_once():
+                print("Synapse AI, the assistant, is ready in Chat.")
+        except Exception as e:
+            print(f"Warning: Failed to create Synapse AI, the default agent: {e}")
+
         # --- Sweep zombie orchestration runs (stale "running" from prior server crash) ---
         try:
-            from core.orchestration.state import SharedState
-            zombie_runs = [r for r in SharedState.list_runs(limit=200) if r.get("status") == "running"]
-            if zombie_runs:
-                now_str = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                from core.orchestration.journal import FileRunJournal
-                for zr in zombie_runs:
-                    try:
-                        restored = SharedState.restore(zr["run_id"])
-                        restored.run.status = "failed"
-                        restored.run.ended_at = now_str
-                        restored.checkpoint()
-                        # Explain the stop to journal replays (reattach UI).
-                        if FileRunJournal.exists(zr["run_id"]):
-                            journal = FileRunJournal(zr["run_id"])
-                            journal.append({"type": "orchestration_error",
-                                            "error": "Server restarted while the run was in progress"})
-                            journal.close()
-                    except Exception:
-                        pass
-                print(f"Swept {len(zombie_runs)} zombie orchestration run(s) (marked failed)")
+            from core.scale.config import get_scale_config as _sweep_scale_cfg
+            from core.scale.heartbeat import sweep_interrupted_runs
+            # In scale mode a worker's task may still pump a run with no owner on
+            # its row (a workflow agent's turn); its lease says so (F470).
+            _lease_redis = None
+            if _sweep_scale_cfg().scale_mode:
+                from core.scale.pubsub import get_redis_client as _lease_client
+                _lease_redis = _lease_client(_sweep_scale_cfg().redis_url)
+            try:
+                swept = await sweep_interrupted_runs(redis=_lease_redis)
+            finally:
+                if _lease_redis is not None:
+                    await _lease_redis.aclose()
+            if swept:
+                print(f"Swept {len(swept)} zombie orchestration run(s) (marked failed)")
         except Exception as e:
             print(f"Warning: Zombie run sweep failed: {e}")
+
+        # --- Background helpers a restart cut short: each conversation told (SUB1a) ---
+        try:
+            from core.helpers import sweep_interrupted as _sweep_helpers
+            from core.scale.config import get_scale_config as _helper_scale_cfg
+            _helper_redis = None
+            if _helper_scale_cfg().scale_mode:
+                from core.scale.pubsub import get_redis_client as _helper_client
+                _helper_redis = _helper_client(_helper_scale_cfg().redis_url)
+            try:
+                told = await _sweep_helpers(redis=_helper_redis)
+            finally:
+                if _helper_redis is not None:
+                    await _helper_redis.aclose()
+            if told:
+                print(f"Told {told} conversation(s) about background helpers the restart ended")
+        except Exception as e:
+            print(f"Warning: Background helper sweep failed: {e}")
 
         # --- Notification hub: observe run events + surface missed pauses ---
         try:
             import core.server as _server_mod
             from core.notifications import hub as _notification_hub
             from core.orchestration.runner import event_observers as _event_observers
+            _notification_hub.reload()  # built at import, before the blob store
             _notification_hub.configure(_server_mod)
             if _notification_hub.observe_run_event not in _event_observers:
                 _event_observers.append(_notification_hub.observe_run_event)
-            _notification_hub.reconstruct_missed()
+            await _notification_hub.reconstruct_missed()
         except Exception as e:
             print(f"Warning: Notification hub setup failed: {e}")
 
-        # --- Initialize Telemetry (OpenTelemetry + Prometheus) ---
+        # --- Telemetry: off unless a Synapse switch turns it on (core/telemetry) ---
+        # Here rather than at import because the Scale tab's saved collector is
+        # only readable once the store is up; TelemetryMiddleware (installed
+        # below, when the app is built) switches on with it.
         try:
+            from core import telemetry as _telemetry
             from core.scale.config import get_scale_config as _get_scale_cfg
-            _tcfg = _get_scale_cfg()
-            if _tcfg.otlp_endpoint:
-                from core.scale.telemetry import setup_telemetry
-                setup_telemetry("synapse-api", otlp_endpoint=_tcfg.otlp_endpoint)
+            _telemetry.setup("synapse-api", saved_endpoint=_get_scale_cfg().otlp_endpoint)
         except Exception as e:
             print(f"Warning: Telemetry setup failed: {e}")
 
@@ -658,7 +836,10 @@ async def lifespan(app: FastAPI):
                 _arq_settings = ArqRedisSettings.from_dsn(
                     _scale_cfg.redis_url.replace("redis+cluster://", "redis://").split(",")[0]
                 )
-                _arq_redis = await arq_create_pool(_arq_settings)
+                from core.telemetry import queue as _tqueue
+                _arq_redis = await arq_create_pool(
+                    _arq_settings, job_serializer=_tqueue.serialize,
+                    job_deserializer=_tqueue.deserialize)
                 app.state.arq_redis = _arq_redis
 
                 # Postgres engine + session factory
@@ -671,13 +852,26 @@ async def lifespan(app: FastAPI):
                 app.state.pg_engine = _pg_engine
                 app.state.pg_session_factory = _pg_session_factory
 
-                # Background task: reap workers that crash without sending shutdown
+                # A run this server pumps in a task of its own holds a lease, so
+                # the sweeps see it alive and its Cancel reaches it (F470).
+                import os as _lease_os
+                import socket as _lease_socket
+                from core.scale import run_lease as _run_lease
+                _run_lease.install(_redis, holder=f"api-{_lease_socket.gethostname()}-{_lease_os.getpid()}")
+
+                # Background task: reap workers that crash without sending shutdown,
+                # and fail the runs nothing is running any more (F470)
                 from core.scale.heartbeat import reap_stale_workers
                 _reap_task = asyncio.create_task(
-                    reap_stale_workers(_pg_session_factory),
+                    reap_stale_workers(_pg_session_factory, redis=_redis),
                     name="reap_stale_workers",
                 )
                 app.state.reap_task = _reap_task
+
+                # Every API server and worker changes one notification ring in turn, and every API server's
+                # bell hears each change (F361).
+                from core.notifications import hub as _notification_hub
+                _notification_hub.share(_redis, listen=True)
 
                 print(f"Scale mode enabled: Redis={_scale_cfg.redis_url[:30]}... Postgres connected.")
             else:
@@ -690,7 +884,7 @@ async def lifespan(app: FastAPI):
             app.state.pg_session_factory = None
 
         # --- Initialize Messaging Manager (if enabled) ---
-        if _settings.get("messaging_enabled", False):
+        if load_settings().get("messaging_enabled", False):
             try:
                 from core.messaging.manager import MessagingManager
                 global messaging_manager
@@ -702,6 +896,18 @@ async def lifespan(app: FastAPI):
                 print(f"Warning: Failed to start messaging manager: {e}")
         else:
             app.state.messaging_manager = None
+
+        # A human step that names a channel asks its question there (F54). The
+        # sender reads `messaging_enabled` per send, so it is installed either way.
+        try:
+            import functools
+            from core.messaging.manager import send_human_prompt
+            from core.orchestration.human_prompts import set_human_prompt_sender
+            set_human_prompt_sender(functools.partial(
+                send_human_prompt, manager=getattr(app.state, "messaging_manager", None),
+            ))
+        except Exception as e:
+            print(f"Warning: human-step channel prompts disabled: {e}")
 
         # --- Initialize Schedule Manager ---
         try:
@@ -715,6 +921,22 @@ async def lifespan(app: FastAPI):
             print(f"Warning: Failed to start schedule manager: {e}")
             app.state.schedule_manager = None
 
+        # --- Knowledge (D157): the Vault hook, and reconcile at startup and every
+        # minute. Both do nothing while `knowledge_enabled` is off; the hook reads
+        # the switch on every change.
+        try:
+            from core.knowledge.sync import start as start_knowledge
+            app.state.knowledge_task = start_knowledge()
+        except Exception as e:
+            print(f"Warning: Knowledge's Vault hook not started: {e}")
+        # Knowledge's eval (V1, D168): re-run a base's question sets when its index switches, and mark the
+        # runs the last process left as interrupted.
+        try:
+            from core.knowledge.evals_auto import startup as start_knowledge_evals
+            await start_knowledge_evals()
+        except Exception as e:
+            print(f"Warning: Knowledge's eval re-runs not started: {e}")
+
         yield
         
     except Exception as e:
@@ -722,6 +944,12 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         print("Shutting down agents...")
+        if "Browser Automation" in agent_sessions:
+            try:
+                from core.browser import client as browser_client
+                await browser_client.tools.host.stop()
+            except Exception as e:
+                print(f"Warning: browser shutdown error: {e}")
         if messaging_manager:
             try:
                 await messaging_manager.stop_all()
@@ -732,10 +960,23 @@ async def lifespan(app: FastAPI):
                 await schedule_manager.stop()
             except Exception as e:
                 print(f"Warning: Schedule manager shutdown error: {e}")
+        if _mcp_boot_retry_task and not _mcp_boot_retry_task.done():
+            _mcp_boot_retry_task.cancel()
+            try:
+                await _mcp_boot_retry_task
+            except (asyncio.CancelledError, Exception):
+                pass
         if _filesystem_manager_task and not _filesystem_manager_task.done():
             _filesystem_manager_task.cancel()
             try:
                 await _filesystem_manager_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        _knowledge_task = getattr(app.state, "knowledge_task", None)
+        if _knowledge_task and not _knowledge_task.done():
+            _knowledge_task.cancel()
+            try:
+                await _knowledge_task
             except (asyncio.CancelledError, Exception):
                 pass
         # Scale layer cleanup
@@ -747,6 +988,8 @@ async def lifespan(app: FastAPI):
                     await _reap
                 except (asyncio.CancelledError, Exception):
                     pass
+            from core.notifications import hub as _notification_hub
+            await _notification_hub.unshare()
             _arq = getattr(app.state, "arq_redis", None)
             if _arq:
                 await _arq.close()
@@ -764,7 +1007,17 @@ async def lifespan(app: FastAPI):
             except BaseException as e:
                 print(f"Warning: Error during shutdown cleanup: {e}")
 
-app = FastAPI(lifespan=lifespan)
+# One call per process: the engine's runtime modules log through the `core`
+# tree (core/log.py). SYNAPSE_LOG_LEVEL=DEBUG turns the step-by-step
+# narration back on.
+from core.log import configure as _configure_logging
+_configure_logging()
+
+# FastAPI's own telemetry off (0.142+ would export on OTEL_* alone): Synapse's
+# switch and TelemetryMiddleware below are the only way in (core/telemetry).
+from core.telemetry import fastapi_options as _fastapi_telemetry_off
+
+app = FastAPI(lifespan=lifespan, **_fastapi_telemetry_off())
 
 _frontend_port = os.getenv("SYNAPSE_FRONTEND_PORT", "3000")
 _backend_port_cors = os.getenv("SYNAPSE_BACKEND_PORT", "8765")
@@ -821,6 +1074,51 @@ app.add_middleware(
 )
 app.add_middleware(TimingMiddleware)
 
+
+# Installed here rather than in lifespan: installing is only setting a function
+# pointer — no I/O, no event loop, no store — and doing it at app construction
+# means the settings a request reads and the settings a request writes are the
+# same store even when the app is driven without its lifespan, as tests do.
+# The *refresh* still belongs in lifespan, after the legacy import.
+from core import settings_runtime as _settings_runtime
+
+_settings_runtime.install_provider()
+
+
+@app.middleware("http")
+async def bind_settings(request, call_next):
+    """Bind the request's settings so `load_settings()` can stay synchronous.
+
+    This is not a read per request: `bind()` only touches the store when the
+    cached snapshot has aged past SYNAPSE_SETTINGS_TTL. In a single-process
+    install the write path invalidates the cache directly, so the TTL never
+    fires anything; it exists for deployments where another replica can write
+    the row. Binding per request is also what gives an embedded multi-tenant
+    host its per-request isolation for free.
+    """
+    from core import settings_runtime
+
+    token = await settings_runtime.bind()
+    try:
+        return await call_next(request)
+    finally:
+        settings_runtime.reset(token)
+
+
+# Synapse's own MCP endpoint (D125), outermost: it checks its own API key and
+# is not a browser surface, so neither CORS nor the internal token applies.
+from core.mcp_server.endpoint import McpDispatch as _McpDispatch
+
+app.add_middleware(_McpDispatch)
+
+# Telemetry, outermost of all: a pass-through until the lifespan's setup()
+# turns tracing on, then one span per request named by its route. Outside
+# McpDispatch so MCP calls, a refused token and a CORS preflight are traced too.
+from core.telemetry.asgi import TelemetryMiddleware as _TelemetryMiddleware
+
+app.add_middleware(_TelemetryMiddleware)
+
+
 # --- Include Route Routers ---
 app.include_router(auth_router)
 app.include_router(settings_router)
@@ -833,6 +1131,7 @@ app.include_router(repos_router)
 app.include_router(db_configs_router)
 app.include_router(orchestrations_router)
 app.include_router(logs_router)
+app.include_router(voice_router)  # a phone number's calls (VOX1a); before the generic webhook
 app.include_router(messaging_router)
 app.include_router(sessions_router)
 app.include_router(usage_router)
@@ -840,12 +1139,29 @@ app.include_router(schedules_router)
 app.include_router(profiling_router)
 app.include_router(import_export_router)
 app.include_router(vault_router)
+app.include_router(knowledge_router)
+app.include_router(boards_router)  # Boards for people (BOARD1b, D282): 404 while off
 app.include_router(builder_router)
+app.include_router(assistant_router)  # the assistant's action card, pressed (ASSIST1, D291)
 app.include_router(api_keys_router)
+app.include_router(skills_router)
+app.include_router(evals_router)
+app.include_router(widget_router)
+app.add_exception_handler(WidgetUpdated, widget_updated_response)
+app.include_router(agent_memory_router)
 app.include_router(api_v1_router, prefix="/api/v1")
+# Every agent behind an OpenAI-compatible endpoint, at /api/v1/openai (OAI1): a
+# key's route like the rest of v1, its errors in OpenAI's shape.
+app.include_router(openai_compat_router, prefix="/api/v1")
+app.add_exception_handler(OpenAIError, handle_openai_error)
+app.include_router(openai_approvals_router)
+app.include_router(api_v1_knowledge_router)  # paths carry /api/v1 (Knowledge, D176)
 app.include_router(api_v2_router, prefix="/api/v2")
 app.include_router(scale_router, prefix="/api")
 app.include_router(notifications_router)
+app.include_router(browser_router)  # the person's view of a browser session (BRW1, D328)
+app.include_router(site_sessions_router)  # the Sessions library (F1138; BRW2's Website logins, D330)
+app.include_router(recordings_router)  # recorded tasks (F1142)
 
 if __name__ == "__main__":
     import uvicorn

@@ -6,7 +6,7 @@ The shared dispatch logic lives here.
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Awaitable, Callable, Optional
 
 from core.messaging.markdown import format_for_platform
 
@@ -18,16 +18,32 @@ logger = logging.getLogger(__name__)
 # Built-in commands handled before routing to agent
 _BUILTIN_COMMANDS = {"/start", "/help", "/reset", "/agent", "/agents"}
 
-HELP_TEXT = """? *Synapse AI Bot*
+HELP_TEXT = """🤖 *Synapse AI Bot*
 
 Available commands:
-/start -- Show this welcome message
-/help -- Show available commands
-/reset -- Clear your conversation memory
-/agent <name> -- Switch to a different agent (if multi-agent mode is on)
-/agents -- List available agents (if multi-agent mode is on)
+/start — Show this welcome message
+/help — Show available commands
+/reset — Clear your conversation memory
+/agent <name> — Switch to another agent assigned to this channel (if multi-agent mode is on)
+/agents — List the agents assigned to this channel (if multi-agent mode is on)
 
 Just send any message to chat with the agent!"""
+
+# What a channel says when nobody is assigned to it. Not an error: a channel is
+# created before its agents are, so this is a reachable, ordinary state.
+NO_AGENT_MESSAGE = (
+    "No agent is assigned to this channel yet. "
+    "Assign one in Settings -> Messaging."
+)
+
+# What a reply gets once the question it would answer has outlived its step's
+# `human_timeout_seconds` — cloud's words, so the two products say the same
+# thing (F93). The run keeps waiting; the app can still answer it.
+QUESTION_EXPIRED_MESSAGE = "That question timed out — answer it from the app instead."
+
+
+class QuestionExpired(Exception):
+    """A channel reply arrived after the run's question stopped taking channel answers."""
 
 
 class MessagingAdapter(ABC):
@@ -43,9 +59,40 @@ class MessagingAdapter(ABC):
         self.platform: str = channel["platform"]
         self.agent_id: str = channel.get("agent_id", "default")
         self.multi_agent_mode: bool = channel.get("multi_agent_mode", False)
+        # "polling" holds a connection to the platform; "webhook" holds nothing
+        # and receives through core/routes/messaging.py. Sending is identical
+        # in both modes (REST, via core/messaging/senders.py).
+        self.mode: str = channel.get("mode", "polling")
         # Tracks the most recent chat_id that sent a message -- used for proactive
         # schedule completion notifications when no notify_chat_id is configured.
         self._last_chat_id: Optional[str] = None
+
+    #: What ended this adapter's background task, if something did.
+    failure: Optional[BaseException] = None
+
+    def _run_in_background(self, coro, name: str) -> asyncio.Task:
+        """Run the adapter's long-lived loop, and report it if it dies (F207).
+
+        Polling and socket modes start their loop as a task, so `start()` has
+        returned — and the channel says RUNNING — before the loop has done
+        anything. A loop that then died (a token revoked, a second poller on
+        the same bot) died unread, and the channel said RUNNING for ever.
+        """
+        task = asyncio.create_task(coro, name=name)
+        task.add_done_callback(self._background_done)
+        return task
+
+    def _background_done(self, task: asyncio.Task) -> None:
+        if task.cancelled() or task.exception() is None:
+            return
+        self.failure = task.exception()
+        from core.messaging.store import redact_secrets
+        logger.error("[%s] Channel %s stopped: %s", self.platform, self.channel_id,
+                     redact_secrets(str(self.failure), self.channel))
+        if self.manager is not None:
+            from core.background import spawn_background
+            spawn_background(self.manager.adapter_failed(self),
+                             name=f"messaging-failed-{self.channel_id}")
 
     # ------------------------------------------------------------------ #
     # Abstract interface
@@ -109,7 +156,7 @@ class MessagingAdapter(ABC):
             # message achieves a soft reset. For now, tell the user.
             await self.send_message(
                 chat_id,
-                "? Conversation reset. Your next message will start fresh."
+                "✅ Conversation reset. Your next message will start fresh."
             )
             # Signal manager to clear per-chat active agent selection
             self.manager.reset_chat_agent(self.channel_id, chat_id)
@@ -119,14 +166,24 @@ class MessagingAdapter(ABC):
             if not self.multi_agent_mode:
                 await self.send_message(
                     chat_id,
-                    "?? Multi-agent mode is disabled for this bot."
+                    "ℹ️ Multi-agent mode is disabled for this bot."
                 )
                 return True
-            agent_list = await self.manager.list_agent_names()
+            agent_list = await self.manager.list_agent_names(self.channel_id)
             if not agent_list:
-                await self.send_message(chat_id, "No agents available.")
+                await self.send_message(
+                    chat_id,
+                    "No agents are assigned to this channel yet."
+                )
+            elif len(agent_list) == 1:
+                await self.send_message(
+                    chat_id,
+                    f"Only *{agent_list[0]}* is assigned to this channel, "
+                    "so there is nothing to switch to."
+                )
             else:
-                lines = ["Available agents:"] + [f"? {name}" for name in agent_list]
+                lines = ["Agents on this channel (the first one answers by default):"]
+                lines += [f"• {name}" for name in agent_list]
                 await self.send_message(chat_id, "\n".join(lines))
             return True
 
@@ -134,7 +191,7 @@ class MessagingAdapter(ABC):
             if not self.multi_agent_mode:
                 await self.send_message(
                     chat_id,
-                    "?? Multi-agent mode is disabled for this bot."
+                    "ℹ️ Multi-agent mode is disabled for this bot."
                 )
                 return True
             agent_name = args.strip()
@@ -144,16 +201,48 @@ class MessagingAdapter(ABC):
             ok = await self.manager.switch_agent(self.channel_id, chat_id, agent_name)
             if ok:
                 await self.send_message(
-                    chat_id, f"? Switched to agent: *{agent_name}*"
+                    chat_id, f"✅ Switched to agent: *{agent_name}*"
                 )
             else:
                 await self.send_message(
                     chat_id,
-                    f"? Agent '{agent_name}' not found. Use /agents to list available agents."
+                    f"❌ Agent '{agent_name}' is not assigned to this channel. "
+                    "Use /agents to see who is."
                 )
             return True
 
         return False  # unrecognised command -- let agent handle it
+
+    # ------------------------------------------------------------------ #
+    # Which agent answers
+    # ------------------------------------------------------------------ #
+
+    async def resolve_agent_id(self, chat_id: str) -> Optional[str]:
+        """The agent this message should go to, or None if nobody is assigned.
+
+        Read per message rather than once at construction. `self.agent_id` is
+        seeded from the join when the adapter is built
+        (`manager.py::start_channel`), which meant a channel assigned a new
+        default kept answering as the old one until it was restarted — and
+        restarting churns Telegram's `setWebhook` and Slack's socket for what
+        is a settings edit.
+
+        None is a real answer, and the caller says so out loud: an unassigned
+        channel used to fall through to the literal string `"default"`, which
+        is not an agent id, and ran the ReAct loop against nothing.
+        """
+        chosen = self.manager.get_chat_agent(self.channel_id, chat_id)
+        if chosen:
+            return chosen
+        try:
+            from core.messaging import store as channel_store
+            assigned = await channel_store.get_default_agent_id(self.channel_id)
+        except Exception:
+            logger.debug("[%s] could not read channel assignments", self.platform)
+            assigned = None
+        if assigned:
+            return assigned
+        return self.agent_id if self.agent_id and self.agent_id != "default" else None
 
     # ------------------------------------------------------------------ #
     # Core dispatch
@@ -165,33 +254,65 @@ class MessagingAdapter(ABC):
         user_text: str,
         user_id: str,
         session_id: Optional[str] = None,
+        send: Optional[Callable[[str, str], Awaitable[None]]] = None,
     ) -> None:
         """
         Route an incoming message through the agent's ReAct loop.
-        Also checks if this message resolves a pending human-step Future.
+        A reply to a run waiting on this channel answers that run instead.
+
+        `send` replaces `send_message` for this one exchange — a webhook
+        transport that must answer through a delivery-specific route (Discord's
+        interaction follow-up) passes its own; everything else answers into the
+        conversation.
         """
         if session_id is None:
             session_id = f"{self.platform}_{self.channel_id}_{chat_id}"
+        if send is None:
+            send = self.send_message
 
         # Track most recent chat_id for proactive schedule notifications
         self._last_chat_id = chat_id
 
-        # -- 1. Check for human-step future waiting on this channel ------
-        # If an orchestration is paused waiting for human input on this channel,
-        # resolve it with the user's message (first-wins -- manager handles dedup).
-        resolved = await self.manager.try_resolve_human_input(
-            channel_id=self.channel_id,
-            response=user_text,
-        )
-        if resolved:
-            await self.send_message(
-                chat_id,
-                "? Response received. Resuming the workflow..."
-            )
+        # -- 0. Who is on the other end (F282) ----------------------------
+        # A channel has no sender list, so its setting decides: a workspace
+        # user (the default), or a visitor held to the channel's own tool list,
+        # with no memory. Read per message rather than kept from construction,
+        # so an edit needs no restart (the lesson D72 paid for once).
+        from core import visitor as _visitor
+        from core.messaging import store as _channel_store
+
+        channel = await _channel_store.get_channel(self.channel_id) or {}
+        scope = None
+        if channel.get("senders_are_members", True) is False:
+            scope = _visitor.VisitorScope(
+                "channel", frozenset(_visitor.clean_tools(channel.get("visitor_tools"))))
+        with _visitor.scope(scope):
+            await self._answer(chat_id, user_text, session_id, send, visitor=scope)
+
+    async def _answer(self, chat_id, user_text, session_id, send, *, visitor) -> None:
+        """`_dispatch`'s body, run as whoever the sender is (`visitor`, or a member)."""
+        # -- 1. A run waiting on this channel for an answer ---------------
+        # A human step that names this channel asked its question here; the
+        # reply answers the newest run waiting on it, the way the app's Answer
+        # control does. Only a workspace user answers one: a visitor's reply
+        # is an ordinary message (F282).
+        try:
+            answered = (await self.manager.answer_from_channel(self.channel_id, user_text)
+                        if visitor is None else False)
+        except QuestionExpired:
+            # Past the step's window: refused in words, and the run keeps
+            # waiting for the app — not handed to the agent as chat (F93).
+            await send(chat_id, QUESTION_EXPIRED_MESSAGE)
+            return
+        if answered:
+            await send(chat_id, "✅ Answer received — resuming the workflow.")
             return
 
         # -- 2. Determine active agent ------------------------------------
-        active_agent_id = self.manager.get_chat_agent(self.channel_id, chat_id) or self.agent_id
+        active_agent_id = await self.resolve_agent_id(chat_id)
+        if not active_agent_id:
+            await send(chat_id, NO_AGENT_MESSAGE)
+            return
 
         # -- 3. Run agent -------------------------------------------------
         try:
@@ -199,11 +320,69 @@ class MessagingAdapter(ABC):
                 message=user_text,
                 agent_id=active_agent_id,
                 session_id=session_id,
+                channel_id=self.channel_id,
+                chat_id=chat_id,
             )
         except Exception as e:
             logger.error("[%s] Agent run failed: %s", self.platform, e)
-            response = "?? An error occurred while processing your message. Please try again."
+            response = "⚠️ An error occurred while processing your message. Please try again."
 
         # -- 4. Send response ---------------------------------------------
         if response:
-            await self.send_message(chat_id, response)
+            await send(chat_id, response)
+
+    # ------------------------------------------------------------------ #
+    # Webhook-mode entry point
+    # ------------------------------------------------------------------ #
+
+    async def handle_inbound(
+        self,
+        payload: dict,
+        send: Optional[Callable[[str, str], Awaitable[None]]] = None,
+    ) -> None:
+        """One provider webhook delivery, already signature-verified upstream.
+
+        The webhook counterpart of the platform callbacks the polling adapters
+        register: parse the payload (`core/messaging/inbound.py`), remember the
+        conversation for proactive sends, run the shared command handling, and
+        dispatch. Subclasses override only when a delivery needs an answer the
+        conversation cannot carry (Discord's interactions).
+        """
+        from core.messaging import inbound as inbound_messages
+
+        message = inbound_messages.parse(self.platform, payload)
+        if message is None:
+            return
+
+        # Durable sibling of `_last_chat_id`: proactive sends (schedule
+        # results, run notifications, human-step prompts) need somewhere to go
+        # even after a restart, and for most platforms the only way to learn a
+        # conversation id is to be spoken to in it.
+        try:
+            from core.messaging import store as channel_store
+            await channel_store.set_default_conversation(
+                self.channel_id, message.conversation_id
+            )
+        except Exception:
+            logger.debug("[%s] could not persist default conversation", self.platform)
+
+        session_id = f"{self.platform}_{self.channel_id}_{message.conversation_id}"
+
+        if message.text.startswith("/"):
+            parts = message.text.split(" ", 1)
+            consumed = await self._handle_command(
+                message.conversation_id,
+                parts[0],
+                parts[1] if len(parts) > 1 else "",
+                session_id,
+            )
+            if consumed:
+                return
+
+        await self._dispatch(
+            message.conversation_id,
+            message.text,
+            message.user_id,
+            session_id,
+            send=send,
+        )

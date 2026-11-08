@@ -12,26 +12,37 @@ import sys
 
 import mcp.types as types
 from mcp.server import Server
-from mcp.server.stdio import stdio_server
 from psycopg_pool import ConnectionPool
 
 from core.file_roots import allowed_roots, refusal, within
 
-def _load_repo_paths() -> dict[str, str]:
-    """Load repo_id → absolute_path mapping from repos.json (via core.config DATA_DIR)."""
+async def _load_repos() -> list[dict]:
+    """The tenant's linked repos.
+
+    This process is a stdio MCP server rather than the backend, so it opens the
+    store itself through SYNAPSE_DB_URL — the same way the engine finds it. It
+    used to read `DATA_DIR/repos.json`, which the CRUD path stopped writing
+    when repos moved into the store.
+    """
     try:
-        from core.config import DATA_DIR
-        repos_file = os.path.join(DATA_DIR, "repos.json")
-        with open(repos_file, encoding="utf-8") as f:
-            repos = json.load(f)
-        return {r["id"]: r["path"].rstrip("/") for r in repos if r.get("id") and r.get("path")}
+        from core.store import collections
+        return await collections.load("repos")
     except Exception:
-        return {}
+        return []
 
 
-def _is_path_allowed(path: str) -> bool:
+async def _load_repo_paths() -> dict[str, str]:
+    """repo_id → absolute path."""
+    return {
+        r["id"]: r["path"].rstrip("/")
+        for r in await _load_repos()
+        if r.get("id") and r.get("path")
+    }
+
+
+async def _is_path_allowed(path: str) -> bool:
     """True if `path` resolves inside a root agents may read (`core/file_roots.py`)."""
-    return within(path, allowed_roots())
+    return within(path, await allowed_roots())
 
 
 _pool: ConnectionPool | None = None
@@ -66,6 +77,19 @@ def _resolve_query_embedding_config() -> tuple[str, int, dict]:
     return model, dim, settings
 
 
+async def _log_embedding(model: str, texts: list[str]) -> None:
+    """A usage row for the query's embedding (F394), its tokens counted from the text:
+    `embed_batch` returns vectors only."""
+    from core import usage_tracker
+    from core.providers.registry import provider_for
+
+    try:
+        await usage_tracker.log_embedding(model=model, provider=provider_for(model).id, source="code_search",
+                                          input_tokens=usage_tracker.estimate_tokens(texts), estimated=True)
+    except Exception as e:  # noqa: BLE001 — a usage row never fails a search
+        print(f"[code_search] the query embedding's usage row was not written: {e}")
+
+
 async def _get_query_embedding(query: str) -> tuple[list[float], str, int]:
     """Generate a query embedding using the same model and dimension as indexing."""
     from core.llm_providers import embed_batch
@@ -77,6 +101,7 @@ async def _get_query_embedding(query: str) -> tuple[list[float], str, int]:
     embeddings = await embed_batch([query], model, embed_settings)
     if not embeddings:
         raise RuntimeError("Embedding provider returned no query embedding.")
+    await _log_embedding(model, [query])
 
     query_vector = list(embeddings[0][:dim])
     if len(query_vector) != dim:
@@ -92,16 +117,9 @@ def _get_table_name(repo_id: str) -> str:
     return f"ci_{repo_id}__emb"
 
 
-def _load_indexed_repo_ids() -> list[str]:
-    """Return repo IDs where status == 'indexed' from repos.json."""
-    try:
-        from core.config import DATA_DIR
-        repos_file = os.path.join(DATA_DIR, "repos.json")
-        with open(repos_file, encoding="utf-8") as f:
-            repos = json.load(f)
-        return [r["id"] for r in repos if r.get("status") == "indexed" and r.get("id")]
-    except Exception:
-        return []
+async def _load_indexed_repo_ids() -> list[str]:
+    """Return repo IDs where status == 'indexed'."""
+    return [r["id"] for r in await _load_repos() if r.get("status") == "indexed" and r.get("id")]
 
 
 async def _search(query: str, repo_ids: list[str], top_k: int = 10,
@@ -112,7 +130,7 @@ async def _search(query: str, repo_ids: list[str], top_k: int = 10,
     except Exception as e:
         return [{"error": f"Database connection failed: {e}"}]
 
-    repo_path_map = _load_repo_paths()
+    repo_path_map = await _load_repo_paths()
     try:
         query_vector, model, dim = await _get_query_embedding(query)
     except Exception as e:
@@ -176,7 +194,7 @@ async def _search(query: str, repo_ids: list[str], top_k: int = 10,
     return all_results[:top_k]
 
 
-def _list_files_in_index(repo_id: str, file_filter: str | None = None) -> dict:
+async def _list_files_in_index(repo_id: str, file_filter: str | None = None) -> dict:
     """Query the embedding table for distinct filenames and chunk counts."""
     if not _VALID_REPO_ID.match(repo_id):
         return {"error": f"Invalid repo_id format: {repo_id}"}
@@ -185,7 +203,7 @@ def _list_files_in_index(repo_id: str, file_filter: str | None = None) -> dict:
     except Exception as e:
         return {"error": f"Database connection failed: {e}"}
 
-    repo_path_map = _load_repo_paths()
+    repo_path_map = await _load_repo_paths()
     repo_root = repo_path_map.get(repo_id, "")
     table_name = _get_table_name(repo_id)
 
@@ -223,7 +241,7 @@ def _list_files_in_index(repo_id: str, file_filter: str | None = None) -> dict:
     return {"repo_id": repo_id, "files": files, "total_files": len(files), "total_chunks": total_chunks}
 
 
-def _get_chunks_for_file(repo_id: str, filename: str) -> dict:
+async def _get_chunks_for_file(repo_id: str, filename: str) -> dict:
     """Retrieve all indexed chunks for a specific file."""
     if not _VALID_REPO_ID.match(repo_id):
         return {"error": f"Invalid repo_id format: {repo_id}"}
@@ -232,7 +250,7 @@ def _get_chunks_for_file(repo_id: str, filename: str) -> dict:
     except Exception as e:
         return {"error": f"Database connection failed: {e}"}
 
-    repo_path_map = _load_repo_paths()
+    repo_path_map = await _load_repo_paths()
     repo_root = repo_path_map.get(repo_id, "")
     table_name = _get_table_name(repo_id)
     clean_filename = filename.lstrip("/")
@@ -347,8 +365,14 @@ def _grep_folder(
     context: int = 0,
     max_matches: int = 1000,
     recursive: bool = True,
+    *,
+    roots: list[str],
 ) -> list[dict]:
-    """Search for a pattern across all files in a folder matching file_pattern."""
+    """Search for a pattern across all files in a folder matching file_pattern.
+
+    Only files that resolve inside `roots`: `file_pattern` is joined onto the
+    folder, so a `..` in it, or a symlink under it, would otherwise walk out (S5).
+    """
     import glob as _glob
 
     resolved = folder_path if os.path.isabs(folder_path) else os.path.join(os.getcwd(), folder_path)
@@ -358,9 +382,6 @@ def _grep_folder(
         return [{"error": f"Not a directory: {folder_path}."}]
 
     glob_pat = os.path.join(resolved, "**", file_pattern) if recursive else os.path.join(resolved, file_pattern)
-    # Only files inside the roots: `file_pattern` is joined onto the folder, so
-    # a `..` in it, or a symlink under it, would otherwise walk out (S5).
-    roots = allowed_roots()
     files = sorted(
         f for f in _glob.glob(glob_pat, recursive=recursive)
         if os.path.isfile(f) and within(f, roots)
@@ -384,10 +405,14 @@ def _glob_files(
     include_dirs: bool = False,
     include_hidden: bool = True,
     max_results: int = 1000,
+    *,
+    roots: list[str],
 ) -> list[dict] | list[str]:
     """List files under `folder_path` matching `pattern` using Python glob rules.
 
     Returns relative paths from `folder_path`. Uses `glob` and supports `**` for recursion.
+    Only entries that resolve inside `roots` — a `..` in `pattern`, or a symlink,
+    would otherwise list what is outside (S5).
     """
     resolved = folder_path if os.path.isabs(folder_path) else os.path.join(os.getcwd(), folder_path)
 
@@ -398,9 +423,6 @@ def _glob_files(
 
     import glob as _glob
 
-    # Only entries inside the roots: a `..` in `pattern`, or a symlink, would
-    # otherwise list what is outside (S5).
-    roots = allowed_roots()
     search_pattern = os.path.join(resolved, pattern)
     iterator = _glob.iglob(search_pattern, recursive=recursive)
 
@@ -420,7 +442,7 @@ def _glob_files(
     return results
 
 
-def _read_file_by_lines(file_path: str, start_line: int = 1, end_line: int = 100, repo_id: str | None = None) -> dict:
+async def _read_file_by_lines(file_path: str, start_line: int = 1, end_line: int = 100, repo_id: str | None = None) -> dict:
     """Read lines [start_line, end_line] (1-indexed, inclusive) from a file."""
     resolved = None
     if os.path.isabs(file_path):
@@ -430,9 +452,9 @@ def _read_file_by_lines(file_path: str, start_line: int = 1, end_line: int = 100
     # Fallback: absolute path from a different user/container context — try local vault by filename
     if not resolved and os.path.isabs(file_path) and "vault" in file_path:
         try:
-            from core.config import DATA_DIR
+            from core.vault import _vault_root
             filename = os.path.basename(file_path)
-            local_candidate = os.path.join(DATA_DIR, "vault", "tool_outputs", filename)
+            local_candidate = os.path.join(str(_vault_root()), "tool_outputs", filename)
             if os.path.exists(local_candidate):
                 resolved = local_candidate
         except Exception:
@@ -464,7 +486,7 @@ def _read_file_by_lines(file_path: str, start_line: int = 1, end_line: int = 100
                 resolved = candidate
 
         if not resolved:
-            repo_path_map = _load_repo_paths()
+            repo_path_map = await _load_repo_paths()
             if repo_id and repo_id in repo_path_map:
                 candidate = os.path.join(repo_path_map[repo_id], file_path)
                 if os.path.exists(candidate):
@@ -475,9 +497,10 @@ def _read_file_by_lines(file_path: str, start_line: int = 1, end_line: int = 100
                 if os.path.exists(candidate):
                     resolved = candidate
 
-    # Checked on what was found, after every fallback above, and on the path
-    # as given when nothing was, so "not found" says nothing about outside (S5).
-    roots = allowed_roots()
+    # Checked on what was found, after every fallback above, so a relative
+    # `../` or a symlink cannot reach past the roots; and on the path as given
+    # when nothing was, so "not found" is not an answer about outside files (S5).
+    roots = await allowed_roots()
     if resolved and not within(resolved, roots):
         return {"error": refusal(file_path)}
     if not resolved and os.path.isabs(file_path) and not within(file_path, roots):
@@ -515,6 +538,7 @@ async def list_tools() -> list[types.Tool]:
     return [
         types.Tool(
             name="search_codebase",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "Search indexed code repositories for relevant code snippets using semantic vector search. "
                 "Returns matching code with filename, location, and relevance score. "
@@ -554,6 +578,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="multi_repo_search",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "Search across multiple indexed repos simultaneously and return globally ranked results. "
                 "Unlike search_codebase, repo_ids is optional — if omitted, ALL indexed repos are searched automatically. "
@@ -592,6 +617,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="find_similar_code",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "Given a code snippet, find semantically similar code patterns across one or more repos. "
                 "Unlike search_codebase (which takes natural language), this embeds actual code — "
@@ -630,6 +656,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="list_indexed_files",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "List all files that have been embedded in the vector index for a repo, with their chunk counts. "
                 "Use this to discover what's covered by the index before searching, or to verify a specific file was indexed. "
@@ -652,6 +679,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="get_file_chunks",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "Get all embedded chunks for a specific file — the semantic view of that file as seen by the index. "
                 "After finding a relevant file via search_codebase, use this to retrieve all its indexed segments "
@@ -674,6 +702,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="grep",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "Search for a pattern inside a file or across all files in a folder (grep-like). "
                 "Pass a file path to search that file, or a folder path to search all matching files within it. "
@@ -699,6 +728,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="glob",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "List files under a folder matching a glob pattern. Returns paths relative to the provided folder. "
                 "IMPORTANT: `folder_path` must be an absolute path (e.g. from list_allowed_directories or list_directory)."
@@ -718,6 +748,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="read_file_by_lines",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "Read a specific range of lines from a file (1-indexed, inclusive). Returns the content, "
                 "start/end line numbers, and total line count. Use this instead of read_file when you only "
@@ -743,6 +774,13 @@ async def list_tools() -> list[types.Tool]:
 async def call_tool(
     name: str, arguments: dict
 ) -> list[types.TextContent]:
+    # The tenant, the store and this tenant's settings are established by
+    # `bootstrap()`, which now runs alongside the handshake rather than ahead
+    # of it. A handler is the first thing that actually needs any of them.
+    from core.tool_server import ready
+
+    await ready()
+
     try:
         if name == "search_codebase":
             query = arguments.get("query", "")
@@ -764,7 +802,7 @@ async def call_tool(
 
             repo_ids = arguments.get("repo_ids") or []
             if not repo_ids:
-                repo_ids = _load_indexed_repo_ids()
+                repo_ids = await _load_indexed_repo_ids()
                 if not repo_ids:
                     return [types.TextContent(type="text", text=json.dumps({"error": "No indexed repos found. Index a repo first."}))]
 
@@ -782,7 +820,7 @@ async def call_tool(
 
             repo_ids = arguments.get("repo_ids") or []
             if not repo_ids:
-                repo_ids = _load_indexed_repo_ids()
+                repo_ids = await _load_indexed_repo_ids()
                 if not repo_ids:
                     return [types.TextContent(type="text", text=json.dumps({"error": "No indexed repos found. Index a repo first."}))]
 
@@ -798,7 +836,7 @@ async def call_tool(
             if not repo_id:
                 return [types.TextContent(type="text", text=json.dumps({"error": "'repo_id' is required."}))]
             file_filter = arguments.get("file_filter") or None
-            result = _list_files_in_index(repo_id, file_filter=file_filter)
+            result = await _list_files_in_index(repo_id, file_filter=file_filter)
             return [types.TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
 
         if name == "get_file_chunks":
@@ -806,7 +844,7 @@ async def call_tool(
             filename = arguments.get("filename", "")
             if not repo_id or not filename:
                 return [types.TextContent(type="text", text=json.dumps({"error": "Both 'repo_id' and 'filename' are required."}))]
-            result = _get_chunks_for_file(repo_id, filename)
+            result = await _get_chunks_for_file(repo_id, filename)
             return [types.TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
 
         if name == "grep":
@@ -822,12 +860,12 @@ async def call_tool(
             max_matches = int(arguments.get("max_matches", 1000))
 
             resolved = path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
-            if not _is_path_allowed(resolved):
-                return [types.TextContent(type="text", text=json.dumps({"error": f"Access denied: '{path}' is not within a configured repository or vault."}))]
+            if not await _is_path_allowed(resolved):
+                return [types.TextContent(type="text", text=json.dumps({"error": refusal(path)}))]
             if os.path.isdir(resolved):
                 file_pattern = arguments.get("file_pattern", "*")
                 recursive = bool(arguments.get("recursive", True))
-                results = _grep_folder(path, pattern, file_pattern=file_pattern, ignore_case=ignore_case, fixed=fixed, context=context, max_matches=max_matches, recursive=recursive)
+                results = _grep_folder(path, pattern, file_pattern=file_pattern, ignore_case=ignore_case, fixed=fixed, context=context, max_matches=max_matches, recursive=recursive, roots=await allowed_roots())
             else:
                 results = _grep_file(path, pattern, ignore_case=ignore_case, fixed=fixed, context=context, max_matches=max_matches)
 
@@ -839,8 +877,8 @@ async def call_tool(
                 return [types.TextContent(type="text", text=json.dumps({"error": "'folder_path' is required."}))]
 
             _fp_resolved = folder_path if os.path.isabs(folder_path) else os.path.join(os.getcwd(), folder_path)
-            if not _is_path_allowed(_fp_resolved):
-                return [types.TextContent(type="text", text=json.dumps({"error": f"Access denied: '{folder_path}' is not within a configured repository or vault."}))]
+            if not await _is_path_allowed(_fp_resolved):
+                return [types.TextContent(type="text", text=json.dumps({"error": refusal(folder_path)}))]
 
             pattern = arguments.get("pattern", "**/*")
             recursive = bool(arguments.get("recursive", True))
@@ -848,7 +886,7 @@ async def call_tool(
             include_hidden = bool(arguments.get("include_hidden", True))
             max_results = int(arguments.get("max_results", 1000))
 
-            results = _glob_files(folder_path, pattern=pattern, recursive=recursive, include_dirs=include_dirs, include_hidden=include_hidden, max_results=max_results)
+            results = _glob_files(folder_path, pattern=pattern, recursive=recursive, include_dirs=include_dirs, include_hidden=include_hidden, max_results=max_results, roots=await allowed_roots())
             return [types.TextContent(type="text", text=json.dumps({"results": results}, ensure_ascii=False))]
 
         if name == "read_file_by_lines":
@@ -858,7 +896,7 @@ async def call_tool(
             start_line = int(arguments.get("start_line", 1))
             end_line = int(arguments.get("end_line", 100))
             repo_id = arguments.get("repo_id")
-            result = _read_file_by_lines(file_path, start_line=start_line, end_line=end_line, repo_id=repo_id)
+            result = await _read_file_by_lines(file_path, start_line=start_line, end_line=end_line, repo_id=repo_id)
             return [types.TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
 
         return [types.TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
@@ -868,8 +906,15 @@ async def call_tool(
 
 
 async def main():
-    async with stdio_server() as (read_stream, write_stream):
-        await app.run(read_stream, write_stream, app.create_initialization_options())
+    # This process serves exactly one tenant, and it has to be told which —
+    # see core/tool_server.py.
+    # Serve first, bootstrap alongside. `bootstrap()` reads Postgres, and
+    # putting that ahead of `stdio_server()` meant the MCP handshake waited
+    # on a database — a cold serverless resume expired the 60s bound and
+    # took the whole chat turn with it. Handlers wait via `ready()`.
+    from core.tool_server import serve
+
+    await serve(app)
 
 
 if __name__ == "__main__":

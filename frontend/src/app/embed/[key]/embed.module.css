@@ -1,0 +1,280 @@
+/*
+ * Self-contained on purpose.
+ *
+ * This page renders inside an iframe on somebody else's website, so it inherits
+ * none of the app's Tailwind layer and needs none of it. A module rather than
+ * globals because the embed route must never pull the workspace stylesheet in —
+ * that is a large download in front of every visitor of every customer site,
+ * for a surface that is five elements.
+ *
+ * ## How branding is applied
+ *
+ * Everything the customer chose arrives as custom properties and `data-`
+ * attributes on `.shell`, and every rule below reads those rather than a literal.
+ * That is what lets the live preview work: the settings screen posts a draft
+ * theme into the frame, the frame sets the attributes, and the CSS does the rest
+ * — no re-render, no second stylesheet, and no way for the preview to disagree
+ * with the real thing.
+ *
+ * `--on-accent` is computed server-side from the accent's relative luminance, so
+ * a customer whose brand colour is a pale yellow gets black text on it instead of
+ * unreadable white. See `core/chat_widgets/branding.py::readable_on`.
+ */
+
+.shell {
+  --accent: #4f46e5;
+  --on-accent: #ffffff;
+
+  /* Light, by default. The dark block at the bottom overrides these.
+     The product's near-white and graphite (tokens.css, M0a) copied as literals:
+     the widget must never load the app's stylesheet, and only the neutrals
+     travel; the accent is always the customer's. */
+  --bg: #ffffff;
+  --text: #12171b;
+  --muted: #4e5459;
+  --surface: #f1f3f4;
+  --line: #d1d5d8;
+  --edge: #9ea3a7;
+  --danger-bg: #fff0ee;
+  --danger-text: #a3201e;
+
+  /* Filled in by the [data-font] rules below. */
+  --font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  margin: 0;
+  overflow: hidden;
+  border-radius: 14px;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 var(--font);
+}
+
+/*
+ * Font stacks the visitor's device already has.
+ *
+ * No webfont, deliberately: a Google Font would be a third-party request from
+ * the customer's visitors — a live GDPR problem in the EU — and one that loads
+ * late repaints a widget sitting on a page that is not ours. These cost zero
+ * bytes and never flash.
+ */
+.shell[data-font='system'] { --font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
+.shell[data-font='sans']   { --font: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+.shell[data-font='serif']  { --font: Georgia, 'Times New Roman', Times, serif; }
+.shell[data-font='rounded'] {
+  --font: 'Avenir Next', Avenir, 'Nunito Sans', 'Segoe UI', system-ui, sans-serif;
+}
+.shell[data-font='mono']   { --font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 12px 14px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+/* The quiet header: the accent stays on buttons and the visitor's own bubbles,
+   which is what brands with a loud primary colour ask for. */
+.shell[data-header='neutral'] .header {
+  background: var(--bg);
+  color: var(--text);
+  border-bottom: 1px solid var(--line);
+}
+
+.logo {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.title { font-size: 14px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.close {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+.close:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+
+.log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.greeting { margin: 0 0 4px; color: var(--muted); }
+
+.bubble {
+  margin: 0;
+  padding: 9px 12px;
+  border-radius: 16px;
+  max-width: 85%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.fromUser {
+  align-self: flex-end;
+  background: var(--accent);
+  color: var(--on-accent);
+  border-bottom-right-radius: 6px;
+}
+.fromAgent { align-self: flex-start; background: var(--surface); border-bottom-left-radius: 6px; }
+.failed { background: var(--danger-bg); color: var(--danger-text); }
+
+.status { margin: 0; color: var(--muted); font-size: 13px; }
+
+/* The one line a visitor gets when the owner changed the agent (F278). */
+.notice {
+  margin: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.retry {
+  align-self: flex-start;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: inherit;
+  border-radius: 8px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.composer {
+  padding: 10px;
+  border-top: 1px solid var(--line);
+}
+
+/*
+ * The product's composer (M2c's `Composer`), copied for the widget: one rounded
+ * field that holds the text and one round button, Send or Stop. Copied rather
+ * than imported because the real one is Tailwind on the app's tokens; this one
+ * reads only the shell's own variables.
+ */
+.field {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 6px 6px 6px 12px;
+  border: 1px solid var(--edge);
+  border-radius: 18px;
+  background: var(--bg);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.field:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  max-height: 120px;
+  margin: 0;
+  padding: 6px 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  font: inherit;
+  line-height: 20px;
+  color: inherit;
+  background: transparent;
+}
+.input::placeholder { color: var(--muted); opacity: 0.85; }
+.input:disabled { cursor: not-allowed; opacity: 0.6; }
+
+.send, .stop {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: opacity 0.15s, background-color 0.15s;
+}
+.send { border: 0; background: var(--accent); color: var(--on-accent); }
+.send:disabled { opacity: 0.4; cursor: default; }
+.stop { border: 1px solid var(--line); background: var(--surface); color: var(--text); }
+.send:focus-visible, .stop:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.send svg { width: 16px; height: 16px; }
+.stop svg { width: 11px; height: 11px; }
+
+/* The refusal an unlisted origin gets. Rendered rather than 404'd: the reader is
+   almost always the customer who forgot to list the site they just pasted the
+   snippet onto, and this is the only place they will see why. */
+.refusal {
+  height: 100vh;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 24px;
+  background: #fff;
+  color: #4e5459;
+  font: 14px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+.refusalTitle { margin: 0; font-weight: 600; color: #12171b; }
+.refusalBody { margin: 0; max-width: 34ch; }
+
+/*
+ * Dark.
+ *
+ * Two selectors, and both are needed. `[data-theme='dark']` is the customer
+ * saying so; the media query inside `[data-theme='auto']` is the visitor's own
+ * setting. A customer on a dark site can now force dark instead of hoping every
+ * visitor has the OS preference — which is the complaint the option answers.
+ */
+.shell[data-theme='dark'] {
+  --bg: #0d1216;
+  --text: #f0f4f8;
+  --muted: #bcc2c7;
+  --surface: #1a2025;
+  --line: #2c3338;
+  --edge: #3a4147;
+  --danger-bg: #391917;
+  --danger-text: #f9b4ae;
+}
+
+@media (prefers-color-scheme: dark) {
+  .shell[data-theme='auto'] {
+    --bg: #0d1216;
+    --text: #f0f4f8;
+    --muted: #bcc2c7;
+    --surface: #1a2025;
+    --line: #2c3338;
+    --edge: #3a4147;
+    --danger-bg: #391917;
+    --danger-text: #f9b4ae;
+  }
+
+  .refusal { background: #0d1216; color: #bcc2c7; }
+  .refusalTitle { color: #f0f4f8; }
+}

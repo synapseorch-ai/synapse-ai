@@ -13,15 +13,21 @@ Differences from V1:
 
 V1 API is completely unchanged.
 """
+import json
 import time
 import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, field_validator
+
+from core.images import checked_images
+from core.routes.api_v1 import refuse_engine_keys
 
 from core.api_key_middleware import require_api_key
+from core.scale.config import QUEUE_NAME
+from core.tenancy import get_tenant
 
 router = APIRouter()
 
@@ -31,29 +37,53 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 class V2OrchestrationRunRequest(BaseModel):
+    # A field it does not know is refused by name, as v1 and cloud's v2 refuse it
+    # (F434): `initial_state` used to be dropped here without a word, the run
+    # starting with none of the caller's inputs.
+    model_config = ConfigDict(extra="forbid")
+
     message: str = ""
     session_id: str | None = None
-    priority: int = 0
+    # The run's inputs, merged into its shared state — v1's field and rule (D126).
+    initial_state: dict = {}
     webhook_url: str | None = None
     webhook_secret: str | None = None
-    tenant_id: str | None = None
+
+    @field_validator("initial_state")
+    @classmethod
+    def _no_engine_keys(cls, value: dict) -> dict:
+        return refuse_engine_keys(value)
+    # No `tenant_id`. It was accepted from the request body and written onto
+    # the run row, so any caller who could reach this endpoint could label its
+    # run with any tenant. The tenant comes from the execution context now —
+    # see core/tenancy.py.
 
 
 class V2ResumeRequest(BaseModel):
-    response: dict | str = {}
+    # v1's rules (F232): a misspelt field is refused by name rather than
+    # answering the question with `{}`, and an empty answer is refused.
+    model_config = ConfigDict(extra="forbid")
+
+    response: dict | str
     webhook_url: str | None = None
     webhook_secret: str | None = None
+    # Which of a team step's questions (TEAM1e): the pause's `questions[].question_id`.
+    question_id: str | None = None
 
 
 class V2ChatRequest(BaseModel):
+    # A misspelt field is refused by name, not dropped (F434), as v1's chat does.
+    model_config = ConfigDict(extra="forbid")
+
     message: str
     agent: str | None = None
     session_id: str | None = None
     images: list[str] = []
-    priority: int = 0
     webhook_url: str | None = None
     webhook_secret: str | None = None
-    tenant_id: str | None = None
+
+    # Refused here with a 422, not inside the worker's ChatRequest (F69).
+    _check_images = checked_images()
 
 
 # ---------------------------------------------------------------------------
@@ -84,8 +114,9 @@ def _get_pg_session_factory(request: Request):
     return sf
 
 
-def _new_run_id() -> str:
-    return f"run_{uuid.uuid4().hex[:12]}_{int(time.time() * 1000)}"
+def _new_run_id(orch_id: str) -> str:
+    from core.run_ids import new_run_id
+    return new_run_id(orch_id)
 
 
 def _new_session_id() -> str:
@@ -106,11 +137,16 @@ async def _check_tenant_quota(session_factory, tenant_id: str, redis) -> None:
             tenant = t_result.scalar_one_or_none()
             max_queued = tenant.max_queued_runs if tenant else 1000
 
-            # Count active + queued runs for this tenant
+            # Count active + queued runs for this tenant — runs, not their
+            # nested children (`{run}__…`), which run inside their parent: one
+            # run with nested steps used to count once per live child (F292),
+            # as cloud's admission did (F283). `autoescape`: `_` is a LIKE
+            # wildcard, and run ids are full of it (state_store.list_runs).
             count_result = await session.execute(
                 select(func.count()).select_from(OrchestrationRunDB).where(
                     OrchestrationRunDB.tenant_id == tenant_id,
                     OrchestrationRunDB.status.in_(["running", "queued", "paused"]),
+                    ~OrchestrationRunDB.run_id.contains("__", autoescape=True),
                 )
             )
             active_count = count_result.scalar() or 0
@@ -172,11 +208,10 @@ async def _check_rate_limit(redis, tenant_id: str, max_rps: int) -> None:
 
 async def _create_run_row(session_factory, run_id: str, orch_id: str, tenant_id: str) -> None:
     """Pre-create the orchestration_runs row so status polling works immediately."""
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-    from core.scale.models_db import OrchestrationRunDB
+    from core.store.models import OrchestrationRunDB
 
     async with session_factory() as session:
-        stmt = pg_insert(OrchestrationRunDB).values(
+        session.add(OrchestrationRunDB(
             run_id=run_id,
             orchestration_id=orch_id,
             tenant_id=tenant_id,
@@ -184,14 +219,44 @@ async def _create_run_row(session_factory, run_id: str, orch_id: str, tenant_id:
             shared_state={},
             step_history=[],
             started_at=datetime.now(timezone.utc),
-        ).on_conflict_do_nothing()
-        await session.execute(stmt)
+        ))
         await session.commit()
 
 
 # ---------------------------------------------------------------------------
 # Orchestration endpoints
 # ---------------------------------------------------------------------------
+
+def _workspace_row(row) -> bool:
+    """Whether an orchestrations row is workspace content — never the AI
+    builder's own machinery, nor one cloud soft-deleted (F96, as v1 and MCP
+    read it: `builder_tools._is_visible`)."""
+    from core.builder_tools import _is_visible
+    return _is_visible({**(row.definition or {}), "is_active": row.is_active})
+
+
+async def _refuse_hidden_orchestration(sf, orch_id: str | None, not_found: str) -> None:
+    """404 when `orch_id` names a stored orchestration that is not workspace
+    content. One the table does not hold is left to the caller, as before."""
+    if not orch_id:
+        return
+    from sqlalchemy import select
+    from core.scale.models_db import OrchestrationDB
+
+    async with sf() as session:
+        row = (await session.execute(
+            select(OrchestrationDB).where(OrchestrationDB.id == orch_id))).scalar_one_or_none()
+    if row is not None and not _workspace_row(row):
+        raise HTTPException(404, detail=not_found)
+
+
+async def _refuse_builder_run(request: Request, run_id: str) -> None:
+    """404 a run of the AI builder's own orchestration (F96), as v1 does: their
+    ids (`run_orch_native_builder_<ms>_…`) are guessable."""
+    from core.run_ids import orchestration_of
+    await _refuse_hidden_orchestration(_get_pg_session_factory(request), orchestration_of(run_id),
+                                       f"Run '{run_id}' not found.")
+
 
 @router.get("/orchestrations")
 async def v2_list_orchestrations(
@@ -207,9 +272,10 @@ async def v2_list_orchestrations(
 
     async with sf() as session:
         result = await session.execute(
-            select(OrchestrationDB.id, OrchestrationDB.name, OrchestrationDB.description, OrchestrationDB.updated_at)
+            select(OrchestrationDB.id, OrchestrationDB.name, OrchestrationDB.description, OrchestrationDB.updated_at,
+                   OrchestrationDB.definition, OrchestrationDB.is_active)
         )
-        rows = result.all()
+        rows = [r for r in result.all() if _workspace_row(r)]
 
     return [
         {
@@ -241,7 +307,7 @@ async def v2_get_orchestration(
         )
         row = result.scalar_one_or_none()
 
-    if not row:
+    if not row or not _workspace_row(row):
         raise HTTPException(404, detail=f"Orchestration '{orch_id}' not found.")
     return row.definition
 
@@ -264,16 +330,18 @@ async def v2_run_orchestration(
     from core.scale.config import get_scale_config
     cfg = get_scale_config()
 
-    tenant_id = body.tenant_id or cfg.default_tenant_id
-    queue_name = f"synapse:orchestrations:{tenant_id}" if cfg.enable_tenant_isolation else f"synapse:orchestrations:{os.getenv('WORKER_QUEUE_SHARD', 'default')}"
+    tenant_id = get_tenant()
+    queue_name = QUEUE_NAME
+
+    # Never the AI builder's own (F96): the worker would run it.
+    await _refuse_hidden_orchestration(sf, orch_id, f"Orchestration '{orch_id}' not found.")
 
     # Rate limit + quota + backpressure checks
     await _check_rate_limit(redis, tenant_id, cfg.rate_limit_per_tenant_rps)
-    if cfg.enable_tenant_isolation:
-        await _check_tenant_quota(sf, tenant_id, redis)
+    await _check_tenant_quota(sf, tenant_id, redis)
     await _check_global_queue_depth(redis, queue_name, cfg.max_global_queue_depth)
 
-    run_id = _new_run_id()
+    run_id = _new_run_id(orch_id)
 
     # Pre-create run row so status polling works immediately
     await _create_run_row(sf, run_id, orch_id, tenant_id)
@@ -285,9 +353,9 @@ async def v2_run_orchestration(
         orch_id=orch_id,
         initial_input=body.message,
         session_id=body.session_id,
+        initial_state=body.initial_state or None,
         webhook_url=body.webhook_url,
         webhook_secret=body.webhook_secret,
-        tenant_id=tenant_id,
         _queue_name=queue_name,
         _job_id=run_id,
     )
@@ -312,6 +380,7 @@ async def v2_run_status(
 ):
     """Poll run status from Postgres."""
     _require_scale_mode(request)
+    await _refuse_builder_run(request, run_id)  # F96
     sf = _get_pg_session_factory(request)
 
     from sqlalchemy import select
@@ -352,6 +421,7 @@ async def v2_stream_run(
     Supports reconnect via Last-Event-ID header — missed events are replayed.
     """
     redis = _require_scale_mode(request)
+    await _refuse_builder_run(request, run_id)  # F96
 
     from core.scale.event_bridge import stream_run_events
 
@@ -380,6 +450,7 @@ async def v2_get_run_events(
     Pass `start="-"` and `end="+"` (defaults) to retrieve the full history.
     """
     redis = _require_scale_mode(request)
+    await _refuse_builder_run(request, run_id)  # F96
 
     from core.scale.event_bridge import get_run_events
 
@@ -395,6 +466,7 @@ async def v2_cancel_run(
 ):
     """Publish a distributed cancellation signal for the run."""
     redis = _require_scale_mode(request)
+    await _refuse_builder_run(request, run_id)  # F96
 
     from core.scale.pubsub import publish_cancellation
     await publish_cancellation(redis, run_id)
@@ -410,53 +482,91 @@ async def v2_resume_run(
     _: dict = Depends(require_api_key),
 ):
     """Enqueue a resume job for a paused run (after human input)."""
-    redis = _require_scale_mode(request)
+    _require_scale_mode(request)
+    await _refuse_builder_run(request, run_id)  # F96
+    from core.orchestration.answers import EmptyAnswer, refuse_empty
+    try:
+        refuse_empty(body.response)
+    except EmptyAnswer as exc:
+        raise HTTPException(422, detail=str(exc))
     arq_redis = _get_arq_redis(request)
     sf = _get_pg_session_factory(request)
 
     # Resolve the shard queue this run was originally enqueued to so the
     # resume job lands on the same worker that checkpointed the paused state.
-    import os
     from sqlalchemy import select
-    from core.scale.models_db import OrchestrationRunDB
-    from core.scale.config import get_scale_config
+    from core.store.models import OrchestrationRunDB
 
-    cfg = get_scale_config()
     async with sf() as session:
         result = await session.execute(
-            select(OrchestrationRunDB.tenant_id, OrchestrationRunDB.status).where(OrchestrationRunDB.run_id == run_id)
+            select(
+                OrchestrationRunDB.status,
+                OrchestrationRunDB.waiting_for_human,
+                OrchestrationRunDB.step_history,
+                OrchestrationRunDB.human_fields,
+                OrchestrationRunDB.step_progress,
+                OrchestrationRunDB.current_step_id,
+            )
+            .where(OrchestrationRunDB.run_id == run_id)
         )
         run_row = result.first()
     if not run_row:
         raise HTTPException(404, detail=f"Run '{run_id}' not found.")
     if run_row.status in ("completed", "failed", "cancelled"):
         raise HTTPException(409, detail=f"Run '{run_id}' is already {run_row.status} and cannot be resumed.")
-    run_tenant_id = (run_row.tenant_id or cfg.default_tenant_id)
-    print("Resuming run", run_id, "for tenant", run_tenant_id)
-    queue_name = (
-        f"synapse:orchestrations:{run_tenant_id}"
-        if cfg.enable_tenant_isolation
-        else f"synapse:orchestrations:{os.getenv('WORKER_QUEUE_SHARD', 'default')}"
-    )
+    if body.question_id and run_row.status in ("running", "pending", "queued"):
+        # A team's question answered while its step works (TEAM1e): to its team, through the run's job.
+        from core import team as _team
+        from core.orchestration.answers import _verdict
+        from core.scale.pubsub import publish_member_answer
+        await publish_member_answer(request.app.state.redis, _team.run_mailbox(run_id),
+                                    _verdict(body.response, body.question_id))
+        return {"run_id": run_id, "status": "answered", "delivered": "sent"}
+    # A run that is not paused on a question has nothing to answer. This used to
+    # enqueue anyway, and a job for a running run carried no question to check
+    # (F136) — as v1 already refused (D113).
+    if not (run_row.status == "paused" and run_row.waiting_for_human):
+        raise HTTPException(409, detail=f"Run '{run_id}' is {run_row.status} and is not waiting for an answer.")
 
-    print("Queue name for resume:", queue_name)
-    # Publish human input to Redis so workers polling for it can pick it up
-    from core.scale.pubsub import publish_human_input
-    resp = body.response
+    # The run's tenant no longer selects a queue: any worker can resume any
+    # run, because the run's state is in the store rather than on the disk of
+    # whichever process happened to start it.
+    queue_name = QUEUE_NAME
+    # An email, date, phone or dropdown answer that is not one (F455), refused
+    # before anything is queued, as `answer_paused_run` refuses it for v1.
+    from core.orchestration.human_fields import BadAnswer, check_answer
+    try:
+        resp = check_answer(run_row.human_fields, body.response)
+    except BadAnswer as exc:
+        raise HTTPException(422, detail=str(exc))
+    # The answer travels as the resume job's argument.
     if isinstance(resp, str):
         resp = {"response": resp}
-    await publish_human_input(redis, run_id, resp)
+    if body.question_id:
+        from core.orchestration.answers import QuestionNotAsked, check_question
+        try:
+            check_question(run_row, body.question_id)
+        except QuestionNotAsked as exc:
+            raise HTTPException(409, detail=str(exc))
+        resp = {**resp, "question_id": body.question_id}
 
-    # Enqueue resume job to the correct shard queue
-    await arq_redis.enqueue_job(
+    from core.orchestration.pauses import pause_ordinal
+
+    job = await arq_redis.enqueue_job(
         "resume_orchestration_job",
         run_id=run_id,
         human_response=resp,
         webhook_url=body.webhook_url,
         webhook_secret=body.webhook_secret,
+        # The question this answer is for (F111).
+        pause_ordinal=pause_ordinal(run_row.step_history),
         _queue_name=queue_name,
-        _job_id=f"resume_{run_id}_{int(time.time())}",
+        _job_id=f"resume_{run_id}_{int(time.time() * 1000)}",
     )
+    if job is None:
+        # ARQ drops a second job with the same id: another answer to this run
+        # was queued this millisecond, and this one was not.
+        raise HTTPException(409, detail=f"An answer to run '{run_id}' was queued at the same moment.")
 
     return {
         "run_id": run_id,
@@ -527,23 +637,25 @@ async def v2_chat(
     redis = _require_scale_mode(request)
     arq_redis = _get_arq_redis(request)
 
-    from core.scale.config import get_scale_config
-    cfg = get_scale_config()
+    # Resolved here, the way v1 resolves it, so an unknown agent is a 404 rather
+    # than a queued job that fails — and a name reaches the worker as the id it
+    # looks agents up by (F69).
+    from core.routes.api_v1 import _agent_or_error, refuse_unread_images
+    agent = await _agent_or_error(body.agent)
+    await refuse_unread_images(agent, body.images)
 
     session_id = body.session_id or _new_session_id()
-    tenant_id = body.tenant_id or cfg.default_tenant_id
-    queue_name = f"synapse:orchestrations:{os.getenv('WORKER_QUEUE_SHARD', 'default')}"
 
     await arq_redis.enqueue_job(
         "run_agent_chat_job",
         session_id=session_id,
-        agent_id=body.agent,
+        agent_id=agent["id"],
         message=body.message,
         images=body.images,
         webhook_url=body.webhook_url,
         webhook_secret=body.webhook_secret,
-        tenant_id=tenant_id,
-        _queue_name=queue_name,
+        expand_mentions=True,  # an API key is a member's: `@[path]` reads the vault
+        _queue_name=QUEUE_NAME,
         _job_id=f"chat_{session_id}_{int(time.time())}",
     )
 
@@ -553,6 +665,42 @@ async def v2_chat(
         "stream_url": f"/api/v2/chat/{session_id}/stream",
         "status_url": f"/api/v2/chat/{session_id}/status",
     }
+
+
+def _for_an_api_caller(event: dict) -> dict:
+    """A failed turn's own words stay with a member in the app (D118, F231, F295).
+
+    The fleet's chat job publishes a failure's text onto the chat stream, beside
+    what kind it was: F275's `code` for a model failure, `run_id` for a failed
+    workflow. An API caller is told that, in v1's sentence, and not the words —
+    a provider's refusal ("…prepayment credits are depleted…"), a key's, or a
+    failed run's last line.
+    """
+    if event.get("type") != "error":
+        return event
+    from core.routes.api_v1 import _failed_workflow, _model_failure
+
+    if event.get("code"):
+        return {**event, "message": _model_failure(event["code"])}
+    if event.get("run_id"):
+        return {**event, "message": _failed_workflow(event["run_id"])}
+    return event
+
+
+async def _frames_for_an_api_caller(frames):
+    """`stream_chat_events`' SSE frames, each failure told as `_for_an_api_caller` tells it."""
+    async for frame in frames:
+        lines = frame.split("\n")
+        for i, line in enumerate(lines):
+            if line.startswith("data: "):
+                try:
+                    event = json.loads(line[6:])
+                except ValueError:
+                    break
+                if isinstance(event, dict) and event.get("type") == "error":
+                    lines[i] = "data: " + json.dumps(_for_an_api_caller(event))
+                break
+        yield "\n".join(lines)
 
 
 @router.get("/chat/{session_id}/stream")
@@ -568,7 +716,7 @@ async def v2_chat_stream(
     from core.scale.event_bridge import stream_chat_events
 
     return StreamingResponse(
-        stream_chat_events(redis, session_id, last_event_id or "0"),
+        _frames_for_an_api_caller(stream_chat_events(redis, session_id, last_event_id or "0")),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -589,11 +737,23 @@ async def v2_chat_status(
     sf = _get_pg_session_factory(request)
 
     from sqlalchemy import select
-    from core.scale.models_db import ChatSessionDB
+    from core.store.models import ChatSessionDB
+    from core.tenancy import get_tenant
 
+    # A session id can name more than one conversation — the same id under a
+    # different agent is a different one — so this returns the most recently
+    # active. API clients mint a session id per conversation, so in practice
+    # there is one row; the ordering is what makes the ambiguous case defined
+    # rather than arbitrary.
     async with sf() as session:
         result = await session.execute(
-            select(ChatSessionDB).where(ChatSessionDB.session_id == session_id)
+            select(ChatSessionDB)
+            .where(
+                ChatSessionDB.tenant_id == get_tenant(),
+                ChatSessionDB.session_id == session_id,
+            )
+            .order_by(ChatSessionDB.last_message_at.desc().nullslast())
+            .limit(1)
         )
         row = result.scalar_one_or_none()
 
@@ -626,7 +786,8 @@ async def v2_get_chat_events(
 
     from core.scale.event_bridge import get_chat_events
 
-    events = await get_chat_events(redis, session_id, start=start, end=end)
+    events = [{**e, "event": _for_an_api_caller(e.get("event") or {})}
+              for e in await get_chat_events(redis, session_id, start=start, end=end)]
     return {"session_id": session_id, "count": len(events), "events": events}
 
 
@@ -639,7 +800,12 @@ async def v2_cancel_chat(
     """Publish a cancellation signal for a chat session."""
     redis = _require_scale_mode(request)
 
-    await redis.set(f"synapse:cancel:chat:{session_id}", "1", ex=3600)
+    # Through the helper, so the key this writes and the key the worker reads
+    # are the same string by construction. They were the same string by
+    # coincidence before, and nothing read it — this endpoint returned 200 and
+    # did nothing at all.
+    from core.scale.pubsub import publish_chat_cancellation
+    await publish_chat_cancellation(redis, session_id)
     return {"status": "cancellation_requested", "session_id": session_id}
 
 
@@ -686,12 +852,8 @@ async def v2_queue_stats(
     """Return ARQ queue depth and active job counts from Redis."""
     redis = _require_scale_mode(request)
 
-    from core.scale.config import get_scale_config
-    cfg = get_scale_config()
-    queue_name = f"synapse:orchestrations:{os.getenv('WORKER_QUEUE_SHARD', 'default')}"
-
     try:
-        queued = await redis.zcard(queue_name) or 0
+        queued = await redis.zcard(QUEUE_NAME) or 0
     except Exception:
         queued = 0
 
@@ -711,7 +873,7 @@ async def v2_queue_stats(
         active = 0
 
     return {
-        "queue_name": queue_name,
+        "queue_name": QUEUE_NAME,
         "queued": queued,
         "active": active,
     }

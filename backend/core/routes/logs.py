@@ -12,10 +12,10 @@ router = APIRouter()
 # -- Agent Logs -----------------------------------------------------
 
 @router.get("/api/logs/agents")
-async def list_agent_logs(limit: int = 100, offset: int = 0):
-    """List recent agent run logs (summary only)."""
+async def list_agent_logs(limit: int = 100, offset: int = 0, agent_id: str | None = None):
+    """List recent agent run logs (summary only), optionally for one agent."""
     from core.agent_logger import AgentLogger
-    return AgentLogger.list_logs(limit=limit, offset=offset)
+    return AgentLogger.list_logs(limit=limit, offset=offset, agent_id=agent_id)
 
 
 @router.get("/api/logs/agents/{run_id}")

@@ -1,0 +1,258 @@
+"""Where a paused run is waiting, and which step asked.
+
+A run's `current_step_id` is where the engine resumes: the top-level step it
+drives. When the question was asked inside a Loop body, a Parallel branch or a
+nested orchestration, that is the container, not the step that asked. So the
+two are recorded apart:
+
+- the step that asked is the run's newest `paused` entry in `step_history`,
+  written by the engine at the pause (with `within`, the container holding it);
+- each container between the two keeps a `paused` record in its progress key,
+  saying where inside it the run stopped, so answering can carry the container
+  on from there instead of stepping past it (F109).
+
+Nothing here imports the engine: anything that needs to know which step is
+waiting — the messaging layer, cloud's notifier and cancel route — reads these.
+"""
+from __future__ import annotations
+
+import time
+
+from typing import Any, Mapping
+
+#: The container step types that keep a pause record, and the key each keeps it
+#: under. The one spelling of these keys: the executors read and write them
+#: through `progress_key`.
+_PROGRESS_PREFIX = {"loop": "_loop_progress_", "parallel": "_parallel_progress_"}
+
+
+def _type_of(step: Any) -> str:
+    kind = getattr(step, "type", None)
+    return str(getattr(kind, "value", kind) or "")
+
+
+def progress_key(step: Any) -> str | None:
+    """The shared-state key a Loop or Parallel step keeps its progress under."""
+    prefix = _PROGRESS_PREFIX.get(_type_of(step))
+    return f"{prefix}{step.id}" if prefix else None
+
+
+def asking_step_id(step_history: list | None, current_step_id: str | None) -> str | None:
+    """The step a paused run is waiting on: its newest `paused` history entry.
+
+    Falls back to `current_step_id`, which is the same step for a question asked
+    at the top level — and for a run paused before the entry existed.
+    """
+    for entry in reversed(step_history or []):
+        if isinstance(entry, dict) and entry.get("status") == "paused":
+            return entry.get("step_id") or current_step_id
+    return current_step_id
+
+
+def pause_ordinal(step_history: list | None) -> int | None:
+    """Which question a paused run is asking: its newest `paused` entry's index.
+
+    A step id does not say — a human step in a loop asks once per iteration
+    under one id — but each pause opens an entry of its own, and an answered
+    one is closed where it stands, so the index names this question and no
+    later one. An answer carries it (F111): an answer job whose question is no
+    longer the one asked must not answer the one that is. None when no entry
+    is paused (a run paused before the entry existed).
+    """
+    history = step_history or []
+    for index in range(len(history) - 1, -1, -1):
+        entry = history[index]
+        if isinstance(entry, dict) and entry.get("status") == "paused":
+            return index
+    return None
+
+
+def pause_chain(step_map: Mapping[str, Any], shared_state: Mapping[str, Any],
+                position: str | None) -> list[dict]:
+    """The containers' pause records from `position` inwards, outermost first.
+
+    Each is the `paused` dict a container wrote when a step inside it stopped to
+    ask; its `step_id` is either the step that asked or the next container in.
+    Empty when `position` is not a container holding a pause.
+    """
+    chain: list[dict] = []
+    seen: set[str] = set()
+    step_id = position
+    while step_id and step_id not in seen:
+        seen.add(step_id)
+        step = step_map.get(step_id)
+        key = progress_key(step) if step is not None else None
+        record = shared_state.get(key) if key else None
+        paused = record.get("paused") if isinstance(record, dict) else None
+        if not isinstance(paused, dict) or not paused.get("step_id"):
+            break
+        chain.append(paused)
+        step_id = paused["step_id"]
+    return chain
+
+
+def innermost_container(position: str, chain: list[dict]) -> str:
+    """The container holding the step that asked — `position` itself at one level."""
+    containers = [position] + [p["step_id"] for p in chain[:-1]]
+    return containers[-1]
+
+
+#: A delegate's Agent step's member and helper tasks, counted in the run's state as each one's answer is back and
+#: moved onto the step's history entry when that is written (TEAM1d, 20 Q7: the entry is priced 1 + its tasks). In
+#: the run's state, so a pause, a crash or a container in between loses none.
+TASKS_KEY = "_step_tasks"
+
+
+def count_task(shared_state: dict, step_id: str) -> None:
+    """One more task for this step's execution (`TASKS_KEY`)."""
+    counts = shared_state.get(TASKS_KEY)
+    if not isinstance(counts, dict):
+        counts = shared_state[TASKS_KEY] = {}
+    counts[step_id] = int(counts.get(step_id) or 0) + 1
+
+
+#: An Agent step whose answer was accepted with its own plan's tasks open (F862): how many, and whether its last turn
+#: is what ended it, moved onto the entry with its counted tasks. Not priced: `tasks` alone is.
+LEFT_OPEN_KEY = "_step_tasks_left_open"  # under `_step_tasks`, so no client and no run memory sees it
+
+
+def note_left_open(shared_state: dict, step_id: str, open_tasks: int, *, turn_limit: bool) -> None:
+    """This step's execution ended with `open_tasks` of its plan open (`LEFT_OPEN_KEY`)."""
+    left = shared_state.get(LEFT_OPEN_KEY)
+    if not isinstance(left, dict):
+        left = shared_state[LEFT_OPEN_KEY] = {}
+    left[step_id] = {"open_tasks": int(open_tasks), **({"ended": "turn_limit"} if turn_limit else {})}
+
+
+def take_tasks(shared_state: dict, step_id: str) -> dict:
+    """The step's counted tasks as its entry's fields, `{"tasks": n}` or nothing, off the run's state — and the plan
+    it left open, `{"open_tasks": n, "ended": "turn_limit"}` (F862)."""
+    fields: dict = {}
+    left = shared_state.get(LEFT_OPEN_KEY)
+    if isinstance(left, dict):
+        mine = left.pop(step_id, None)
+        if isinstance(mine, dict) and int(mine.get("open_tasks") or 0) > 0:
+            fields.update(mine)
+        if not left:
+            shared_state.pop(LEFT_OPEN_KEY, None)
+    counts = shared_state.get(TASKS_KEY)
+    if not isinstance(counts, dict):
+        return fields
+    n = int(counts.pop(step_id, 0) or 0)
+    if not counts:
+        shared_state.pop(TASKS_KEY, None)
+    return {"tasks": n, **fields} if n > 0 else fields
+
+
+def record_pause(step_history: list, entry: dict) -> None:
+    """Record a pause: a step's first question adds its entry; a later question in
+    the same execution closes the first as the wait it was (F463).
+
+    A step whose approval was answered is `running` in its reopened entry. When it
+    asked again, a second entry was added and the first stayed `running` for ever:
+    one execution read as two by the loop guard and a host's pricing, and as a step
+    that never ended in the run's log. Pausing the one entry again would give both
+    questions one `pause_ordinal`, the index an answer names its question by
+    (F136, F140), so a stale answer could approve a different call.
+
+    F140's shape instead (Naveen, D267): the reopened entry becomes a closed `human`
+    wait — free, outside active time and the executed-step count, and true, a
+    person's wait inside one execution — from the first pause to its answer. The new
+    pause, typed as the step, carries the step's start and every second it worked,
+    so its end prices and times one execution.
+    """
+    for existing in reversed(step_history):
+        if not isinstance(existing, dict) or existing.get("step_id") != entry.get("step_id"):
+            continue
+        if existing.get("status") == "running" and existing.get("step_type") != "human":
+            worked = (existing.pop("worked_seconds", None) or 0) + (entry.get("worked_seconds") or 0)
+            # The execution's tasks go with its work to the new pause (TEAM1d); the wait is free.
+            tasks = int(existing.pop("tasks", None) or 0) + int(entry.get("tasks") or 0)
+            if tasks:
+                entry["tasks"] = tasks
+            for key in ("started_at", "started_ms"):
+                if existing.get(key):
+                    entry[key] = existing[key]
+            if worked:
+                entry["worked_seconds"] = round(worked, 2)
+            now = time.time()
+            answered = existing.pop("resumed_ms", None)
+            asked = existing.pop("paused_ms", None)
+            waited_to = answered / 1000 if answered else now
+            waited_from = min(asked / 1000, waited_to) if asked else waited_to
+            existing.update(
+                status="completed", step_type="human",
+                started_at=_stamp(waited_from), started_ms=int(waited_from * 1000),
+                ended_at=_stamp(waited_to), ended_ms=int(waited_to * 1000),
+                duration_seconds=round(waited_to - waited_from, 2),
+            )
+        break
+    step_history.append(entry)
+
+
+def _stamp(t: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+
+
+def end_step(step_history: list, entry: dict) -> None:
+    """Record a step's end: close the entry it has open, or add one.
+
+    A step re-entered after its tool call was approved already has an entry —
+    the pause's, reopened `running` by the resume. Its end closes that entry
+    instead of adding a second, so a step that ran once has one entry: that is
+    what a run's timeline shows and what cloud prices (F109). The entry keeps
+    its start, whole-second and exact; its duration is this execution's, never
+    the person's wait.
+    """
+    for existing in reversed(step_history):
+        if (isinstance(existing, dict) and existing.get("step_id") == entry.get("step_id")
+                and existing.get("status") == "running"):
+            kept = {key: existing[key] for key in ("started_at", "started_ms") if existing.get(key)}
+            # And what it worked before it asked (F439): the resumed stretch alone
+            # left out every model call before the question.
+            worked = existing.pop("worked_seconds", None)
+            existing.pop("resumed_ms", None)
+            existing.pop("paused_ms", None)
+            # And the tasks it ran before it asked (TEAM1d): one execution, one count.
+            tasks = int(existing.get("tasks") or 0) + int(entry.get("tasks") or 0)
+            existing.update(entry)
+            existing.update(kept)
+            if tasks:
+                existing["tasks"] = tasks
+            if worked and isinstance(existing.get("duration_seconds"), (int, float)):
+                existing["duration_seconds"] = round(existing["duration_seconds"] + worked, 2)
+            if "started_ms" not in kept:
+                # Opened before the exact stamps: its window stays the whole-second one.
+                existing.pop("started_ms", None)
+                existing.pop("ended_ms", None)
+            return
+    step_history.append(entry)
+
+
+async def asked_again(definition: Mapping | None, shared_state: Mapping | None, step_history: list | None,
+                      current_step_id: str | None) -> dict:
+    """What a paused run's question carried beside its words, read back from the run as stored (F1333): `context_key`,
+    and `context` when that is an object that names itself. A reopened review is drawn from the very object its live
+    event carried (`steps.asked_context`, the same state, the history up to its pause), masked as the live event was:
+    this task holds the workspace's secret variables and its held secrets first (`variables.load`, `refresh_held`),
+    then the event goes through the one public door (`public_event`). `{}` when the step that asked is not in the run's
+    definition (a nested pause, a run from before definitions were kept): the question's words alone, as before."""
+    from core import variables
+    from core.events_public import public_event
+    from core.orchestration.steps import asked_context
+    from core.secret_scrub import refresh_held
+
+    step_id = asking_step_id(step_history, current_step_id)
+    steps = (definition or {}).get("steps") if isinstance(definition, Mapping) else None
+    step = next((s for s in steps or [] if isinstance(s, Mapping) and s.get("id") == step_id), None)
+    if step is None:
+        return {}
+    history = list(step_history or [])
+    paused = max((i for i, e in enumerate(history) if isinstance(e, Mapping) and e.get("status") == "paused"),
+                 default=len(history))
+    _said, context_key, typed = asked_context(step.get("input_keys"), dict(shared_state or {}), history[:paused])
+    await variables.load()
+    await refresh_held()
+    shown = public_event({"type": "human_input_required", "context_key": context_key,
+                          **({"context": typed} if typed is not None else {})}) or {}
+    return {"context_key": shown.get("context_key"), **({"context": shown["context"]} if "context" in shown else {})}

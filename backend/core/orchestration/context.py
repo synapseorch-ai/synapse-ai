@@ -13,9 +13,13 @@ Provides:
 from __future__ import annotations
 
 import datetime
+import json
+import re
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+from core import templating as _templating
 
 if TYPE_CHECKING:
     from core.models_orchestration import StepConfig, OrchestrationRun
@@ -64,6 +68,10 @@ class TransitionContext:
     # Loop-specific
     loop_iteration: int | None = None
     loop_total: int | None = None
+    #: A for-each loop (`loop_over`): each iteration is the same task for its own
+    #: item, not another pass at the last output (F767).
+    loop_for_each: bool = False
+    loop_item: Any = None
 
     # Human-specific
     human_response_key: str | None = None
@@ -133,18 +141,12 @@ def build_transition_context(
                 human_response_key=human_key,
             )
 
-        elif prev_step and prev_step.type == StepType.LOOP:
-            # Inside a loop body — get iteration metadata from shared_state
-            iteration = run.shared_state.get("_loop_current_iteration")
-            total = run.shared_state.get("_loop_total")
-            return TransitionContext(
-                origin_type="loop",
-                execution_number=execution_number,
-                from_step_id=from_step_id,
-                from_step_name=from_step_name,
-                loop_iteration=iteration,
-                loop_total=total,
-            )
+        # NOTE: there is deliberately no `prev_step.type == StepType.LOOP` branch
+        # here. A body step's loop context is built by LoopStepExecutor, which is
+        # what actually knows the iteration. The only step whose *previous*
+        # completed step is the loop node is the one after it on the done path —
+        # which is a linear transition, not a loop one. This used to key off that
+        # and told the post-loop step it was "inside a loop, iteration None of None".
 
         # Default: linear flow from previous step
         if prev_step and prev_step.agent_id:
@@ -168,6 +170,11 @@ def build_execution_trace(events: list[dict]) -> dict:
     """
     Extract a structured trace from the SSE events emitted by run_agent_step().
     Keeps tool names/args/result-previews and the final response — NOT full outputs.
+
+    Reads both spellings: the agent loop's own `tool_execution` + `args` and
+    `tool_result` + `preview`, and the `tool_call` + `tool_input` shape the TOOL
+    and nested-orchestration steps synthesise. Only the second was read, so
+    every agent step's memory held no tool calls (F81).
     """
     tool_calls: list[dict] = []
     tools_used: list[str] = []
@@ -177,16 +184,16 @@ def build_execution_trace(events: list[dict]) -> dict:
     for event in events:
         etype = event.get("type", "")
 
-        if etype == "tool_call":
+        if etype in ("tool_call", "tool_execution"):
             name = event.get("tool_name") or event.get("tool") or ""
-            args = event.get("tool_input") or event.get("arguments") or {}
+            args = event.get("tool_input") or event.get("arguments") or event.get("args") or {}
             if name and name not in tools_used:
                 tools_used.append(name)
             tool_calls.append({"name": name, "args": args})
 
         elif etype == "tool_result":
             # Attach result preview to the last recorded call for this tool
-            result_raw = str(event.get("result") or event.get("output") or "")
+            result_raw = str(event.get("result") or event.get("output") or event.get("preview") or "")
             preview = result_raw[:300] + ("..." if len(result_raw) > 300 else "")
             if tool_calls:
                 tool_calls[-1]["result_preview"] = preview
@@ -205,6 +212,29 @@ def build_execution_trace(events: list[dict]) -> dict:
     }
 
 
+def answered_human_keys(run: "OrchestrationRun", engine: "OrchestrationEngine") -> set[str]:
+    """The keys a person's answer has been written to in this run (F194).
+
+    A human step's output key is in state from the first step whenever the
+    schema declares it — a default, not an answer — so presence says nothing.
+    The run's history does: an answered question leaves a `completed` entry
+    under the human step that asked, and the engine wrote the answer to that
+    step's output key and to `human_response`. An entry under any other step
+    (a nested run's question, recorded on the step that ran it) is not an
+    answer written into this run's state.
+    """
+    keys: set[str] = set()
+    for entry in run.step_history:
+        if entry.get("status") != "completed":
+            continue
+        asker = engine.step_map.get(entry.get("step_id"))
+        if asker is None or not asker.type or asker.type.value != "human":
+            continue
+        keys.add(asker.output_key or "human_response")
+        keys.add("human_response")
+    return keys
+
+
 def snapshot_inputs(
     step: "StepConfig",
     run: "OrchestrationRun",
@@ -221,12 +251,8 @@ def snapshot_inputs(
     if "user_input" in run.shared_state:
         snap["user_input"] = _truncate(str(run.shared_state["user_input"]), max_chars)
 
-    # Human response keys (mirrors logic in build_origin_aware_context)
-    human_keys = {"human_response"}
-    for s in engine.step_map.values():
-        if s.type and s.type.value == "human" and s.output_key:
-            human_keys.add(s.output_key)
-    for hkey in human_keys:
+    # Answered human keys (mirrors logic in build_origin_aware_context)
+    for hkey in answered_human_keys(run, engine):
         if hkey in run.shared_state and hkey not in snap:
             snap[hkey] = _truncate(str(run.shared_state[hkey]), max_chars)
 
@@ -235,6 +261,17 @@ def snapshot_inputs(
             snap[key] = _truncate(str(run.shared_state[key]), max_chars)
 
     return snap
+
+
+#: How many past executions of a step are kept. The only reader renders the
+#: revision history on a rerun, and a loop or evaluator cycle is bounded well
+#: under this; beyond it the entries were ballast in every checkpoint.
+EXEC_MEMORY_MAX_ENTRIES = 10
+
+#: The stored final output per execution. The renderer shows at most 800
+#: characters of it (`_render_full_history`); the previous output in full is
+#: read from shared_state, not from here.
+EXEC_MEMORY_MAX_OUTPUT_CHARS = 2000
 
 
 def store_execution_memory(
@@ -250,11 +287,24 @@ def store_execution_memory(
     `transition` records what triggered this execution (evaluator decision, loop
     iteration, etc) — used by full-history rendering to show per-turn provenance.
     `inputs_snapshot` records the inputs the agent saw on this turn.
+
+    Bounded: the last `EXEC_MEMORY_MAX_ENTRIES` executions, each with its
+    final output capped. This grew without limit — every rerun appended a
+    full untruncated output — and every one of those bytes rode along in
+    every checkpoint and both terminal events for the rest of the run.
     """
     key = f"_exec_memory_{step.id}"
     history = run.shared_state.get(key)
     if not isinstance(history, list):
         history = []
+    # `execution` numbers continue from what was recorded, not from what is
+    # kept: a dropped entry is still an execution that happened.
+    next_execution = (history[-1].get("execution", len(history)) + 1) if history else 1
+
+    final_output = trace.get("final_output")
+    if isinstance(final_output, str) and len(final_output) > EXEC_MEMORY_MAX_OUTPUT_CHARS:
+        from .summarizer import smart_truncate
+        trace = {**trace, "final_output": smart_truncate(final_output, EXEC_MEMORY_MAX_OUTPUT_CHARS)}
 
     origin = None
     if transition is not None:
@@ -268,14 +318,14 @@ def store_execution_memory(
         }
 
     history.append({
-        "execution": len(history) + 1,
+        "execution": next_execution,
         "agent": agent_name,
         "origin": origin,
         "inputs": inputs_snapshot or {},
         "trace": trace,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     })
-    run.shared_state[key] = history
+    run.shared_state[key] = history[-EXEC_MEMORY_MAX_ENTRIES:]
 
 
 def get_execution_memory(run: "OrchestrationRun", step_id: str) -> list[dict]:
@@ -583,17 +633,20 @@ def _format_context_value(
         <value>
 
     The bare key (no brackets) is used as the header so the heading cannot be
-    visually confused with `{state.<key>}` template placeholders. The Source
+    visually confused with `{{ state.<key> }}` template placeholders. The Source
     line carries provenance (which agent / step produced this value).
     """
+    from core.step_refs import for_prompt, is_ref
+
     # List values from loop/parallel accumulation
     if isinstance(val, list) and val and isinstance(val[0], dict) and "result" in val[0]:
         parts = []
         for entry in val:
             iteration = entry.get("iteration", entry.get("run", ""))
             agent = entry.get("agent", "")
-            result_str = str(entry.get("result", ""))
-            if len(result_str) > max_chars:
+            result = entry.get("result", "")
+            result_str = for_prompt(result, max_chars) if is_ref(result) else str(result)
+            if not is_ref(result) and len(result_str) > max_chars:
                 from .summarizer import smart_truncate
                 result_str = smart_truncate(result_str, max_chars)
             iter_suffix = f" (iteration {iteration})" if iteration else ""
@@ -601,12 +654,66 @@ def _format_context_value(
             parts.append(f"### {key}{iter_suffix}\nSource: {source}\n{result_str}")
         return "\n\n".join(parts)
 
-    val_str = str(val)
-    if len(val_str) > max_chars:
-        from .summarizer import smart_truncate
-        val_str = smart_truncate(val_str, max_chars)
+    if is_ref(val):
+        val_str = for_prompt(val, max_chars)  # a saved output: inline if it fits, else its file (D339 P4)
+    else:
+        val_str = str(val)
+        if len(val_str) > max_chars:
+            from .summarizer import smart_truncate
+            val_str = smart_truncate(val_str, max_chars)
     source = label if label and label != key else "shared state"
     return f"### {key}\nSource: {source}\n{val_str}"
+
+
+#: The step prompt's references, `{{ … }}` (`templating.REF`): `{{ state.x }}`, the one form of a reference to state
+#: (F1252: an older `{state.x}` is written so as the step is read), and `{{ global.x }}`.
+_TASK_REF = _templating.REF
+
+
+def _fill_task_template(template: str, shared_state: dict, global_variables: dict, *,
+                        read_cap: int | None = None, as_values: bool = False) -> str:
+    """`{{ global.x }}` and `{{ state.x }}`, in one pass.
+
+    One pass, because two were a leak (F19): a pass that wrote a state value into the text before `templating.render`
+    read it let a crawled page or a model answer holding `{{ global.KEY }}` reach the next step — and the run log —
+    as the secret. A `re.sub` never scans what it inserted, so a value is a value: a state value holding
+    `{{ global.KEY }}`, or a global value holding a reference, reaches the model as those words. An object renders
+    as JSON, and an unknown `{{ global.x }}` — or a wrong path inside a state key that is set — stays visible.
+
+    A state key no step has written yet reads empty (U74): this is a model's prompt, and on a feedback loop's first
+    pass the writer's `{{ state.feedback }}` reached the model as those words, which it echoed into its draft. A
+    declared default already fills the key (`_init_state`). So a field of a key that holds only its empty default
+    (`""`, `{}`, `[]`) reads empty too: nothing has written it either (SAI2-P2; the change planner's "what happened on
+    the first pass" read as template text on its first). A person's text — a Human or a Print step's — keeps the gap
+    (`steps.render_state_refs`).
+
+    A step output saved to the vault (`core.step_refs`, D339 P4) is inline when it fits `read_cap`, this step's read
+    share (`context_budget`; by default the one its step set, `step_refs.reading`), and otherwise the file and how to
+    read it; a field of one is its value. `as_values` fills in what a saved output holds, whatever its size: text
+    typed into a site or searched for is a value, not a prompt.
+    """
+    from core.step_refs import for_prompt, read_cap_now, resolved
+    from core.vault import READ_CAP
+
+    cap = read_cap or read_cap_now() or READ_CAP
+
+    def _ref_text(ref: dict) -> str:
+        if as_values:
+            value = resolved(ref)
+            return value if isinstance(value, str) else _templating._text(value)
+        return for_prompt(ref, cap)
+
+    context = {"global": global_variables, "state": shared_state}
+
+    def _sub(match: re.Match) -> str:
+        parts = match.group(1).split(".")
+        if parts[0] == "state" and len(parts) > 1:
+            top = shared_state.get(parts[1])
+            if top is None or (len(parts) > 2 and top in ("", {}, [])):
+                return ""
+        return _templating.render(match.group(0), context, refs=_ref_text)
+
+    return _TASK_REF.sub(_sub, template)
 
 
 def build_origin_aware_context(
@@ -614,6 +721,8 @@ def build_origin_aware_context(
     run: "OrchestrationRun",
     engine: "OrchestrationEngine",
     transition: TransitionContext,
+    *,
+    prompt_template: str | None = None,
 ) -> tuple[str, str, str]:
     """
     Build (prompt, system_prompt_extra, system_prompt_prefix) for an
@@ -626,9 +735,13 @@ def build_origin_aware_context(
       system_prompt_prefix iteration banner PREPENDED to the system prompt
                            on re-runs (execution_number > 1); empty otherwise
     """
-    import re
     sections: list[str] = []
     is_rerun = transition.execution_number > 1
+    # A for-each iteration is its item's task, run afresh: the refine-your-last-
+    # output framing below is for loops that go round on their own output. Told
+    # "produce the next item … don't silently re-emit", Claude Haiku invented the
+    # next order ids instead of the item it was given (F767).
+    for_each = transition.origin_type == "loop" and transition.loop_for_each
 
     # ------------------------------------------------------------------
     # Section: ROLE
@@ -694,6 +807,17 @@ def build_origin_aware_context(
         )
 
     # ------------------------------------------------------------------
+    # Section: CONVERSATION SO FAR (a workflow chatted with as an agent)
+    # The turns before this message, from `state.history` (F260). Every
+    # message used to start a run that knew nothing of the ones before it, so
+    # "what amount did I say?" had no answer. Beside MAIN GOAL, in every model
+    # step: the step that answers a follow-up is seldom the first.
+    # ------------------------------------------------------------------
+    conversation = _conversation_block(run.shared_state.get("history"))
+    if conversation:
+        sections.append(conversation)
+
+    # ------------------------------------------------------------------
     # Section: WHY YOU ARE RUNNING AGAIN (any re-run, any origin)
     # ------------------------------------------------------------------
     if is_rerun:
@@ -710,6 +834,13 @@ def build_origin_aware_context(
                 "An evaluator reviewed your previous output and routed you back. "
                 "See HOW TO PROCEED below."
             )
+        elif for_each:
+            why_lines = [
+                "## WHY YOU ARE RUNNING AGAIN",
+                f"This loop runs this step once for each item of a list "
+                f"(iteration {transition.loop_iteration} of {transition.loop_total}). "
+                f"This iteration's item is: {_item_text(transition.loop_item)}",
+            ]
         elif transition.origin_type == "loop":
             iter_str = (
                 f"iteration {transition.loop_iteration} of {transition.loop_total}"
@@ -728,7 +859,7 @@ def build_origin_aware_context(
     # ------------------------------------------------------------------
     # Section: YOUR PREVIOUS OUTPUT (any re-run)
     # ------------------------------------------------------------------
-    if is_rerun and step.output_key and step.output_key in run.shared_state:
+    if is_rerun and not for_each and step.output_key and step.output_key in run.shared_state:
         prev_out = str(run.shared_state[step.output_key])
         if len(prev_out) > 2000:
             from .summarizer import smart_truncate
@@ -742,7 +873,7 @@ def build_origin_aware_context(
     # ------------------------------------------------------------------
     # Section: YOUR PREVIOUS WORK / REVISION HISTORY (on any re-invocation)
     # ------------------------------------------------------------------
-    if is_rerun:
+    if is_rerun and not for_each:
         memory = get_execution_memory(run, step.id)
         if memory:
             use_full = (
@@ -787,7 +918,9 @@ def build_origin_aware_context(
         loop_key = f"_loop_{step.output_key}"
         loop_results = run.shared_state.get(loop_key, [])
         if loop_results:
-            iter_lines = ["## PREVIOUS ITERATIONS"]
+            iter_lines = ["## EARLIER ITEMS (context only)",
+                          "What this step produced for the list's earlier items. They are not a "
+                          "sequence to continue."] if for_each else ["## PREVIOUS ITERATIONS"]
             for entry in loop_results[-5:]:  # last 5 to keep it manageable
                 it = entry.get("iteration", "?")
                 res = str(entry.get("result", ""))[:200]
@@ -804,12 +937,11 @@ def build_origin_aware_context(
     # input_keys, the explicit-input loop below will skip it for the same
     # reason.
 
-    # Human response keys (always inject unless already listed)
-    human_keys = {"human_response"}
-    for s in engine.step_map.values():
-        if s.type and s.type.value == "human" and s.output_key:
-            human_keys.add(s.output_key)
-    for hkey in sorted(human_keys):
+    # Human response keys: every key a person has answered in this run, unless
+    # the step lists it itself. Not one that only holds its schema default —
+    # "Source: human response {}" before anyone was asked told the model a
+    # person had answered (F194).
+    for hkey in sorted(answered_human_keys(run, engine)):
         if (
             hkey in run.shared_state
             and hkey not in (step.input_keys or [])
@@ -844,7 +976,13 @@ def build_origin_aware_context(
     # the deliberate non-change) relative to the previous attempt.
     # ------------------------------------------------------------------
     if is_rerun:
-        if transition.origin_type == "loop":
+        if for_each:
+            proceed_block = (
+                "## HOW TO PROCEED\n"
+                "Do the task below for this iteration's item only. The earlier items are "
+                "there for context: do not continue their sequence or repeat their work."
+            )
+        elif transition.origin_type == "loop":
             proceed_block = (
                 "## HOW TO PROCEED\n"
                 "This is another iteration of a loop. Your previous iteration's output and "
@@ -874,16 +1012,16 @@ def build_origin_aware_context(
     # ------------------------------------------------------------------
     # Section: TASK (first run) / ORIGINAL TASK reference (re-run)
     # ------------------------------------------------------------------
-    prompt_template = step.prompt_template or run.shared_state.get("user_input", "")
+    # The step's template — handed in by `build_step_prompt` with its `@[path]`
+    # mentions already masked — rendered in one pass (`_fill_task_template`):
+    # `{{ state.x }}` and `{{ global.x }}`, the double-brace family
+    # shared with tools and system prompts (core/templating.py). A step with no
+    # template takes the run's input as typed: the input is a value, not a
+    # template (D97, as D95 ruled for `@[path]`), so text that an agent, a
+    # channel or a parent run put there is never rendered.
+    task_text = _task_text(step, run, engine, prompt_template)
 
-    # Replace {state.key} references
-    def replace_ref(match):
-        k = match.group(1)
-        return str(run.shared_state.get(k, f"{{state.{k}}}"))
-
-    task_text = re.sub(r"\{state\.(\w+)\}", replace_ref, prompt_template)
-
-    if is_rerun:
+    if is_rerun and not for_each:
         task_header = "## ORIGINAL TASK (reference only)"
         task_suffix = (
             "\n\nThis is the original task statement, included for reference. "
@@ -929,6 +1067,9 @@ def build_origin_aware_context(
             f"You are revising your previous output based on evaluator feedback "
             f"(\"{transition.routing_decision}\")."
         )
+    called_from = _called_from_block(getattr(engine, "caller", None))
+    if called_from:
+        sys_lines += ["", called_from]
     system_prompt_extra = "\n".join(sys_lines)
 
     # ------------------------------------------------------------------
@@ -937,7 +1078,14 @@ def build_origin_aware_context(
     # cannot drown out the iteration signal.
     # ------------------------------------------------------------------
     system_prompt_prefix = ""
-    if is_rerun:
+    if is_rerun and for_each:
+        system_prompt_prefix = (
+            "LOOP ITEM - READ BEFORE RESPONDING\n"
+            f"This step runs once for each item of a list; this is iteration "
+            f"{transition.loop_iteration} of {transition.loop_total}. Do the task in the "
+            "user message for this iteration's item."
+        )
+    elif is_rerun:
         why_short = ""
         if transition.origin_type == "evaluator" and transition.routing_decision:
             why_short = f" (evaluator routed back: \"{transition.routing_decision}\")"
@@ -954,3 +1102,142 @@ def build_origin_aware_context(
         )
 
     return prompt, system_prompt_extra, system_prompt_prefix
+
+
+def _item_text(item: Any) -> str:
+    """A for-each item as the prompt names it: text as written, anything else as JSON."""
+    if isinstance(item, str):
+        return item
+    try:
+        return json.dumps(item, ensure_ascii=False, default=str)[:500]
+    except (TypeError, ValueError):
+        return str(item)[:500]
+
+
+#: What "Conversation so far" may cost a prompt: per message, and in all.
+_TURN_CHARS = 1000
+_CONVERSATION_CHARS = 6000
+
+
+def _conversation_block(history) -> str:
+    """The conversation before this message, newest kept when it must be cut (F260)."""
+    if not isinstance(history, list) or not history:
+        return ""
+    lines: list[str] = []
+    used = 0
+    for message in reversed(history):
+        if not isinstance(message, dict) or not message.get("content"):
+            continue
+        who = "User" if message.get("role") == "user" else "You (the workflow)"
+        text = _truncate(str(message["content"]).strip(), _TURN_CHARS)
+        line = f"**{who}:** {text}"
+        if used + len(line) > _CONVERSATION_CHARS:
+            break
+        lines.append(line)
+        used += len(line)
+    if not lines:
+        return ""
+    return ("## CONVERSATION SO FAR\n"
+            "Earlier messages in this conversation, oldest first. The MAIN GOAL above is the "
+            "latest message.\n\n" + "\n\n".join(reversed(lines)))
+
+
+def _task_text(step, run, engine, prompt_template: str | None = None) -> str:
+    """The step's task: its template rendered in one pass, or the run's input as typed."""
+    if prompt_template is None:
+        prompt_template = step.prompt_template
+    if prompt_template:
+        return _fill_task_template(
+            prompt_template,
+            run.shared_state,
+            getattr(engine, "global_variables", None) or {},
+        )
+    return str(run.shared_state.get("user_input") or "")
+
+
+def _called_from_block(caller: dict | None) -> str:
+    """Who called this nested run, for its model steps' system text (F252).
+
+    The parent's own prompt used to be the child's input, so a child knew its
+    caller only by carrying the caller's whole meta-prompt as its task. Now the
+    task is its own, and this says where it sits: the calling workflow and step,
+    and what that workflow is for — context, not instructions.
+    """
+    if not caller:
+        return ""
+    lines = [
+        "## CALLED FROM",
+        f"This workflow is running as step \"{caller.get('step') or '?'}\" of the workflow "
+        f"\"{caller.get('workflow') or '?'}\". Your task is the one given to you; this is context.",
+    ]
+    goal = str(caller.get("goal") or "").strip()
+    if goal:
+        if len(goal) > 2000:
+            from .summarizer import smart_truncate
+            goal = smart_truncate(goal, 2000)
+        lines.append(f"What that workflow is for:\n{goal}")
+    return "\n".join(lines)
+
+
+async def build_task_text(
+    step: "StepConfig",
+    run: "OrchestrationRun",
+    engine: "OrchestrationEngine",
+) -> tuple[str, list]:
+    """The step's task alone, with its `@[path]` mentions read — a nested child's input (F252).
+
+    What `build_step_prompt` puts under TASK, and nothing around it: a child
+    orchestration is handed this, not the parent step's whole prompt. The same
+    three passes, in the same order, for the same reason.
+    """
+    template = step.prompt_template or ""
+    if "@[" not in template:
+        return _task_text(step, run, engine), []
+    reader = _mention_reader(engine)
+    masked, raws = reader.mask(template)
+    text, mentions = await reader.fill(_task_text(step, run, engine, masked), raws)
+    return text, mentions
+
+
+async def build_step_prompt(
+    step: "StepConfig",
+    run: "OrchestrationRun",
+    engine: "OrchestrationEngine",
+    transition: TransitionContext,
+) -> tuple[str, str, str, list]:
+    """`build_origin_aware_context`, with the step's `@[path]` mentions resolved.
+
+    Three passes, in this order because the order is the safety: the mentions
+    in `step.prompt_template` become placeholders; the sync builder renders
+    `{{ … }}` around them; the placeholders are swapped for the
+    files. So a file's text never meets the template pass (a file that holds
+    `{{ global.KEY }}` reaches the model as those words, not as the secret),
+    and a state value or the run's own input that contains `@[x]` is a value,
+    not a mention. Only the template a member typed expands.
+
+    Returns the prompt, the system-prompt extra and prefix, and the mentions
+    (`core.vault.Mention`) for the run log and for `step_warning`s. The Agent,
+    Tool and LLM executors call this; Loop and Parallel run those, so a
+    mention inside either is covered.
+    """
+    template = step.prompt_template or ""
+    if "@[" not in template:
+        prompt, extra, prefix = build_origin_aware_context(step, run, engine, transition)
+        return prompt, extra, prefix, []
+    reader = _mention_reader(engine)
+    masked, raws = reader.mask(template)
+    prompt, extra, prefix = build_origin_aware_context(
+        step, run, engine, transition, prompt_template=masked
+    )
+    prompt, mentions = await reader.fill(prompt, raws)
+    return prompt, extra, prefix, mentions
+
+
+def _mention_reader(engine):
+    """The run's reader — one cache per run — or a fresh one for an engine
+    stand-in that has none (tests build those)."""
+    getter = getattr(engine, "mention_reader", None)
+    if callable(getter):
+        return getter()
+    from core.vault import MentionReader
+    return MentionReader()

@@ -1,6 +1,7 @@
 # Synapse Worker Image
 # Runs ARQ jobs that execute OrchestrationEngine and agent chat turns.
-# Does NOT include the frontend or playwright browser automation.
+# Does NOT include the frontend or Browser Automation (Playwright MCP); it does
+# include the headless Chromium the web scraper launches (F1159).
 FROM python:3.13-slim
 
 # Node 20 + npm for the npx-based MCP servers, from Debian (base is Debian 13
@@ -21,29 +22,43 @@ WORKDIR /app/backend
 COPY backend/requirements.txt backend/requirements-worker.txt backend/requirements-worker.lock ./
 RUN pip install --no-cache-dir -r requirements-worker.lock
 
+# The web scraper runs on every worker (WORKER_NATIVE_TOOLS) and launches
+# headless Chromium. Without it every scrape failed with "Executable doesn't
+# exist" (F1159). The headless shell only: the scraper never opens a window.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN python -m playwright install --with-deps chromium-headless-shell \
+    && chmod -R a+rX /ms-playwright
+
 COPY backend/core ./core
 COPY backend/services ./services
 COPY backend/tools ./tools
 COPY backend/worker_main.py .
 
 ENV PYTHONPATH=/app/backend
-ENV SYNAPSE_DATA_DIR=/data
+
+# A worker holds no install of its own: the database it reads is deployment
+# configuration, and tenant content is shared with the API — through S3 in a
+# real deployment, or a shared /blobs volume in compose. No default DB URL
+# here, deliberately; a worker with a private SQLite file would run every job
+# against an empty install and never say so.
+ENV SYNAPSE_BLOB_DIR=/blobs
+ENV SYNAPSE_STATE_DIR=/var/lib/synapse/state
 
 # Core connection URLs (required for scale mode)
 ENV REDIS_URL=""
 ENV SCALE_POSTGRES_URL=""
+ENV SYNAPSE_DB_URL=""
 
 # Worker tuning
 ENV WORKER_HEALTH_PORT=9000
 ENV WORKER_CONCURRENCY=10
 ENV WORKER_JOB_TIMEOUT=3600
 ENV WORKER_MAX_RETRIES=3
-ENV WORKER_QUEUE_SHARD=default
-ENV NUM_QUEUE_SHARDS=1
 
-# Multi-tenancy
-ENV DEFAULT_TENANT_ID=default
-ENV ENABLE_TENANT_ISOLATION=0
+# WORKER_QUEUE_SHARD, DEFAULT_TENANT_ID and ENABLE_TENANT_ISOLATION are gone.
+# The engine reads none of them: the queue name is a constant, because a queue
+# bound to a tenant is one worker pool per tenant — which is the shape a shared
+# fleet exists to remove.
 
 # Database
 ENV PGBOUNCER_MODE=0

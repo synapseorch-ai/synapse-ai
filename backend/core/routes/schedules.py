@@ -3,19 +3,15 @@ Schedules API: CRUD for schedule definitions and manual trigger.
 """
 import time
 import uuid
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 
-from core.json_store import JsonStore
-from core.models_schedule import ScheduleCreate, ScheduleUpdate
+from core.models_schedule import ScheduleCreate, ScheduleInvalid, ScheduleUpdate, validate_timing
 from core.scheduler import compute_next_run, _utc_now, _iso
+from core.store import schedules as schedule_store
 
 router = APIRouter()
-
-_DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
-_SCHEDULES_FILE = str(_DATA_DIR / "schedules.json")
-_store = JsonStore(_SCHEDULES_FILE, default_factory=list)
 
 
 def _get_manager(request: Request):
@@ -25,12 +21,47 @@ def _get_manager(request: Request):
     return mgr
 
 
+# -- Checks (F197) -------------------------------------------------------
+# The answers are cloud's (`api/control/routes/schedules.py`), so a v1 request
+# gets one answer on both products: 422 for timing it cannot run, 404 for a
+# target that is not there. Each `detail` is a sentence — the form toasts it.
+
+_TIMING_KEYS = {"schedule_type", "interval_value", "interval_unit", "cron_expression", "timezone"}
+_TARGET_KEYS = {"target_type", "target_id"}
+
+
+def _check_timing(schedule: dict) -> None:
+    try:
+        validate_timing(schedule)
+    except ScheduleInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+async def _check_target(schedule: dict) -> None:
+    """The agent or orchestration must be the workspace's own.
+
+    A schedule whose target does not exist fires into nothing for ever. The AI
+    builder's own agents and orchestration are not the workspace's, so they are
+    not there either — the builder's `create_schedule` has refused both since
+    D115.
+    """
+    from core.builder_tools import _is_visible
+    from core.store.resources import get_agent, get_orchestration
+
+    kind = schedule.get("target_type")
+    target_id = schedule.get("target_id") or ""
+    load = get_agent if kind == "agent" else get_orchestration
+    found = await load(target_id) if target_id else None
+    if found is None or not _is_visible(found):
+        raise HTTPException(status_code=404, detail=f"No such {kind}: {target_id}.")
+
+
 # -- List ----------------------------------------------------------------
 
 @router.get("/api/schedules")
 async def list_schedules():
     """Return all schedules."""
-    return _store.load()
+    return await schedule_store.load()
 
 
 # -- Create --------------------------------------------------------------
@@ -38,20 +69,19 @@ async def list_schedules():
 @router.post("/api/schedules")
 async def create_schedule(body: ScheduleCreate, request: Request):
     """Create a new schedule. Server computes next_run_at."""
-    mgr = _get_manager(request)
+    _get_manager(request)
 
     schedule = body.model_dump()
+    _check_timing(schedule)
+    await _check_target(schedule)
     schedule["id"] = f"sched_{uuid.uuid4().hex[:8]}"
     schedule["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     schedule["last_run_at"] = None
 
     now = _utc_now()
-    next_dt = compute_next_run(schedule, now)
-    schedule["next_run_at"] = _iso(next_dt)
+    schedule["next_run_at"] = _iso(compute_next_run(schedule, now))
 
-    schedules = _store.load()
-    schedules.append(schedule)
-    _store.save(schedules)
+    await schedule_store.save(schedule)
     return schedule
 
 
@@ -60,8 +90,7 @@ async def create_schedule(body: ScheduleCreate, request: Request):
 @router.get("/api/schedules/{schedule_id}")
 async def get_schedule(schedule_id: str):
     """Return a single schedule."""
-    schedules = _store.load()
-    s = next((x for x in schedules if x["id"] == schedule_id), None)
+    s = await schedule_store.get(schedule_id)
     if not s:
         raise HTTPException(status_code=404, detail="Schedule not found")
     return s
@@ -72,25 +101,23 @@ async def get_schedule(schedule_id: str):
 @router.put("/api/schedules/{schedule_id}")
 async def update_schedule(schedule_id: str, body: ScheduleCreate, request: Request):
     """Full replacement update. Server recomputes next_run_at."""
-    mgr = _get_manager(request)
+    _get_manager(request)
 
-    schedules = _store.load()
-    idx = next((i for i, x in enumerate(schedules) if x["id"] == schedule_id), None)
-    if idx is None:
+    existing = await schedule_store.get(schedule_id)
+    if not existing:
         raise HTTPException(status_code=404, detail="Schedule not found")
 
-    existing = schedules[idx]
     updated = body.model_dump()
+    _check_timing(updated)
+    await _check_target(updated)
     updated["id"] = schedule_id
     updated["created_at"] = existing.get("created_at", "")
     updated["last_run_at"] = existing.get("last_run_at")
 
     now = _utc_now()
-    next_dt = compute_next_run(updated, now)
-    updated["next_run_at"] = _iso(next_dt)
+    updated["next_run_at"] = _iso(compute_next_run(updated, now))
 
-    schedules[idx] = updated
-    _store.save(schedules)
+    await schedule_store.save(updated)
     return updated
 
 
@@ -98,33 +125,37 @@ async def update_schedule(schedule_id: str, body: ScheduleCreate, request: Reque
 
 @router.patch("/api/schedules/{schedule_id}")
 async def patch_schedule(schedule_id: str, body: ScheduleUpdate, request: Request):
-    """Partial update. If re-enabling, recomputes next_run_at from now."""
-    mgr = _get_manager(request)
+    """Partial update. If re-enabling, recomputes next_run_at from now.
 
-    schedules = _store.load()
-    idx = next((i for i, x in enumerate(schedules) if x["id"] == schedule_id), None)
-    if idx is None:
+    Checked as a whole only where the patch reaches: its timing, its target, or
+    turning it on. Switching a schedule off is never refused, so one saved
+    before the checks (F197) can always be stopped.
+    """
+    _get_manager(request)
+
+    s = await schedule_store.get(schedule_id)
+    if not s:
         raise HTTPException(status_code=404, detail="Schedule not found")
 
-    s = schedules[idx]
     patch = body.model_dump(exclude_none=True)
 
     was_disabled = not s.get("enabled", True)
     re_enabling = patch.get("enabled") is True and was_disabled
 
-    # Apply patch fields
-    for k, v in patch.items():
-        s[k] = v
+    patched = {**s, **patch}
+    retimed = bool(_TIMING_KEYS.intersection(patch))
+    if retimed or re_enabling:
+        _check_timing(patched)
+    if _TARGET_KEYS.intersection(patch):
+        await _check_target(patched)
+    s = patched
 
     # If the schedule is being re-enabled or schedule timing changed, recalculate next_run_at
-    timing_keys = {"schedule_type", "interval_value", "interval_unit", "cron_expression"}
-    if re_enabling or timing_keys.intersection(patch.keys()):
+    if re_enabling or retimed:
         now = _utc_now()
-        next_dt = compute_next_run(s, now)
-        s["next_run_at"] = _iso(next_dt)
+        s["next_run_at"] = _iso(compute_next_run(s, now))
 
-    schedules[idx] = s
-    _store.save(schedules)
+    await schedule_store.save(s)
     return s
 
 
@@ -133,11 +164,8 @@ async def patch_schedule(schedule_id: str, body: ScheduleUpdate, request: Reques
 @router.delete("/api/schedules/{schedule_id}")
 async def delete_schedule(schedule_id: str):
     """Delete a schedule."""
-    schedules = _store.load()
-    new_list = [x for x in schedules if x["id"] != schedule_id]
-    if len(new_list) == len(schedules):
+    if not await schedule_store.delete_one(schedule_id):
         raise HTTPException(status_code=404, detail="Schedule not found")
-    _store.save(new_list)
     return {"status": "deleted", "id": schedule_id}
 
 
@@ -145,14 +173,63 @@ async def delete_schedule(schedule_id: str):
 
 @router.post("/api/schedules/{schedule_id}/run")
 async def run_schedule_now(schedule_id: str, request: Request):
-    """Manually trigger a schedule immediately (fire-and-forget). Returns a run_id."""
+    """Run a schedule now, as a test (fire-and-forget). Returns the run's id.
+
+    Runs a disabled schedule too, and does not move its next run (F72). One whose
+    target was deleted is turned off and refused, 409 with why (F518).
+    """
+    from core.scheduler import TargetGone
+
     mgr = _get_manager(request)
 
-    # Verify schedule exists
-    schedules = _store.load()
-    s = next((x for x in schedules if x["id"] == schedule_id), None)
-    if not s:
+    try:
+        run_id = await mgr.trigger_now(schedule_id)
+    except TargetGone as gone:
+        raise HTTPException(status_code=409, detail=str(gone)) from None
+    if run_id is None:
         raise HTTPException(status_code=404, detail="Schedule not found")
-
-    run_id = await mgr.trigger_now(schedule_id)
     return {"status": "triggered", "schedule_id": schedule_id, "run_id": run_id}
+
+
+# -- A scheduled run's tool call (F268) ------------------------------------
+
+class ApprovalAnswer(BaseModel):
+    """A person's answer to a scheduled run's "may this tool call run?"."""
+    approve: bool
+    reason: str = ""
+    #: The question this answers: a bell item left open must not answer a newer one.
+    approval_id: str | None = None
+    #: Which of a team's questions (TEAM1c): each member's has its own bell item and id.
+    question_id: str | None = None
+
+
+@router.post("/api/schedules/{schedule_id}/approve")
+async def answer_schedule_approval(schedule_id: str, body: ApprovalAnswer, request: Request):
+    """Answer the tool call a scheduled run stopped on, and carry that run on.
+
+    The bell's Approve / Refuse. The turn resumes from its snapshot under the
+    schedule's own run id — its log continues — and runs in the background: the
+    answer returns at once, and the bell item is resolved when it does.
+    """
+    from core import chat_turns
+    from core.routes.chat import TURN_RUNNING
+
+    mgr = _get_manager(request)
+    if body.question_id:
+        # A team member's question (TEAM1c): answered as chat answers it — now, if its team is at work
+        # again after an earlier answer, or by resuming the run's paused turn.
+        from core.routes.chat import ApprovalDecision, approve_chat_tool
+        from core.scheduler import _session_of
+        s = await schedule_store.get(schedule_id) or {}
+        await approve_chat_tool(_session_of(schedule_id), ApprovalDecision(
+            approve=body.approve, reason=body.reason, agent_id=s.get("target_id") or None,
+            approval_id=body.approval_id, question_id=body.question_id))
+        return {"status": "allowed" if body.approve else "refused", "schedule_id": schedule_id}
+    try:
+        await mgr.answer_approval(schedule_id, approve=body.approve, reason=body.reason,
+                                  approval_id=body.approval_id)
+    except LookupError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except chat_turns.TurnAlreadyRunning:
+        raise HTTPException(status_code=409, detail=TURN_RUNNING)
+    return {"status": "allowed" if body.approve else "refused", "schedule_id": schedule_id}

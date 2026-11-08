@@ -9,7 +9,13 @@ from googleapiclient.discovery import build
 from bs4 import BeautifulSoup
 from email.mime.text import MIMEText
 
-from core.config import TOKEN_FILE, CREDENTIALS_FILE
+#: Store keys. Deliberately not settings rows: load_settings() returns one dict
+#: that is read on every turn and handed to a dozen call sites, and a refresh
+#: token has no business in it. The account *email* is a setting, because it is
+#: not a secret and one sync caller needs it — see core/tools.py.
+_CLIENT_KEY = "google_client"
+_TOKEN_KEY = "google_token"
+EMAIL_SETTING = "google_account_email"
 
 # If modifying these scopes, delete the file token.json.
 # Make sure to delete the old token.json whenever you modify these scopes!
@@ -41,18 +47,19 @@ SCOPES = [
     'https://www.googleapis.com/auth/contacts',
 ]
 
-# Mirror server.py's pattern: always derive from __file__ so the path is
-# anchored to the backend directory regardless of SYNAPSE_DATA_DIR being
-# a relative string (which would otherwise resolve against CWD).
-_BACKEND_ROOT = Path(__file__).resolve().parent.parent  # backend/services/google.py → backend/
-_project_root = _BACKEND_ROOT.parent
-_data_dir_env = os.getenv("SYNAPSE_DATA_DIR", "")
-if _data_dir_env:
-    _data_dir_p = Path(_data_dir_env)
-    _DATA_DIR = _data_dir_p if _data_dir_p.is_absolute() else _project_root / _data_dir_p
-else:
-    _DATA_DIR = _BACKEND_ROOT / "data"
-GOOGLE_CREDENTIALS_DIR = _DATA_DIR / "google-credentials"
+
+def google_credentials_dir() -> Path:
+    """The directory `workspace-mcp` is pointed at.
+
+    A real directory, because it is handed to a subprocess through an
+    environment variable and the subprocess opens files in it — but process
+    scratch rather than durable state. It is materialised from the stored rows
+    immediately before the server is spawned, so it can be thrown away with the
+    container and there is nothing in it that is not in the database.
+    """
+    from core.storage.scratch import scratch_dir
+
+    return scratch_dir("google-credentials")
 
 
 class UnauthenticatedError(Exception):
@@ -81,63 +88,130 @@ def _email_from_token_data(token_data: dict) -> str | None:
     return None
 
 
-def _sync_token_to_mcp(token_data: dict, email: str | None = None) -> None:
-    """Mirror token.json into google-credentials/ so workspace-mcp sees fresh creds."""
+async def load_client_config() -> dict | None:
+    """The uploaded `credentials.json` contents, or None."""
+    from core.store import collections
+
+    return await collections.load_one(_CLIENT_KEY) or None
+
+
+async def save_client_config(data: dict) -> None:
+    from core.store import collections
+
+    await collections.save_one(_CLIENT_KEY, data)
+
+
+async def load_token() -> dict | None:
+    """The stored OAuth token document, or None."""
+    from core.store import collections
+
+    return await collections.load_one(_TOKEN_KEY) or None
+
+
+async def save_token(token_data: dict) -> None:
+    """Persist the token and publish the account email as a setting.
+
+    The email is the one part of this a synchronous caller needs
+    (``build_system_prompt`` tells the model which address to pass to the
+    Workspace tools), so it is stored separately as a non-secret. That is what
+    keeps the refresh token out of the settings dict entirely.
+    """
+    from core.store import collections
+    from core.store.settings import save_setting
+
+    await collections.save_one(_TOKEN_KEY, token_data)
+
+    email = _email_from_token_data(token_data)
+    if email:
+        await save_setting(EMAIL_SETTING, email)
+        from core import settings_runtime
+        await settings_runtime.refresh()
+
+
+async def materialise_mcp_dir() -> Path | None:
+    """Write the stored credentials into the workspace-mcp scratch directory.
+
+    Called immediately before the subprocess is spawned. Returns None when
+    there is nothing to write, which is the signal not to start the server.
+    """
+    client = await load_client_config()
+    if not client:
+        return None
+
+    token_data = await load_token() or {}
+    directory = google_credentials_dir()
     try:
-        os.makedirs(GOOGLE_CREDENTIALS_DIR, exist_ok=True)
-        with open(GOOGLE_CREDENTIALS_DIR / "token.json", "w", encoding="utf-8") as f:
-            json.dump(token_data, f, indent=2)
-        if email:
-            with open(GOOGLE_CREDENTIALS_DIR / f"{email}.json", "w", encoding="utf-8") as f:
-                json.dump(token_data, f, indent=2)
-    except Exception as e:
-        print(f"Warning: Failed to sync token to workspace-mcp dir: {e}")
+        (directory / "client_secret.json").write_text(
+            json.dumps(client, indent=2), encoding="utf-8")
+        if token_data:
+            (directory / "token.json").write_text(
+                json.dumps(token_data, indent=2), encoding="utf-8")
+            email = _email_from_token_data(token_data)
+            if email:
+                (directory / f"{email}.json").write_text(
+                    json.dumps(token_data, indent=2), encoding="utf-8")
+    except OSError as e:
+        print(f"Warning: could not materialise workspace-mcp credentials: {e}")
+        return None
+    return directory
 
 
-def get_google_credentials():
-    """Returns valid credentials or None."""
-    creds = None
-    if os.path.exists(TOKEN_FILE):
-        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+async def get_google_credentials(refresh: bool = True):
+    """Returns valid credentials or None.
+
+    `refresh=False` asks whether the stored token is *currently* valid without
+    performing a network refresh or a write. GET /api/config uses it: a status
+    poll that refreshes a token and writes three files is a read endpoint with
+    side effects, and the UI polls it on every visit to the integrations tab.
+    """
+    token_data = await load_token()
+    if not token_data:
+        return None
+
+    try:
+        creds = Credentials.from_authorized_user_info(token_data, SCOPES)
+    except ValueError as e:
+        # A partial token — uploaded by hand, or written by an older version —
+        # is "not connected", not an error. The contract here is valid
+        # credentials or None, and /api/config renders the difference.
+        print(f"Warning: stored Google token is not usable: {e}")
+        return None
 
     if creds and creds.valid:
         return creds
+    if not refresh:
+        return None
 
     if creds and creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
-            # Preserve fields like `email` that aren't part of creds.to_json()
-            try:
-                with open(TOKEN_FILE, "r", encoding="utf-8") as f:
-                    prior = json.load(f)
-            except Exception:
-                prior = {}
             refreshed = json.loads(creds.to_json())
-            email = prior.get("email") or _email_from_token_data(refreshed)
-            merged = {**prior, **refreshed}
+            # Preserve fields like `email` that aren't part of creds.to_json()
+            merged = {**token_data, **refreshed}
+            email = token_data.get("email") or _email_from_token_data(refreshed)
             if email:
                 merged["email"] = email
-            with open(TOKEN_FILE, "w", encoding="utf-8") as token:
-                json.dump(merged, token, indent=2)
-            _sync_token_to_mcp(merged, email)
+            await save_token(merged)
             return creds
         except Exception as e:
             print(f"Warning: Token refresh failed: {e}")
 
     return None
 
-def get_auth_url(redirect_uri):
+
+async def get_auth_url(redirect_uri):
     """Generates the OAuth2 authorization URL and stores the flow for later use."""
     global _pending_flow
 
-    if not os.path.exists(CREDENTIALS_FILE):
+    client_config = await load_client_config()
+    if not client_config:
         raise FileNotFoundError(
-            f"credentials.json not found at {CREDENTIALS_FILE}. "
-            "Please upload it via Settings → Integrations."
+            "Google credentials have not been configured. "
+            "Please upload credentials.json via Settings → Integrations."
         )
 
-    flow = Flow.from_client_secrets_file(
-        CREDENTIALS_FILE, SCOPES, redirect_uri=redirect_uri
+    flow = Flow.from_client_config(
+        client_config, SCOPES, redirect_uri=redirect_uri
     )
     auth_url, _ = flow.authorization_url(
         access_type='offline',
@@ -148,7 +222,7 @@ def get_auth_url(redirect_uri):
     print(f"DEBUG: Auth URL generated — flow stored for callback.")
     return auth_url
 
-def finish_auth(code, redirect_uri):
+async def finish_auth(code, redirect_uri):
     """Exchanges the auth code using the stored flow (preserves code_verifier)."""
     global _pending_flow
 
@@ -160,8 +234,11 @@ def finish_auth(code, redirect_uri):
     else:
         # Fallback: create fresh flow (may fail if PKCE was involved)
         print("WARNING: No stored flow found — creating fresh flow (may fail with PKCE).")
-        flow = Flow.from_client_secrets_file(
-            CREDENTIALS_FILE, SCOPES, redirect_uri=redirect_uri
+        client_config = await load_client_config()
+        if not client_config:
+            raise FileNotFoundError("Google credentials have not been configured.")
+        flow = Flow.from_client_config(
+            client_config, SCOPES, redirect_uri=redirect_uri
         )
 
     # Allow Google to return extra/different scopes without raising an error
@@ -190,56 +267,32 @@ def finish_auth(code, redirect_uri):
     except Exception as e:
         print(f"Warning: Could not fetch user email after OAuth: {e}")
 
-    with open(TOKEN_FILE, "w", encoding="utf-8") as token:
-        json.dump(token_data, token, indent=2)
-
-    print(f"DEBUG: token.json saved to {TOKEN_FILE}")
-
-    # --- Sync to workspace-mcp's default directory ---
-    try:
-        mcp_cred_dir = GOOGLE_CREDENTIALS_DIR
-        os.makedirs(mcp_cred_dir, exist_ok=True)
-        # 1. Copy our credentials.json as client_secret.json
-        import shutil
-        shutil.copy2(CREDENTIALS_FILE, os.path.join(mcp_cred_dir, "client_secret.json"))
-        # 2. Save the token with the email formatted name
-        if email:
-            mcp_token_path = os.path.join(mcp_cred_dir, f"{email}.json")
-            with open(mcp_token_path, "w", encoding="utf-8") as token:
-                json.dump(token_data, token, indent=2)
-            print(f"DEBUG: Synchronized token to workspace-mcp via {mcp_token_path}")
-        # 3. Always save generic token.json just in case
-        mcp_generic_token = os.path.join(mcp_cred_dir, "token.json")
-        with open(mcp_generic_token, "w", encoding="utf-8") as token:
-            json.dump(token_data, token, indent=2)
-            
-    except Exception as e:
-        print(f"Warning: Failed to sync tokens to workspace-mcp dir: {e}")
-
+    await save_token(token_data)
+    await materialise_mcp_dir()
     return creds
 
-def get_service(api, version):
+async def get_service(api, version):
     """Returns an authorized service instance or raises UnauthenticatedError."""
-    creds = get_google_credentials()
+    creds = await get_google_credentials()
     if not creds:
         raise UnauthenticatedError("User is not authenticated.")
     return build(api, version, credentials=creds)
 
-def get_gmail_service():
+async def get_gmail_service():
     """Returns an authorized Gmail API service instance."""
-    return get_service('gmail', 'v1')
+    return await get_service('gmail', 'v1')
 
-def get_drive_service():
+async def get_drive_service():
     """Returns an authorized Drive API service instance."""
-    return get_service('drive', 'v3')
+    return await get_service('drive', 'v3')
 
-def get_calendar_service():
+async def get_calendar_service():
     """Returns an authorized Calendar API service instance."""
-    return get_service('calendar', 'v3')
+    return await get_service('calendar', 'v3')
 
 # --- Helper Functions ---
 
-def list_messages(query=None, limit=5):
+async def list_messages(query=None, limit=5):
     """Lists messages from the user's mailbox.
     
     Args:
@@ -248,7 +301,7 @@ def list_messages(query=None, limit=5):
     """
     print(f"DEBUG: list_messages called with query='{query}', limit={limit} (type: {type(limit)})")
     try:
-        service = get_gmail_service()
+        service = await get_gmail_service()
         
         results = service.users().messages().list(userId="me", q=query, maxResults=limit).execute()
         messages = results.get("messages", [])
@@ -280,10 +333,10 @@ def list_messages(query=None, limit=5):
         print(f"An error occurred: {e}")
         return []
 
-def get_message(message_id):
+async def get_message(message_id):
     """Get the full content of a message."""
     try:
-        service = get_gmail_service()
+        service = await get_gmail_service()
         message = service.users().messages().get(userId="me", id=message_id, format='full').execute()
         
         payload = message.get('payload', {})
@@ -350,7 +403,7 @@ def get_message(message_id):
         print(f"An error occurred: {e}")
         return None
 
-def send_email(to, subject, body, cc=None, bcc=None):
+async def send_email(to, subject, body, cc=None, bcc=None):
     """Sends an email message.
 
     Args:
@@ -361,7 +414,7 @@ def send_email(to, subject, body, cc=None, bcc=None):
         bcc: Optional BCC recipient(s).
     """
     try:
-        service = get_gmail_service()
+        service = await get_gmail_service()
         
         message = MIMEText(body)
         message['to'] = to

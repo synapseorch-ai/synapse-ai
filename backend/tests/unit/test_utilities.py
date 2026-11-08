@@ -1,7 +1,7 @@
 """
 Coverage for utility modules: usage_tracker, vault, session, config,
-personal_details, user_auth, compaction, profiling. Pure/JSON-backed logic,
-sandboxed via SYNAPSE_DATA_DIR.
+personal_details, user_auth, compaction, profiling. Store- and blob-backed
+logic, isolated per test by conftest's `_isolate_store`.
 """
 import os
 import pathlib
@@ -10,14 +10,14 @@ import pytest
 
 
 class TestUsageTracker:
-    def test_log_and_summarize(self):
+    async def test_log_and_summarize(self):
         from core import usage_tracker
-        usage_tracker.log_usage(model="claude-x", provider="anthropic",
-                                input_tokens=100, output_tokens=50, context_chars=1000,
-                                session_id="s1", source="chat", latency_seconds=0.5)
-        logs = usage_tracker.get_usage_logs(limit=10)
+        await usage_tracker.log_usage(model="claude-x", provider="anthropic",
+                                      input_tokens=100, output_tokens=50, context_chars=1000,
+                                      session_id="s1", source="chat", latency_seconds=0.5)
+        logs = await usage_tracker.get_usage_logs(limit=10)
         assert any(r.get("model") == "claude-x" for r in logs)
-        summary = usage_tracker.get_usage_summary()
+        summary = await usage_tracker.get_usage_summary()
         assert isinstance(summary, dict)
 
     def test_estimate_tokens(self):
@@ -25,27 +25,29 @@ class TestUsageTracker:
         assert usage_tracker.estimate_tokens_from_text("hello world foo bar") > 0
         assert usage_tracker.estimate_tokens_from_text("") == 0
 
-    def test_pricing_table_roundtrip(self):
+    async def test_pricing_table_roundtrip(self):
         from core import usage_tracker
-        table = usage_tracker.get_pricing_table()
+        table = await usage_tracker.get_pricing_table()
         assert isinstance(table, dict)
-        usage_tracker.save_pricing_table({"m": {"provider": "x", "input_per_1m": 1.0, "output_per_1m": 2.0}})
-        assert "m" in usage_tracker.get_pricing_table()
+        await usage_tracker.save_pricing_table(
+            {"m": {"provider": "x", "input_per_1m": 1.0, "output_per_1m": 2.0}}
+        )
+        assert "m" in await usage_tracker.get_pricing_table()
 
-    def test_cache_summary_and_clear(self):
+    async def test_cache_summary_and_clear(self):
         from core import usage_tracker
-        assert isinstance(usage_tracker.get_cache_summary(), dict)
-        usage_tracker.log_usage(model="m", provider="p", input_tokens=1, output_tokens=1,
-                                context_chars=1)
-        assert usage_tracker.clear_usage_logs() >= 0
+        assert isinstance(await usage_tracker.get_cache_summary(), dict)
+        await usage_tracker.log_usage(model="m", provider="p", input_tokens=1, output_tokens=1,
+                                      context_chars=1)
+        assert await usage_tracker.clear_usage_logs() >= 0
 
 
 class TestVault:
     def _tmpfile(self, name, content):
         # Absolute path under the sandbox data dir (the vault tools resolve paths
         # as-is via _safe_path, so we pass an absolute path).
-        from core.config import DATA_DIR
-        d = pathlib.Path(DATA_DIR) / "vault" / "utiltests"
+        from core.vault import _vault_root
+        d = pathlib.Path(_vault_root()) / "utiltests"
         d.mkdir(parents=True, exist_ok=True)
         p = d / name
         p.write_text(content, encoding="utf-8")
@@ -69,17 +71,17 @@ class TestVault:
         from core.vault import maybe_vault
         assert maybe_vault("t", "x" * 1000) == "x" * 1000
 
-    def test_expand_vault_mentions_no_mentions(self):
-        from core.vault import expand_vault_mentions
-        assert expand_vault_mentions("plain message") == "plain message"
+    async def test_mention_reader_no_mentions(self):
+        from core.vault import MentionReader
+        out, mentions = await MentionReader().expand("plain message")
+        assert (out, mentions) == ("plain message", [])
 
-    def test_expand_vault_mentions_inlines_file(self):
-        from core.config import DATA_DIR
-        from core.vault import expand_vault_mentions
-        vd = pathlib.Path(DATA_DIR) / "vault"
+    async def test_mention_reader_inlines_file(self):
+        from core.vault import MentionReader, _vault_root
+        vd = _vault_root()
         vd.mkdir(parents=True, exist_ok=True)
         (vd / "cfg.txt").write_text("SECRET=42", encoding="utf-8")
-        out = expand_vault_mentions("use @[cfg.txt] please")
+        out, _ = await MentionReader().expand("use @[cfg.txt] please")
         assert "SECRET=42" in out
 
     def test_read_file_chunk(self):
@@ -106,19 +108,19 @@ class TestVault:
 
 
 class TestSession:
-    def test_cli_session_id_roundtrip(self):
+    async def test_cli_session_id_roundtrip(self):
         import uuid
         from core.session import get_cli_session_id, save_cli_session_id
         sid = f"sess_{uuid.uuid4().hex[:8]}"
-        assert get_cli_session_id(sid, "agent1", "anthropic_cli") is None
-        save_cli_session_id(sid, "agent1", "anthropic_cli", "cli-xyz")
-        assert get_cli_session_id(sid, "agent1", "anthropic_cli") == "cli-xyz"
+        assert await get_cli_session_id(sid, "agent1", "anthropic_cli") is None
+        await save_cli_session_id(sid, "agent1", "anthropic_cli", "cli-xyz")
+        assert await get_cli_session_id(sid, "agent1", "anthropic_cli") == "cli-xyz"
 
-    def test_history_and_sessions_empty(self):
+    async def test_history_and_sessions_empty(self):
         from core.session import get_recent_history_messages, list_chat_sessions, delete_chat_session
-        assert get_recent_history_messages("ghost") == []
-        assert isinstance(list_chat_sessions(), list)
-        assert delete_chat_session("ghost") is False
+        assert await get_recent_history_messages("ghost") == []
+        assert isinstance(await list_chat_sessions(), list)
+        assert await delete_chat_session("ghost") is False
 
 
 class TestConfig:
@@ -142,11 +144,11 @@ class TestConfig:
 
 
 class TestPersonalDetails:
-    def test_default_load_save(self):
+    async def test_default_load_save(self):
         from core import personal_details as pd
         assert isinstance(pd.default_personal_details(), dict)
-        pd.save_personal_details({"first_name": "Grace", "last_name": "Hopper"})
-        assert pd.load_personal_details()["first_name"] == "Grace"
+        await pd.save_personal_details({"first_name": "Grace", "last_name": "Hopper"})
+        assert (await pd.load_personal_details())["first_name"] == "Grace"
 
 
 class TestUserAuth:

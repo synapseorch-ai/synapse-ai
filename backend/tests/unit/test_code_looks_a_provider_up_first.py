@@ -1,0 +1,648 @@
+"""Code looks a provider up before any model reads the web (SAI2-P5, D300).
+
+Research was web-first: the Researcher searched, read page heads of 6000 characters and wrote prose a quick model
+turned into the findings card. It was the weakest class on every model (Nova Pro 1/12 at SAI2's re-baseline) and the
+dearest (about 150k tokens a persona). `look_up_providers` looks where the answer is known first, in code:
+
+1. this product's Apps catalogue (a hit is `catalog_app`, with the app);
+2. the MCP Registry (the provider's own reachable server is `mcp`, by `provider_owns`, its anchors by F951);
+3. one web search for the provider's developer page, read only on the provider's own domain (`_providers_own_page`).
+
+Code gives only the two verdicts it can stand behind: an app in the catalogue and the provider's own server. A
+developer page is a lead, never a verdict (Naveen, 10-24): Booking.com, OpenTable and Uber have developer pages and
+are partners-only, so whether an API is open is for the research to read. Code never writes `none` or `unclear`,
+never an `api` spec, and says when a source could not be read.
+"""
+from __future__ import annotations
+
+import json
+from urllib.parse import unquote_plus
+
+import pytest
+
+import core.builder_connect as bc
+import core.builder_research as br
+import core.safe_fetch as sf
+from core.native_builder import lookup
+
+CATALOG = [
+    {"slug": "stripe", "name": "Stripe", "auth": "oauth", "url": "https://stripe.com"},
+    {"slug": "google_calendar", "name": "Google Calendar", "auth": "oauth", "url": "https://calendar.google.com"},
+    # Names that are words too (cloud's catalogue, SAI2's probe).
+    *({"slug": n.lower(), "name": n, "auth": "key", "url": f"https://{n.lower()}.com"}
+      for n in ("Close", "Square", "Linear", "Neon", "Asana")),
+]
+
+SHIPPO_OWN = {"server": {"name": "com.shippo/mcp", "description": "Shippo's own", "websiteUrl": "https://goshippo.com",
+                         "remotes": [{"type": "streamable-http", "url": "https://mcp.goshippo.com/mcp"}]}}
+MAILCHIMP_THIRD_PARTY = {"server": {"name": "io.github.someone/mailchimp-mcp", "description": "unofficial",
+                                    "remotes": [{"url": "https://mailchimp-mcp.someone.dev/mcp"}]}}
+DUFFEL_BY_HAND = {"server": {"name": "com.duffel/mcp", "websiteUrl": "https://duffel.com",
+                             "repository": {"url": "https://github.com/duffelhq/mcp"}}}
+
+DOCS = ("# Mailchimp Marketing API\n\nIntro text.\n\n## Authentication\n\nUse an API key in the Authorization "
+        "header. Endpoints live under https://{dc}.api.mailchimp.com/3.0.\n\n## Reference\n\nLists, campaigns.")
+
+
+@pytest.fixture(autouse=True)
+def _fresh_evidence():
+    br._LOOSE.clear()
+    yield
+    br._LOOSE.clear()
+
+
+@pytest.fixture
+def world(monkeypatch):
+    """The catalogue, the Registry and the web, with what each was asked."""
+    asked = {"registry": [], "scraped": []}
+    state = {"catalog": list(CATALOG), "registry": {}, "results": {}, "pages": {}, "registry_down": False,
+             "refused": False}
+
+    async def options():
+        return {"catalog": state["catalog"], "providers": {}, "screens": {}}
+
+    async def fetch(url):
+        asked["registry"].append(url)
+        if state["registry_down"]:
+            raise sf.FetchRefused("blocked")
+        term = url.split("search=", 1)[1].split("&", 1)[0].lower()
+        return json.dumps({"servers": state["registry"].get(term, [])}).encode()
+
+    async def scrape(server_module, args):
+        url = args["url"]
+        asked["scraped"].append(url)
+        if state.get("web_down"):
+            return {"error": br._DOWN_NOTE, "down": True}
+        if url.startswith(br.SEARCH_URL):
+            if state["refused"]:
+                return {"markdown": "Unfortunately, bots use DuckDuckGo too.", "links": []}
+            term = unquote_plus(url[len(br.SEARCH_URL):]).lower().removesuffix(" api documentation").replace(" ", "")
+            return {"markdown": "results", "links": [{"href": u, "text": u} for u in state["results"].get(term, [])]}
+        if url in state["pages"]:
+            return {"markdown": state["pages"][url]}
+        return {"error": "404"}
+
+    monkeypatch.setattr(bc, "_read_options", options)
+    monkeypatch.setattr(sf, "fetch_bytes", fetch)
+    monkeypatch.setattr(br, "_scrape", scrape)
+    from core.native_builder import build_plan
+    monkeypatch.setattr(build_plan, "_state", lambda: state.get("run") or {})
+    return state, asked
+
+
+async def _look(**args) -> dict:
+    return await lookup.look_up_providers(args, None, [])
+
+
+async def _route(state: dict, providers: list[str], need: str = "") -> dict:
+    """The research route's own look-up: its step sets no arguments, and the run's request names the providers."""
+    state["run"] = {"request": {"kind": "research", "providers": providers}, "user_message": need}
+    return await lookup.look_up_providers({"by_route": True}, None, [])
+
+
+# ── 1. The catalogue ──────────────────────────────────────────────────────────────────────────────────────────────
+
+async def test_an_app_in_the_catalogue_is_found_by_code(world):
+    _, asked = world
+    got = await _look(providers=["Stripe"], need="Send a payment link")
+    assert got["left"] == []
+    [stripe] = got["found"]
+    assert stripe["how"] == "catalog_app" and stripe["app"] == {"slug": "stripe", "name": "Stripe"}
+    assert stripe["provider"] == "Stripe" and "api" not in stripe
+    assert got["findings"] == {"goal": "Send a payment link", "options": [stripe]}
+    assert asked == {"registry": [], "scraped": []}, "a catalogue hit needs nothing else"
+
+
+async def test_a_catalogue_word_alone_is_not_the_provider(world):
+    """"Google Drive" shares a word with Google Calendar; a verdict needs the provider's whole name."""
+    state, _ = world
+    got = await _look(providers=["Google Drive"])
+    assert got["found"] == [] and [x["provider"] for x in got["left"]] == ["Google Drive"]
+
+
+# ── 2. The Registry ───────────────────────────────────────────────────────────────────────────────────────────────
+
+async def test_the_providers_own_reachable_server_is_found(world):
+    state, asked = world
+    state["registry"]["shippo"] = [SHIPPO_OWN]
+    got = await _look(providers=["Shippo"])
+    [shippo] = got["found"]
+    assert shippo["how"] == "mcp" and shippo["sources"][0] == "https://goshippo.com"
+    assert {"goshippo.com", "shippo.com"} <= set(shippo["own_domains"])
+    assert "https://mcp.goshippo.com/mcp" in shippo["detail"], "the card can say where it connects"
+    assert asked["scraped"] == [], "found in the Registry: the web is not searched"
+
+
+async def test_a_third_partys_server_is_not_the_providers(world):
+    state, _ = world
+    state["registry"]["mailchimp"] = [MAILCHIMP_THIRD_PARTY]
+    got = await _look(providers=["Mailchimp"])
+    assert got["found"] == [] and got["left"][0]["provider"] == "Mailchimp"
+
+
+async def test_an_own_server_installed_by_hand_lends_its_anchors_and_goes_on(world):
+    state, asked = world
+    state["registry"]["duffel"] = [DUFFEL_BY_HAND]
+    state["results"]["duffel"] = ["https://duffel.com.evil.io/docs", "https://duffel.com/docs/api"]
+    state["pages"]["https://duffel.com/docs/api"] = "# Duffel API\n\nAuthentication with an access token. Endpoints."
+    got = await _look(providers=["Duffel"])
+    assert got["found"] == []
+    [left] = got["left"]
+    assert left["lead"]["sources"] == ["https://duffel.com/docs/api"]
+    assert "https://duffel.com.evil.io/docs" not in asked["scraped"]
+
+
+# ── 3. The provider's own developer page: a lead ──────────────────────────────────────────────────────────────────
+
+async def test_an_own_developer_page_is_a_lead_never_a_verdict(world):
+    state, asked = world
+    state["results"]["mailchimp"] = ["https://mailchimp.evil.com/api", "https://evilmailchimp.io/docs",
+                                     "https://mailchimp.com/developer/marketing/"]
+    state["pages"]["https://mailchimp.com/developer/marketing/"] = DOCS
+    got = await _look(providers=["Mailchimp"])
+    assert got["found"] == []
+    [left] = got["left"]
+    lead = left["lead"]
+    assert lead["how"] == "api" and "api" not in lead, "a lead has no spec: only report_findings writes one"
+    assert lead["sources"] == ["https://mailchimp.com/developer/marketing/"]
+    assert lead["own_domains"] == ["mailchimp.com"]
+    assert left["page"] == "https://mailchimp.com/developer/marketing/"
+    assert "page_text" not in left, "a page's words stay out of the step's output and the run's history"
+    assert asked["scraped"][1:] == ["https://mailchimp.com/developer/marketing/"], "look-alikes are never read"
+    assert "mailchimp.com" in br._evidence()["read_hosts"], "report_findings may cite the page it read"
+
+
+async def test_only_look_alikes_found_reads_nothing_and_says_so(world):
+    state, asked = world
+    state["results"]["mailchimp"] = ["https://mailchimp.evil.com/api", "https://mailchimp.xyz/docs"]
+    got = await _look(providers=["Mailchimp"])
+    [left] = got["left"]
+    assert "lead" not in left and "own" in left["note"]
+    assert len(asked["scraped"]) == 1, "only the search page"
+
+
+async def test_a_page_without_api_words_is_no_lead_but_is_handed_on(world):
+    """What a `none` rests on: the provider's own page, read, saying orders go by phone."""
+    state, _ = world
+    state["results"]["henryschein"] = ["https://henryschein.com/us-en/ordering"]
+    state["pages"]["https://henryschein.com/us-en/ordering"] = "# Ordering\n\nOrders are placed by phone or online."
+    got = await _look(providers=["Henry Schein"])
+    [left] = got["left"]
+    assert "lead" not in left and left["page"] == "https://henryschein.com/us-en/ordering"
+    assert "nothing of an API" in left["note"]
+    assert "henryschein.com" in br._evidence()["read_hosts"], "a none may rest on it"
+
+
+async def test_code_never_writes_none_unclear_or_a_spec(world):
+    state, _ = world
+    state["registry"]["shippo"] = [SHIPPO_OWN]
+    state["results"]["mailchimp"] = ["https://mailchimp.com/developer/"]
+    state["pages"]["https://mailchimp.com/developer/"] = DOCS
+    got = await _look(providers=["Stripe", "Shippo", "Mailchimp", "IRCTC", "OpenTable"])
+    assert {f["how"] for f in got["found"]} <= {"catalog_app", "mcp"}
+    assert all(x["lead"]["how"] == "api" for x in got["left"] if "lead" in x)
+    assert not any("api" in f for f in got["found"]) and not any("api" in x.get("lead", {}) for x in got["left"])
+
+
+# ── What could not be read is said ────────────────────────────────────────────────────────────────────────────────
+
+async def test_a_registry_that_cannot_be_read_is_said(world):
+    state, _ = world
+    state["registry_down"] = True
+    [left] = (await _look(providers=["Mailchimp"]))["left"]
+    assert "Registry could not be read" in left["note"]
+
+
+async def test_a_refused_search_is_said(world):
+    state, _ = world
+    state["refused"] = True
+    [left] = (await _look(providers=["Mailchimp"]))["left"]
+    assert "refused" in left["note"]
+
+
+# ── Cached in the run, bounded, and apart from the researcher's backstop ──────────────────────────────────────────
+
+async def test_a_second_look_up_in_the_run_reads_nothing_again(world):
+    state, asked = world
+    state["registry"]["shippo"] = [SHIPPO_OWN]
+    state["results"]["mailchimp"] = ["https://mailchimp.com/developer/"]
+    state["pages"]["https://mailchimp.com/developer/"] = DOCS
+    first = await _look(providers=["Shippo", "Mailchimp"])
+    before = {k: list(v) for k, v in asked.items()}
+    again = await _look(providers=["shippo", "Mailchimp"])
+    assert asked == before and again["found"] == first["found"] and again["left"] == first["left"]
+
+
+async def test_the_look_up_spends_none_of_the_researchers_backstop(world):
+    state, _ = world
+    state["results"]["mailchimp"] = ["https://mailchimp.com/developer/"]
+    state["pages"]["https://mailchimp.com/developer/"] = DOCS
+    await _look(providers=["Mailchimp", "Calendly"])
+    assert not br._evidence().get("spent")
+
+
+async def test_at_most_five_providers_are_looked_up(world):
+    got = await _look(providers=[f"Provider{i}" for i in range(8)])
+    assert len(got["found"]) + len(got["left"]) == 5
+
+
+# ── Inputs: P4's providers, the build route's needs, or the message alone ─────────────────────────────────────────
+
+async def test_with_no_providers_code_takes_them_from_the_message(world):
+    """A paused run on the old definition, or a channel turn, carries no `request` (SAI2, 10-24). A domain written
+    out is named; a catalogue name among the words is only a lead (SAI2's probe)."""
+    state, asked = world
+    got = await _look(need="Send our patients a Stripe link, and book them in through calendly.com")
+    assert got["found"] == []
+    assert [x["provider"] for x in got["left"]] == ["Stripe", "Calendly"]
+    assert "matches words" in got["left"][0]["note"]
+    assert [u.split("search=")[1].split("&")[0] for u in asked["registry"]] == ["Calendly"], "only the named one"
+
+
+@pytest.mark.parametrize("message", [
+    "Close the Jira ticket when it's done",
+    "Make the logo a square thumbnail",
+    "Close the ticket, draw a square, a linear gradient and a neon glow",
+])
+async def test_a_catalogue_name_that_is_a_word_is_never_code_s_verdict(world, message):
+    got = await _look(need=message)
+    assert got["found"] == [] and all("matches words" in x["note"] for x in got["left"])
+
+
+async def test_a_catalogue_name_the_request_names_is(world):
+    got = await _look(providers=["Linear"], need="Close the ticket in Linear")
+    assert [(f["provider"], f["how"]) for f in got["found"]] == [("Linear", "catalog_app")]
+
+
+async def test_file_names_are_not_providers(world):
+    got = await _look(need="Update notes.md and app.py, and ship it with node.js")
+    assert got["found"] == [] and got["left"] == []
+
+
+async def test_a_message_naming_nothing_known_leaves_it_all_to_the_research(world):
+    got = await _look(need="Can an agent book hotel rooms for our staff conferences?")
+    assert got == {"findings": {"goal": "Can an agent book hotel rooms for our staff conferences?", "options": []},
+                   "found": [], "left": [], "unmatched": []}  # `unmatched`: F997's guard (SAI2's b)
+
+
+async def test_a_need_without_a_provider_takes_a_catalogue_name_as_a_lead_only(world):
+    """The build route's needs (SAI2-P3): a tool the Plan calls and what its step does. A catalogue name in its
+    words is the research's to confirm, never code's verdict (SAI2's probe)."""
+    got = await _look(needs=[{"tool": "send_payment_link", "does": "Send the patient a Stripe payment link"},
+                             {"tool": "send_newsletter", "does": "Send the monthly newsletter"},
+                             {"tool": "add_task", "does": "Add a task in Asana or Linear"}])
+    assert got["found"] == []
+    stripe, newsletter, two = got["left"]
+    assert stripe["provider"] == "Stripe" and stripe["tool"] == "send_payment_link"
+    assert "matches words" in stripe["note"]
+    assert newsletter == {"tool": "send_newsletter", "does": "Send the monthly newsletter",
+                          "note": "No provider is named for this yet: the research finds who provides it."}
+    assert "provider" not in two, "two names in its words: neither is chosen"
+
+
+async def test_a_need_naming_its_provider_can_be_found(world):
+    got = await _look(needs=[{"tool": "send_payment_link", "does": "Send a link", "provider": "Stripe"}])
+    assert [(f["provider"], f["how"]) for f in got["found"]] == [("Stripe", "catalog_app")]
+
+
+async def test_a_need_keeps_its_tool_on_what_is_left(world):
+    got = await _look(needs=[{"tool": "add_subscriber", "does": "Add a subscriber", "provider": "Mailchimp"}])
+    [left] = got["left"]
+    assert left["provider"] == "Mailchimp" and left["tool"] == "add_subscriber"
+
+
+# ── The contract: report_findings and the build route read it unchanged (P3B-HANDOFF.md) ──────────────────────────
+
+FINDING_KEYS = {"provider", "how", "detail", "needs", "sources", "own_domains"}
+
+
+async def test_every_found_is_report_findings_shape_and_the_build_reads_it(world):
+    from core.native_builder import objects as O
+    from core.native_builder.build_plan import _found
+
+    state, _ = world
+    state["registry"]["shippo"] = [SHIPPO_OWN]
+    got = await _look(providers=["Stripe", "Shippo"])
+    for f in got["found"]:
+        assert FINDING_KEYS <= set(f) <= FINDING_KEYS | {"app"}, f
+    plan = O.PlanDraft(kind="create", title="t", summary="s", steps=[
+        O.Step(id="a", type="tool", name="Link", does="Send a Stripe payment link", tool="stripe_payment_link"),
+        O.Step(id="b", type="tool", name="Label", does="Buy a Shippo label", tool="shippo_buy_label")])
+    status = _found(plan, {"plan_findings": got["findings"]})
+    assert (status["stripe_payment_link"].status, status["stripe_payment_link"].via) == ("found", "catalog_app")
+    assert (status["shippo_buy_label"].status, status["shippo_buy_label"].via) == ("found", "mcp_server")
+
+
+async def test_report_findings_puts_up_the_look_ups_finals_with_no_model(world):
+    """The research route with everything found: `step_findings` calls report_findings with nothing of its own."""
+    state, _ = world
+    state["registry"]["shippo"] = [SHIPPO_OWN]
+    got = await _route(state, ["Stripe", "Shippo"], "Labels and links")
+    events: list[dict] = []
+    card = await br.report_findings({}, None, events)
+    assert card["options"] == got["found"]
+    assert [e["type"] for e in events] == ["research_findings"]
+
+
+async def test_report_findings_merges_the_look_up_with_the_researchers_report(world):
+    state, _ = world
+    state["results"]["mailchimp"] = ["https://mailchimp.com/developer/"]
+    state["pages"]["https://mailchimp.com/developer/"] = DOCS
+    got = await _route(state, ["Stripe", "Mailchimp"], "Links and a newsletter")
+    events: list[dict] = []
+    card = await br.report_findings({"goal": "Links and a newsletter", "options": [
+        {"provider": "Mailchimp", "how": "api", "detail": "Open API with a key.", "needs": "A Mailchimp account",
+         "sources": ["https://mailchimp.com/developer/"], "own_domains": ["mailchimp.com"]}]}, None, events)
+    assert [(o["provider"], o["how"]) for o in card["options"]] == [("Stripe", "catalog_app"), ("Mailchimp", "api")]
+    assert len(events) == 1 and events[0]["options"] == card["options"]
+    assert got["left"][0]["provider"] == "Mailchimp"
+
+
+async def test_a_model_cannot_upgrade_or_drop_a_look_up_final(world):
+    state, _ = world
+    await _look(providers=["Stripe"])
+    card = await br.report_findings({"options": [{"provider": "Stripe", "how": "mcp", "sources": []}]}, None, [])
+    assert [(o["provider"], o["how"]) for o in card["options"]] == [("Stripe", "catalog_app")], "one Stripe, code's"
+
+
+async def test_a_checked_none_on_the_providers_own_page_replaces_its_own_server(world):
+    """The one downgrade: a verdict of none for the same provider, resting on a page of that server's own domain."""
+    state, _ = world
+    state["registry"]["shippo"] = [SHIPPO_OWN]
+    state["pages"]["https://goshippo.com/partners"] = "# Partners\n\nThis API is for partners only."
+    await _route(state, ["Shippo"])
+    await br.read_web_page({"url": "https://goshippo.com/partners"}, None, [])
+    card = await br.report_findings({"options": [{"provider": "Shippo", "how": "none", "detail": "Partners only.",
+                                                  "sources": ["https://goshippo.com/partners"]}]}, None, [])
+    assert [(o["provider"], o["how"]) for o in card["options"]] == [("Shippo", "none")]
+
+
+async def test_an_app_in_the_catalogue_is_never_replaced_by_a_none(world):
+    """SAI2's review, S1: an app in the catalogue connects whatever a page says; with or without a url of its own."""
+    state, _ = world
+    state["catalog"].append({"slug": "acme", "name": "Acme", "auth": "key"})
+    state["pages"]["https://acme.com/partners"] = "# Partners\n\nPartners only."
+    await _route(state, ["Stripe", "Acme"])
+    await br.read_web_page({"url": "https://acme.com/partners"}, None, [])
+    await br.read_web_page({"url": "https://stripe.com/partners"}, None, [])
+    card = await br.report_findings({"options": [
+        {"provider": "Acme", "how": "none", "sources": ["https://acme.com/partners"], "own_domains": ["acme.com"]},
+        {"provider": "Stripe", "how": "none", "sources": ["https://stripe.com/partners"],
+         "own_domains": ["stripe.com"]}]}, None, [])
+    assert [(o["provider"], o["how"]) for o in card["options"]] == [("Stripe", "catalog_app"), ("Acme", "catalog_app")]
+
+
+def test_the_look_up_is_a_read_the_builder_may_call():
+    from core.builder_access import READS
+    from core.builder_tools import BUILDER_TOOL_SCHEMAS
+
+    assert "look_up_providers" in READS
+    assert any(s["function"]["name"] == "look_up_providers" for s in BUILDER_TOOL_SCHEMAS)
+
+
+async def test_the_researcher_reads_a_looked_up_page_again_for_free(world):
+    """The look-up's page goes to the Researcher through read_web_page, from the run's record: no second read, no
+    backstop spent, and at most 3000 characters."""
+    state, asked = world
+    long_docs = DOCS + "\n\n" + "\n\n".join(f"Changelog entry {i}, nothing to see." for i in range(400))
+    state["results"]["mailchimp"] = ["https://mailchimp.com/developer/marketing/"]
+    state["pages"]["https://mailchimp.com/developer/marketing/"] = long_docs
+    await _look(providers=["Mailchimp"])
+    before = list(asked["scraped"])
+    got = await br.read_web_page({"url": "https://mailchimp.com/developer/marketing/"}, None, [])
+    assert asked["scraped"] == before and not br._evidence().get("spent")
+    assert "## Authentication" in got["page_text"] and len(got["page_text"]) <= 3000
+    await br.report_findings({"options": [{"provider": "Mailchimp", "how": "unclear"}]}, None, [])
+    assert br.PAGES_KEY not in br._evidence(), "a report clears the pages with the rest of the record"
+
+
+# ── SAI2's probe of 35e8988e ──────────────────────────────────────────────────────────────────────────────────────
+
+async def test_a_github_namespace_is_never_code_s_verdict(world):
+    """`io.github.<user>` is anyone's who holds that GitHub name: the Registry checks no domain for it."""
+    state, _ = world
+    state["registry"]["acme"] = [{"server": {"name": "io.github.acme/acme-mcp", "websiteUrl": "https://acme.com",
+                                             "remotes": [{"url": "https://acme-mcp.fly.dev/mcp"}]}}]
+    [left] = (await _look(providers=["Acme"]))["left"]
+    assert "GitHub" in left["note"] and "acme" not in br._evidence()["own_mcp"]
+
+
+@pytest.mark.parametrize("remote", ["http://mcp.acme.com/mcp", "https://10.0.0.1:9/mcp",
+                                    "https://mcp.acme.com/{tenant}/mcp", "https://localhost/mcp",
+                                    "https://mcp.acme.internal/mcp"])
+async def test_a_remote_no_one_can_connect_is_not_found(world, remote):
+    state, _ = world
+    state["registry"]["acme"] = [{"server": {"name": "com.acme/mcp", "remotes": [{"url": remote}]}}]
+    got = await _look(providers=["Acme"])
+    assert got["found"] == [] and "can't be reached" in got["left"][0]["note"]
+
+
+async def test_code_looks_up_at_most_ten_providers_in_a_research(world):
+    state, asked = world
+    for batch in range(3):
+        got = await _look(providers=[f"Maker{batch}{i}" for i in range(5)])
+    assert len(asked["registry"]) == 10
+    assert all("looked up enough" in x["note"] for x in got["left"])
+
+
+async def test_a_failed_source_is_tried_once_more_then_kept(world):
+    state, asked = world
+    state["registry_down"] = True
+    for _ in range(3):
+        await _look(providers=["Mailchimp"])
+    assert len(asked["registry"]) == 2
+
+
+async def test_a_web_that_cannot_be_read_is_not_tried_for_each_provider(world):
+    state, asked = world
+    state["web_down"] = True
+    got = await _look(providers=["Mailchimp", "Calendly", "Duffel"])
+    assert len(asked["scraped"]) == 1
+    assert all("can't be read here" in x["note"] or "could not be searched" in x["note"] for x in got["left"])
+
+
+async def test_an_account_takes_its_article(world):
+    [asana] = (await _look(providers=["Asana"]))["found"]
+    assert asana["needs"] == "An Asana account"
+
+
+async def test_a_checked_none_wins_over_the_models_other_word_for_the_provider(world):
+    state, _ = world
+    state["registry"]["shippo"] = [SHIPPO_OWN]
+    state["pages"]["https://goshippo.com/partners"] = "# Partners\n\nThis API is for partners only."
+    await _route(state, ["Shippo"])
+    await br.read_web_page({"url": "https://goshippo.com/partners"}, None, [])
+    card = await br.report_findings({"options": [
+        {"provider": "Shippo", "how": "none", "detail": "Partners only.", "sources": ["https://goshippo.com/partners"]},
+        {"provider": "Shippo", "how": "unclear"}]}, None, [])
+    assert [(o["provider"], o["how"]) for o in card["options"]] == [("Shippo", "none")]
+
+
+async def test_the_models_option_folds_into_code_s_verdict_by_identity(world):
+    """Its own domain in common ("Stripe Payments" on docs.stripe.com) or the same name; never a shared word."""
+    state, _ = world
+    state["pages"]["https://docs.stripe.com/payments"] = "# Payments\n\nThe Payments API."
+    await _look(providers=["Stripe"])
+    await br.read_web_page({"url": "https://docs.stripe.com/payments"}, None, [])
+    card = await br.report_findings({"options": [
+        {"provider": "Stripe Payments", "how": "api", "sources": ["https://docs.stripe.com/payments"],
+         "own_domains": ["stripe.com"]},
+        {"provider": "Stripe Terminal", "how": "unclear"},
+        {"provider": "Square", "how": "unclear"}]}, None, [])
+    assert [(o["provider"], o["how"]) for o in card["options"]] == [
+        ("Stripe", "catalog_app"), ("Stripe Terminal", "unclear"), ("Square", "unclear")]
+
+
+async def test_another_products_none_never_replaces_code_s_verdict(world):
+    """SAI2: a one-word final that is a brand ("Microsoft") and a model's none on one of its other products."""
+    state, _ = world
+    state["catalog"].append({"slug": "microsoft", "name": "Microsoft", "auth": "oauth", "url": "https://microsoft.com"})
+    state["pages"]["https://teams.live.com/partners"] = "# Teams\n\nPartners only."
+    await _route(state, ["Microsoft"])
+    await br.read_web_page({"url": "https://teams.live.com/partners"}, None, [])
+    options = {"options": [{"provider": "Microsoft Teams", "how": "none", "sources": ["https://teams.live.com/partners"]}]}
+    # It names no own domain it read: asked once to (F1244), then, saying none again, it is unclear.
+    assert "own_domains" in (await br.report_findings(options, None, []))["error"]
+    card = await br.report_findings(options, None, [])
+    assert [(o["provider"], o["how"]) for o in card["options"]] == [("Microsoft", "catalog_app"),
+                                                                    ("Microsoft Teams", "unclear")]
+
+
+async def test_a_provider_the_researcher_looked_up_itself_is_its_own_to_leave_out(world):
+    """SAI2: "Close is in the Apps catalogue" is true; whether Close fits the job is the model's judgement. Only the
+    route's own look-up (the request's providers, a domain written out, the build's needs) is locked."""
+    state, _ = world
+    await _route(state, ["Stripe"])
+    got = await _look(providers=["Close", "Linear"])
+    assert [f["provider"] for f in got["found"]] == ["Close", "Linear"]
+    card = await br.report_findings({"options": [{"provider": "Linear", "how": "unclear"}]}, None, [])
+    assert [(o["provider"], o["how"]) for o in card["options"]] == [("Stripe", "catalog_app"), ("Linear", "catalog_app")]
+
+
+async def test_the_route_s_own_verdict_stays_locked_when_the_researcher_looks_it_up_again(world):
+    state, _ = world
+    await _route(state, ["Stripe"])
+    await _look(providers=["Stripe", "Linear"])
+    card = await br.report_findings({"options": [{"provider": "Linear", "how": "unclear"}]}, None, [])
+    assert [o["provider"] for o in card["options"]] == ["Stripe", "Linear"]
+
+
+# ── SAI2's review of 0b1ba1fe ─────────────────────────────────────────────────────────────────────────────────────
+
+async def test_another_product_under_the_same_umbrella_domain_is_its_own_option(world):
+    """B1: Google Calendar is in the catalogue; the Researcher reads developers.google.com for Sheets and says none.
+    Both stand: a shared umbrella domain alone never makes two products one."""
+    state, _ = world
+    state["pages"]["https://developers.google.com/sheets"] = "# Sheets API\n\nNot for this, partners only."
+    await _route(state, ["Google Calendar"])
+    await br.read_web_page({"url": "https://developers.google.com/sheets"}, None, [])
+    card = await br.report_findings({"options": [
+        {"provider": "Google Sheets", "how": "none", "sources": ["https://developers.google.com/sheets"],
+         "own_domains": ["google.com"]},
+        {"provider": "Google Drive", "how": "api", "sources": ["https://developers.google.com/sheets"],
+         "own_domains": ["google.com"]}]}, None, [])
+    assert [(o["provider"], o["how"]) for o in card["options"]] == [
+        ("Google Calendar", "catalog_app"), ("Google Sheets", "none"), ("Google Drive", "api")]
+
+
+async def test_a_researchers_needs_never_lock_its_own_look_up(world):
+    """N1: only the route's step sets `by_route`; a Researcher passing `needs` looks up for itself."""
+    got = await _look(needs=[{"tool": "close_deal", "does": "Close a deal", "provider": "Close"}])
+    assert [f["provider"] for f in got["found"]] == ["Close"]
+    card = await br.report_findings({"options": [{"provider": "Linear", "how": "unclear"}]}, None, [])
+    assert [o["provider"] for o in card["options"]] == ["Linear"]
+
+
+@pytest.mark.parametrize("remote", ["https://localhost./mcp", "https://mcp.acme.internal./mcp"])
+async def test_a_trailing_dot_hides_no_private_host(world, remote):
+    """N2."""
+    state, _ = world
+    state["registry"]["acme"] = [{"server": {"name": "com.acme/mcp", "remotes": [{"url": remote}]}}]
+    assert (await _look(providers=["Acme"]))["found"] == []
+
+
+# ── The gate (SAI2, Naveen 10-27): only a named provider is looked up, and a look-up with no finals hands on nothing ─
+# P5's measure at 4d99ae1b: the look-up found nothing in 18 runs. The classify wrote categories as providers ("train
+# operator", "hotel booking services", "our usual dental supplier"), code searched the web for "<category> API
+# documentation", and the Researcher read a lead that said only that, every round.
+
+async def test_a_category_the_classify_wrote_is_never_looked_up(world):
+    state, asked = world
+    got = await _route(state, ["hotel booking"], "Can an agent book hotel rooms for our staff conferences?")
+    assert asked == {"registry": [], "scraped": []}, "no Registry search and no web search for a category"
+    assert got["found"] == [] and got["left"] == [] and got["unmatched"] == ["hotel booking"]
+
+
+async def test_a_capitalised_category_is_looked_up_in_code_and_hands_on_nothing(world):
+    """Fails safe: a classify that writes "Hotel booking" costs one look in code and no tokens."""
+    state, asked = world
+    got = await _route(state, ["Hotel booking"], "Hotel booking for our staff?")
+    assert len(asked["registry"]) == 1
+    assert got["found"] == [] and got["left"] == [] and got["unmatched"] == ["Hotel booking"]
+
+
+async def test_a_lower_case_catalogue_name_is_named(world):
+    state, _ = world
+    got = await _route(state, ["stripe"], "send a payment link")
+    assert [(f["provider"], f["how"]) for f in got["found"]] == [("stripe", "catalog_app")]
+
+
+async def test_a_lower_case_name_outside_the_catalogue_is_left_to_the_research(world):
+    """The fixture's catalogue has no Mailchimp: lower-case "mailchimp" is the research's to search by hand, and F997's
+    line stays true of it (SAI2)."""
+    state, asked = world
+    got = await _route(state, ["mailchimp"], "send our newsletter")
+    assert asked == {"registry": [], "scraped": []} and got["unmatched"] == ["mailchimp"]
+
+
+async def test_a_domain_is_named_whatever_its_case(world):
+    state, asked = world
+    await _route(state, ["booking.com"], "book hotels")
+    assert len(asked["registry"]) == 1
+
+
+async def test_a_route_look_up_with_no_finals_hands_no_lead_text_and_keeps_its_leads_for_the_card(world):
+    """No finals: the Researcher starts as it did before P5, with no lead in its prompt. A Researcher that then never
+    reports still leaves the lead on the fallback card, from the run's record."""
+    state, _ = world
+    state["results"]["mailchimp"] = ["https://mailchimp.com/developer/"]
+    state["pages"]["https://mailchimp.com/developer/"] = DOCS
+    got = await _route(state, ["Mailchimp"], "send our newsletter")
+    assert got["found"] == [] and got["left"] == [] and got["unmatched"] == []
+    state["run"].update(lookup=got, findings={"status": "no_report", "fallback": True})
+    done = await lookup.finish_findings({}, None, [])
+    [option] = done["options"]
+    assert (option["provider"], option["how"]) == ("Mailchimp", "unclear")
+    assert option["sources"] == ["https://mailchimp.com/developer/"]
+
+
+async def test_a_route_look_up_with_a_final_still_hands_on_what_is_left(world):
+    state, _ = world
+    got = await _route(state, ["Stripe", "Mailchimp"], "links and a newsletter")
+    assert [f["provider"] for f in got["found"]] == ["Stripe"] and [x["provider"] for x in got["left"]] == ["Mailchimp"]
+
+
+async def test_the_build_routes_look_up_keeps_its_leads(world):
+    """The build route's step passes its needs: its look-up is not the research route's, and P3's planner reads them."""
+    got = await lookup.look_up_providers(
+        {"by_route": True, "needs": [{"tool": "send_newsletter", "does": "Send it", "provider": "Mailchimp"}]}, None, [])
+    assert got["found"] == [] and [x["provider"] for x in got["left"]] == ["Mailchimp"]
+
+
+async def test_a_researchers_own_look_up_reads_the_catalogue_and_the_registry(world, monkeypatch):
+    """SAI2's condition for the Researcher's tools (find_in_catalog and search_mcp_registry are gone from them): its
+    own look_up_providers call, of a name the request didn't name, still reads both sources."""
+    state, asked = world
+    read = []
+    options = bc._read_options
+
+    async def counted():
+        read.append(1)
+        return await options()
+
+    monkeypatch.setattr(bc, "_read_options", counted)
+    await _route(state, ["Stripe"], "take payments")
+    read.clear()
+    await _look(providers=["Shippo"])
+    assert read, "the Apps catalogue was read"
+    assert any("Shippo" in u for u in asked["registry"]), "the MCP Registry was searched"

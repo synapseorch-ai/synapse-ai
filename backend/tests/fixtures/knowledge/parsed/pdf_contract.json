@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "source": {
+    "path": "contracts/acme-msa.pdf",
+    "sha256": "d9e836c18fb43f476de287d3b7afb5a3950ba16adff198263b60b1d459f94a21",
+    "size_bytes": 48213,
+    "mime": "application/pdf",
+    "source": "upload"
+  },
+  "parser": {
+    "name": "docling",
+    "version": "2.x",
+    "options_hash": "fixture"
+  },
+  "text": "Master Services Agreement\n\nThis agreement is made between Acme Ltd and Example Corp for data processing services.\n\nFees\n\nService | Monthly fee\nHosting | 1,200\nSupport | 300\n\nFees exclude VAT.",
+  "blocks": [
+    {
+      "id": "b0001-0000",
+      "char_start": 0,
+      "char_end": 25,
+      "kind": "heading",
+      "level": 1,
+      "text": "Master Services Agreement",
+      "page": 1,
+      "heading_path": [
+        "Master Services Agreement"
+      ]
+    },
+    {
+      "id": "b0001-0001",
+      "char_start": 27,
+      "char_end": 113,
+      "kind": "paragraph",
+      "page": 1,
+      "heading_path": [
+        "Master Services Agreement"
+      ],
+      "text": "This agreement is made between Acme Ltd and Example Corp for data processing services."
+    },
+    {
+      "id": "b0002-0002",
+      "char_start": 115,
+      "char_end": 119,
+      "kind": "heading",
+      "level": 2,
+      "text": "Fees",
+      "page": 2,
+      "heading_path": [
+        "Master Services Agreement",
+        "Fees"
+      ]
+    },
+    {
+      "id": "b0002-0003",
+      "char_start": 121,
+      "char_end": 172,
+      "kind": "table",
+      "page": 2,
+      "heading_path": [
+        "Master Services Agreement",
+        "Fees"
+      ],
+      "text": "Service | Monthly fee\nHosting | 1,200\nSupport | 300",
+      "table": {
+        "rows": [
+          [
+            "Service",
+            "Monthly fee"
+          ],
+          [
+            "Hosting",
+            "1,200"
+          ],
+          [
+            "Support",
+            "300"
+          ]
+        ],
+        "header_rows": 1,
+        "n_rows": 3,
+        "n_cols": 2,
+        "caption": "Fees"
+      },
+      "bbox": [
+        {
+          "page": 2,
+          "x0": 72,
+          "y0": 140,
+          "x1": 520,
+          "y1": 220
+        }
+      ]
+    },
+    {
+      "id": "b0002-0004",
+      "char_start": 174,
+      "char_end": 191,
+      "kind": "footnote",
+      "page": 2,
+      "heading_path": [
+        "Master Services Agreement",
+        "Fees"
+      ],
+      "text": "Fees exclude VAT.",
+      "furniture": false
+    }
+  ],
+  "pages": [
+    {
+      "number": 1,
+      "width": 612,
+      "height": 792,
+      "text_chars": 110
+    },
+    {
+      "number": 2,
+      "width": 612,
+      "height": 792,
+      "text_chars": 70
+    },
+    {
+      "number": 3,
+      "width": 612,
+      "height": 792,
+      "text_chars": 0,
+      "quality": {
+        "no_text_layer": true,
+        "image_only": true
+      },
+      "warnings": [
+        "no_text_layer"
+      ]
+    }
+  ],
+  "title": "Master Services Agreement",
+  "doc_date": "2024-03-01",
+  "language": "en",
+  "warnings": [
+    {
+      "code": "no_text_layer",
+      "message": "Page 3 has no text layer and was not read (no OCR).",
+      "page": 3
+    }
+  ],
+  "stats": {
+    "pages": 3,
+    "pages_no_text_layer": 1,
+    "tables": 1,
+    "chars": 191
+  }
+}

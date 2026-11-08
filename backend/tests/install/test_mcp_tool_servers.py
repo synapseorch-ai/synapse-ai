@@ -33,10 +33,11 @@ import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from core.tool_router import SEP, ToolRouter
 from core.tools_registry import ALL_NATIVE_TOOLS
 
 # Generous enough for the heavy importers (code_search pulls cocoindex,
-# web_scraper pulls crawl4ai) on a cold CI runner, short enough that a hung
+# web_scraper pulls Playwright) on a cold CI runner, short enough that a hung
 # server fails the job instead of stalling it.
 _BOOT_TIMEOUT = timedelta(seconds=90)
 
@@ -78,37 +79,43 @@ async def test_native_tool_server_boots_and_advertises_tools(tool_name: str, scr
         assert tool.inputSchema is not None, f"{tool_name}: tool {tool.name!r} has no inputSchema"
 
 
-# Collisions that already exist and are not addressed here.
-#
-# `read_file_by_lines` is advertised by both code_search.py and file_reader.py
-# with genuinely different behaviour — code_search's takes a `repo_id` and
-# searches active repositories, file_reader's is the lightweight vault/S3 variant
-# with no index. Since `core.server.tool_router` is keyed by bare tool name and
-# file_reader connects last, file_reader's version wins and code_search's
-# repo-aware one is unreachable through the router.
-#
-# Tracked separately — fixing it is a routing/namespacing decision (see how
-# core/routes/tools.py namespaces *external* servers as `f"{name}__{tool.name}"`),
-# not part of the dependency-pinning work. Listed here so the test guards against
-# *new* collisions without hiding this one.
-_KNOWN_TOOL_NAME_COLLISIONS = {"read_file_by_lines"}
+async def test_a_colliding_tool_name_leaves_both_copies_reachable():
+    """A collision is survivable now, and this asserts *how*.
 
+    `read_file_by_lines` is advertised by both code_search.py and file_reader.py
+    with genuinely different behaviour — code_search's takes a `repo_id` and
+    searches active repositories, file_reader's is the lightweight vault/S3
+    variant with no index. This used to be an allowance
+    (`_KNOWN_TOOL_NAME_COLLISIONS`), because `tool_router` was keyed by the bare
+    name and whichever server connected last silently won.
 
-async def test_no_new_tool_name_collisions_across_servers():
-    """`core.server.tool_router` is keyed by bare tool name, so a collision
-    between two servers silently shadows one of them — last connection wins."""
-    seen: dict[str, str] = {}
-    collisions: list[str] = []
+    Keys are `{server}__{tool}` now, so both copies exist. The bare name is an
+    alias, and this pins which server it resolves to rather than leaving it to
+    connection order — the property the allowance used to hide.
+    """
+    router = ToolRouter()
+    advertised: dict[str, list[str]] = {}
 
-    for tool_name, script_path in sorted(ALL_NATIVE_TOOLS.items()):
+    for server_name, script_path in sorted(ALL_NATIVE_TOOLS.items()):
         result = await _boot_and_list(script_path)
         for tool in result.tools:
-            if tool.name in seen:
-                if tool.name not in _KNOWN_TOOL_NAME_COLLISIONS:
-                    collisions.append(f"{tool.name!r} in both {seen[tool.name]!r} and {tool_name!r}")
-            else:
-                seen[tool.name] = tool_name
+            router.register(server_name, tool.name)
+            advertised.setdefault(tool.name, []).append(server_name)
 
-    assert not collisions, (
-        "New tool name collisions would shadow entries in tool_router: " + "; ".join(collisions)
+    collided = {name: servers for name, servers in advertised.items() if len(servers) > 1}
+
+    for name, servers in collided.items():
+        for server_name in servers:
+            key = f"{server_name}{SEP}{name}"
+            assert key in router, f"{key!r} is not reachable, so {server_name}'s copy is lost"
+            assert router[key] == (server_name, name)
+
+        # The bare name still dispatches somewhere, and to the last registrant —
+        # sorted() above makes that deterministic rather than a race.
+        assert router.resolve(name) == f"{servers[-1]}{SEP}{name}"
+
+    # And the collision is reported rather than swallowed.
+    assert set(router.ambiguous()) == set(collided), (
+        f"router.ambiguous() disagrees with what the servers advertised: "
+        f"{sorted(router.ambiguous())} vs {sorted(collided)}"
     )

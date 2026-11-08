@@ -1,29 +1,58 @@
 'use client';
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { createPortal } from 'react-dom';
-import { Plus, Save, Play, Trash, Square, Loader2, Copy, Check, Radio, Bot, Scale, GitBranch, GitMerge, RefreshCw, User, Code, Zap, Wrench, ExternalLink, X, Sparkles, Braces, GitFork, ArrowLeftRight, FileText, ArrowLeft } from 'lucide-react';
-import { BuilderPanel } from '../orchestration/BuilderPanel';
-import { STEP_TYPE_META } from '@/types/orchestration';
+import { useState, useEffect, useEffectEvent, useCallback, useMemo, useRef, useSyncExternalStore } from 'react';
+import { Plus, Trash, Trash2, Copy, Files, LayoutTemplate, Pencil, Radio, Bot } from 'lucide-react';
+import {
+    Button, Combobox, ConfirmDialog, EmptyState, LinkButton, Mark, MenuItem, MenuSeparator, Modal, RowMenu,
+} from '@/components/ui';
+import { AppScreen } from '@/components/app/AppScreen';
+import { useNavFlags } from '@/components/app/NavFlags';
+import { BoardPanel } from '@/components/boards/BoardPanel';
+import { boardsApi } from '@/components/boards/board';
+import { OssBoardsHost, ossBoardsHost } from '@/lib/boardsHost';
+import { useRouter } from 'next/navigation';
+import { RESOURCE_SAVED_EVENT, useBuilder } from '@/components/app/BuilderProvider';
+import { cloneStep, generateStepId, removeStepFromGraph } from '../orchestration/graph';
+import { validateOrchestration } from '../orchestration/validate';
+import { useBuilderShortcuts, useDraftHistory } from '../orchestration/use-draft-history';
+import { EditorBoundary } from '../orchestration/EditorBoundary';
+import { readOrchestration, type ShapeNotes } from '../orchestration/readOrchestration';
+import type { EditorTabs } from '../tabs/editorTabs';
 import { readWithStallTimeout } from '@/lib/sse';
-import { ReactFlowProvider } from '@xyflow/react';
-import { WorkflowCanvas } from '../orchestration/WorkflowCanvas';
+import { refusedAnswerMessage } from '@/lib/answers';
+import { failureReason, stepErrorsFrom } from '@/lib/runErrors';
+import { CanvasWorkbench, type CanvasViewport } from '../orchestration/CanvasWorkbench';
+import { EstimateLine, useRunEstimate } from '../orchestration/estimate';
+import { RunCapFields } from '../orchestration/RunCapFields';
+import { loadRunEstimate } from '@/lib/estimate';
 import { StepConfigPanel } from '../orchestration/StepConfigPanel';
+import { getRecording, listRecordings, listSessions, RecordTask, type RecordingSummary, type SiteSession } from '@/components/browser';
+import { OSS_BROWSER_HOST } from '@/lib/browserHost';
+import { OSS_RECORDINGS_HOST } from '@/lib/recordingsHost';
+import { OSS_SESSIONS_HOST } from '@/lib/sessionsHost';
 import { StateSchemaEditor } from '../orchestration/StateSchemaEditor';
-import type { Orchestration, StepConfig, StepType } from '@/types/orchestration';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import {
+    DescriptionField, GuardrailsFields, McpOfferField, SchedulesList, SettingsSection, WorkflowSettingsPanel,
+    type WorkflowSchedule,
+} from '../orchestration/WorkflowSettings';
+import { initialHumanValues, type HumanField, type HumanValues } from '../orchestration/humanFields';
+import type { Orchestration, StepConfig } from '@/types/orchestration';
+import type { KnowledgeBaseOption } from '../orchestration/panel/shared';
+import { knowledgeApi, useKnowledgeEnabled } from '@/lib/knowledge';
+import { useHelpTopic } from '@/components/help';
 import { ConfirmationModal } from './ConfirmationModal';
+import { ifMatch, problemLabel, saveProblem, type SaveProblem } from '@/components/orchestration/saveConflict';
+import { SaveConflictDialog } from '@/components/orchestration/workbench/SaveConflictDialog';
 import { ToastNotification } from './ToastNotification';
-
-type ToolCallLogEntry = { kind: 'tool_call'; tool_name: string; args: Record<string, any>; step_name?: string };
-type ToolResultLogEntry = { kind: 'tool_result'; tool_name: string; preview: string };
-type StepResultLogEntry = { kind: 'step_result'; step_name: string; step_type: 'agent' | 'llm' | 'print' | 'extract_json'; content: string };
-// Model reasoning ([REASONING] blocks) and inter-tool prose, collapsible so a
-// chatty agent doesn't drown the structural log lines.
-type ReasoningLogEntry = { kind: 'reasoning'; step_name?: string; content: string };
-type ThoughtLogEntry = { kind: 'thought'; step_name?: string; content: string };
-type LogEntry = string | ToolCallLogEntry | ToolResultLogEntry | StepResultLogEntry | ReasoningLogEntry | ThoughtLogEntry;
+import { isLiveRun, type RunSummary } from '@/components/runs/summary';
+import {
+    appendRunLog, applyRunEvent, ApprovalCard, emptyRunLog, RunHostProvider, RunList, stepTimes, WorkflowList, workflowRow,
+    type RunHost, type RunLogState, type RunRecord, type RunRow, type StepExecution, type StepResultEntry,
+} from '@/components/run';
+import { OSS_RUN_HOST, ossLastRun, ossRunRecord, ossRunRow } from '@/lib/runHost';
+import { ResponseModal } from '@/components/workflows/runLog';
+import { RunDrawer } from '@/components/workflows/RunDrawer';
+import { RunStrip, type RunDrawerView } from '@/components/workflows/RunStrip';
 
 type RunStepStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed';
 
@@ -35,55 +64,276 @@ function applyStepHistory(
 ): Record<string, RunStepStatus> {
     const next = { ...prev };
     for (const h of stepHistory) {
-        if (h?.step_id) next[h.step_id] = h.status === 'failed' ? 'failed' : 'completed';
+        if (!h?.step_id) continue;
+        // A question closed by a cancel was never answered: not green (F193).
+        next[h.step_id] = h.status === 'failed' ? 'failed' : h.status === 'cancelled' ? 'pending' : 'completed';
     }
     return next;
 }
 
-const STEP_ICONS: Record<StepType, React.FC<{ size?: number }>> = {
-    llm: Zap, agent: Bot, tool: Wrench, evaluator: Scale, parallel: GitBranch,
-    merge: GitMerge, loop: RefreshCw, human: User, transform: Code,
-    extract_json: Braces, if_else: GitFork, switch: ArrowLeftRight, print: FileText, end: Square,
-};
+// A run that has ended asks nothing and runs nothing. A cancelled one's
+// question stops waiting (F193); and no step keeps pulsing: one still marked
+// waiting or running is done if the run completed, and not reached otherwise
+// (F190). End, for one, never gets a step_complete of its own.
+function settleRun(
+    prev: Record<string, RunStepStatus>,
+    outcome: 'completed' | 'failed' | 'cancelled',
+): Record<string, RunStepStatus> {
+    if (!Object.values(prev).some(v => v === 'paused' || v === 'running')) return prev;
+    const to: RunStepStatus = outcome === 'completed' ? 'completed' : 'pending';
+    const next = { ...prev };
+    for (const k in next) { if (next[k] === 'paused' || next[k] === 'running') next[k] = to; }
+    return next;
+}
+
+// Every cancel says this on a run's stream: the pump, the fleet and `cancel_run`.
+const isCancel = (event: { type?: string; error?: unknown }) =>
+    event?.type === 'orchestration_error' && event.error === 'Cancelled';
+
+const CANCELLED_LINE = '[Cancelled]';
+
+/** How long a reopened run's journal stays quiet before its replay counts as caught up (M3a-2). */
+const REPLAY_QUIET_MS = 300;
+
+/** The newest entry of a step in a run's history, by its index. */
+function lastEntryOf(history: StepExecution[], stepId: string, status?: string): number {
+    for (let i = history.length - 1; i >= 0; i--) {
+        if (history[i].step_id === stepId && (!status || history[i].status === status)) return i;
+    }
+    return -1;
+}
+
+/**
+ * The run on the canvas as its steps went, from its events (Last run, M3a-2):
+ * a start opens a running entry, `step_complete` closes it with the engine's
+ * own duration, an error fails it, a question pauses it and the next start
+ * closes it (a person's step gets no step_complete, F190), and the run's end
+ * brings the whole history from its record. No clock of this browser's is used.
+ */
+function foldHistory(prev: StepExecution[], data: any, asked: string | null): StepExecution[] {
+    const set = (i: number, patch: Partial<StepExecution>) => prev.map((h, j) => (j === i ? { ...h, ...patch } : h));
+    switch (data.type) {
+        case 'step_start': {
+            const id = data.orch_step_id;
+            if (!id) return prev;
+            // The step that asked picking up again after its answer (a tool call's approval).
+            if (asked === id) {
+                const i = lastEntryOf(prev, id, 'paused');
+                return i < 0 ? prev : set(i, { status: 'running' });
+            }
+            let next = prev;
+            if (asked) {
+                const i = lastEntryOf(next, asked, 'paused');
+                if (i >= 0) next = next.map((h, j) => (j === i ? { ...h, status: 'completed' } : h));
+            }
+            return [...next, { step_id: id, step_name: data.step_name, step_type: data.step_type, status: 'running' }];
+        }
+        case 'step_complete': {
+            const i = lastEntryOf(prev, data.orch_step_id, 'running');
+            if (i < 0) return prev;
+            return set(i, { status: 'completed', duration_seconds: typeof data.duration_seconds === 'number' ? data.duration_seconds : undefined });
+        }
+        case 'step_error': {
+            const i = lastEntryOf(prev, data.orch_step_id, 'running');
+            return i < 0 ? prev : set(i, { status: 'failed', error: data.reason ?? data.error ?? null });
+        }
+        case 'human_input_required': {
+            const i = lastEntryOf(prev, data.orch_step_id);
+            return i < 0 ? prev : set(i, { status: 'paused' });
+        }
+        case 'orchestration_complete':
+        case 'orchestration_error': {
+            const to = data.type === 'orchestration_complete' && data.status === 'completed' ? 'completed' : 'cancelled';
+            return prev.some(h => h.status === 'running' || h.status === 'paused')
+                ? prev.map(h => (h.status === 'running' || h.status === 'paused' ? { ...h, status: to } : h))
+                : prev;
+        }
+        case 'final':
+            return data.intent === 'orchestration' && Array.isArray(data.data?.step_history) ? data.data.step_history : prev;
+        default:
+            return prev;
+    }
+}
+
+/** The log with nothing going on: what the model was doing has stopped. */
+const settleActivity = (log: RunLogState): RunLogState => (log.liveActivity === null ? log : { ...log, liveActivity: null });
 
 const EMPTY_ORCHESTRATION: Orchestration = {
     id: '',
-    name: 'New Orchestration',
+    name: 'New workflow',
     description: '',
     steps: [],
     entry_step_id: '',
     state_schema: {},
     max_total_turns: 100,
-    max_total_cost_usd: null,
     timeout_minutes: 30,
     trigger: 'manual',
+    rubric_id: '',
+    result_key: '',
 };
 
-function generateId() {
-    return 'step_' + Math.random().toString(36).substring(2, 9);
+/** Step events a nested run forwards that belong to its own steps (F251). */
+const NESTED_STEP_EVENTS = new Set(['step_start', 'step_complete', 'step_error', 'final',
+    'tasks_updated', 'orchestration_error']);
+
+function subscribeResize(onChange: () => void) {
+    window.addEventListener('resize', onChange);
+    return () => window.removeEventListener('resize', onChange);
+}
+const readWindowWidth = () => window.innerWidth;
+const serverWindowWidth = () => 0;
+
+/** A human step's declared fields off the wire — anything else is no fields (F75). */
+function fieldList(raw: unknown): HumanField[] {
+    return Array.isArray(raw) ? (raw as HumanField[]) : [];
 }
 
-function newStep(type: StepType, position: { x: number; y: number }): StepConfig {
-    return {
-        id: generateId(),
-        name: type.charAt(0).toUpperCase() + type.slice(1) + ' Step',
-        type,
-        position_x: position.x,
-        position_y: position.y,
-        max_turns: 15,
-        timeout_seconds: 300,
-        max_iterations: 3,
-    };
-}
+/** What a cap per run counts here: model dollars on your own keys (CAP1). */
+const OSS_CAP_UNITS = ['usd'] as const;
 
-export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {}) {
+export type { EditorTabs } from '../tabs/editorTabs';
+
+export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, openSettings, tabs }: {
+    initialRunId?: string;
+    initialOrchId?: string;
+    /** A value that changes each time a blank workflow is asked for from elsewhere (⌘K's New workflow, M1a). */
+    newRequest?: string;
+    /** `initialOrchId` opens with its settings (`?settings=1`: a run's "Raise the cap", CAP1). */
+    openSettings?: boolean;
+    tabs?: EditorTabs;
+} = {}) {
     // --- Orchestration list ---
     const [orchestrations, setOrchestrations] = useState<Orchestration[]>([]);
-    const [selectedOrchId, setSelectedOrchId] = useState<string | null>(null);
-    const [draft, setDraft] = useState<Orchestration | null>(null);
+    // The list is read in the browser: until the first read answers, it draws
+    // nothing rather than "No workflows yet" for a moment (Naveen, M2k review).
+    const [listLoaded, setListLoaded] = useState(false);
+    // A Workflow step's picker and its card's name (E3).
+    const workflowOptions = useMemo(
+        () => orchestrations.map((o) => ({ id: o.id, name: o.name, description: o.description })),
+        [orchestrations],
+    );
+    const workflowNames = useMemo(
+        () => Object.fromEntries(orchestrations.map((o) => [o.id, o.name])),
+        [orchestrations],
+    );
+    const [selectedOrchId, setSelectedOrchId] = useState<string | null>(tabs?.history?.draft?.id ?? null);
+    // The draft with undo/redo, dirty tracking and the unload guard.
+    // `setDraft` records history (edits); `replaceDraft` resets it (navigation).
+    // A tab coming forward starts from the draft it left with (TABS1 v2).
+    const { draft, setDraft, replaceDraft: replaceDraftAsStored, markSaved, undo, redo, canUndo, canRedo, dirty, snapshot } =
+        useDraftHistory(800, tabs?.history);
+    // Every workflow that opens is read into the shapes the editor draws, and what was read differently is said on
+    // its steps until a save writes it back (F1054: a builder-saved `human_fields` object took the page down).
+    const [shapeNotes, setShapeNotes] = useState<ShapeNotes>({});
+    const replaceDraft = useCallback((next: Orchestration | null, opts?: { saved?: boolean }) => {
+        const read = readOrchestration(next);
+        setShapeNotes(read.notes);
+        replaceDraftAsStored(read.orchestration, opts);
+    }, [replaceDraftAsStored]);
+    const router = useRouter();
+    // The "?" panel explains the editor while one is open, the list otherwise (H1).
+    useHelpTopic(draft ? 'orchestrations.editor' : null);
+
+    // The builder runs from the app shell now and can be talked to from any
+    // screen, so this one learns about a save the way every other list does:
+    // from the event, not from a callback it owned.
+    const loadSavedOrchestration = useCallback(async (orch: any) => {
+        setOrchestrations((prev) => {
+            const idx = prev.findIndex((o) => o.id === orch.id);
+            return idx >= 0 ? prev.map((o) => (o.id === orch.id ? orch : o)) : [...prev, orch];
+        });
+        replaceDraft(orch, { saved: true });
+        setSelectedOrchId(orch.id);
+        // Re-read for the canonical version, with every step resolved.
+        try {
+            const res = await fetch('/api/orchestrations');
+            if (!res.ok) return;
+            const all = await res.json();
+            const freshList = Array.isArray(all) ? all : [];
+            setOrchestrations(freshList);
+            const fresh = freshList.find((o: any) => o.id === orch.id);
+            if (fresh) replaceDraft(fresh, { saved: true });
+        } catch { /* the event's copy stands */ }
+    }, [replaceDraft]);
+
+    useEffect(() => {
+        const onSaved = (event: Event) => {
+            const saved = (event as CustomEvent).detail;
+            if (saved?.kind === 'agent' && saved.resource) {
+                setAgents((prev) => {
+                    const idx = prev.findIndex((a) => a.id === saved.resource.id);
+                    return idx >= 0
+                        ? prev.map((a) => (a.id === saved.resource.id ? saved.resource : a))
+                        : [...prev, saved.resource];
+                });
+                return;
+            }
+            if (saved?.kind !== 'orchestration') return;
+            if (saved.action === 'deleted') {
+                setOrchestrations((prev) => prev.filter((o) => o.id !== saved.id));
+                return;
+            }
+            if (!saved.resource) return;
+            // Loading over unsaved work is the user's call, not ours. This used
+            // to replace the draft silently, and the builder can now be talked
+            // to from any screen, so the collision is reachable in a way it
+            // was not when the panel lived inside this editor.
+            if (dirty && saved.id === selectedOrchId) {
+                setBuilderSavedOrch(saved.resource);
+                return;
+            }
+            void loadSavedOrchestration(saved.resource);
+        };
+        window.addEventListener(RESOURCE_SAVED_EVENT, onSaved);
+        return () => window.removeEventListener(RESOURCE_SAVED_EVENT, onSaved);
+    }, [dirty, selectedOrchId, loadSavedOrchestration]);
     const [agents, setAgents] = useState<any[]>([]);
+    // Knowledge (R1): its Retrieve and Ingest steps are offered only while it is
+    // on, and their pickers list the workspace's knowledge bases.
+    const knowledgeEnabled = useKnowledgeEnabled() === true;
+    // Its board (BOARD1b): the top bar's "Board · N" while Boards are on, for a saved workflow. Read on opening it
+    // and every half minute, as agents write.
+    const boardsOn = !!useNavFlags().boards_enabled;
+    const boardWorkflowId = boardsOn && draft && orchestrations.some(o => o.id === draft.id) ? draft.id : null;
+    // Kept with the workflow it was read for, so another workflow's count never shows while its own is read.
+    const [boardRead, setBoardRead] = useState<{ id: string; count: number | null } | null>(null);
+    const boardCount = boardRead && boardRead.id === boardWorkflowId ? boardRead.count : null;
+    useEffect(() => {
+        if (!boardWorkflowId) return;
+        let live = true;
+        const read = () => boardsApi(ossBoardsHost.request).open({ scope: 'workflow', scopeId: boardWorkflowId })
+            .then(p => { if (live) setBoardRead({ id: boardWorkflowId, count: p.board.open + p.board.claimed }); })
+            .catch(() => { if (live) setBoardRead({ id: boardWorkflowId, count: null }); });
+        read();
+        const t = window.setInterval(read, 30_000);
+        return () => { live = false; window.clearInterval(t); };
+    }, [boardWorkflowId]);
+    const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseOption[] | undefined>(undefined);
+    useEffect(() => {
+        if (!knowledgeEnabled) return;
+        let live = true;
+        knowledgeApi.bases()
+            .then((bases) => { if (live) setKnowledgeBases(bases.map(({ id, name, status, description }) => ({ id, name, status, description }))); })
+            .catch(() => { /* the pickers fall back to typed ids */ });
+        return () => { live = false; };
+    }, [knowledgeEnabled]);
     const [availableModels, setAvailableModels] = useState<string[]>([]);
+    // What a step's semantic cache embeds with (F327): the panel says whether one is set.
+    const [embeddingModel, setEmbeddingModel] = useState<string | null>(null);
+    useEffect(() => {
+        let live = true;
+        fetch('/api/settings').then(r => r.json())
+            .then((s) => { if (live) setEmbeddingModel(String(s?.embedding_model || '')); })
+            .catch(() => { /* the panel keeps its general note */ });
+        return () => { live = false; };
+    }, []);
+    const semanticCacheNote = embeddingModel === null ? undefined : embeddingModel
+        ? `It embeds each prompt with ${embeddingModel}, the Embedding Model in Settings → Models.`
+        : 'No Embedding Model is set in Settings → Models, so only exact match runs.';
     const [saving, setSaving] = useState(false);
+    // A save the server refused as made from a stale copy or of a deleted workflow (F871), for the workflow it was
+    // of: the bar says it until it is settled, and the dialog offers the ways on.
+    const [refused, setRefused] = useState<{ id: string; problem: SaveProblem; open: boolean } | null>(null);
     const [toast, setToast] = useState<{ show: boolean; message: string; type: 'success' | 'warning' | 'error' } | null>(null);
     const showToast = (message: string, type: 'success' | 'warning' | 'error' = 'success') => {
         setToast({ show: true, message, type });
@@ -96,13 +346,70 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
     // --- Run state ---
     const [runStatus, setRunStatus] = useState<'idle' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'>('idle');
     const [runStepStatuses, setRunStepStatuses] = useState<Record<string, 'pending' | 'running' | 'paused' | 'completed' | 'failed'>>({});
+    // The step whose question is open, so the step that starts after the answer
+    // can close it (F190).
+    const askedStepRef = useRef<string | null>(null);
+    // Why each failed step failed, in its own words (F195): shown on its card and in the run log.
+    const [runStepErrors, setRunStepErrors] = useState<Record<string, string>>({});
     const [runId, setRunId] = useState<string | null>(null);
+    // Last run (M3a-2): the run on the canvas as its steps went (`foldHistory`),
+    // and the bar's toggle that shows each step's time. With no run on the canvas
+    // the toggle reads the workflow's newest run once, when pressed.
+    const historyRef = useRef<StepExecution[]>([]);
+    const [runHistory, setRunHistory] = useState<StepExecution[]>([]);
+    const [lastRunShown, setLastRunShown] = useState(false);
+    const [newestRun, setNewestRun] = useState<RunRecord | null>(null);
+    const [newestLoading, setNewestLoading] = useState(false);
+    // The live stream's run has ended: it is let go once the run's end (`final`,
+    // with its whole history) has been read, not before.
+    const endingRef = useRef(false);
+    // The live run on the canvas (M3a-2): the steps in the order they started
+    // (each start sends a signal down the connection it came along), which run
+    // they belong to, and whether a reopened run's journal is still catching up —
+    // its history lights in place and nothing travels until it has.
+    const trailRef = useRef<string[]>([]);
+    const [trail, setTrail] = useState<readonly string[]>([]);
+    const [runKey, setRunKey] = useState(0);
+    const [replaying, setReplaying] = useState(false);
+    const startTrail = useCallback((replay: boolean) => {
+        trailRef.current = [];
+        setTrail(trailRef.current);
+        setRunKey(k => k + 1);
+        setReplaying(replay);
+        historyRef.current = [];
+        setRunHistory(historyRef.current);
+        endingRef.current = false;
+    }, []);
     const [runInput, setRunInput] = useState('');
-    const [runLog, setRunLog] = useState<LogEntry[]>([]);
+    // The sessions a Browser agent's steps start signed in with for the next run (F1140), and the library they come
+    // from: read only for a workflow that has such a step.
+    const [siteSessions, setSiteSessions] = useState<SiteSession[] | null>(null);
+    // The run log, the plan and what the model is doing right now: the run
+    // screens' `RunLogState`, folded by their `applyRunEvent` (M3a-2).
+    const [runLog, setRunLog] = useState<RunLogState>(emptyRunLog);
     const [humanPrompt, setHumanPrompt] = useState<string | null>(null);
-    const [humanContext, setHumanContext] = useState<string | null>(null);
+    // What the question is about (the step's first input key with a value, or
+    // the newest step output) and the key it came from, so its box can say what
+    // it is (U65); a question from before the key was sent says "this run".
+    const [humanContext, setHumanContext] = useState<{ text: string; key: string | null } | null>(null);
     const [humanResponse, setHumanResponse] = useState('');
+    // The step a person's answer is waiting on, which question this is (a loop
+    // can ask the same step again), and since when it has waited, when the run's
+    // record says (a reopened run): the setup card answers it there (M3a-2).
+    const [waitingStep, setWaitingStep] = useState<string | null>(null);
+    const [questionSeq, setQuestionSeq] = useState(0);
+    const [waitingSince, setWaitingSince] = useState<string | null>(null);
+    // Answer on a question whose step is not on this canvas: the same card, in a dialog.
+    const [answerDialog, setAnswerDialog] = useState(false);
+    // The step's declared fields, when it has any — answered as a form keyed by
+    // name, like every other place a human step is answered (F75). Set with the
+    // prompt at each place a question arrives; ignored while there is none.
+    const [humanFields, setHumanFields] = useState<HumanField[]>([]);
+    const [humanValues, setHumanValues] = useState<HumanValues>({});
     const abortRef = useRef<AbortController | null>(null);
+    // A reopened run's failed steps from its record, for a journal written
+    // before `step_error` carried its reason (F195).
+    const historyErrorsRef = useRef<Record<string, string>>({});
     // Mirrors `runId` so the streamSSE catch / wake handler can read the live run
     // id without a stale closure. Timestamp of the last byte (incl. heartbeats)
     // tells a healthy stream from a dead one after sleep. reattachActiveRef
@@ -113,34 +420,45 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
     // Highest journal event id seen on the reattach stream (`id:` lines) — a
     // reconnect resumes with ?after=<this> instead of replaying everything.
     const lastEventIdRef = useRef(0);
-    // One-line "what the model is doing right now" indicator for the Run Log.
-    const [liveActivity, setLiveActivity] = useState<string | null>(null);
-    // Map of orch_step_id -> pending step result (supports parallel branches)
-    const pendingStepResultRef = useRef<Map<string, { step_name: string; step_type: 'agent' | 'llm' | 'print' | 'extract_json'; content: string }>>(new Map());
-    const [responseModal, setResponseModal] = useState<{ step_name: string; step_type?: string; content: string } | null>(null);
+    const [responseModal, setResponseModal] = useState<StepResultEntry | null>(null);
+    // The open canvas's run drawer (M3a): the Run Log or Recent Runs, or shut.
+    // A run started, resumed or reopened opens it on the log, where its lines arrive.
+    const [runDrawer, setRunDrawer] = useState<RunDrawerView | null>(null);
+    // Leaving an unsaved draft asks first (M3a, Naveen's OK): Back, the
+    // switcher, New, another run, a link in the app. It used to drop it silently;
+    // the browser's own prompt covered only a reload or a closed tab. The same
+    // question as the agents screen's (F73).
+    const [pendingLeave, setPendingLeave] = useState<null | (() => void)>(null);
     const [confirmDeleteOrchId, setConfirmDeleteOrchId] = useState<string | null>(null);
-    const [builderOpen, setBuilderOpen] = useState(false);
-    const [builderSessionKey, setBuilderSessionKey] = useState(0);
+    const { open: openBuilder, setCurrentOrchestration, isOpen: builderOpen } = useBuilder();
+    // The builder's panel stands at the window's right edge, 620 px wide at
+    // most; the open canvas keeps its chrome clear of it while it is open.
+    const windowWidth = useSyncExternalStore(subscribeResize, readWindowWidth, serverWindowWidth);
+    const builderInset = builderOpen ? Math.min(620, windowWidth - 24) + 12 : 0;
+    // Set when the builder saved the orchestration being edited while the draft
+    // had unsaved changes — the user chooses which version survives.
+    const [builderSavedOrch, setBuilderSavedOrch] = useState<any | null>(null);
 
     // --- Active runs (for reconnect banner) ---
-    type RunSummary = {
-        run_id: string;
-        orchestration_id: string;
-        status: string;
-        started_at?: string | null;
-        ended_at?: string | null;
-        current_step_id?: string | null;
-        steps_completed?: number;
-        last_step_name?: string | null;
-        waiting_for_human?: boolean;
-        total_cost_usd?: number | null;
-        session_id?: string | null;
-    };
     const [activeRuns, setActiveRuns] = useState<RunSummary[]>([]);
     const activeRunsPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    // Rubrics, for the "score runs against" picker in Guardrails. Names only —
+    // the editor lives on /evals.
+    const [rubrics, setRubrics] = useState<Array<{ id: string; name: string }>>([]);
     const [pastRuns, setPastRuns] = useState<RunSummary[]>([]);
+    // Recent Runs on the canvas list this workflow's runs only (Naveen, M3a-2
+    // review). The poll above holds the newest 20 of every workflow, so opening
+    // the list also reads the newest 100 once — the landing's All runs read.
+    const [moreRuns, setMoreRuns] = useState<RunSummary[]>([]);
     // Landing dashboard: which table is shown when no orchestration is open.
-    const [schedules, setSchedules] = useState<Array<{ id: string; name: string }>>([]);
+    // Full rows (M2k): the list's trigger chips read their rhythm; runs read their names.
+    const [schedules, setSchedules] = useState<WorkflowSchedule[]>([]);
+    // The list's last run per workflow (M2k): the 5 s poll holds only the newest 20
+    // of every workflow, so the list also reads the newest 200 once it shows.
+    const [listRuns, setListRuns] = useState<RunSummary[]>([]);
+    // Whether that read has answered with the runs: until it has (or when it failed) a row with no run can't say
+    // "Never run", which for a workflow that ran is a wrong word on the way (stack 1's baseline, workflowlist).
+    const [listRunsKnown, setListRunsKnown] = useState(false);
     const [landingTab, setLandingTab] = useState<'orchestrations' | 'active' | 'recent' | 'all'>('orchestrations');
     const [allRuns, setAllRuns] = useState<RunSummary[]>([]);
     const autoTabRef = useRef(false);
@@ -148,8 +466,8 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
     // --- Fetch orchestrations + agents ---
     useEffect(() => {
         fetch('/api/orchestrations').then(r => r.json()).then(data => {
-            setOrchestrations(Array.isArray(data) ? data.filter((o: any) => o.id !== 'orch_native_builder') : []);
-        }).catch(() => {});
+            setOrchestrations(Array.isArray(data) ? data : []);
+        }).catch(() => {}).finally(() => setListLoaded(true));
 
         fetch('/api/agents').then(r => r.json()).then(data => {
             setAgents(Array.isArray(data) ? data : []);
@@ -162,6 +480,11 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
         // Schedule names, for labelling schedule-triggered runs.
         fetch('/api/schedules').then(r => r.json()).then(data => {
             setSchedules(Array.isArray(data) ? data : []);
+        }).catch(() => {});
+
+        // Rubrics, for the Guardrails picker.
+        fetch('/api/rubrics').then(r => r.json()).then(data => {
+            setRubrics(Array.isArray(data) ? data : []);
         }).catch(() => {});
     }, []);
 
@@ -186,7 +509,8 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
         };
     }, [fetchActiveRuns]);
 
-    // Land on the Active table when something is running/paused (once).
+    // Land on the Active table when something is running/paused (once), unless the person
+    // has already picked a pill: the runs read can land after their click (F510).
     useEffect(() => {
         if (!autoTabRef.current && activeRuns.length > 0) {
             autoTabRef.current = true;
@@ -209,153 +533,47 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
         return () => clearInterval(interval);
     }, [landingTab]);
 
-    // --- Landing-table helpers ---
-    const orchNameOf = (id: string) => orchestrations.find(o => o.id === id)?.name ?? id;
-    const currentStepNameOf = (run: RunSummary): string | null => {
-        const orch = orchestrations.find(o => o.id === run.orchestration_id);
-        const byId = run.current_step_id
-            ? orch?.steps.find(s => s.id === run.current_step_id)?.name
-            : null;
-        return byId || run.last_step_name || null;
-    };
-    // What kicked this run off. Derived from session_id, which the scheduler
-    // sets to `schedule_<schedule_id>` and the orchestrator-agent path sets to
-    // the chat session id; manual UI and API runs carry none.
-    const triggerOf = (run: RunSummary): string => {
-        const session = run.session_id || '';
-        if (session.startsWith('schedule_')) {
-            const schedId = session.slice('schedule_'.length);
-            const sched = schedules.find(s => s.id === schedId);
-            return sched ? `Schedule · ${sched.name}` : 'Schedule';
-        }
-        if (session) return 'Agent chat';
-        return 'Manual';
-    };
-
-    const fmtDuration = (start?: string | null, end?: string | null): string => {
-        if (!start) return '—';
-        const s = new Date(start).getTime();
-        const e = end ? new Date(end).getTime() : Date.now();
-        const sec = Math.max(0, Math.round((e - s) / 1000));
-        if (sec < 60) return `${sec}s`;
-        const m = Math.floor(sec / 60);
-        if (m < 60) return `${m}m ${sec % 60}s`;
-        return `${Math.floor(m / 60)}h ${m % 60}m`;
-    };
-    const runStatusMeta = (run: RunSummary): { dot: string; label: string; text: string } => {
-        switch (run.status) {
-            case 'running': return { dot: 'bg-blue-400 animate-pulse', label: 'Running', text: 'text-blue-300' };
-            case 'paused': return run.waiting_for_human
-                ? { dot: 'bg-yellow-400', label: 'Needs input', text: 'text-yellow-300' }
-                : { dot: 'bg-yellow-400', label: 'Paused', text: 'text-yellow-300' };
-            case 'completed': return { dot: 'bg-green-500', label: 'Completed', text: 'text-zinc-400' };
-            case 'cancelled': return { dot: 'bg-zinc-500', label: 'Cancelled', text: 'text-zinc-500' };
-            default: return { dot: 'bg-red-500', label: 'Failed', text: 'text-red-300' };
-        }
-    };
-
-    const thCls = 'px-4 py-2 text-[10px] font-medium uppercase tracking-wider text-zinc-500 whitespace-nowrap';
-    const tdCls = 'px-4 py-2.5 text-xs';
-
-    const renderRunsTable = (rows: RunSummary[], empty: string) => (
-        <div className="border border-white/5 bg-zinc-900/60">
-            <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                    <thead>
-                        <tr className="border-b border-white/5 bg-zinc-950/40">
-                            <th className={thCls}>Status</th>
-                            <th className={thCls}>Orchestration</th>
-                            <th className={thCls}>Step</th>
-                            <th className={thCls}>Trigger</th>
-                            <th className={`${thCls} text-right`}>Progress</th>
-                            <th className={`${thCls} text-right`}>Cost</th>
-                            <th className={`${thCls} text-right`}>Started</th>
-                            <th className={`${thCls} text-right`}>Duration</th>
-                            <th className={thCls}></th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {rows.length === 0 ? (
-                            <tr>
-                                <td colSpan={9} className="px-4 py-10 text-center text-xs text-zinc-600 italic">
-                                    {empty}
-                                </td>
-                            </tr>
-                        ) : rows.map(run => {
-                            const meta = runStatusMeta(run);
-                            const stepName = currentStepNameOf(run);
-                            const isLive = run.status === 'running' || run.status === 'paused';
-                            return (
-                                <tr
-                                    key={run.run_id}
-                                    onClick={() => restoreRun(run)}
-                                    className="border-b border-white/3 last:border-b-0 hover:bg-white/2 cursor-pointer transition-colors group"
-                                >
-                                    <td className={`${tdCls} whitespace-nowrap`}>
-                                        <span className="inline-flex items-center gap-2">
-                                            <span className={`w-2 h-2 rounded-full shrink-0 ${meta.dot}`} />
-                                            <span className={meta.text}>{meta.label}</span>
-                                        </span>
-                                    </td>
-                                    <td className={`${tdCls} text-zinc-200 max-w-[220px]`}>
-                                        <span className="block truncate">{orchNameOf(run.orchestration_id)}</span>
-                                        <span className="block text-[10px] text-zinc-600 truncate">{run.run_id}</span>
-                                    </td>
-                                    <td className={`${tdCls} max-w-[200px]`}>
-                                        {stepName ? (
-                                            <span className={`block truncate ${isLive ? 'text-zinc-300' : 'text-zinc-500'}`}>
-                                                {run.status === 'running' ? '▶ ' : run.status === 'paused' ? '⏸ ' : ''}{stepName}
-                                            </span>
-                                        ) : <span className="text-zinc-600">—</span>}
-                                    </td>
-                                    <td className={`${tdCls} text-zinc-500 max-w-[160px]`}>
-                                        <span className="block truncate">{triggerOf(run)}</span>
-                                    </td>
-                                    <td className={`${tdCls} text-right text-zinc-400 whitespace-nowrap`}>
-                                        {run.steps_completed ?? 0} step{(run.steps_completed ?? 0) === 1 ? '' : 's'}
-                                    </td>
-                                    <td className={`${tdCls} text-right text-zinc-500 whitespace-nowrap`}>
-                                        {run.total_cost_usd ? `$${run.total_cost_usd.toFixed(4)}` : '—'}
-                                    </td>
-                                    <td className={`${tdCls} text-right text-zinc-500 whitespace-nowrap`}>
-                                        {run.started_at ? new Date(run.started_at).toLocaleString() : '—'}
-                                    </td>
-                                    <td className={`${tdCls} text-right text-zinc-500 whitespace-nowrap`}>
-                                        {fmtDuration(run.started_at, run.ended_at)}
-                                    </td>
-                                    <td className={`${tdCls} text-right whitespace-nowrap`}>
-                                        <span className="text-[11px] text-zinc-600 group-hover:text-zinc-300 transition-colors">
-                                            View →
-                                        </span>
-                                    </td>
-                                </tr>
-                            );
-                        })}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    );
+    // The list's own read (M2k), again when a run ends while it shows.
+    const onList = !draft;
+    const liveCount = activeRuns.length;
+    useEffect(() => {
+        if (!onList) return;
+        let live = true;
+        fetch('/api/orchestrations/runs?limit=200')
+            .then(r => r.json())
+            .then(d => {
+                if (live && Array.isArray(d)) { setListRuns(d); setListRunsKnown(true); }
+            })
+            .catch(() => {});
+        return () => { live = false; };
+    }, [onList, liveCount]);
 
     // --- Restore a run from the active runs banner / recent runs / deep link ---
     // The run's event journal is replayable, so restoring = hydrate step
     // statuses from the checkpoint (fast canvas paint), then replay the journal
     // from the start — which rebuilds the exact same Run Log as live viewing —
     // and keep tailing live events until the run ends.
-    const restoreRun = useCallback(async (runInfo: { run_id: string; orchestration_id: string; status: string }) => {
+    const restoreRun = useCallback(async (
+        runInfo: { run_id: string; orchestration_id: string; status: string },
+        // A tab coming forward re-attaches its run to the draft it kept: never the saved one over edits (TABS1 v2).
+        { keepDraft = false }: { keepDraft?: boolean } = {},
+    ) => {
         const orch = orchestrations.find(o => o.id === runInfo.orchestration_id);
         if (!orch) {
             // No definition to render the canvas from — bail loudly rather than
             // setting draft to null, which would silently re-render the landing
             // page and look like the click did nothing. The runs API filters
             // these out, so this is a backstop (e.g. deleted mid-session).
-            showToast('That run\'s orchestration no longer exists', 'error');
+            showToast('That run\'s workflow no longer exists', 'error');
             return;
         }
-        setSelectedOrchId(runInfo.orchestration_id);
-        setSelectedStepId(null);
-        setDraft({ ...orch });
+        if (!keepDraft) {
+            setSelectedOrchId(runInfo.orchestration_id);
+            setSelectedStepId(null);
+            replaceDraft({ ...orch }, { saved: true });
+        }
         setRunId(runInfo.run_id);
+        setRunDrawer('run');
         // Sync the ref synchronously — the useEffect that mirrors runId only runs
         // after render, but streamRunJournal's guard reads currentRunIdRef immediately.
         currentRunIdRef.current = runInfo.run_id;
@@ -368,29 +586,62 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
         const seeded: Record<string, RunStepStatus> = {};
         orch.steps.forEach(s => { seeded[s.id] = 'pending'; });
         setRunStepStatuses(seeded);
+        askedStepRef.current = null;
+        historyErrorsRef.current = {};
+        setRunStepErrors({});
+        startTrail(true);
+        setLastRunShown(true);
 
         // Restore step statuses + human-input state from the persisted checkpoint
         // so the canvas is meaningful before (and in case of a pre-journal run,
         // without) the journal replay.
+        let recorded: string | undefined;  // the run's status in its record
         try {
             const res = await fetch(`/api/orchestrations/runs/${runInfo.run_id}`);
             if (res.ok) {
                 const data = await res.json();
+                recorded = data.status;
                 if (Array.isArray(data.step_history)) {
                     setRunStepStatuses(prev => applyStepHistory(prev, data.step_history));
+                    historyErrorsRef.current = stepErrorsFrom(data.step_history);
+                    setRunStepErrors(historyErrorsRef.current);
+                    // Its steps' times, until its journal replays them (a run from
+                    // before the journal keeps these).
+                    historyRef.current = data.step_history;
+                    setRunHistory(historyRef.current);
                 }
                 if (data.waiting_for_human && data.human_prompt) {
                     setHumanPrompt(data.human_prompt);
-                    setHumanContext(data.human_context || null);
+                    setHumanContext(data.human_context ? { text: String(data.human_context), key: null } : null);
+                    setHumanFields(fieldList(data.human_fields));
+                    setHumanValues(initialHumanValues(fieldList(data.human_fields)));
+                    // The journal's question names its step; a run from before the
+                    // journal has only its record's current step.
+                    setWaitingStep(data.current_step_id ?? null);
+                    setQuestionSeq(n => n + 1);
                 }
+                const asked = Array.isArray(data.step_history)
+                    ? [...data.step_history].reverse().find((h: any) => h?.status === 'paused')
+                    : null;
+                setWaitingSince(data.waiting_for_human && asked?.started_at ? String(asked.started_at) : null);
             }
         } catch { /* ignore */ }
 
         // Full-fidelity replay + live tail from the event journal. Falls back to
         // status polling for runs that predate the journal.
         const hasJournal = await streamRunJournal(runInfo.run_id, 0);
+        // The replay rebuilt the question a finished run once asked. A cancel
+        // is in the journal since F193, but not in one written before it, and
+        // the record is the authority either way: a finished run asks nothing.
+        if (currentRunIdRef.current !== runInfo.run_id) return;  // switched runs meanwhile
+        if (recorded === 'cancelled' || recorded === 'completed' || recorded === 'failed') {
+            setHumanPrompt(null);
+            setHumanContext(null);
+            setRunStepStatuses(prev => settleRun(prev, recorded));
+            setRunStatus(recorded);
+        }
         if (!hasJournal) {
-            setRunLog(['[This run predates event journaling — showing checkpoint status only.]']);
+            setRunLog(appendRunLog(emptyRunLog(), '[This run predates event journaling — showing checkpoint status only.]'));
             if (runInfo.status === 'running') {
                 reattachRun(runInfo.run_id, { silent: true });
             }
@@ -400,52 +651,113 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [orchestrations]);
 
+    // A row of the landing's run tables (the shared list, M2b) opens the run here, on the canvas.
+    const openLandingRun = (row: RunRow) => (tabs
+        ? tabs.open(row.workflowId, row.id)
+        : restoreRun({ run_id: row.id, orchestration_id: row.workflowId, status: row.status }));
+    /** Open a workflow: its own tab when the page keeps tabs, here otherwise. */
+    const openWorkflow = (id: string) => (tabs ? tabs.open(id) : selectOrchestration(id));
+
     // --- Select orchestration ---
     const selectOrchestration = useCallback((id: string | null) => {
         setSelectedOrchId(id);
         setSelectedStepId(null);
         setRunStatus('idle');
         setRunStepStatuses({});
-        setRunLog([]);
+        setRunStepErrors({});
+        historyErrorsRef.current = {};
+        setRunLog(emptyRunLog());
         setHumanPrompt(null);
+        startTrail(false);
+        setLastRunShown(false);
+        setNewestRun(null);
         if (id) {
             const orch = orchestrations.find(o => o.id === id);
-            setDraft(orch ? { ...orch } : null);
+            replaceDraft(orch ? { ...orch } : null, { saved: true });
         } else {
-            setDraft(null);
+            replaceDraft(null);
         }
-    }, [orchestrations]);
+    }, [orchestrations, replaceDraft, startTrail]);
 
     // --- Back to the landing dashboard ---
     // Detaches this browser from the run's event stream; the run itself keeps
     // executing server-side on the runner pump and stays listed under Active,
     // so leaving the view never interrupts work.
+    // A blank workflow nobody has touched yet holds nothing to lose: it asks only
+    // once there is an edit (an undo step) or a saved workflow differs from its save.
+    const hasEdits = !!draft && dirty && (canUndo || orchestrations.some(o => o.id === draft.id));
+    const tabsRef = useRef(tabs);
+    const hasEditsRef = useRef(hasEdits);
+    // Where the canvas stood when it closed: a tab keeps it (TABS1 v2).
+    const viewportRef = useRef<CanvasViewport | null>(tabs?.viewport ?? null);
+    useEffect(() => { tabsRef.current = tabs; hasEditsRef.current = hasEdits; });
+    const guardLeave = useCallback((go: () => void) => {
+        if (hasEdits) setPendingLeave(() => go);
+        else go();
+    }, [hasEdits]);
+
+    // A link inside the app gets the question too: the App Router cannot stop a
+    // navigation once it has started, so the click is taken before it does.
+    // Leaving the page loses every tab's draft, so unsaved work in another tab asks too (TABS1 v2).
+    const leaveAsks = hasEdits || !!tabs?.othersDirty;
+    useEffect(() => {
+        if (!leaveAsks) return;
+        const onClick = (e: MouseEvent) => {
+            if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+            const link = (e.target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
+            if (!link || link.target === '_blank' || link.hasAttribute('download')) return;
+            const url = new URL(link.href, window.location.href);
+            if (url.origin !== window.location.origin || url.pathname === window.location.pathname) return;
+            if (tabsRef.current?.isTabLink(url)) return;  // opens beside this tab: nothing is left behind
+            e.preventDefault();
+            e.stopPropagation();
+            setPendingLeave(() => () => router.push(url.pathname + url.search + url.hash));
+        };
+        document.addEventListener('click', onClick, true);
+        return () => document.removeEventListener('click', onClick, true);
+    }, [leaveAsks, router]);
+
     const backToList = useCallback(() => {
         abortRef.current?.abort();
         abortRef.current = null;
         currentRunIdRef.current = null;  // stops streamRunJournal's tail loop
         setRunId(null);
-        setLiveActivity(null);
         selectOrchestration(null);
     }, [selectOrchestration]);
 
     // --- Create new orchestration ---
-    const createNew = () => {
-        const id = 'orch_' + Math.random().toString(36).substring(2, 9);
+    const createNew = (named?: string) => {
+        const id = named ?? 'orch_' + Math.random().toString(36).substring(2, 9);
         const orch: Orchestration = { ...EMPTY_ORCHESTRATION, id };
-        setDraft(orch);
+        replaceDraft(orch);
         setSelectedOrchId(id);
         setSelectedStepId(null);
     };
 
+    // ⌘K's New workflow lands here as `?new=<n>`: the same as clicking New, once
+    // per request. The request then leaves the address — the address effect above
+    // does not run again when this page is already open, so it would linger.
+    const newHandledRef = useRef<string | undefined>(undefined);
+    const onNewRequested = useEffectEvent(() => guardLeave(() => createNew()));
+    useEffect(() => {
+        if (!newRequest || newHandledRef.current === newRequest) return;
+        newHandledRef.current = newRequest;
+        onNewRequested();
+        const url = new URL(window.location.href);
+        if (url.searchParams.has('new')) {
+            url.searchParams.delete('new');
+            window.history.replaceState(null, '', `${url.pathname}${url.search}`);
+        }
+    }, [newRequest]);
+
     // --- Duplicate orchestration ---
-    const handleDuplicate = async () => {
-        if (!draft) return;
+    // From the canvas the copy opens; from the list's row menu it joins the list (M2k).
+    const duplicateOrchestration = async (source: Orchestration, open: boolean) => {
 
         // Build old→new step ID map
         const idMap: Record<string, string> = {};
-        for (const step of draft.steps) {
-            idMap[step.id] = generateId();
+        for (const step of source.steps) {
+            idMap[step.id] = generateStepId();
         }
 
         // Remap a step ID reference, preserving null/undefined
@@ -455,7 +767,7 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
         };
 
         // Clone steps with remapped IDs
-        const clonedSteps: StepConfig[] = draft.steps.map(step => ({
+        const clonedSteps: StepConfig[] = source.steps.map(step => ({
             ...step,
             id: idMap[step.id],
             next_step_id: remap(step.next_step_id) as string | undefined,
@@ -484,16 +796,17 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
                   )
                 : undefined,
             switch_default_step_id: remap(step.switch_default_step_id) as string | undefined,
+            on_exhausted_step_id: remap(step.on_exhausted_step_id),
         }));
 
         const newId = 'orch_' + Math.random().toString(36).substring(2, 9);
         const clone: Orchestration = {
-            ...draft,
+            ...source,
             id: newId,
-            name: draft.name + ' (Copy)',
+            name: source.name + ' (Copy)',
             steps: clonedSteps,
-            entry_step_id: draft.entry_step_id ? (idMap[draft.entry_step_id] ?? '') : '',
-            state_schema: JSON.parse(JSON.stringify(draft.state_schema ?? {})),
+            entry_step_id: source.entry_step_id ? (idMap[source.entry_step_id] ?? '') : '',
+            state_schema: JSON.parse(JSON.stringify(source.state_schema ?? {})),
             created_at: undefined,
             updated_at: undefined,
         };
@@ -508,26 +821,48 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
             if (res.ok) {
                 const saved = await res.json();
                 setOrchestrations(prev => [...prev, saved]);
-                setDraft(saved);
-                setSelectedOrchId(newId);
-                setSelectedStepId(null);
+                if (open && tabs) {
+                    tabs.open(saved.id);
+                } else if (open) {
+                    replaceDraft(saved, { saved: true });
+                    setSelectedOrchId(newId);
+                    setSelectedStepId(null);
+                } else {
+                    showToast(`Duplicated ${source.name}.`, 'success');
+                }
+            } else {
+                showToast('Duplicate failed — the server rejected the copy', 'error');
             }
-        } catch { /* ignore */ } finally {
+        } catch {
+            showToast('Duplicate failed — could not reach the server', 'error');
+        } finally {
             setSaving(false);
         }
     };
 
+    const handleDuplicate = () => {
+        if (draft) void duplicateOrchestration(draft, true);
+    };
+
     // --- Save orchestration ---
-    const handleSave = async () => {
+    // Always saves — a half-built draft must be saveable — but names the
+    // outcome either way. Configuration errors surface as node badges and a
+    // toast here; they only *block* at Run.
+    // F871: it says what it read (`If-Match`), so a save from a stale copy, or of a workflow deleted meanwhile, is
+    // refused rather than written over the other or brought back. `seen` overrides that: the time a 409 named, to
+    // keep mine; null, to save without the check (save as a new workflow).
+    const handleSave = async (opts?: { seen: string | null }) => {
         if (!draft) return;
         setSaving(true);
         try {
+            const read = opts ? { updated_at: opts.seen } : draft;
             const res = await fetch('/api/orchestrations', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...ifMatch(read) },
                 body: JSON.stringify(draft),
             });
             if (res.ok) {
+                setRefused(null);
                 const saved = await res.json();
                 const idx = orchestrations.findIndex(o => o.id === saved.id);
                 if (idx >= 0) {
@@ -537,11 +872,45 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
                 } else {
                     setOrchestrations([...orchestrations, saved]);
                 }
-                setDraft(saved);
+                markSaved(saved);
+                const { errorCount } = validateOrchestration(saved, agents);
+                if (errorCount > 0) {
+                    showToast(`Saved, with ${errorCount} configuration error${errorCount !== 1 ? 's' : ''} still to fix`, 'warning');
+                } else {
+                    showToast('Workflow saved', 'success');
+                }
+            } else {
+                const err = await res.json().catch(() => null);
+                const problem = saveProblem(res.status, err?.detail);
+                if (problem) {
+                    setRefused({ id: draft.id, problem, open: true });
+                    return;
+                }
+                const said = typeof err?.detail === 'string' ? err.detail : err?.detail?.message;
+                showToast(`Save failed: ${said || `HTTP ${res.status}`}`, 'error');
             }
-        } catch { /* ignore */ } finally {
+        } catch {
+            showToast('Save failed — could not reach the server', 'error');
+        } finally {
             setSaving(false);
         }
+    };
+    const saveRefused = refused && draft && refused.id === draft.id ? refused : null;
+    const reloadTheirs = async () => {
+        if (!draft) return;
+        const res = await fetch(`/api/orchestrations/${encodeURIComponent(draft.id)}`).catch(() => null);
+        if (!res?.ok) {
+            showToast('Could not load their version. Try again.', 'error');
+            return;
+        }
+        setRefused(null);
+        await loadSavedOrchestration(await res.json());
+    };
+    const discardDeleted = () => {
+        const gone = draft?.id;
+        setRefused(null);
+        setOrchestrations((prev) => prev.filter((o) => o.id !== gone));
+        backToList();
     };
 
     // --- Delete orchestration ---
@@ -553,26 +922,31 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
     const confirmDeleteOrchestration = async () => {
         if (!confirmDeleteOrchId) return;
         try {
-            await fetch(`/api/orchestrations/${confirmDeleteOrchId}`, { method: 'DELETE' });
+            const res = await fetch(`/api/orchestrations/${confirmDeleteOrchId}`, { method: 'DELETE' });
+            // Refused while a workflow agent or a schedule runs it (F408): the
+            // server's sentence names them, and the workflow stays. A 404 is one
+            // already gone, so it leaves the list as a delete would.
+            if (!res.ok && res.status !== 404) {
+                const err = await res.json().catch(() => null);
+                showToast(typeof err?.detail === 'string' ? err.detail : `Delete failed (HTTP ${res.status})`, 'error');
+                return;
+            }
             setOrchestrations(orchestrations.filter(o => o.id !== confirmDeleteOrchId));
             if (draft?.id === confirmDeleteOrchId) {
-                setDraft(null);
+                if (tabs) {
+                    tabs.gone();
+                    return;
+                }
+                replaceDraft(null);
                 setSelectedOrchId(null);
             }
-        } catch { /* ignore */ }
+        } catch {
+            showToast('Delete failed — could not reach the server', 'error');
+        }
     };
 
-    // --- Add step ---
-    const addStep = (type: StepType) => {
-        if (!draft) return;
-        const existingCount = draft.steps.length;
-        const step = newStep(type, { x: 100 + (existingCount % 3) * 250, y: 80 + Math.floor(existingCount / 3) * 180 });
-        const updated = { ...draft, steps: [...draft.steps, step] };
-        if (!updated.entry_step_id) {
-            updated.entry_step_id = step.id;
-        }
-        setDraft(updated);
-    };
+    // Steps are added from the palette inside WorkflowCanvas (drag-drop or
+    // click), which owns placement and entry-point assignment via graph.ts.
 
     // --- Update step ---
     const updateStep = useCallback((updatedStep: StepConfig) => {
@@ -581,63 +955,38 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
             ...draft,
             steps: draft.steps.map(s => s.id === updatedStep.id ? updatedStep : s),
         });
-    }, [draft]);
+    }, [draft, setDraft]);
 
-    // --- Delete step ---
+    // --- Delete step --- (reference cleanup lives in the shared graph module)
     const deleteStep = useCallback((stepId: string) => {
         if (!draft) return;
-        const updated = {
-            ...draft,
-            steps: draft.steps.filter(s => s.id !== stepId),
-        };
-        // Clean references
-        updated.steps = updated.steps.map(s => {
-            const patched: any = {
-                ...s,
-                next_step_id: s.next_step_id === stepId ? undefined : s.next_step_id,
-                loop_step_ids: s.loop_step_ids?.filter(id => id !== stepId),
-                parallel_branches: s.parallel_branches?.map(branch => branch.filter(id => id !== stepId)),
-                // Clean if_else references
-                if_true_step_id: s.if_true_step_id === stepId ? undefined : s.if_true_step_id,
-                if_false_step_id: s.if_false_step_id === stepId ? undefined : s.if_false_step_id,
-                // Clean switch default
-                switch_default_step_id: s.switch_default_step_id === stepId ? undefined : s.switch_default_step_id,
-            };
-            // Clean route_map entries pointing to deleted step
-            if (s.route_map) {
-                const newRouteMap: Record<string, string | null> = {};
-                for (const [label, target] of Object.entries(s.route_map)) {
-                    newRouteMap[label] = target === stepId ? null : target;
-                }
-                patched.route_map = newRouteMap;
-            }
-            // Clean switch_cases entries pointing to deleted step
-            if (s.switch_cases) {
-                const newCases: Record<string, string | null> = {};
-                for (const [val, target] of Object.entries(s.switch_cases)) {
-                    newCases[val] = target === stepId ? null : target;
-                }
-                patched.switch_cases = newCases;
-            }
-            return patched;
-        });
-        if (updated.entry_step_id === stepId) {
-            updated.entry_step_id = updated.steps[0]?.id || '';
-        }
-        setDraft(updated);
+        setDraft(removeStepFromGraph(draft, stepId));
         if (selectedStepId === stepId) setSelectedStepId(null);
-    }, [draft, selectedStepId]);
+    }, [draft, selectedStepId, setDraft]);
+
+    // --- Duplicate a step: the selected one (Cmd+D), or the one the canvas's step toolbar is over ---
+    const duplicateStep = useCallback((stepId: string) => {
+        if (!draft) return;
+        const step = draft.steps.find(s => s.id === stepId);
+        if (!step) return;
+        const copy = cloneStep(step);
+        setDraft({ ...draft, steps: [...draft.steps, copy] });
+        setSelectedStepId(copy.id);
+    }, [draft, setDraft]);
+    const duplicateSelectedStep = useCallback(() => {
+        if (selectedStepId) duplicateStep(selectedStepId);
+    }, [selectedStepId, duplicateStep]);
 
     // --- Set entry point ---
     const setEntryPoint = useCallback((stepId: string) => {
         if (!draft) return;
         setDraft({ ...draft, entry_step_id: stepId });
-    }, [draft]);
+    }, [draft, setDraft]);
 
     // --- Update orchestration from canvas (position changes, edge connections) ---
     const updateOrchestration = useCallback((orch: Orchestration) => {
         setDraft(orch);
-    }, []);
+    }, [setDraft]);
 
     // --- Reattach stream: replay the run's event journal, then tail it live ---
     // The engine runs in a background task on the server and keeps executing
@@ -665,15 +1014,27 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
                 if (lastEventIdRef.current === 0) {
                     // Full replay rebuilds the log from scratch — identical to
                     // having watched the run live, with no duplicated entries.
-                    setRunLog([]);
+                    setRunLog(emptyRunLog());
+                    // And the canvas's trail and steps: the replayed starts light in place.
+                    trailRef.current = [];
+                    setTrail(trailRef.current);
+                    setReplaying(true);
+                    historyRef.current = [];
+                    setRunHistory(historyRef.current);
                 }
                 attempts = 0;
                 const reader = res.body.getReader();
                 const decoder = new TextDecoder();
                 let buffer = '';
+                // The journal replays in a burst, then goes quiet until the run
+                // moves: a quiet moment is when the replay has caught up and the
+                // canvas's signals may travel again.
+                let quiet = setTimeout(() => setReplaying(false), REPLAY_QUIET_MS);
                 while (true) {
                     const { done, value } = await readWithStallTimeout(reader, controller);
                     if (done) break;
+                    clearTimeout(quiet);
+                    quiet = setTimeout(() => setReplaying(false), REPLAY_QUIET_MS);
                     lastChunkAtRef.current = Date.now();
                     buffer += decoder.decode(value, { stream: true });
                     const lines = buffer.split('\n');
@@ -703,7 +1064,7 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
                 const intentional = e?.name === 'AbortError' && controller.signal.reason !== 'recover';
                 if (intentional) return true;
                 if (++attempts > 20) {
-                    setRunLog(prev => [...prev, '[Reconnect failed — see Active Runs to rejoin]']);
+                    setRunLog(prev => appendRunLog(prev, '[Reconnect failed — see Active Runs to rejoin]'));
                     return true;
                 }
                 await new Promise<void>(r => setTimeout(r, Math.min(3000, 500 * attempts)));
@@ -717,7 +1078,7 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
     // Journal replay is the primary path; polling remains only for runs that
     // predate event journaling.
     const reattachRun = useCallback(async (rid: string | null, opts?: { silent?: boolean }) => {
-        if (!rid) { setRunStatus('failed'); setRunLog(prev => [...prev, '[Connection lost]']); return; }
+        if (!rid) { setRunStatus('failed'); setRunLog(prev => appendRunLog(prev, '[Connection lost]')); return; }
         if (reattachActiveRef.current) return;       // already reconnecting
         reattachActiveRef.current = true;
         try {
@@ -733,7 +1094,7 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
     // Legacy fallback: track a pre-journal run to completion by polling its
     // step-boundary checkpoint.
     const pollRunStatus = useCallback(async (rid: string, opts?: { silent?: boolean }) => {
-        if (!opts?.silent) setRunLog(prev => [...prev, '[Connection lost — reconnecting to run…]']);
+        if (!opts?.silent) setRunLog(prev => appendRunLog(prev, '[Connection lost — reconnecting to run…]'));
         const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
         const deadline = Date.now() + 10 * 60 * 1000; // give up after 10 min
         let notFound = 0; // tolerate brief 404 windows at run start/end before giving up
@@ -746,7 +1107,7 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
                     if (res.status === 404) {
                         if (++notFound >= 3) {
                             setRunStatus('failed');
-                            setRunLog(prev => [...prev, '[Reconnect failed — run not found]']);
+                            setRunLog(prev => appendRunLog(prev, '[Reconnect failed — run not found]'));
                             return;
                         }
                         await sleep(3000); continue;
@@ -759,6 +1120,7 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
                 // Sync step statuses from the persisted history
                 if (Array.isArray(data.step_history)) {
                     setRunStepStatuses(prev => applyStepHistory(prev, data.step_history));
+                    setRunStepErrors(prev => ({ ...prev, ...stepErrorsFrom(data.step_history) }));
                 }
 
                 if (data.status === 'running') {
@@ -770,9 +1132,13 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
                     setRunStatus('paused');
                     if (data.waiting_for_human && data.human_prompt) {
                         setHumanPrompt(data.human_prompt);
-                        setHumanContext(data.human_context || null);
+                        setHumanContext(data.human_context ? { text: String(data.human_context), key: null } : null);
+                        setHumanFields(fieldList(data.human_fields));
+                        setHumanValues(initialHumanValues(fieldList(data.human_fields)));
+                        setWaitingStep(data.current_step_id ?? null);
+                        setQuestionSeq(n => n + 1);
                     }
-                    setRunLog(prev => [...prev, '[Reconnected — run is waiting for your input]']);
+                    setRunLog(prev => appendRunLog(prev, '[Reconnected — run is waiting for your input]'));
                     return;
                 }
                 // Terminal: completed / failed / cancelled
@@ -780,15 +1146,22 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
                 setRunStatus(final);
                 setHumanPrompt(null);
                 setHumanContext(null);
-                setRunLog(prev => [...prev, `[Reconnected — run ${data.status}]`]);
+                setRunLog(prev => appendRunLog(prev, `[Reconnected — run ${data.status}]`));
                 return;
             }
-            setRunLog(prev => [...prev, '[Reconnect timed out — see Active Runs to rejoin]']);
+            setRunLog(prev => appendRunLog(prev, '[Reconnect timed out — see Active Runs to rejoin]'));
         }
     }, []);
 
     // --- SSE stream reader helper (POST run/resume/human-input streams) ---
-    const streamSSE = async (url: string, body: Record<string, any>) => {
+    const streamSSE = async (
+        url: string,
+        body: Record<string, any>,
+        /** A caller that can say why its request was refused, and what now. */
+        onRefused?: (res: Response) => Promise<void>,
+        /** The request was taken: called once the response says so, before its stream is read. */
+        onOpen?: () => void,
+    ) => {
         const controller = new AbortController();
         abortRef.current?.abort();  // e.g. close a reattach tail before resuming
         abortRef.current = controller;
@@ -801,11 +1174,16 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
                 body: JSON.stringify(body),
                 signal: controller.signal,
             });
-            if (!res.ok || !res.body) {
-                setRunStatus('failed');
-                setRunLog(prev => [...prev, `[HTTP ${res.status}]`]);
+            if (!res.ok && onRefused) {
+                await onRefused(res);
                 return;
             }
+            if (!res.ok || !res.body) {
+                setRunStatus('failed');
+                setRunLog(prev => appendRunLog(prev, `[HTTP ${res.status}]`));
+                return;
+            }
+            onOpen?.();
 
             const reader = res.body.getReader();
             const decoder = new TextDecoder();
@@ -845,18 +1223,66 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
         }
     };
 
+    // A step on a Browser agent: the run and that step pick sessions (F1140). Read the library once one is there.
+    // A Browser agent's step, or a Browser step (F1146): both pick sessions; a Browser step picks a recording too.
+    const browserSteps = !!draft?.steps.some(s => s.type === 'browser');
+    const usesBrowser = browserSteps || !!draft?.steps.some(s => s.type === 'agent' && agents.find(a => a.id === s.agent_id)?.type === 'browser');
+    useEffect(() => {
+        if (!usesBrowser || siteSessions !== null) return;
+        listSessions(OSS_SESSIONS_HOST).then(setSiteSessions).catch(() => setSiteSessions([]));
+    }, [usesBrowser, siteSessions]);
+    const [recordingList, setRecordingList] = useState<RecordingSummary[] | null>(null);
+    useEffect(() => {
+        if (!browserSteps || recordingList !== null) return;
+        let live = true;
+        listRecordings(OSS_RECORDINGS_HOST).then(rows => { if (live) setRecordingList(rows); }, () => { if (live) setRecordingList([]); });
+        return () => { live = false; };
+    }, [browserSteps, recordingList]);
+    // A recording made from a Browser step is this workflow's once it is saved (BRW1); before that it is the library's.
+    const savedId = draft && orchestrations.some(o => o.id === draft.id) ? draft.id : undefined;
+    const browserRecordings = useMemo(() => ({
+        list: recordingList,
+        get: (id: string) => getRecording(OSS_RECORDINGS_HOST, id),
+        libraryHref: OSS_RECORDINGS_HOST.libraryHref,
+        recordingHref: OSS_RECORDINGS_HOST.recordingHref,
+        record: ({ sessions, onKept }: { sessions: string[]; onKept: (id: string) => void }) => (
+            <RecordTask host={OSS_RECORDINGS_HOST} sessionsHost={OSS_SESSIONS_HOST} browserHost={OSS_BROWSER_HOST}
+                        label="Record a new one" initialSessions={sessions} workflowId={savedId}
+                        onKept={(id) => { setRecordingList(null); onKept(id); }} />
+        ),
+    }), [recordingList, savedId]);
+
     // --- Run orchestration ---
     const startRun = () => {
         if (!draft) return;
+        // Errors are exactly the class the engine would fail on mid-run —
+        // dangling targets, an agent step with no agent. Block here, where the
+        // author can still fix them, instead of three steps into a paid run.
+        const { errorCount } = validateOrchestration(draft, agents);
+        if (errorCount > 0) {
+            showToast(`Fix ${errorCount} configuration error${errorCount !== 1 ? 's' : ''} before running — see the marked steps`, 'error');
+            return;
+        }
+        if (dirty) {
+            showToast('You have unsaved changes — the run uses the last saved version', 'warning');
+        }
         const statuses: Record<string, 'pending' | 'running' | 'completed' | 'failed'> = {};
         draft.steps.forEach(s => { statuses[s.id] = 'pending'; });
         setRunStepStatuses(statuses);
+        askedStepRef.current = null;
+        startTrail(false);
+        setLastRunShown(true);
+        setRunStepErrors({});
+        historyErrorsRef.current = {};
         setRunStatus('running');
-        setRunLog([]);
+        setRunLog(emptyRunLog());
         setHumanPrompt(null);
-        setLiveActivity(null);
+        setWaitingStep(null);
+        setWaitingSince(null);
         lastEventIdRef.current = 0;  // fresh run, fresh journal
+        setRunDrawer('run');
 
+        // Sessions are the Browser agent's and its step's, set once there (Naveen 10-29); a run sends only its input.
         streamSSE(`/api/orchestrations/${draft.id}/run`, { message: runInput });
     };
 
@@ -866,10 +1292,39 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
     // abort the feed there — the server signals the real end with
     // `stream_complete`. Aborting on the live POST stream stays correct.
     const handleSSEEvent = (data: any, fromJournal = false) => {
+        // The log is the run screens' own reducer (M3a-2): the lines, the step
+        // results, the plan and the live activity are read the same way here as
+        // on the run pages and in cloud's builder panel. A step's failure is told
+        // in its own words — the event's reason, else the reopened run's record
+        // (F195) — and a cancel says "[Cancelled]" once, as this editor always has.
+        if (data.type === 'step_error') {
+            data = { ...data, reason: failureReason(data, historyErrorsRef.current) };
+        }
+        if (isCancel(data) && !data.nested_run_id) {
+            setRunLog(prev => {
+                const quiet = settleActivity(prev);
+                return quiet.entries[quiet.entries.length - 1] === CANCELLED_LINE ? quiet : appendRunLog(quiet, CANCELLED_LINE);
+            });
+        } else {
+            setRunLog(prev => applyRunEvent(prev, data));
+        }
+
+        // A nested run's own step events arrive under the step that called it
+        // (F251): they are logged with both names and never move that step's
+        // card — a child's step ending used to read as the parent step's.
+        if (data.nested_run_id && NESTED_STEP_EVENTS.has(data.type)) return;
+
+        // The run's steps as they go, for Last run: read before the switch below
+        // clears the step that asked.
+        const folded = foldHistory(historyRef.current, data, askedStepRef.current);
+        if (folded !== historyRef.current) {
+            historyRef.current = folded;
+            setRunHistory(folded);
+        }
+
         switch (data.type) {
             case 'orchestration_start':
                 setRunId(data.run_id);
-                setRunLog(prev => [...prev, `Started run ${data.run_id}`]);
                 break;
 
             case 'step_start': {
@@ -879,211 +1334,116 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
                 setHumanPrompt(null);
                 setHumanContext(null);
                 setRunStatus('running');
-                setRunStepStatuses(prev => ({ ...prev, [data.orch_step_id]: 'running' }));
-                setRunLog(prev => [...prev, `▶ ${data.step_name} (${data.step_type})`]);
-                // Begin tracking response for agent/llm/print/extract_json steps, keyed by step id
-                if (data.step_type === 'agent' || data.step_type === 'llm' || data.step_type === 'print' || data.step_type === 'extract_json') {
-                    pendingStepResultRef.current.set(data.orch_step_id, {
-                        step_name: data.step_name,
-                        step_type: data.step_type as 'agent' | 'llm' | 'print' | 'extract_json',
-                        content: '',
-                    });
-                } else {
-                    pendingStepResultRef.current.delete(data.orch_step_id);
-                }
-                break;
-            }
-
-            case 'step_complete': {
-                setLiveActivity(null);
-                setRunStepStatuses(prev => ({ ...prev, [data.orch_step_id]: 'completed' }));
-                const pendingForStep = pendingStepResultRef.current.get(data.orch_step_id);
-                setRunLog(prev => {
-                    const next = [...prev, `✓ ${data.step_name} completed (${data.duration_seconds?.toFixed(1)}s)`];
-                    if (pendingForStep && pendingForStep.content.trim()) {
-                        next.splice(next.length - 1, 0, {
-                            kind: 'step_result',
-                            step_name: pendingForStep.step_name,
-                            step_type: pendingForStep.step_type,
-                            content: pendingForStep.content.trim(),
-                        } as StepResultLogEntry);
+                {
+                    // Another step starting is the answer having been taken, so the
+                    // step that asked is done: the engine sends no step_complete for
+                    // it (F190). Live, on a replay, and after a refused answer alike.
+                    const asked = askedStepRef.current;
+                    if (asked && asked !== data.orch_step_id) askedStepRef.current = null;
+                    // A new start on the canvas's trail; the step that asked picking up
+                    // again after its answer (a tool call's approval) is not one.
+                    if (asked !== data.orch_step_id) {
+                        trailRef.current = [...trailRef.current, data.orch_step_id];
+                        setTrail(trailRef.current);
                     }
+                    setRunStepStatuses(prev => {
+                        const next: Record<string, RunStepStatus> = { ...prev, [data.orch_step_id]: 'running' };
+                        if (asked && asked !== data.orch_step_id && (prev[asked] === 'paused' || prev[asked] === 'running')) {
+                            next[asked] = 'completed';
+                        }
+                        return next;
+                    });
+                }
+                // A step run again (resume from failure) is not failing yet.
+                setRunStepErrors(prev => {
+                    if (!(data.orch_step_id in prev)) return prev;
+                    const next = { ...prev };
+                    delete next[data.orch_step_id];
                     return next;
                 });
-                pendingStepResultRef.current.delete(data.orch_step_id);
                 break;
             }
+
+            case 'step_complete':
+                // A step in a Parallel branch or a Loop body that failed is still
+                // followed by its step_complete: it stays failed, not green.
+                setRunStepStatuses(prev => (prev[data.orch_step_id] === 'failed'
+                    ? prev
+                    : { ...prev, [data.orch_step_id]: 'completed' }));
+                break;
 
             case 'step_error':
-                setLiveActivity(null);
                 setRunStepStatuses(prev => ({ ...prev, [data.orch_step_id]: 'failed' }));
-                setRunLog(prev => [...prev, `✗ Step error: ${data.error}`]);
-                pendingStepResultRef.current.delete(data.orch_step_id);
-                break;
-
-            case 'llm_reasoning':
-                if (data.reasoning) {
-                    setLiveActivity(`🧠 ${String(data.reasoning).split('\n')[0].slice(0, 140)}`);
-                    setRunLog(prev => [...prev, {
-                        kind: 'reasoning',
-                        step_name: data.step_name,
-                        content: String(data.reasoning),
-                    } as ReasoningLogEntry]);
-                }
-                break;
-
-            case 'llm_thought':
-                if (data.thought) {
-                    setRunLog(prev => [...prev, {
-                        kind: 'thought',
-                        step_name: data.step_name,
-                        content: String(data.thought),
-                    } as ThoughtLogEntry]);
-                }
-                break;
-
-            case 'thinking':
-                // Chatty progress line ("Analyzing...", "Delegating to X...") —
-                // shown as the live activity indicator, not appended to the log.
-                if (data.message) setLiveActivity(`💭 ${data.message}`);
-                break;
-
-            case 'status':
-                if (data.message) setRunLog(prev => [...prev, `ℹ ${data.message}`]);
-                break;
-
-            case 'step_warning':
-                setRunLog(prev => [...prev, `⚠ ${data.message || 'Step warning'}`]);
-                break;
-
-            case 'context_compact':
-                setRunLog(prev => [...prev,
-                    `⇲ Context compacted (${data.chars_before ?? '?'} → ${data.chars_after ?? '?'} chars)`]);
-                break;
-
-            case 'final': {
-                // Capture the full final response keyed by step id
-                const response = data.response || '';
-                const stepId = data.orch_step_id || '';
-                if (stepId && pendingStepResultRef.current.has(stepId) && response) {
-                    pendingStepResultRef.current.get(stepId)!.content = response;
-                }
-                break;
-            }
-
-            case 'routing_decision':
-                setRunLog(prev => [...prev, `🔀 Evaluator routed → ${data.decision} (${data.reasoning || ''})`]);
-                break;
-
-            case 'if_decision':
-                setRunLog(prev => [...prev, `🔀 If/Else: ${data.condition || ''} → ${data.result}`]);
-                break;
-
-            case 'switch_decision':
-                setRunLog(prev => [...prev, `🔀 Switch: ${data.expression || ''} = "${data.value}" → ${data.matched_case ?? 'default'}`]);
-                break;
-
-            case 'parallel_start':
-                setRunLog(prev => [...prev, `⫘ Parallel: running ${data.branch_count} branches`]);
-                break;
-
-            case 'branch_start':
-                setRunLog(prev => [...prev, `  ↳ Branch ${(data.branch_index ?? 0) + 1}/${data.branch_count}`]);
-                break;
-
-            case 'parallel_complete':
-                setRunLog(prev => [...prev, `⫘ Parallel: all ${data.branch_count} branches done`]);
-                break;
-
-            case 'loop_iteration':
-                setRunLog(prev => [...prev, `⟳ Loop iteration ${data.iteration}/${data.total}`]);
-                break;
-
-            case 'merge_complete':
-                setRunLog(prev => [...prev, `⊕ Merged ${data.input_count} inputs (${data.strategy})`]);
+                setRunStepErrors(prev => ({ ...prev, [data.orch_step_id]: data.reason }));
                 break;
 
             case 'orchestration_end':
-                setRunLog(prev => [...prev, `■ End node reached`]);
+                if (data.orch_step_id) setRunStepStatuses(prev => ({ ...prev, [data.orch_step_id]: 'completed' }));
                 break;
 
             case 'human_input_required':
-                setLiveActivity(null);
                 setRunStatus('paused');
-                if (data.orch_step_id) setRunStepStatuses(prev => ({ ...prev, [data.orch_step_id]: 'paused' }));
+                if (data.orch_step_id) {
+                    askedStepRef.current = data.orch_step_id;
+                    setRunStepStatuses(prev => ({ ...prev, [data.orch_step_id]: 'paused' }));
+                }
+                setWaitingStep(data.orch_step_id ?? null);
+                setQuestionSeq(n => n + 1);
+                // A question asked now has waited no time; a replayed one keeps
+                // the record's start, read when the run was reopened.
+                if (!fromJournal) setWaitingSince(null);
                 setHumanPrompt(data.prompt || 'Please provide input:');
-                setHumanContext(data.agent_context || null);
-                setRunLog(prev => [...prev, `⏸ Waiting for human input...`]);
-                break;
-
-            case 'loop_limit_reached':
-                setRunLog(prev => [...prev, `⟳ Loop limit reached for step ${data.orch_step_id} (${data.iterations} iterations)`]);
+                setHumanContext(data.agent_context
+                    ? { text: String(data.agent_context), key: data.context_key || null }
+                    : null);
+                setHumanFields(fieldList(data.fields));
+                setHumanValues(initialHumanValues(fieldList(data.fields)));
                 break;
 
             case 'orchestration_complete':
-                setLiveActivity(null);
                 setHumanPrompt(null);
                 setHumanContext(null);
                 setRunStatus(data.status === 'completed' ? 'completed' : 'failed');
-                setRunLog(prev => [...prev, `Done — status: ${data.status}`]);
-                if (!fromJournal) {
+                setRunStepStatuses(prev => settleRun(prev, data.status === 'completed' ? 'completed' : 'failed'));
+                // The live stream is let go after the run's end has been read: the
+                // `final` that follows carries the run's whole history (Last run).
+                // The server closes the stream after it either way.
+                if (!fromJournal) endingRef.current = true;
+                break;
+
+            case 'final':
+                if (data.intent === 'orchestration' && !fromJournal && endingRef.current) {
+                    endingRef.current = false;
                     abortRef.current?.abort();
                     abortRef.current = null;
                 }
                 break;
 
             case 'orchestration_error':
-                setLiveActivity(null);
                 setHumanPrompt(null);
                 setHumanContext(null);
-                setRunStatus('failed');
-                setRunLog(prev => [...prev, `Error: ${data.error}`]);
+                if (isCancel(data)) {
+                    // Not a failure. The tab that cancelled has said so already.
+                    setRunStatus('cancelled');
+                    setRunStepStatuses(prev => settleRun(prev, 'cancelled'));
+                } else {
+                    setRunStatus('failed');
+                    setRunStepStatuses(prev => settleRun(prev, 'failed'));
+                }
                 if (!fromJournal) {
                     abortRef.current?.abort();
                     abortRef.current = null;
                 }
                 break;
 
-            case 'tool_execution':
-                setLiveActivity(`🔧 ${data.tool_name}`);
-                setRunLog(prev => [...prev, {
-                    kind: 'tool_call',
-                    tool_name: data.tool_name,
-                    args: data.args || {},
-                    step_name: data.step_name,
-                } as ToolCallLogEntry]);
-                break;
-
-            case 'tool_result':
-                setRunLog(prev => [...prev, {
-                    kind: 'tool_result',
-                    tool_name: data.tool_name,
-                    preview: data.preview || '',
-                } as ToolResultLogEntry]);
-                break;
-
-            case 'token_usage':
-                // Silently track
-                break;
-
             default:
-                // chunk events are accumulated in pendingStepResultRef (via 'final'),
-                // so we only show a live streaming indicator if there's no pending capture
-                if (data.type === 'chunk' && data.content && !pendingStepResultRef.current) {
-                    setRunLog(prev => {
-                        const last = prev[prev.length - 1];
-                        if (last && typeof last === 'string' && last.startsWith('  ')) {
-                            return [...prev.slice(0, -1), last + data.content];
-                        }
-                        return [...prev, '  ' + data.content];
-                    });
-                }
+                // Everything else is the log's alone.
                 break;
         }
     };
 
     const cancelRun = async () => {
-        setLiveActivity(null);
+        setRunLog(settleActivity);
         abortRef.current?.abort();
         abortRef.current = null;
         if (runId) {
@@ -1092,35 +1452,242 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
             } catch { /* ignore */ }
         }
         setRunStatus('cancelled');
-        setRunLog(prev => [...prev, '[Cancelled]']);
+        setRunStepStatuses(prev => settleRun(prev, 'cancelled'));
+        setRunLog(prev => appendRunLog(prev, CANCELLED_LINE));
     };
 
-    const submitHumanInput = async () => {
-        if (!runId) return;
-        setHumanPrompt(null);
-        setHumanContext(null);
-        setRunStatus('running');
-        setRunStepStatuses(prev => {
-            const next = { ...prev };
-            for (const k in next) { if (next[k] === 'paused') next[k] = 'running'; }
-            return next;
+    // The answer from the setup card (`ApprovalCard` through the run host's
+    // `answer`, M3a-2): the mapping of the step's fields, or the text. It resolves
+    // once the server has taken it, and only then does the canvas move on; a
+    // refusal rejects with its reason, which the card says, and the question stays.
+    const submitHumanInput = (response: string | HumanValues | Record<string, unknown>): Promise<string> =>
+        new Promise((resolve, reject) => {
+            const rid = runId;
+            if (!rid) { reject(new Error('No run is waiting for an answer.')); return; }
+            let settled = false;
+            void streamSSE(`/api/orchestrations/runs/${rid}/human-input`, { response }, async (res) => {
+                // Refused (F215): most often someone else answered first. Say so,
+                // then follow the run on from the last event this tab saw, which
+                // keeps this line in the log; a replay from 0 would rebuild it.
+                const message = await refusedAnswerMessage(res);
+                settled = true;
+                reject(new Error(message));
+                setRunLog(prev => appendRunLog(prev, `[${message}]`));
+                if (res.status === 404) { setRunStatus('failed'); return; }
+                const hasJournal = await streamRunJournal(rid, lastEventIdRef.current);
+                if (!hasJournal) await pollRunStatus(rid, { silent: true });
+            }, () => {
+                settled = true;
+                setHumanPrompt(null);
+                setHumanContext(null);
+                setRunStatus('running');
+                setRunStepStatuses(prev => {
+                    const next = { ...prev };
+                    for (const k in next) { if (next[k] === 'paused') next[k] = 'running'; }
+                    return next;
+                });
+                setRunLog(prev => appendRunLog(prev, `Human response submitted`));
+                setHumanResponse('');
+                setAnswerDialog(false);
+                resolve('Answer sent — the run is resuming.');
+            }).then(() => {
+                if (!settled) reject(new Error('The answer could not be sent. Try again.'));
+            });
         });
-        setRunLog(prev => [...prev, `Human response submitted`]);
-        const response = humanResponse;
-        setHumanResponse('');
 
-        streamSSE(`/api/orchestrations/runs/${runId}/human-input`, { response });
+    // The setup card answers through the run screens' own host: OSS's, with the
+    // answer going the editor's way (its stream follows the run on from there).
+    const submitRef = useRef(submitHumanInput);
+    useEffect(() => { submitRef.current = submitHumanInput; });
+    const runHost = useMemo<RunHost>(() => ({
+        ...OSS_RUN_HOST,
+        answer: (_runId, response) => submitRef.current(response),
+    }), []);
+
+    // The question as the card reads it: the waiting step by name, since when it
+    // has waited when the run's record says, the prompt, its fields and context.
+    const waitingStepName = waitingStep ? (draft?.steps.find(s => s.id === waitingStep)?.name ?? waitingStep) : null;
+    const asking = runStatus === 'paused' && !!humanPrompt && !!runId && !!waitingStep;
+    const waitingRecord: RunRecord | null = asking ? {
+        id: runId!,
+        workflowId: draft?.id ?? '',
+        workflowName: draft?.name ?? null,
+        status: 'paused',
+        waitingForHuman: true,
+        startedAt: null,
+        endedAt: null,
+        currentStepId: waitingStep,
+        tokens: null,
+        costUsd: null,
+        history: [{ step_id: waitingStep!, step_name: waitingStepName ?? undefined, status: 'paused', started_at: waitingSince ?? undefined }],
+        sharedState: {},
+        tasks: [],
+        humanPrompt,
+        humanFields,
+        humanContext: humanContext?.text ?? null,
+        humanContextKey: humanContext?.key ?? null,
+        error: null,
+    } : null;
+    const questionKey = `${runId ?? ''}:${questionSeq}`;
+    // In the step's setup card its header names the step; the dialog's top line does.
+    const approval = (inCard: boolean) => waitingRecord ? (
+        <ApprovalCard
+            key={questionKey}
+            run={waitingRecord}
+            showStep={!inCard}
+            onDone={() => { /* the canvas moves on with the run's own events */ }}
+            onCancel={cancelRun}
+            busy={false}
+            requireAnswer
+            submitOnEnter
+            draft={{ text: humanResponse, onText: setHumanResponse, values: humanValues, onValues: setHumanValues }}
+        />
+    ) : null;
+
+    // This workflow's runs, newest first: the poll's, and the wider read's while the list is open.
+    const workflowRuns = useMemo(() => {
+        if (!draft) return [];
+        const byId = new Map<string, RunSummary>();
+        for (const r of [...pastRuns, ...moreRuns]) {
+            if (r.orchestration_id === draft.id && !byId.has(r.run_id)) byId.set(r.run_id, r);
+        }
+        return [...byId.values()].sort((a, b) => (b.started_at ?? '').localeCompare(a.started_at ?? ''));
+    }, [draft, pastRuns, moreRuns]);
+    useEffect(() => {
+        if (runDrawer !== 'recent') return;
+        let live = true;
+        fetch('/api/orchestrations/runs?limit=100')
+            .then(r => (r.ok ? r.json() : []))
+            .then(rows => { if (live && Array.isArray(rows)) setMoreRuns(rows); })
+            .catch(() => { /* the poll's rows stand */ });
+        return () => { live = false; };
+    }, [runDrawer]);
+
+    // Last run on the steps: the run on the canvas — as it goes, then as its end
+    // records it — or, with none, the workflow's newest run, read once when the
+    // toggle is pressed (the read the run page and Recent Runs make).
+    const runOnCanvas = runStatus !== 'idle' && !!runId;
+    // Each step's spend as the run goes (CE1): the stream carries times, not money,
+    // so the record is read again a moment after the steps move — a call's row is
+    // written as its step closes — and once more when the run ends. The same read
+    // keeps what the steps wrote, for each step's result on the canvas (F902).
+    const [liveSpend, setLiveSpend] = useState<{ runId: string; stepUsage: RunRecord['stepUsage']; sharedState: Record<string, unknown> } | null>(null);
+    useEffect(() => {
+        if (!runOnCanvas || !runId || runHistory.length === 0) return;
+        let live = true;
+        const timer = window.setTimeout(async () => {
+            try {
+                const res = await fetch(`/api/orchestrations/runs/${encodeURIComponent(runId)}`);
+                if (!res.ok) return;
+                const data = await res.json();
+                if (live) {
+                    setLiveSpend({
+                        runId,
+                        stepUsage: data.step_usage && typeof data.step_usage === 'object' ? data.step_usage : undefined,
+                        sharedState: data.shared_state && typeof data.shared_state === 'object' ? data.shared_state : {},
+                    });
+                }
+            } catch { /* the times still show; the spend comes with the next read */ }
+        }, 2500);
+        return () => { live = false; window.clearTimeout(timer); };
+    }, [runOnCanvas, runId, runHistory, runStatus]);
+    const lastSteps = useMemo(() => {
+        if (!draft) return null;
+        if (runOnCanvas) {
+            return stepTimes({
+                status: runStatus,
+                waitingForHuman: runStatus === 'paused' && !!humanPrompt,
+                currentStepId: runStatus === 'paused' ? waitingStep : null,
+                history: runHistory,
+                stepUsage: liveSpend && liveSpend.runId === runId ? liveSpend.stepUsage : undefined,
+            }, draft);
+        }
+        return newestRun ? stepTimes(newestRun, draft) : null;
+    }, [draft, runOnCanvas, runStatus, humanPrompt, waitingStep, runHistory, newestRun, liveSpend, runId]);
+    // The run those come from, for each step's result (F902): the run on the canvas as far as it is read, or the newest.
+    const lastRecord = useMemo(() => {
+        if (runOnCanvas) {
+            const read = liveSpend && liveSpend.runId === runId ? liveSpend : null;
+            return { history: runHistory, sharedState: read?.sharedState ?? {}, stepUsage: read?.stepUsage };
+        }
+        return newestRun;
+    }, [runOnCanvas, liveSpend, runId, runHistory, newestRun]);
+    const lastRunId = runOnCanvas ? runId : newestRun?.id ?? null;
+    const showLastRun = async (on: boolean) => {
+        setLastRunShown(on);
+        if (!on || runOnCanvas || !draft) return;
+        const newest = workflowRuns[0];
+        if (!newest) {
+            setLastRunShown(false);
+            showToast('No recent run of this workflow — run it, or open one from Recent Runs.', 'warning');
+            return;
+        }
+        if (newestRun?.id === newest.run_id) return;
+        setNewestLoading(true);
+        try {
+            const res = await fetch(`/api/orchestrations/runs/${encodeURIComponent(newest.run_id)}`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            setNewestRun(ossRunRecord(await res.json(), draft, schedules));
+        } catch {
+            setLastRunShown(false);
+            showToast('The last run could not be read. Try again.', 'error');
+        } finally {
+            setNewestLoading(false);
+        }
+    };
+
+    // The run strip's Answer: the card on the step that asked, the question at
+    // its top and its first field ready — or, when that step is not on this
+    // canvas, the same card in a dialog.
+    const answerNow = () => {
+        if (waitingStep && draft?.steps.some(s => s.id === waitingStep)) {
+            setSelectedStepId(waitingStep);
+            window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+                const question = document.querySelector<HTMLElement>('[data-canvas-chrome="card"] section[aria-label="Waiting for a person"]');
+                question?.scrollIntoView({ block: 'start' });
+                question?.querySelector<HTMLElement>('textarea, input, select')?.focus();
+            }));
+        } else {
+            setAnswerDialog(true);
+        }
     };
 
     const resumeRun = async () => {
         if (!runId) return;
         setRunStatus('running');
-        setRunLog(prev => [...prev, '[Resuming from where run stopped...]']);
+        setRunDrawer('run');
+        setRunLog(prev => appendRunLog(prev, '[Resuming from where run stopped...]'));
         streamSSE(`/api/orchestrations/runs/${runId}/resume`, {});
     };
 
     // Keep a ref mirror of runId so async handlers read the live value.
     useEffect(() => { currentRunIdRef.current = runId; }, [runId]);
+
+    // Deep link (?id=<orchestration_id>): open it on the canvas, exactly as if
+    // its row had been clicked. `HowImBuilt` has been sending people here since
+    // it shipped — "duplicate the builder" ends with
+    // `window.location.href = /orchestrations?id=…` — and the page read only
+    // `?run=`, so the link landed on the list with nothing selected.
+    // A tab coming forward already holds its draft; a new one starts blank under its own id.
+    const initialOrchConsumedRef = useRef(!!tabs?.history);
+    useEffect(() => {
+        if (!initialOrchId || initialOrchConsumedRef.current) return;
+        if (tabs?.startNew) {
+            initialOrchConsumedRef.current = true;
+            createNew(initialOrchId);
+            return;
+        }
+        if (!listLoaded) return;
+        if (!orchestrations.some((o) => o.id === initialOrchId)) {
+            // A tab of a workflow deleted since: it has nothing to show.
+            if (tabs) tabs.gone();
+            return;
+        }
+        initialOrchConsumedRef.current = true;
+        selectOrchestration(initialOrchId);
+        // createNew is a plain function; the consumed ref keeps this one-shot.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [initialOrchId, orchestrations, listLoaded, selectOrchestration]);
 
     // Deep link (?run=<run_id>): once orchestrations are loaded, open that run
     // exactly as if it was clicked in the Active Runs banner.
@@ -1137,7 +1704,7 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
                     run_id: initialRunId,
                     orchestration_id: data.orchestration_id || '',
                     status: data.status || 'running',
-                });
+                }, { keepDraft: !!tabsRef.current?.history });
             } catch { /* ignore */ }
         })();
         // restoreRun is recreated when orchestrations load; the consumed ref
@@ -1164,15 +1731,76 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
         };
     }, []);
 
-    // Cleanup on unmount
+    // Cleanup on unmount. A tab going behind keeps its draft and the run it follows (TABS1 v2).
     useEffect(() => {
         return () => {
             abortRef.current?.abort();
+            tabsRef.current?.keep({
+                history: snapshot(), runId: currentRunIdRef.current, dirty: hasEditsRef.current, viewport: viewportRef.current,
+            });
         };
-    }, []);
+    }, [snapshot]);
 
-    const selectedStep = draft?.steps.find(s => s.id === selectedStepId) || null;
+    const runLive = runStatus === 'running' || runStatus === 'paused';
+    useEffect(() => {
+        tabsRef.current?.report({
+            title: draft?.name ?? '',
+            dirty: hasEdits,
+            running: runLive,
+            waiting: !!humanPrompt,
+            workflowId: draft?.id ?? null,
+        });
+    }, [draft?.name, draft?.id, hasEdits, runLive, humanPrompt]);
+
     const allStepIds = draft?.steps.map(s => ({ id: s.id, name: s.name })) || [];
+
+
+    // The builder's "this one" is whatever this screen is showing, for exactly
+    // as long as it is showing it — including across a client-side navigation,
+    // which leaves the panel open and used to leave the old answer with it.
+    const realOrchId = selectedOrchId && orchestrations.some(o => o.id === selectedOrchId)
+        ? selectedOrchId
+        : null;
+    // What a run will cost (CE1), following the draft as it is edited; past runs once it is saved.
+    const { estimate, busy: estimating, error: estimateError } = useRunEstimate(loadRunEstimate, draft, realOrchId);
+    useEffect(() => {
+        setCurrentOrchestration(realOrchId);
+        return () => setCurrentOrchestration(null);
+    }, [realOrchId, setCurrentOrchestration]);
+
+    // The address names what is open, so a reload or a shared link reopens it:
+    // `?id=` follows the orchestration on screen, and the list is bare
+    // `/orchestrations`. Duplicate opened the copy under the original's `?id=`,
+    // and a reload went back to the original (F198). A `?run=` link stays only
+    // while the orchestration it opened is still the one shown. Written with
+    // `history.replaceState`, which Next keeps in step, so nothing re-renders.
+    // Not before the page's tabs have read the address: the list's bare address
+    // went over a link's `?id=` first, and the link opened nothing (F1403).
+    const urlOrchRef = useRef<string | null>(null);
+    const addressRead = tabs?.addressRead !== false;
+    useEffect(() => {
+        if (!addressRead) return;
+        if (initialRunId && !initialRunConsumedRef.current) return;  // the run link is still to open
+        const url = new URL(window.location.href);
+        const run = url.searchParams.get('run');
+        const next = new URLSearchParams();
+        if (realOrchId) {
+            next.set('id', realOrchId);
+            if (run && urlOrchRef.current === null) next.set('run', run);
+        }
+        urlOrchRef.current = realOrchId;
+        const search = next.toString();
+        if (search === url.searchParams.toString()) return;
+        window.history.replaceState(null, '', `${url.pathname}${search ? `?${search}` : ''}`);
+    }, [realOrchId, initialRunId, addressRead]);
+
+    useBuilderShortcuts({
+        enabled: !!draft,
+        undo,
+        redo,
+        onDuplicate: duplicateSelectedStep,
+        onSave: () => void handleSave(),
+    });
 
     // --- Deploy as agent ---
     const handleDeploy = async () => {
@@ -1187,339 +1815,418 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
                 showToast(`Deploy failed: ${err.detail || 'Unknown error'}`, 'error');
             }
         } catch {
-            showToast('Failed to deploy orchestration as agent', 'error');
+            showToast('Failed to deploy the workflow as an agent', 'error');
         }
     };
 
-    return (
-        <div className="flex flex-col h-full relative">
-            {toast && <ToastNotification show={toast.show} message={toast.message} type={toast.type} />}
-            {/* Header */}
-            <div className="px-6 py-4 border-b border-zinc-800 shrink-0">
-                <h1 className="text-2xl font-bold text-zinc-100">Orchestrations</h1>
-                <p className="text-zinc-500 text-xs mt-0.5">Design multi-agent workflows with visual canvas</p>
-            </div>
+    // One row per workflow (M2k): its newest run from the poll, else from the list's read.
+    const workflowRows = useMemo(() => {
+        const newest = new Map<string, RunSummary>();
+        for (const r of [...pastRuns, ...listRuns]) {
+            if (!newest.has(r.orchestration_id)) newest.set(r.orchestration_id, r);
+        }
+        return orchestrations.map(o => {
+            const run = newest.get(o.id);
+            return workflowRow(o, run ? ossLastRun(run) : null, schedules);
+        });
+    }, [orchestrations, pastRuns, listRuns, schedules]);
 
-            {/* Toolbar: orchestration picker + actions */}
-            <div className="flex items-center gap-3 px-4 py-2.5 border-b border-zinc-800 shrink-0">
-                <div className="flex items-center gap-2 flex-1 min-w-0">
-                    {draft && (
-                        <button
-                            onClick={backToList}
-                            title="Back to all orchestrations and runs"
-                            className="flex items-center gap-1 px-2.5 py-1.5 text-xs text-zinc-400 hover:text-white border border-zinc-700 hover:border-white transition-colors shrink-0"
-                        >
-                            <ArrowLeft size={14} /> Back
-                        </button>
-                    )}
-                    <select
-                        className="bg-zinc-900 border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 outline-none max-w-[240px]"
-                        value={selectedOrchId || ''}
-                        onChange={(e) => selectOrchestration(e.target.value || null)}
-                    >
-                        <option value="">Select orchestration...</option>
-                        {orchestrations.map(o => (
-                            <option key={o.id} value={o.id}>{o.name}</option>
-                        ))}
-                    </select>
-                    <button
-                        onClick={createNew}
-                        className="flex items-center gap-1 px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white transition-colors"
-                    >
-                        <Plus size={14} /> New
-                    </button>
-                    <button
-                        onClick={() => { 
-                            if (!selectedOrchId) createNew(); 
-                            setBuilderOpen(true); 
-                            setBuilderSessionKey(k => k + 1); 
-                        }}
-                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-purple-600 hover:bg-purple-500 text-white transition-colors"
-                    >
-                        <Sparkles size={13} /> Build with AI
-                    </button>
-                </div>
+    const copyId = async (id: string) => {
+        try {
+            await navigator.clipboard.writeText(id);
+            showToast('ID copied.', 'success');
+        } catch {
+            showToast('Could not copy the ID', 'error');
+        }
+    };
 
-                {draft && (
-                    <div className="flex items-center gap-2 pr-6">
-                        <button
-                            onClick={handleSave}
-                            disabled={saving}
-                            className="flex items-center gap-1 px-3 py-1.5 text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-200 transition-colors disabled:opacity-50"
-                        >
-                            {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save
-                        </button>
-                        {runStatus === 'idle' || runStatus === 'completed' || runStatus === 'failed' || runStatus === 'cancelled' ? (
-                            <button
-                                onClick={startRun}
-                                className="flex items-center gap-1 px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 text-white transition-colors"
-                            >
-                                <Play size={14} /> Run
-                            </button>
-                        ) : (
-                            <button
-                                onClick={cancelRun}
-                                className="flex items-center gap-1 px-3 py-1.5 text-xs bg-red-600 hover:bg-red-500 text-white transition-colors"
-                            >
-                                <Square size={14} /> Cancel
-                            </button>
-                        )}
-                        <button
-                            onClick={handleDeploy}
-                            className="px-3 py-1.5 text-xs bg-purple-600 hover:bg-purple-500 text-white transition-colors"
-                        >
-                            Deploy as Agent
-                        </button>
-                        <button
-                            onClick={handleDuplicate}
-                            disabled={saving}
-                            className="flex items-center gap-1 px-3 py-1.5 text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-200 transition-colors disabled:opacity-50"
-                        >
-                            <Copy size={13} /> Duplicate
-                        </button>
-                        <div className="w-px h-5 bg-zinc-700 mx-1" />
-                        <button
-                            onClick={handleDelete}
-                            className="flex items-center gap-1 px-2 py-1.5 text-xs text-zinc-500 hover:text-red-400 hover:bg-red-900/20 transition-colors"
-                        >
-                            <Trash size={13} /> Delete
-                        </button>
-                    </div>
-                )}
-            </div>
+    const toastEl = toast && <ToastNotification show={toast.show} message={toast.message} type={toast.type} />;
+    const dialogs = (
+        <>
+            <ConfirmDialog
+                open={pendingLeave !== null}
+                onClose={() => setPendingLeave(null)}
+                onConfirm={() => {
+                    const go = pendingLeave;
+                    setPendingLeave(null);
+                    go?.();
+                }}
+                title="Discard unsaved changes?"
+                description={hasEdits || !tabs?.othersDirty
+                    ? <>Your changes to <strong>{draft?.name || 'this workflow'}</strong> have not been saved.</>
+                    : <>A workflow open in another tab has changes that have not been saved.</>}
+                confirmLabel="Discard changes"
+            />
 
-            {/* Active runs banner */}
-            {activeRuns.filter(r => r.run_id !== runId).length > 0 && (
-                <div className="px-4 py-2 border-b border-zinc-800 bg-zinc-900/60 shrink-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-xs text-zinc-500 flex items-center gap-1">
-                            <Radio size={11} className="text-blue-400 animate-pulse" /> Active runs:
-                        </span>
-                        {activeRuns.filter(r => r.run_id !== runId).map(run => {
-                            const orch = orchestrations.find(o => o.id === run.orchestration_id);
-                            return (
-                                <button
-                                    key={run.run_id}
-                                    onClick={() => restoreRun(run)}
-                                    className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 transition-colors"
-                                >
-                                    <span className={`w-1.5 h-1.5 rounded-full ${
-                                        run.status === 'running' ? 'bg-blue-400 animate-pulse' : 'bg-yellow-400'
-                                    }`} />
-                                    <span className="text-zinc-300">{orch?.name ?? run.orchestration_id}</span>
-                                    <span className="text-zinc-500">{run.status === 'paused' ? '· waiting for input' : '· running'}</span>
-                                </button>
-                            );
-                        })}
-                    </div>
-                </div>
-            )}
+            <ConfirmationModal
+                isOpen={!!confirmDeleteOrchId}
+                title="Delete workflow"
+                message="Are you sure you want to delete this workflow? This action cannot be undone."
+                onConfirm={() => {
+                    confirmDeleteOrchestration();
+                    setConfirmDeleteOrchId(null);
+                }}
+                onClose={() => setConfirmDeleteOrchId(null)}
+            />
 
-            {!draft ? (
-                /* ── Landing dashboard: tabbed tables ────────────────────── */
-                <div className="flex-1 overflow-y-auto modern-scrollbar">
-                    <div className="px-4 pb-8">
-                        {/* Tab bar */}
-                        <div className="flex items-end border-b border-white/5 mb-4">
-                            <div className="flex items-center">
-                                {([
-                                    { id: 'orchestrations', label: 'Orchestrations', count: orchestrations.length },
-                                    { id: 'active', label: 'Active', count: activeRuns.length },
-                                    { id: 'recent', label: 'Recent', count: null },
-                                    { id: 'all', label: 'All runs', count: null },
-                                ] as const).map(t => (
+            <SaveConflictDialog
+                problem={saveRefused?.open ? saveRefused.problem : null}
+                busy={saving}
+                onReload={() => void reloadTheirs()}
+                onKeepMine={() => saveRefused?.problem.kind === 'changed' && void handleSave({ seen: saveRefused.problem.at })}
+                onSaveAsNew={() => void handleSave({ seen: null })}
+                onDiscard={discardDeleted}
+                onClose={() => setRefused((r) => (r ? { ...r, open: false } : r))}
+            />
+
+            <ConfirmationModal
+                isOpen={builderSavedOrch !== null}
+                title="The builder changed this workflow"
+                message="You have unsaved edits open. Load the builder's version and lose them, or keep editing yours?"
+                confirmText="Load the builder's version"
+                onConfirm={() => {
+                    const orch = builderSavedOrch;
+                    setBuilderSavedOrch(null);
+                    if (orch) void loadSavedOrchestration(orch);
+                }}
+                onClose={() => setBuilderSavedOrch(null)}
+            />
+
+        </>
+    );
+
+    if (!draft) {
+        const others = activeRuns.filter(r => r.run_id !== runId);
+        const views = [
+            { id: 'orchestrations', label: 'Workflows', count: orchestrations.length, dot: null },
+            { id: 'active', label: 'Active', count: activeRuns.length, dot: 'bg-machine' },
+            { id: 'recent', label: 'Recent', count: null, dot: null },
+            { id: 'all', label: 'All runs', count: null, dot: null },
+        ] as const;
+        // The Workflows list (M2k): the hub's landing. The frame's header holds the
+        // page's actions; the run views M2b drew stay as pills beside the list.
+        return (
+            <AppScreen
+                id="orchestrations"
+                width="wide"
+                actions={
+                    <>
+                        {/* On a phone the two secondary actions are their icons, named; the row must fit 400 px. */}
+                        <LinkButton href="/templates" variant="secondary" aria-label="Templates" data-tour="workflows-templates">
+                            <LayoutTemplate className="size-4" aria-hidden /> <span className="hidden sm:inline">Templates</span>
+                        </LinkButton>
+                        <Button variant="secondary" onClick={() => openBuilder()} aria-label="Build with AI" data-tour="workflows-build">
+                            <Mark size={20} compact={false} className="-my-0.5" /> <span className="hidden sm:inline">Build with AI</span>
+                        </Button>
+                        <Button onClick={() => (tabs ? tabs.openNew() : createNew())} data-tour="workflows-new">
+                            <Plus className="size-4" aria-hidden /> New workflow
+                        </Button>
+                    </>
+                }
+            >
+                {toastEl}
+                <div className="grid gap-5">
+                    {tabs?.strip}
+                    {/* Runs that are live now, on any workflow: one click back onto its canvas. */}
+                    {others.length > 0 && (
+                        <div role="group" aria-label="Active runs" className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface px-3 py-2">
+                            <span className="flex items-center gap-1.5 text-xs text-text-faint">
+                                <Radio size={12} aria-hidden className="text-machine motion-safe:animate-pulse" /> Active runs:
+                            </span>
+                            {others.map(run => {
+                                const orch = orchestrations.find(o => o.id === run.orchestration_id);
+                                return (
                                     <button
-                                        key={t.id}
-                                        onClick={() => setLandingTab(t.id)}
-                                        className={`px-4 py-2.5 text-xs font-medium border-b -mb-px transition-colors ${
-                                            landingTab === t.id
-                                                ? 'text-zinc-100 border-zinc-100'
-                                                : 'text-zinc-500 border-transparent hover:text-zinc-300'
-                                        }`}
+                                        key={run.run_id}
+                                        type="button"
+                                        onClick={() => (tabs ? tabs.open(run.orchestration_id, run.run_id) : restoreRun(run))}
+                                        className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface-2 px-2.5 py-1 text-xs transition-colors hover:border-border-strong"
                                     >
-                                        {t.label}
-                                        {t.count !== null && t.count > 0 && (
-                                            <span className={`ml-1.5 px-1.5 py-0.5 text-[10px] ${
-                                                t.id === 'active'
-                                                    ? 'bg-blue-500/20 text-blue-300'
-                                                    : 'bg-white/5 text-zinc-400'
-                                            }`}>{t.count}</span>
-                                        )}
+                                        <span aria-hidden className={`size-1.5 rounded-full ${
+                                            run.status === 'running' ? 'bg-machine motion-safe:animate-pulse' : 'bg-person'
+                                        }`} />
+                                        <span className="text-text">{orch?.name ?? run.orchestration_id}</span>
+                                        <span className="text-text-faint">{run.status === 'paused' ? '· waiting for input' : '· running'}</span>
                                     </button>
-                                ))}
-                            </div>
+                                );
+                            })}
                         </div>
+                    )}
 
-                        {landingTab === 'orchestrations' && (
-                            <div className="border border-white/5 bg-zinc-900/60">
-                                <div className="overflow-x-auto">
-                                    <table className="w-full text-left border-collapse">
-                                        <thead>
-                                            <tr className="border-b border-white/5 bg-zinc-950/40">
-                                                <th className={thCls}>Name</th>
-                                                <th className={thCls}>Description</th>
-                                                <th className={`${thCls} text-right`}>Steps</th>
-                                                <th className={`${thCls} text-right`}>Last run</th>
-                                                <th className={thCls}></th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {orchestrations.length === 0 ? (
-                                                <tr>
-                                                    <td colSpan={5} className="px-4 py-10 text-center text-xs text-zinc-600 italic">
-                                                        No orchestrations yet — create one or build with AI.
-                                                    </td>
-                                                </tr>
-                                            ) : orchestrations.map(o => {
-                                                const lastRun = pastRuns.find(r => r.orchestration_id === o.id);
-                                                const lastMeta = lastRun ? runStatusMeta(lastRun) : null;
-                                                return (
-                                                    <tr
-                                                        key={o.id}
-                                                        onClick={() => selectOrchestration(o.id)}
-                                                        className="border-b border-white/3 last:border-b-0 hover:bg-white/2 cursor-pointer transition-colors group"
-                                                    >
-                                                        <td className={`${tdCls} text-zinc-200 font-medium whitespace-nowrap max-w-[240px]`}>
-                                                            <span className="block truncate">{o.name}</span>
-                                                        </td>
-                                                        <td className={`${tdCls} text-zinc-500 max-w-[380px]`}>
-                                                            <span className="block truncate">{o.description || '—'}</span>
-                                                        </td>
-                                                        <td className={`${tdCls} text-right text-zinc-400 whitespace-nowrap`}>
-                                                            {o.steps.length}
-                                                        </td>
-                                                        <td className={`${tdCls} text-right whitespace-nowrap`}>
-                                                            {lastRun && lastMeta ? (
-                                                                <span className="inline-flex items-center gap-1.5 justify-end">
-                                                                    <span className={`w-1.5 h-1.5 rounded-full ${lastMeta.dot}`} />
-                                                                    <span className="text-zinc-500">
-                                                                        {lastRun.started_at ? new Date(lastRun.started_at).toLocaleString() : lastMeta.label}
-                                                                    </span>
-                                                                </span>
-                                                            ) : <span className="text-zinc-600">never</span>}
-                                                        </td>
-                                                        <td className={`${tdCls} text-right whitespace-nowrap`}>
-                                                            <span className="text-[11px] text-zinc-600 group-hover:text-zinc-300 transition-colors">
-                                                                Open →
-                                                            </span>
-                                                        </td>
-                                                    </tr>
-                                                );
-                                            })}
-                                        </tbody>
-                                    </table>
-                                </div>
-                            </div>
-                        )}
-
-                        {landingTab === 'active' && renderRunsTable(
-                            activeRuns,
-                            'No active runs — start one from the Orchestrations tab.',
-                        )}
-
-                        {landingTab === 'recent' && renderRunsTable(
-                            pastRuns.filter(r => r.status !== 'running' && r.status !== 'paused').slice(0, 10),
-                            'No finished runs yet.',
-                        )}
-
-                        {landingTab === 'all' && renderRunsTable(
-                            allRuns.length > 0 ? allRuns : pastRuns,
-                            'No runs recorded yet.',
-                        )}
-                    </div>
-                </div>
-            ) : (
-                <div className="flex-1 flex flex-col min-h-0">
-                    {/* Name + description */}
-                    <div className="flex items-center gap-3 px-4 py-2 border-b border-zinc-800 shrink-0">
-                        <input
-                            className="bg-transparent border-b border-zinc-700 text-zinc-200 text-sm font-medium px-1 py-0.5 outline-none focus:border-blue-500 w-64"
-                            value={draft.name}
-                            onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-                            placeholder="Orchestration name"
-                        />
-                        <input
-                            className="bg-transparent border-b border-zinc-700 text-zinc-400 text-xs px-1 py-0.5 outline-none focus:border-blue-500 flex-1 mr-6"
-                            value={draft.description}
-                            onChange={(e) => setDraft({ ...draft, description: e.target.value })}
-                            placeholder="Description..."
-                        />
+                    {/* The list and its run views, as the runs list's pills (M2b). */}
+                    <div role="group" aria-label="Show" data-tour="workflows-views" className="-mx-1 flex items-center gap-1.5 overflow-x-auto px-1 py-0.5 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:p-0">
+                        {views.map(v => (
+                            <button
+                                key={v.id}
+                                type="button"
+                                aria-pressed={landingTab === v.id}
+                                onClick={() => { autoTabRef.current = true; setLandingTab(v.id); }}
+                                className={`inline-flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 text-[13px] font-medium transition-colors ${
+                                    landingTab === v.id
+                                        ? 'border-transparent bg-text text-bg'
+                                        : 'border-border text-text-muted hover:border-border-strong hover:text-text'
+                                }`}
+                            >
+                                {v.dot && v.count !== null && v.count > 0 && <span aria-hidden className={`size-2 rounded-full ${v.dot}`} />}
+                                {v.label}
+                                {v.count !== null && v.count > 0 && <span className="text-[11.5px] tabular-nums opacity-70">{v.count}</span>}
+                            </button>
+                        ))}
                     </div>
 
-                    {/* Step type toolbar */}
-                    <div className="flex items-center gap-1 px-4 py-2 border-b border-zinc-800 shrink-0">
-                        <span className="text-xs text-zinc-500 mr-2">Add step:</span>
-                        {(['llm', 'agent', 'tool', 'evaluator', 'parallel', 'merge', 'loop', 'human', 'transform', 'extract_json', 'if_else', 'switch', 'print', 'end'] as StepType[]).map(type => {
-                            const meta = STEP_TYPE_META[type];
-                            const Icon = STEP_ICONS[type];
-                            return (
-                                <button
-                                    key={type}
-                                    onClick={() => addStep(type)}
-                                    className="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors capitalize"
+                    {landingTab === 'orchestrations' && !listLoaded && (
+                        <div aria-busy="true" aria-label="Loading workflows" className="min-h-40" />
+                    )}
+
+                    {landingTab === 'orchestrations' && listLoaded && (
+                        <WorkflowList
+                            rows={workflowRows}
+                            runsKnown={listRunsKnown}
+                            onOpen={(row) => openWorkflow(row.id)}
+                            menu={(row) => {
+                                const orch = orchestrations.find(o => o.id === row.id);
+                                return (
+                                    <RowMenu label={`Actions for ${row.name}`}>
+                                        <MenuItem icon={Pencil} onSelect={() => openWorkflow(row.id)}>Open</MenuItem>
+                                        <MenuItem icon={Files} disabled={saving || !orch} onSelect={() => { if (orch) void duplicateOrchestration(orch, false); }}>Duplicate</MenuItem>
+                                        <MenuItem icon={Copy} onSelect={() => { void copyId(row.id); }}>Copy ID</MenuItem>
+                                        <MenuSeparator />
+                                        <MenuItem icon={Trash2} tone="danger" onSelect={() => setConfirmDeleteOrchId(row.id)}>Delete</MenuItem>
+                                    </RowMenu>
+                                );
+                            }}
+                            empty={
+                                <EmptyState
+                                    title="No workflows yet"
+                                    action={<LinkButton href="/templates" variant="secondary">Start from a template</LinkButton>}
                                 >
-                                    <Icon size={12} />
-                                    {meta.label}
-                                </button>
-                            );
-                        })}
-                    </div>
-
-                    {/* Main content: canvas + optional side panel */}
-                    <div className="flex-1 flex min-h-0">
-                        {/* Canvas */}
-                        <div className="flex-1 min-w-0">
-                            <ReactFlowProvider>
-                                <WorkflowCanvas
-                                    orchestration={draft}
-                                    agents={agents}
-                                    selectedStepId={selectedStepId}
-                                    onSelectStep={setSelectedStepId}
-                                    onUpdateOrchestration={updateOrchestration}
-                                    runStepStatuses={runStepStatuses}
-                                />
-                            </ReactFlowProvider>
-                        </div>
-
-                        {/* Step config panel */}
-                        {selectedStep && (
-                            <StepConfigPanel
-                                step={selectedStep}
-                                agents={agents}
-                                allStepIds={allStepIds}
-                                onUpdate={updateStep}
-                                onDelete={() => deleteStep(selectedStep.id)}
-                                onClose={() => setSelectedStepId(null)}
-                                isEntry={draft.entry_step_id === selectedStep.id}
-                                onSetEntry={() => setEntryPoint(selectedStep.id)}
-                                availableModels={availableModels}
-                            />
-                        )}
-                    </div>
-
-                    {/* Bottom panel: state schema + guardrails + run log */}
-                    <div className="border-t border-zinc-700 bg-zinc-900 shrink-0">
-                        <BottomPanel
-                            draft={draft}
-                            setDraft={setDraft}
-                            runStatus={runStatus}
-                            liveActivity={liveActivity}
-                            runLog={runLog}
-                            runInput={runInput}
-                            setRunInput={setRunInput}
-                            onStartRun={startRun}
-                            humanPrompt={humanPrompt}
-                            humanContext={humanContext}
-                            humanResponse={humanResponse}
-                            setHumanResponse={setHumanResponse}
-                            onSubmitHuman={submitHumanInput}
-                            onOpenResponseModal={setResponseModal}
-                            runId={runId}
-                            onResumeRun={resumeRun}
-                            pastRuns={pastRuns}
-                            onRestoreRun={restoreRun}
+                                    Describe one to Synapse AI, start from a template, or make a blank one and wire its steps on the canvas.
+                                </EmptyState>
+                            }
                         />
-                    </div>
+                    )}
+
+                    {landingTab === 'active' && (
+                        <RunList
+                            rows={activeRuns.map(r => ossRunRow(r, orchestrations, schedules))}
+                            workflows={orchestrations}
+                            filters={false}
+                            search={false}
+                            onOpen={openLandingRun}
+                            empty={<p className="px-2.5 py-10 text-center text-xs italic text-text-faint">No active runs — start one from the Workflows tab.</p>}
+                        />
+                    )}
+
+                    {landingTab === 'recent' && (
+                        <RunList
+                            rows={pastRuns.filter(r => !isLiveRun(r)).slice(0, 10).map(r => ossRunRow(r, orchestrations, schedules))}
+                            workflows={orchestrations}
+                            filters={false}
+                            search={false}
+                            onOpen={openLandingRun}
+                            empty={<p className="px-2.5 py-10 text-center text-xs italic text-text-faint">No finished runs yet.</p>}
+                        />
+                    )}
+
+                    {landingTab === 'all' && (
+                        <RunList
+                            rows={(allRuns.length > 0 ? allRuns : pastRuns).map(r => ossRunRow(r, orchestrations, schedules))}
+                            workflows={orchestrations}
+                            filters={false}
+                            search={false}
+                            onOpen={openLandingRun}
+                            empty={<p className="px-2.5 py-10 text-center text-xs italic text-text-faint">No runs recorded yet.</p>}
+                        />
+                    )}
+                </div>
+                {dialogs}
+            </AppScreen>
+        );
+    }
+
+    return (
+        <AppScreen id="orchestrations" bleed>
+        <div className="flex flex-col h-full relative">
+            {toastEl}
+            {tabs?.strip}
+                {/* The open canvas (Prototype 4, D204): the workflow fills the sheet and
+                    everything else floats over it. Every control of the old editor is
+                    here, moved (M3a's field map): the toolbar's into the bar and the
+                    dock, the panels' into the card's Workflow settings, the run log's
+                    into the run strip and drawer. */}
+                <div className="relative min-h-0 flex-1">
+                    <RunHostProvider value={runHost}>
+                        <EditorBoundary
+                            what={`“${draft.name || draft.id}”`}
+                            resetKey={draft.id}
+                            action={<Button size="sm" variant="secondary" onClick={() => (tabs ? tabs.showList() : guardLeave(backToList))}>Back to workflows</Button>}
+                        >
+                        <CanvasWorkbench
+                            orchestration={draft}
+                            shapeNotes={shapeNotes}
+                            onChange={updateOrchestration}
+                            agents={agents}
+                            workflowNames={workflowNames}
+                            knowledgeEnabled={knowledgeEnabled}
+                            selectedStepId={selectedStepId}
+                            onSelectStep={setSelectedStepId}
+                            renderStep={(step) => (
+                                <StepConfigPanel
+                                    frame="card"
+                                    step={step}
+                                    agents={agents}
+                                    allStepIds={allStepIds}
+                                    onUpdate={updateStep}
+                                    onDelete={() => deleteStep(step.id)}
+                                    onClose={() => setSelectedStepId(null)}
+                                    isEntry={draft.entry_step_id === step.id}
+                                    onSetEntry={() => setEntryPoint(step.id)}
+                                    availableModels={availableModels}
+                                    orchestration={draft}
+                                    knowledgeEnabled={knowledgeEnabled}
+                                    knowledgeBases={knowledgeBases}
+                                    workflows={workflowOptions}
+                                    browserSessions={usesBrowser ? { sessions: siteSessions, libraryHref: OSS_SESSIONS_HOST.libraryHref } : undefined}
+                                    browserRecordings={browserSteps ? browserRecordings : undefined}
+                                    semanticCacheNote={semanticCacheNote}
+                                    lead={step.id === waitingStep ? approval(true) : undefined}
+                                />
+                            )}
+                            settingsAtOpen={!!openSettings && draft.id === initialOrchId}
+                            board={boardWorkflowId && boardCount !== null ? {
+                                count: boardCount,
+                                render: (close) => (
+                                    <OssBoardsHost><BoardPanel workflowId={boardWorkflowId} name={draft.name} onClose={close} /></OssBoardsHost>
+                                ),
+                            } : undefined}
+                            renderSettings={(close) => (
+                                <WorkflowSettingsPanel name={draft.name} onClose={close}>
+                                    <SettingsSection title="Description">
+                                        <DescriptionField draft={draft} onChange={setDraft} />
+                                    </SettingsSection>
+                                    <SettingsSection title="Schedules">
+                                        <SchedulesList schedules={schedules} workflowId={draft.id} href="/schedules" />
+                                    </SettingsSection>
+                                    {/* Its own heading and Add key, as in the State Schema tab. */}
+                                    <StateSchemaEditor
+                                        schema={draft.state_schema}
+                                        onChange={(schema) => setDraft({ ...draft, state_schema: schema })}
+                                    />
+                                    <SettingsSection title="Cost per run">
+                                        <EstimateLine estimate={estimate} busy={estimating} error={estimateError} className="text-sm" />
+                                        {/* Self-hosted has no credits: its cap is in model dollars (CAP1). */}
+                                        <RunCapFields draft={draft} onChange={setDraft} units={OSS_CAP_UNITS} estimate={estimate} />
+                                    </SettingsSection>
+                                    <SettingsSection title="Guardrails">
+                                        <GuardrailsFields draft={draft} onChange={setDraft} rubrics={rubrics} />
+                                    </SettingsSection>
+                                    <SettingsSection title="MCP clients">
+                                        <McpOfferField draft={draft} onChange={setDraft} />
+                                    </SettingsSection>
+                                </WorkflowSettingsPanel>
+                            )}
+                            stepActions={{
+                                duplicate: duplicateStep,
+                                setEntry: setEntryPoint,
+                                remove: deleteStep,
+                            }}
+                            history={{ undo, redo, canUndo, canRedo }}
+                            viewport={tabs?.viewport}
+                            onViewport={(v) => { viewportRef.current = v; }}
+                            save={{ dirty, saving, onSave: () => void handleSave(), problem: problemLabel(saveRefused?.problem ?? null) }}
+                            onBack={() => (tabs ? tabs.showList() : guardLeave(backToList))}
+                            switcher={
+                                <Combobox
+                                    trigger="icon"
+                                    value={selectedOrchId || undefined}
+                                    onChange={(id: string) => (tabs
+                                        ? (id && tabs.open(id))
+                                        : guardLeave(() => selectOrchestration(id || null)))}
+                                    placeholder="Select workflow…"
+                                    searchPlaceholder="Search workflows…"
+                                    aria-label="Workflow"
+                                    size="sm"
+                                    options={orchestrations.map(o => ({ value: o.id, label: o.name }))}
+                                />
+                            }
+                            menu={[
+                                { id: 'new', label: 'New workflow', icon: Plus, onSelect: () => (tabs ? tabs.openNew() : guardLeave(() => createNew())), separatorBefore: true },
+                                { id: 'deploy', label: 'Deploy as Agent', icon: Bot, onSelect: handleDeploy },
+                                { id: 'duplicate', label: 'Duplicate', icon: Copy, onSelect: handleDuplicate, disabled: saving },
+                                { id: 'delete', label: 'Delete', icon: Trash, onSelect: handleDelete, danger: true, separatorBefore: true },
+                            ]}
+                            onChangeWithAI={() => openBuilder({ currentOrchestrationId: realOrchId })}
+                            insetRight={builderInset}
+                            run={{
+                                phase: runStatus,
+                                stepStatuses: runStepStatuses,
+                                stepErrors: runStepErrors,
+                                onRun: startRun,
+                                onStop: cancelRun,
+                                input: {
+                                    value: runInput,
+                                    onChange: setRunInput,
+                                    estimate: <EstimateLine estimate={estimate} busy={estimating} error={estimateError} compact cap={draft} capUnits={OSS_CAP_UNITS} />,
+                                },
+                                runKey,
+                                trail,
+                                replaying,
+                                waitingStepId: asking && !replaying ? waitingStep : null,
+                                questionKey,
+                            }}
+                            lastRun={{
+                                steps: lastSteps,
+                                shown: lastRunShown,
+                                onShow: (on) => { void showLastRun(on); },
+                                loading: newestLoading,
+                                record: lastRecord,
+                                runHref: lastRunId ? `/runs/${encodeURIComponent(lastRunId)}` : null,
+                            }}
+                            runStrip={
+                                <RunStrip
+                                    runStatus={runStatus}
+                                    liveActivity={runLog.liveActivity}
+                                    runId={runId}
+                                    humanPrompt={humanPrompt}
+                                    onAnswer={answerNow}
+                                    onResumeRun={resumeRun}
+                                    drawer={runDrawer}
+                                    onDrawer={setRunDrawer}
+                                    pastRunCount={workflowRuns.length}
+                                    activeRuns={activeRuns.filter(r => r.run_id !== runId)}
+                                    workflowName={(id) => orchestrations.find(o => o.id === id)?.name ?? id}
+                                    onRestoreRun={(run) => guardLeave(() => restoreRun(run))}
+                                />
+                            }
+                            runDrawer={runDrawer ? {
+                                open: true,
+                                content: (
+                                    <RunDrawer
+                                        view={runDrawer}
+                                        onClose={() => setRunDrawer(null)}
+                                        runStatus={runStatus}
+                                        log={runLog}
+                                        onOpenResponseModal={setResponseModal}
+                                        runId={runId}
+                                        humanPrompt={humanPrompt}
+                                        orchestrationNames={Object.fromEntries(orchestrations.map(o => [o.id, o.name]))}
+                                        pastRuns={workflowRuns}
+                                        onRestoreRun={(run) => guardLeave(() => restoreRun(run))}
+                                    />
+                                ),
+                            } : undefined}
+                        />
+                        </EditorBoundary>
+
+                        <Modal
+                            open={answerDialog && !!waitingRecord}
+                            onClose={() => setAnswerDialog(false)}
+                            title="Human input required"
+                            size="lg"
+                        >
+                            {approval(false)}
+                        </Modal>
+                    </RunHostProvider>
 
                     {/* Response detail modal */}
                     {responseModal && (
@@ -1531,585 +2238,8 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
                         />
                     )}
                 </div>
-            )}
-
-            <ConfirmationModal
-                isOpen={!!confirmDeleteOrchId}
-                title="Delete Orchestration"
-                message="Are you sure you want to delete this orchestration? This action cannot be undone."
-                onConfirm={() => {
-                    confirmDeleteOrchestration();
-                    setConfirmDeleteOrchId(null);
-                }}
-                onClose={() => setConfirmDeleteOrchId(null)}
-            />
-
-            <BuilderPanel
-                isOpen={builderOpen}
-                onClose={() => setBuilderOpen(false)}
-                agents={agents}
-                availableModels={availableModels}
-                currentOrchestrationId={
-                    // Only pass a real saved orchestration ID — not the temp frontend draft ID
-                    selectedOrchId && orchestrations.some(o => o.id === selectedOrchId)
-                        ? selectedOrchId
-                        : null
-                }
-                sessionKey={builderSessionKey}
-                onOrchestrationSaved={async (orch) => {
-                    // Immediately update with the event data so user sees it
-                    setOrchestrations((prev) => {
-                        const idx = prev.findIndex((o) => o.id === orch.id);
-                        return idx >= 0
-                            ? prev.map((o) => (o.id === orch.id ? orch : o))
-                            : [...prev, orch];
-                    });
-                    setDraft(orch);
-                    setSelectedOrchId(orch.id);
-
-                    // Re-fetch the full orchestration from backend to get the
-                    // canonical version with all steps properly resolved
-                    try {
-                        const res = await fetch('/api/orchestrations');
-                        if (res.ok) {
-                            const all = await res.json();
-                            const freshList = Array.isArray(all)
-                                ? all.filter((o: any) => o.id !== 'orch_native_builder')
-                                : [];
-                            setOrchestrations(freshList);
-                            const fresh = freshList.find((o: any) => o.id === orch.id);
-                            if (fresh) {
-                                setDraft(fresh);
-                            }
-                        }
-                    } catch { /* use event data as fallback */ }
-                }}
-                onAgentSaved={(agent) => {
-                    setAgents((prev) => {
-                        const idx = prev.findIndex((a) => a.id === agent.id);
-                        return idx >= 0
-                            ? prev.map((a) => (a.id === agent.id ? agent : a))
-                            : [...prev, agent];
-                    });
-                }}
-            />
+            {dialogs}
         </div>
-    );
-}
-
-// --- Response detail modal ---
-function ResponseModal({ stepName, stepType, content, onClose }: { stepName: string; stepType?: string; content: string; onClose: () => void }) {
-    // Try to pretty-print JSON for extract_json steps
-    const isJson = stepType === 'extract_json';
-    let formattedJson = content;
-    let jsonParseOk = false;
-    if (isJson) {
-        try {
-            const parsed = JSON.parse(content);
-            formattedJson = JSON.stringify(parsed, null, 2);
-            jsonParseOk = true;
-        } catch {
-            // content may already be pretty or non-JSON — just display as-is
-            formattedJson = content;
-        }
-    }
-    const [copied, setCopied] = useState(false);
-    useEffect(() => {
-        const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-        document.addEventListener('keydown', handler);
-        return () => document.removeEventListener('keydown', handler);
-    }, [onClose]);
-
-    return createPortal(
-        <div
-            className="fixed inset-0 z-[9999] flex items-center justify-center p-4"
-            onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-        >
-            {/* Backdrop */}
-            <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
-            {/* Panel */}
-            <div className="relative z-10 w-full max-w-3xl max-h-[80vh] flex flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl">
-                {/* Header */}
-                <div className="flex items-center justify-between px-5 py-3 border-b border-zinc-700 shrink-0">
-                    <div className="flex items-center gap-2">
-                        <Bot size={14} className="text-blue-400" />
-                        <span className="text-sm font-semibold text-zinc-100">{stepName}</span>
-                        <span className="text-xs text-zinc-500">— full response</span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                        <button
-                            onClick={() => { navigator.clipboard.writeText(isJson ? formattedJson : content); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
-                            className="text-zinc-400 hover:text-zinc-100 transition-colors p-1 rounded hover:bg-zinc-700"
-                            title="Copy to clipboard"
-                        >
-                            {copied ? <Check size={15} className="text-green-400" /> : <Copy size={15} />}
-                        </button>
-                        <button onClick={onClose} className="text-zinc-400 hover:text-zinc-100 transition-colors p-1 rounded hover:bg-zinc-700">
-                            <X size={15} />
-                        </button>
-                    </div>
-                </div>
-                {/* Content */}
-                <div className="flex-1 overflow-y-auto p-5">
-                    {isJson ? (
-                        /* Pretty-printed JSON with basic syntax colouring */
-                        <pre className="text-xs font-mono leading-relaxed whitespace-pre-wrap break-all rounded-lg bg-zinc-800/70 border border-zinc-700/50 p-4 overflow-x-auto">
-                            {(jsonParseOk ? formattedJson : content)
-                                .split('\n')
-                                .map((line, i) => {
-                                    /* Colour keys orange, strings lime, numbers/booleans/null cyan */
-                                    const coloured = line
-                                        .replace(/("(?:[^"\\]|\\.)*")(\s*:)/g, '<span class="text-orange-300">$1</span><span class="text-zinc-400">$2</span>')
-                                        .replace(/:\s*("(?:[^"\\]|\\.)*")/g, ': <span class="text-lime-300">$1</span>')
-                                        .replace(/:\s*(\d+\.?\d*)/g, ': <span class="text-cyan-300">$1</span>')
-                                        .replace(/:\s*(true|false|null)\b/g, ': <span class="text-cyan-400">$1</span>');
-                                    return (
-                                        <span key={i} dangerouslySetInnerHTML={{ __html: coloured + '\n' }} />
-                                    );
-                                })}
-                        </pre>
-                    ) : (
-                    <div className="prose prose-sm prose-invert max-w-none text-zinc-300 text-sm leading-relaxed">
-                        <ReactMarkdown
-                            remarkPlugins={[remarkGfm]}
-                            components={{
-                                p: ({ children }) => <p className="mb-3 last:mb-0">{children}</p>,
-                                h1: ({ children }) => <h1 className="text-lg font-bold text-zinc-100 mb-2 mt-4 first:mt-0">{children}</h1>,
-                                h2: ({ children }) => <h2 className="text-base font-semibold text-zinc-100 mb-2 mt-3">{children}</h2>,
-                                h3: ({ children }) => <h3 className="text-sm font-semibold text-zinc-200 mb-1 mt-2">{children}</h3>,
-                                ul: ({ children }) => <ul className="list-disc pl-5 mb-3 space-y-1">{children}</ul>,
-                                ol: ({ children }) => <ol className="list-decimal pl-5 mb-3 space-y-1">{children}</ol>,
-                                li: ({ children }) => <li className="text-zinc-300">{children}</li>,
-                                code: ({ children, className }) => {
-                                    const isBlock = className?.includes('language-');
-                                    return isBlock
-                                        ? <code className={`block bg-zinc-800 rounded px-3 py-2 text-xs font-mono text-zinc-200 overflow-x-auto ${className}`}>{children}</code>
-                                        : <code className="bg-zinc-800 px-1.5 py-0.5 rounded text-xs font-mono text-emerald-300">{children}</code>;
-                                },
-                                pre: ({ children }) => <pre className="bg-zinc-800/60 rounded-lg p-3 mb-3 overflow-x-auto border border-zinc-700/50">{children}</pre>,
-                                blockquote: ({ children }) => <blockquote className="border-l-2 border-zinc-600 pl-3 text-zinc-400 italic">{children}</blockquote>,
-                                a: ({ href, children }) => <a href={href} className="text-blue-400 underline hover:text-blue-300" target="_blank" rel="noreferrer">{children}</a>,
-                                strong: ({ children }) => <strong className="font-semibold text-zinc-100">{children}</strong>,
-                                em: ({ children }) => <em className="italic text-zinc-300">{children}</em>,
-                                hr: () => <hr className="border-zinc-700 my-4" />,
-                                table: ({ children }) => <table className="w-full text-xs border-collapse mb-3">{children}</table>,
-                                th: ({ children }) => <th className="border border-zinc-700 px-2 py-1 text-zinc-200 font-semibold bg-zinc-800">{children}</th>,
-                                td: ({ children }) => <td className="border border-zinc-700 px-2 py-1 text-zinc-300">{children}</td>,
-                            }}
-                        >
-                            {content}
-                        </ReactMarkdown>
-                    </div>
-                    )}
-                </div>
-            </div>
-        </div>,
-        document.body
-    );
-}
-
-// --- Bottom panel with collapsible sections ---
-function BottomPanel({
-    draft, setDraft, runStatus, liveActivity, runLog, runInput, setRunInput, onStartRun,
-    humanPrompt, humanContext, humanResponse, setHumanResponse, onSubmitHuman, onOpenResponseModal,
-    runId, onResumeRun, pastRuns, onRestoreRun,
-}: {
-    draft: Orchestration;
-    setDraft: (o: Orchestration) => void;
-    runStatus: string;
-    liveActivity: string | null;
-    runLog: LogEntry[];
-    runInput: string;
-    setRunInput: (v: string) => void;
-    onStartRun: () => void;
-    humanPrompt: string | null;
-    humanContext: string | null;
-    humanResponse: string;
-    setHumanResponse: (v: string) => void;
-    onSubmitHuman: () => void;
-    onOpenResponseModal: (entry: { step_name: string; step_type?: string; content: string }) => void;
-    runId: string | null;
-    onResumeRun: () => void;
-    pastRuns: { run_id: string; orchestration_id: string; status: string; started_at?: string | null; ended_at?: string | null }[];
-    onRestoreRun: (run: { run_id: string; orchestration_id: string; status: string }) => void;
-}) {
-    const [activeSection, setActiveSection] = useState<'state' | 'guardrails' | 'run' | 'recent'>('run');
-    const [panelHeight, setPanelHeight] = useState(280);
-    const [humanContextHeight, setHumanContextHeight] = useState(200);
-    const logRef = useRef<HTMLDivElement>(null);
-    const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
-    const contextDragRef = useRef<{ startY: number; startHeight: number } | null>(null);
-
-    const onDragHandleMouseDown = useCallback((e: React.MouseEvent) => {
-        e.preventDefault();
-        dragRef.current = { startY: e.clientY, startHeight: panelHeight };
-        const onMouseMove = (ev: MouseEvent) => {
-            if (!dragRef.current) return;
-            const delta = dragRef.current.startY - ev.clientY;
-            const newHeight = Math.max(120, Math.min(700, dragRef.current.startHeight + delta));
-            setPanelHeight(newHeight);
-        };
-        const onMouseUp = () => {
-            dragRef.current = null;
-            document.removeEventListener('mousemove', onMouseMove);
-            document.removeEventListener('mouseup', onMouseUp);
-        };
-        document.addEventListener('mousemove', onMouseMove);
-        document.addEventListener('mouseup', onMouseUp);
-    }, [panelHeight]);
-
-    const onContextDragMouseDown = useCallback((e: React.MouseEvent) => {
-        e.preventDefault();
-        contextDragRef.current = { startY: e.clientY, startHeight: humanContextHeight };
-        const onMouseMove = (ev: MouseEvent) => {
-            if (!contextDragRef.current) return;
-            const delta = ev.clientY - contextDragRef.current.startY;
-            const newHeight = Math.max(80, Math.min(500, contextDragRef.current.startHeight + delta));
-            setHumanContextHeight(newHeight);
-        };
-        const onMouseUp = () => {
-            contextDragRef.current = null;
-            document.removeEventListener('mousemove', onMouseMove);
-            document.removeEventListener('mouseup', onMouseUp);
-        };
-        document.addEventListener('mousemove', onMouseMove);
-        document.addEventListener('mouseup', onMouseUp);
-    }, [humanContextHeight]);
-
-    useEffect(() => {
-        if (logRef.current) {
-            logRef.current.scrollTop = logRef.current.scrollHeight;
-        }
-    }, [runLog]);
-
-    return (
-        <div style={{ height: panelHeight }} className="flex flex-col">
-            {/* Drag handle */}
-            <div
-                onMouseDown={onDragHandleMouseDown}
-                className="h-1.5 w-full cursor-row-resize bg-zinc-800 hover:bg-blue-500/40 transition-colors flex-shrink-0 group flex items-center justify-center"
-            >
-                <div className="w-8 h-0.5 rounded bg-zinc-600 group-hover:bg-blue-400 transition-colors" />
-            </div>
-            {/* Section tabs */}
-            <div className="flex border-b border-zinc-800 flex-shrink-0">
-                {(['state', 'guardrails', 'run'] as const).map(section => (
-                    <button
-                        key={section}
-                        onClick={() => setActiveSection(section)}
-                        className={`px-4 py-2 text-xs font-medium capitalize transition-colors ${
-                            activeSection === section
-                                ? 'text-blue-400 border-b-2 border-blue-400'
-                                : 'text-zinc-500 hover:text-zinc-300'
-                        }`}
-                    >
-                        {section === 'state' ? 'State Schema' : section === 'guardrails' ? 'Guardrails' : 'Run Log'}
-                        {section === 'run' && runStatus !== 'idle' && (
-                            <span className={`ml-2 inline-block w-2 h-2 rounded-full ${
-                                runStatus === 'running' ? 'bg-blue-400 animate-pulse' :
-                                runStatus === 'completed' ? 'bg-green-400' :
-                                runStatus === 'paused' ? 'bg-yellow-400' :
-                                runStatus === 'cancelled' ? 'bg-zinc-500' : 'bg-red-400'
-                            }`} />
-                        )}
-                    </button>
-                ))}
-                <button
-                    onClick={() => setActiveSection('recent')}
-                    className={`px-4 py-2 text-xs font-medium transition-colors ${
-                        activeSection === 'recent'
-                            ? 'text-blue-400 border-b-2 border-blue-400'
-                            : 'text-zinc-500 hover:text-zinc-300'
-                    }`}
-                >
-                    Recent Runs
-                    {pastRuns.length > 0 && (
-                        <span className="ml-1.5 text-[10px] bg-zinc-700 text-zinc-400 rounded-full px-1.5 py-0.5">
-                            {pastRuns.length}
-                        </span>
-                    )}
-                </button>
-            </div>
-
-            <div className="p-4 flex-1 overflow-y-auto min-h-0">
-                {/* State Schema */}
-                {activeSection === 'state' && (
-                    <StateSchemaEditor
-                        schema={draft.state_schema}
-                        onChange={(schema) => setDraft({ ...draft, state_schema: schema })}
-                    />
-                )}
-
-                {/* Guardrails */}
-                {activeSection === 'guardrails' && (
-                    <div className="grid grid-cols-3 gap-4">
-                        <div>
-                            <label className="text-xs text-zinc-400 block mb-1">Max Total Turns</label>
-                            <input
-                                type="number"
-                                className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-1.5 text-sm text-zinc-200 outline-none"
-                                value={draft.max_total_turns}
-                                onChange={(e) => setDraft({ ...draft, max_total_turns: parseInt(e.target.value) || 100 })}
-                            />
-                        </div>
-                        <div>
-                            <label className="text-xs text-zinc-400 block mb-1">Timeout (minutes)</label>
-                            <input
-                                type="number"
-                                className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-1.5 text-sm text-zinc-200 outline-none"
-                                value={draft.timeout_minutes}
-                                onChange={(e) => setDraft({ ...draft, timeout_minutes: parseInt(e.target.value) || 30 })}
-                            />
-                        </div>
-                        <div>
-                            <label className="text-xs text-zinc-400 block mb-1">Max Cost (USD)</label>
-                            <input
-                                type="number"
-                                step="0.01"
-                                className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-1.5 text-sm text-zinc-200 outline-none"
-                                value={draft.max_total_cost_usd ?? ''}
-                                onChange={(e) => setDraft({ ...draft, max_total_cost_usd: e.target.value ? parseFloat(e.target.value) : null })}
-                                placeholder="No limit"
-                            />
-                        </div>
-                    </div>
-                )}
-
-                {/* Recent Runs */}
-                {activeSection === 'recent' && (
-                    <div className="space-y-1">
-                        {pastRuns.length === 0 ? (
-                            <div className="text-zinc-600 italic text-xs">No runs yet.</div>
-                        ) : (
-                            pastRuns.slice(0, 20).map(r => (
-                                <div key={r.run_id} className="flex items-center gap-2 text-[11px] py-1 px-2 rounded bg-zinc-800/50">
-                                    <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                                        r.status === 'completed' ? 'bg-green-400' :
-                                        r.status === 'failed'    ? 'bg-red-400' :
-                                        r.status === 'cancelled' ? 'bg-zinc-500' :
-                                        r.status === 'paused'    ? 'bg-yellow-400' : 'bg-blue-400 animate-pulse'
-                                    }`} />
-                                    <span className="text-zinc-400 truncate flex-1" title={r.run_id}>{r.run_id}</span>
-                                    <span className="text-zinc-500 capitalize">{r.status}</span>
-                                    {r.started_at && (
-                                        <span className="text-zinc-600 text-[10px]">
-                                            {new Date(r.started_at).toLocaleTimeString()}
-                                        </span>
-                                    )}
-                                    {(r.status === 'failed' || r.status === 'cancelled') && (
-                                        <button
-                                            onClick={() => { onRestoreRun(r); setActiveSection('run'); }}
-                                            className="px-2 py-0.5 text-[10px] bg-orange-600 hover:bg-orange-500 text-white rounded"
-                                        >
-                                            Resume
-                                        </button>
-                                    )}
-                                </div>
-                            ))
-                        )}
-                    </div>
-                )}
-
-                {/* Run Log */}
-                {activeSection === 'run' && (
-                    <div className="space-y-2">
-                        {/* Input bar */}
-                        {(runStatus === 'idle' || runStatus === 'completed' || runStatus === 'failed' || runStatus === 'cancelled') && (
-                            <div className="flex gap-2">
-                                <input
-                                    className="flex-1 bg-zinc-800 border border-zinc-700 rounded px-3 py-1.5 text-xs text-zinc-200 outline-none"
-                                    value={runInput}
-                                    onChange={(e) => setRunInput(e.target.value)}
-                                    placeholder="Initial input for the orchestration..."
-                                    onKeyDown={(e) => { if (e.key === 'Enter') onStartRun(); }}
-                                />
-                                {(runStatus === 'failed' || runStatus === 'cancelled') && runId && (
-                                    <button
-                                        onClick={onResumeRun}
-                                        className="px-3 py-1.5 text-xs bg-orange-600 hover:bg-orange-500 text-white rounded whitespace-nowrap"
-                                    >
-                                        Resume from failure
-                                    </button>
-                                )}
-                            </div>
-                        )}
-
-                        {/* Human input prompt */}
-                        {humanPrompt && (
-                            <div className="bg-amber-900/20 border border-amber-700/50 rounded p-3 space-y-2">
-                                {humanContext && (
-                                    <div>
-                                        <div
-                                            className="text-xs text-zinc-300 bg-zinc-800/60 rounded-t p-2 overflow-y-auto border border-zinc-700/50 border-b-0"
-                                            style={{ height: humanContextHeight }}
-                                        >
-                                            <ReactMarkdown
-                                                remarkPlugins={[remarkGfm]}
-                                                components={{
-                                                    p: ({ children }) => <p className="mb-1 last:mb-0">{children}</p>,
-                                                    a: ({ href, children }) => <a href={href} className="text-blue-400 underline" target="_blank" rel="noreferrer">{children}</a>,
-                                                    code: ({ children }) => <code className="bg-zinc-700 px-1 rounded">{children}</code>,
-                                                    strong: ({ children }) => <strong className="font-semibold text-zinc-100">{children}</strong>,
-                                                }}
-                                            >{humanContext}</ReactMarkdown>
-                                        </div>
-                                        <div
-                                            onMouseDown={onContextDragMouseDown}
-                                            className="h-1.5 w-full cursor-row-resize bg-zinc-700/60 hover:bg-blue-500/40 transition-colors rounded-b border border-zinc-700/50 flex items-center justify-center group"
-                                        >
-                                            <div className="w-8 h-0.5 rounded bg-zinc-600 group-hover:bg-blue-400 transition-colors" />
-                                        </div>
-                                    </div>
-                                )}
-                                <div className="text-xs text-amber-300">
-                                    <ReactMarkdown
-                                        remarkPlugins={[remarkGfm]}
-                                        components={{
-                                            p: ({ children }) => <p className="mb-0">{children}</p>,
-                                            a: ({ href, children }) => <a href={href} className="text-amber-200 underline" target="_blank" rel="noreferrer">{children}</a>,
-                                            strong: ({ children }) => <strong className="font-semibold text-amber-200">{children}</strong>,
-                                        }}
-                                    >{humanPrompt}</ReactMarkdown>
-                                </div>
-                                <div className="flex gap-2">
-                                    <input
-                                        className="flex-1 bg-zinc-800 border border-zinc-700 rounded px-3 py-1.5 text-xs text-zinc-200 outline-none"
-                                        value={humanResponse}
-                                        onChange={(e) => setHumanResponse(e.target.value)}
-                                        placeholder="Your response..."
-                                        onKeyDown={(e) => { if (e.key === 'Enter') onSubmitHuman(); }}
-                                    />
-                                    <button
-                                        onClick={onSubmitHuman}
-                                        className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded"
-                                    >
-                                        Submit
-                                    </button>
-                                </div>
-                            </div>
-                        )}
-
-                        {/* Live activity: what the model is doing right now */}
-                        {runStatus === 'running' && liveActivity && (
-                            <div className="flex items-center gap-2 text-[11px] text-sky-300/90 bg-sky-950/30 border border-sky-900/40 rounded px-2.5 py-1.5">
-                                <Loader2 size={11} className="animate-spin shrink-0" />
-                                <span className="truncate">{liveActivity}</span>
-                            </div>
-                        )}
-
-                        {/* Log output */}
-                        <div ref={logRef} className="font-mono text-[11px] text-zinc-400 space-y-0.5">
-                            {runLog.length === 0 ? (
-                                <div className="text-zinc-600 italic">No run output yet. Click Run to start.</div>
-                            ) : (
-                                runLog.map((entry, i) => {
-                                    if (typeof entry !== 'string') {
-                                        if (entry.kind === 'tool_call') {
-                                            return (
-                                                <div key={i} className="text-violet-400 pl-2">
-                                                    <details>
-                                                        <summary className="cursor-pointer list-none">
-                                                            🔧 {entry.tool_name}
-                                                            {entry.step_name && <span className="text-zinc-500 text-[10px]"> · {entry.step_name}</span>}
-                                                        </summary>
-                                                        <pre className="bg-zinc-800/50 p-1 rounded mt-0.5 text-[10px] text-zinc-300 overflow-x-auto whitespace-pre-wrap">
-                                                            {JSON.stringify(entry.args, null, 2)}
-                                                        </pre>
-                                                    </details>
-                                                </div>
-                                            );
-                                        }
-                                        if (entry.kind === 'tool_result') {
-                                            return (
-                                                <div key={i} className="text-zinc-500 pl-4 text-[10px]">
-                                                    ↳ {entry.preview.slice(0, 200)}{entry.preview.length > 200 ? '…' : ''}
-                                                </div>
-                                            );
-                                        }
-                                        if (entry.kind === 'step_result') {
-                                            const preview = entry.content.slice(0, 200).replace(/\n+/g, ' ').trim();
-                                            const isTruncated = entry.content.length > 200;
-                                            const isAgent = entry.step_type === 'agent';
-                                            const isPrint = entry.step_type === 'print';
-                                            const isExtractJson = entry.step_type === 'extract_json';
-                                            const dotColor = isAgent ? 'bg-emerald-400' : isPrint ? 'bg-lime-400' : isExtractJson ? 'bg-orange-400' : 'bg-teal-400';
-                                            const labelColor = isAgent ? 'text-emerald-400' : isPrint ? 'text-lime-400' : isExtractJson ? 'text-orange-400' : 'text-teal-400';
-                                            const typeLabel = isAgent ? 'agent response' : isPrint ? 'print output' : isExtractJson ? 'json output' : 'llm output';
-                                            return (
-                                                <div key={i} className="my-1.5">
-                                                    {/* Header label */}
-                                                    <div className="flex items-center gap-1.5 mb-1 pl-1">
-                                                        <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${dotColor}`} />
-                                                        <span className={`text-[10px] font-semibold uppercase tracking-wider ${labelColor}`}>
-                                                            {entry.step_name}
-                                                        </span>
-                                                        <span className="text-[9px] text-zinc-600 uppercase tracking-wide">
-                                                            {typeLabel}
-                                                        </span>
-                                                    </div>
-                                                    {/* Content bubble */}
-                                                    <div className="flex items-start gap-2 bg-zinc-800/70 border border-zinc-700/50 rounded-lg px-3 py-2 group ml-3">
-                                                        <div className="flex-1 min-w-0 text-zinc-300 leading-relaxed">
-                                                            {preview}{isTruncated ? '\u2026' : ''}
-                                                        </div>
-                                                        <button
-                                                            onClick={() => onOpenResponseModal({ step_name: entry.step_name, step_type: entry.step_type, content: entry.content })}
-                                                            className="shrink-0 flex items-center gap-1 text-[10px] text-zinc-500 hover:text-emerald-400 transition-colors opacity-0 group-hover:opacity-100 ml-1 whitespace-nowrap self-center"
-                                                            title="View full response"
-                                                        >
-                                                            <ExternalLink size={10} />
-                                                            View full
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                            );
-                                        }
-                                        if (entry.kind === 'reasoning' || entry.kind === 'thought') {
-                                            const isReasoning = entry.kind === 'reasoning';
-                                            const firstLine = entry.content.split('\n')[0].slice(0, 120);
-                                            return (
-                                                <div key={i} className="pl-2 my-0.5">
-                                                    <details>
-                                                        <summary className={`cursor-pointer list-none text-[10px] ${isReasoning ? 'text-sky-400/80' : 'text-zinc-500'}`}>
-                                                            {isReasoning ? '🧠' : '💬'} {firstLine}{entry.content.length > firstLine.length ? '…' : ''}
-                                                            {entry.step_name && <span className="text-zinc-600"> · {entry.step_name}</span>}
-                                                        </summary>
-                                                        <div className="mt-0.5 bg-zinc-800/40 border border-zinc-800 rounded p-2 text-[10px] text-zinc-400 whitespace-pre-wrap max-h-64 overflow-y-auto">
-                                                            {entry.content}
-                                                        </div>
-                                                    </details>
-                                                </div>
-                                            );
-                                        }
-                                        return null;
-                                    }
-                                    return (
-                                        <div key={i} className={
-                                            entry.startsWith('✓') ? 'text-green-400' :
-                                            entry.startsWith('✗') ? 'text-red-400' :
-                                            entry.startsWith('▶') ? 'text-blue-400' :
-                                            entry.startsWith('⏸') ? 'text-amber-400' :
-                                            entry.startsWith('⟳') ? 'text-purple-400' :
-                                            'text-zinc-400'
-                                        }>
-                                            <ReactMarkdown
-                                                remarkPlugins={[remarkGfm]}
-                                                components={{
-                                                    p: ({ children }) => <span>{children}</span>,
-                                                    code: ({ children }) => <code className="bg-zinc-800 px-1 rounded text-[10px]">{children}</code>,
-                                                    pre: ({ children }) => <pre className="bg-zinc-800 p-1 rounded mt-0.5 overflow-x-auto">{children}</pre>,
-                                                    a: ({ href, children }) => <a href={href} className="underline opacity-70" target="_blank" rel="noreferrer">{children}</a>,
-                                                }}
-                                            >{entry}</ReactMarkdown>
-                                        </div>
-                                    );
-                                })
-                            )}
-                        </div>
-
-                    </div>
-                )}
-            </div>
-        </div>
+        </AppScreen>
     );
 }

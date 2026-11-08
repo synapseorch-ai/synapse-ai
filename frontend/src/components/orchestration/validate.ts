@@ -1,0 +1,545 @@
+/**
+ * Static checks over an orchestration draft.
+ *
+ * Pure and synchronous so the canvas can badge nodes on every edit and the
+ * shells can gate Run without a round-trip. Severity is the contract:
+ * an `error` is something the engine will trip over (a dangling target, an
+ * agent step with no agent); a `warning` is something that probably isn't what
+ * the author meant (an unreachable step, an unused input key). Errors block
+ * Run; nothing blocks Save — a half-built draft must always be saveable.
+ */
+
+import type { Orchestration, StepConfig, StepIssue } from '@/types/orchestration';
+import { BUILTIN_STATE_KEYS } from './graph';
+import { normalizeStateType } from './stateTypes';
+import { humanFieldOptions, humanFieldType } from './humanFields';
+
+export interface ValidationResult {
+    byStep: Record<string, StepIssue[]>;
+    global: StepIssue[];
+    errorCount: number;
+    warningCount: number;
+}
+
+const error = (message: string): StepIssue => ({ severity: 'error', message });
+const warning = (message: string): StepIssue => ({ severity: 'warning', message });
+
+/** Steps that exist to produce a value, so losing it is worth saying. */
+const RESULT_STEP_TYPES = new Set(['agent', 'llm', 'tool', 'merge', 'transform', 'extract_json', 'human', 'retrieve', 'workflow', 'browser']);
+
+/**
+ * `agents` is the list the caller already holds for the picker. When it is
+ * given, an `agent_id` that names nothing in it is an error — the engine
+ * refuses to run such a step, and before it did it silently ran whichever
+ * agent sorted first, which is worse than any error. When it is omitted (a
+ * caller with no agent list), that check is skipped rather than guessed at.
+ */
+export function validateOrchestration(orch: Orchestration, agents?: { id: string; type?: string }[]): ValidationResult {
+    // A check that throws on a shape it did not expect says so and lets the editor stand (F1054): the canvas, the
+    // step card and Save each run these, and an uncaught throw here took the whole page down (HOT2, D323).
+    try {
+        return checkOrchestration(orch, agents);
+    } catch (e) {
+        const why = e instanceof Error ? e.message : String(e);
+        return { byStep: {}, global: [warning(`Some checks could not run on this workflow: ${why}`)], errorCount: 0, warningCount: 1 };
+    }
+}
+
+function checkOrchestration(orch: Orchestration, agents?: { id: string; type?: string }[]): ValidationResult {
+    const byStep: Record<string, StepIssue[]> = {};
+    const global: StepIssue[] = [];
+    const ids = new Set(orch.steps.map((s) => s.id));
+    const agentIds = agents ? new Set(agents.map((a) => a.id)) : null;
+    const add = (stepId: string, issue: StepIssue) => {
+        (byStep[stepId] ??= []).push(issue);
+    };
+    const checkTarget = (stepId: string, target: string | null | undefined, what: string) => {
+        if (target && !ids.has(target)) add(stepId, error(`${what} points at a step that no longer exists`));
+        if (target === stepId) add(stepId, error(`${what} points at the step itself`));
+    };
+
+    // --- Graph level ---
+    if (orch.steps.length === 0) {
+        global.push(warning('No steps yet — add one from the palette'));
+    } else if (!orch.entry_step_id) {
+        global.push(error('No entry point set'));
+    } else if (!ids.has(orch.entry_step_id)) {
+        global.push(error('Entry point references a deleted step'));
+    }
+
+    // --- Known state keys for input_keys checks: the engine's built-ins
+    // (user_input/user_query are seeded on every run), the schema, and every
+    // output key. Flagging a built-in taught this check its first false alarm.
+    const knownKeys = new Set(BUILTIN_STATE_KEYS);
+    for (const key of Object.keys(orch.state_schema || {})) knownKeys.add(key);
+    for (const s of orch.steps) {
+        if (s.output_key) knownKeys.add(s.output_key);
+        // An output key is not the only writer (F123). Every loop writes its
+        // iteration's index before the body runs (F212), a for-each loop its
+        // item too — a count or while loop has none — and a human step's
+        // answer is always written to `human_response` as well as to its own
+        // output key. Declaring them in Shared state used to be the only thing
+        // that stopped the warning.
+        if (s.type === 'loop') {
+            knownKeys.add(s.loop_index_key || 'loop_index');
+            if (s.loop_over) knownKeys.add(s.loop_item_key || 'loop_item');
+        }
+        if (s.type === 'human') knownKeys.add('human_response');
+    }
+
+    // --- Duplicate output keys ---
+    // Only writers that can both run in one run (F932): one after the other,
+    // round a loop, or in one loop body. Writers on an If/Else's, a Switch's
+    // or an Evaluator's separate branches never both run, and a later writer
+    // that reads the key it writes is revising it, not overwriting it blind.
+    const byId = new Map(orch.steps.map((x) => [x.id, x]));
+    const outputOwners = new Map<string, string[]>();
+    for (const s of orch.steps) {
+        if (s.output_key) outputOwners.set(s.output_key, [...(outputOwners.get(s.output_key) || []), s.id]);
+    }
+    const reach = new Map<string, Set<string>>();
+    const reachOf = (id: string) => reach.get(id) ?? reach.set(id, reachableFrom([id], byId, false)).get(id)!;
+    for (const [key, owners] of outputOwners) {
+        if (owners.length < 2) continue;
+        const clash = new Set<string>();
+        for (const a of owners) {
+            for (const b of owners) {
+                if (a === b || !reachOf(a).has(b)) continue;
+                const later = byId.get(b)!;
+                if (promptReads(later).has(key) || (later.input_keys || []).includes(key)) continue;
+                clash.add(a).add(b);
+            }
+        }
+        for (const id of owners) {
+            if (clash.has(id)) add(id, warning(`Output key “${key}” is written by ${clash.size} steps — later runs overwrite earlier ones`));
+        }
+    }
+
+    // --- Per step ---
+    for (const s of orch.steps) {
+        // Any step may name where a route to it goes at its Max iterations (F248).
+        checkTarget(s.id, s.on_exhausted_step_id, '“When it reaches the limit”');
+        switch (s.type) {
+            case 'agent': {
+                if (!s.agent_id) add(s.id, error('No agent selected'));
+                // A tool it finishes with that its agent does not hold never ends it (E2).
+                const holds = (agents?.find((a) => a.id === s.agent_id) as { tools?: string[] } | undefined)?.tools;
+                if (holds && !holds.includes('all')) {
+                    for (const name of s.finish_tools ?? []) {
+                        if (!holds.includes(name)) add(s.id, error(`Finishes with “${name}”, which its agent does not hold`));
+                    }
+                }
+                break;
+            }
+            case 'llm':
+                if (!s.prompt_template?.trim()) add(s.id, error('No prompt set'));
+                break;
+            case 'tool':
+                if (!s.forced_tool) add(s.id, error('No tool selected'));
+                break;
+            case 'browser':
+                // As BRW1's save refuses (F1146): a recording to replay, and a Browser agent when one finds the way.
+                if (!s.recording_id) add(s.id, error('No recording selected'));
+                if (s.on_miss === 'agent' && agents && agents.find((a) => a.id === s.agent_id)?.type !== 'browser') {
+                    add(s.id, error('Pick a Browser agent to find the way, or have it pause for you'));
+                }
+                break;
+            case 'workflow':
+                if (!s.workflow_id) add(s.id, error('No workflow selected'));
+                else if (s.workflow_id === orch.id) add(s.id, error('A workflow cannot run itself'));
+                break;
+            case 'evaluator': {
+                const routes = Object.entries(s.route_map || {});
+                if (routes.length === 0) add(s.id, warning('No routes — the evaluator has nothing to choose between'));
+                for (const [label, target] of routes) checkTarget(s.id, target, `Route “${label}”`);
+                break;
+            }
+            case 'if_else':
+                if (!s.if_condition?.trim()) add(s.id, error('No condition set'));
+                checkTarget(s.id, s.if_true_step_id, 'True path');
+                checkTarget(s.id, s.if_false_step_id, 'False path');
+                break;
+            case 'switch': {
+                const cases = Object.entries(s.switch_cases || {});
+                if (!s.switch_expression?.trim()) add(s.id, error('No expression set'));
+                if (cases.length === 0) add(s.id, warning('No cases — everything falls through to the default path'));
+                for (const [val, target] of cases) checkTarget(s.id, target, `Case “${val}”`);
+                checkTarget(s.id, s.switch_default_step_id, 'Default path');
+                break;
+            }
+            case 'loop': {
+                const body = s.loop_step_ids || [];
+                if (body.length === 0) add(s.id, warning('Loop body is empty'));
+                for (const id of body) {
+                    if (!id) add(s.id, warning('Loop body has an unassigned slot'));
+                    else if (!ids.has(id)) add(s.id, error('Loop body references a step that no longer exists'));
+                }
+                if (body.includes(s.id)) add(s.id, error('Loop body contains the loop itself — it would never end'));
+
+                const cap = s.loop_max_iterations ?? 50;
+                if (cap < 1) add(s.id, error('Max iterations must be at least 1'));
+                if (!s.loop_over && !s.loop_while_condition) {
+                    const count = s.loop_count ?? 3;
+                    if (count < 1) add(s.id, error('Iteration count must be at least 1'));
+                    else if (count > cap) add(s.id, error(`Iteration count (${count}) is above the ${cap}-iteration cap — the run fails before the loop starts; raise Max iterations`));
+                }
+                if (s.loop_over && s.loop_while_condition) {
+                    add(s.id, warning('Both a collection and a while condition are set — the collection wins'));
+                }
+
+                const bodySet = new Set(body);
+                for (const id of body) {
+                    const b = orch.steps.find((x) => x.id === id);
+                    if (!b) continue;
+                    // The loop runs its body as an ordered list; _resolve_next never
+                    // runs for these, so a branch decided in here goes nowhere.
+                    if (b.type === 'if_else' || b.type === 'switch' || b.type === 'evaluator') {
+                        add(s.id, warning(`“${b.name}” routes, but routing inside a loop body is ignored — put the branch after the loop`));
+                    }
+                    // A parallel branch auto-follows next_step_id; a loop body does not.
+                    if (b.next_step_id && !bodySet.has(b.next_step_id) && b.next_step_id !== s.next_step_id) {
+                        add(s.id, warning(`“${b.name}” points on to a step outside the loop body, which the loop will not run`));
+                    }
+                }
+                break;
+            }
+            case 'parallel': {
+                const branches = s.parallel_branches || [];
+                if (branches.length === 0) add(s.id, warning('No branches — nothing runs in parallel'));
+                for (const branch of branches) {
+                    if (branch.length === 0) add(s.id, warning('A branch has no entry step'));
+                    else checkTarget(s.id, branch[0], 'A branch entry');
+                }
+                // The join. A branch listed by its entry step follows that step's
+                // next-step chain until it reaches this step's own next step — so
+                // with none set, every branch runs the whole rest of the flow, one
+                // branch after another, and the first to reach an End step takes
+                // the run with it. An error, not a warning: the run misbehaves.
+                // Two branches writing one key keep one value; the engine fails
+                // the node before any branch runs (F256, backend branch_keys.py).
+                for (const sentence of sharedBranchKeys(s, byId)) add(s.id, error(sentence));
+                if (!s.next_step_id) {
+                    add(s.id, error('No next step — set it to the Merge step where the branches meet, or each branch runs the rest of the flow'));
+                } else {
+                    const join = orch.steps.find((x) => x.id === s.next_step_id);
+                    if (join && join.type !== 'merge') {
+                        add(s.id, warning(`Branches meet at “${join.name}”, which is not a Merge step, so what they produced is not combined`));
+                    }
+                }
+                break;
+            }
+            case 'merge':
+                // It combines the keys it is given and nothing else: with none,
+                // it writes an empty dict/list/string over its output key and
+                // reports `input_count: 0`, silently.
+                if (!s.input_keys?.length) add(s.id, warning('No input keys — nothing to combine, so this writes an empty result'));
+                break;
+            case 'transform':
+                if (!s.transform_code?.trim()) add(s.id, error('No Python code set'));
+                break;
+            case 'human':
+                if (!s.human_prompt?.trim()) add(s.id, warning('No prompt for the human — they will see an empty question'));
+                break;
+            case 'print':
+                if (!s.print_content?.trim()) add(s.id, warning('No content set'));
+                break;
+            case 'extract_json':
+                if (!s.input_keys?.length) add(s.id, warning('No input keys — nothing to extract from'));
+                break;
+            // Knowledge's steps (R1): what the engine checks when the step runs
+            // (`core.knowledge.workflow_steps`), said while it is being edited.
+            case 'retrieve': {
+                const settings = s.retrieve || {};
+                const kbs = settings.kb_ids || [];
+                const pin = settings.snapshot && settings.snapshot !== 'active' ? settings.snapshot : '';
+                if (kbs.length === 0) add(s.id, error('No knowledge base selected'));
+                if (kbs.length > 10) add(s.id, error('At most 10 knowledge bases'));
+                if (!settings.query?.trim()) add(s.id, error('No query set'));
+                if (settings.top_k != null && (settings.top_k < 1 || settings.top_k > 50)) {
+                    add(s.id, error('Passages is between 1 and 50'));
+                }
+                if (pin && !pin.startsWith('ksnap_')) add(s.id, error('An index version is “active” or a ksnap_… id'));
+                else if (pin && kbs.length > 1) {
+                    add(s.id, error('A pinned index version is one knowledge base’s — search exactly one, or clear the version'));
+                }
+                break;
+            }
+            case 'ingest': {
+                const settings = s.ingest || {};
+                const source = (settings.records_from || '').replace(/^state\./, '');
+                if (!settings.kb_id) add(s.id, error('No knowledge base selected'));
+                if (!source) add(s.id, error('No state key to read records from'));
+                else if (!knownKeys.has(source)) {
+                    add(s.id, warning(`Records from “${source}”, which no step writes and the schema does not declare`));
+                }
+                break;
+            }
+        }
+
+        // A step whose whole purpose is a value, with nowhere to put it.
+        //
+        // These executors write `shared_state[output_key]` and nothing else
+        // keeps what they produced, so without one the step runs, costs its
+        // model call, and its result is dropped — no later step can read it.
+        // Left out on purpose: routing steps (`evaluator`, `if_else`, `switch`)
+        // whose key only records the decision they already acted on, `print`
+        // (its text is in the run log either way), and the containers, `loop`
+        // and `parallel`, whose key is a summary of what their body did.
+        if (RESULT_STEP_TYPES.has(s.type) && !s.output_key?.trim()) {
+            add(s.id, warning("No output key — this step's result is discarded"));
+        }
+
+        // Any step may name an agent (agent steps must, evaluators may). A name
+        // that resolves to nothing is an error wherever it appears.
+        if (s.agent_id && agentIds && !agentIds.has(s.agent_id)) {
+            add(s.id, error('The selected agent no longer exists — pick another'));
+        }
+
+        checkTarget(s.id, s.next_step_id, 'Next step');
+
+        for (const key of s.input_keys || []) {
+            if (!knownKeys.has(key)) {
+                add(s.id, warning(`Input key “${key}” is not in the state schema and no step outputs it`));
+            }
+        }
+    }
+
+    // --- A human step's answer and the key it lands in (F189) ---
+    // The builder's validator raises the same two. A human step with fields
+    // stores the mapping {field: value} it was answered with under its key, so
+    // a key the schema types as text or a number holds the wrong thing, and a
+    // Print that shows the key whole prints a Python dict. Warnings, not
+    // errors: the run works, it just says the wrong thing.
+    const schema = orch.state_schema || {};
+    const fielded = new Map<string, { stepName: string; field: string }>();
+    for (const s of orch.steps) {
+        if (s.type !== 'human') continue;
+        // A dropdown with nothing to choose from cannot be answered (F455); the builder says the same.
+        for (const f of s.human_fields || []) {
+            if (f && humanFieldType(f.type) === 'choice' && humanFieldOptions(f).length === 0) {
+                add(s.id, error(`Field “${f.name}” is a dropdown with no options`));
+            }
+        }
+        const names = (s.human_fields || []).map((f) => f?.name).filter((n): n is string => !!n);
+        if (!names.length) continue;
+        const key = s.output_key?.trim() || 'human_response';
+        fielded.set(key, { stepName: s.name, field: names[0] });
+        const declared = normalizeStateType(schema[key]?.type);
+        if (declared && declared !== 'dict') {
+            add(s.id, warning(
+                `Collects fields (${names.join(', ')}), so “${key}” holds a mapping {field: value}, not ${declared}: ` +
+                `declare it dict in the state schema and read one field as {{ state.${key}.${names[0]} }}`,
+            ));
+        }
+    }
+    for (const s of orch.steps) {
+        if (s.type !== 'print') continue;
+        // The whole key, in the one form or an older one typed here (written so when it is saved, F1252).
+        const shown = new Set([...(s.print_content || '').matchAll(/\{\{\s*state\.([\w.-]+)\s*\}\}|\{state\.([\w.]+)\}/g)]
+            .map((m) => m[1] || m[2]));
+        for (const [key, { stepName, field }] of fielded) {
+            if (shown.has(key)) {
+                add(s.id, warning(
+                    `Shows {{ state.${key} }}, “${stepName}”’s whole answer, which prints as a Python dict: ` +
+                    `show one field, {{ state.${key}.${field} }}`,
+                ));
+            }
+        }
+    }
+
+    // --- Reachability from the entry point ---
+    if (orch.entry_step_id && ids.has(orch.entry_step_id) && orch.steps.length > 1) {
+        const reachable = reachableFrom([orch.entry_step_id], byId, true);
+        for (const s of orch.steps) {
+            if (!reachable.has(s.id)) add(s.id, warning('Unreachable from the entry point'));
+        }
+    }
+
+    // --- A prompt that reads a key before any step writes it (U74) ---
+    // It reads empty there, so a feedback loop's first pass is told — never
+    // blocked: that pass is a real pattern. Mirrors branch_keys.unset_reads.
+    for (const [stepId, message] of unsetReads(orch)) add(stepId, warning(message));
+
+    let errorCount = global.filter((i) => i.severity === 'error').length;
+    let warningCount = global.filter((i) => i.severity === 'warning').length;
+    for (const issues of Object.values(byStep)) {
+        for (const i of issues) {
+            if (i.severity === 'error') errorCount++;
+            else warningCount++;
+        }
+    }
+    return { byStep, global, errorCount, warningCount };
+}
+
+/**
+ * The steps a run can go on to from `starts`, by every edge a step has. A step
+ * in a Loop's body also goes on to the body's next step, and the last one back
+ * to its Loop, which runs the body again or moves on. `withStarts` keeps the
+ * starts themselves; without it a start is in the set only if a cycle returns to it.
+ */
+function reachableFrom(starts: string[], byId: Map<string, StepConfig>, withStarts: boolean): Set<string> {
+    const bodyNext = new Map<string, string>();
+    for (const s of byId.values()) {
+        if (s.type !== 'loop') continue;
+        const body = (s.loop_step_ids || []).filter((b) => byId.has(b));
+        body.forEach((sid, i) => bodyNext.set(sid, body[i + 1] ?? s.id));
+    }
+    const successors = (s: StepConfig): (string | null | undefined)[] => [
+        s.next_step_id, s.if_true_step_id, s.if_false_step_id, s.switch_default_step_id,
+        s.on_exhausted_step_id,
+        ...Object.values(s.route_map || {}),
+        ...Object.values(s.switch_cases || {}),
+        ...(s.loop_step_ids || []),
+        ...(s.parallel_branches || []).flat(),
+        bodyNext.get(s.id),
+    ];
+    const reached = new Set<string>();
+    const queue = withStarts ? [...starts] : starts.flatMap((id) => (byId.has(id) ? successors(byId.get(id)!) : []));
+    while (queue.length) {
+        const id = queue.pop();
+        if (!id || !byId.has(id) || reached.has(id)) continue;
+        reached.add(id);
+        for (const t of successors(byId.get(id)!)) if (t && !reached.has(t)) queue.push(t);
+    }
+    return reached;
+}
+
+/** The steps each branch runs, as the engine resolves them: a branch listing one
+ *  step follows its next-step chain up to the Parallel's own next step. */
+function branchChains(parallel: StepConfig, byId: Map<string, StepConfig>): string[][] {
+    return (parallel.parallel_branches || []).map((branch) => {
+        if (branch.length !== 1) return [...branch];
+        const chain = [branch[0]];
+        let current = branch[0];
+        for (;;) {
+            const nxt = byId.get(current)?.next_step_id;
+            if (!nxt || nxt === parallel.next_step_id || chain.includes(nxt)) break;
+            chain.push(nxt);
+            current = nxt;
+        }
+        return chain;
+    });
+}
+
+/** The keys a step writes: its output key, and a Loop's or a nested Parallel's body. */
+function keysWritten(id: string, byId: Map<string, StepConfig>, seen: Set<string>): Set<string> {
+    const step = byId.get(id);
+    const keys = new Set<string>();
+    if (!step || seen.has(id)) return keys;
+    seen.add(id);
+    if (step.output_key) keys.add(step.output_key);
+    const inner = step.type === 'loop' ? (step.loop_step_ids || [])
+        : step.type === 'parallel' ? branchChains(step, byId).flat() : [];
+    for (const sub of inner) for (const k of keysWritten(sub, byId, seen)) keys.add(k);
+    return keys;
+}
+
+/** One sentence per key two or more branches of `parallel` write (mirrors branch_keys.py). */
+function sharedBranchKeys(parallel: StepConfig, byId: Map<string, StepConfig>): string[] {
+    const owners = new Map<string, Map<number, string[]>>();
+    branchChains(parallel, byId).forEach((chain, index) => {
+        for (const sid of chain) {
+            for (const key of keysWritten(sid, byId, new Set())) {
+                const byBranch = owners.get(key) ?? new Map<number, string[]>();
+                byBranch.set(index, [...(byBranch.get(index) ?? []), byId.get(sid)?.name || sid]);
+                owners.set(key, byBranch);
+            }
+        }
+    });
+    const sentences: string[] = [];
+    for (const [key, byBranch] of owners) {
+        if (byBranch.size < 2) continue;
+        const numbers = [...byBranch.keys()].sort((a, b) => a - b).map((i) => String(i + 1));
+        const which = numbers.slice(0, -1).join(', ') + ' and ' + numbers[numbers.length - 1];
+        const steps = [...byBranch.keys()].sort((a, b) => a - b).flatMap((i) => byBranch.get(i)!).map((n) => `“${n}”`).join(', ');
+        sentences.push(`Branches ${which} ${numbers.length === 2 ? 'both write' : 'all write'} “${key}” (${steps}) — only one value would survive. Give each branch its own output key.`);
+    }
+    return sentences;
+}
+
+/** Keys the engine writes before any step: the run's input, a workflow agent's conversation. */
+const ENGINE_KEYS = new Set(['user_input', 'user_query', 'history']);
+
+/** The keys a model's prompt names (an Agent's, an LLM's or a Tool step's template, a Retrieve query). */
+function promptReads(step: StepConfig): Set<string> {
+    const texts: string[] = [];
+    if (step.type === 'agent' || step.type === 'llm' || step.type === 'workflow') texts.push(step.prompt_template || '');
+    // A Tool step reads its prompt when a model writes its arguments, and its set arguments when they are set (E1).
+    if (step.type === 'tool') {
+        if (step.tool_arguments != null) texts.push(JSON.stringify(step.tool_arguments));
+        else texts.push(step.prompt_template || '');
+    }
+    if (step.type === 'retrieve') texts.push(step.retrieve?.query || '');
+    const keys = new Set<string>();
+    for (const text of texts) {
+        // `{{ state.key }}` is the one form (F1252); an older `{state.key}` typed here is written so when it is saved.
+        for (const m of text.matchAll(/\{\{\s*state\.([A-Za-z_]\w*)|\{state\.(\w+)\}/g)) keys.add(m[1] || m[2]);
+    }
+    return keys;
+}
+
+/** What a step writes itself (not its body): its output key, a Loop's index and item, a Human step's answer. */
+function ownWrites(step: StepConfig): Set<string> {
+    const keys = new Set<string>(step.output_key ? [step.output_key] : []);
+    if (step.type === 'loop') {
+        keys.add(step.loop_index_key || 'loop_index');
+        if (step.loop_over) keys.add(step.loop_item_key || 'loop_item');
+    }
+    if (step.type === 'human') keys.add('human_response');
+    return keys;
+}
+
+/** The steps a run can reach before any step writes `key` (a Loop's body is taken to run; a Parallel's every branch). */
+function firstUnwritten(key: string, entry: string | null | undefined, byId: Map<string, StepConfig>): Set<string> {
+    const inLoop = new Map<string, string | null>();
+    for (const s of byId.values()) {
+        if (s.type !== 'loop') continue;
+        const body = (s.loop_step_ids || []).filter((b) => byId.has(b));
+        body.forEach((sid, i) => inLoop.set(sid, body[i + 1] ?? null));
+    }
+    const reached = new Set<string>();
+    const queue = entry && byId.has(entry) ? [entry] : [];
+    while (queue.length) {
+        const sid = queue.pop()!;
+        if (reached.has(sid)) continue;
+        reached.add(sid);
+        const step = byId.get(sid)!;
+        if (ownWrites(step).has(key)) continue;
+        const targets: (string | null | undefined)[] = [];
+        if (step.type === 'loop') targets.push((step.loop_step_ids || []).filter((b) => byId.has(b))[0]);
+        else if (step.type === 'parallel') targets.push(...branchChains(step, byId).map((c) => c[0]));
+        const container = step.type === 'loop' || step.type === 'parallel';
+        if (!container || !keysWritten(sid, byId, new Set()).has(key)) {
+            if (inLoop.has(sid)) targets.push(inLoop.get(sid));
+            else targets.push(
+                step.next_step_id, step.if_true_step_id, step.if_false_step_id, step.switch_default_step_id,
+                step.on_exhausted_step_id, ...Object.values(step.route_map || {}), ...Object.values(step.switch_cases || {}),
+            );
+        }
+        for (const t of targets) if (t && byId.has(t) && !reached.has(t)) queue.push(t);
+    }
+    return reached;
+}
+
+/** `[stepId, sentence]` for each prompt that reads a key before any step writes it. */
+function unsetReads(orch: Orchestration): [string, string][] {
+    const byId = new Map(orch.steps.map((s) => [s.id, s]));
+    const declared = new Set(Object.keys(orch.state_schema || {}));
+    const written = new Set(orch.steps.flatMap((s) => [...ownWrites(s)]));
+    const walks = new Map<string, Set<string>>();
+    const found: [string, string][] = [];
+    for (const step of orch.steps) {
+        for (const key of [...promptReads(step)].sort()) {
+            if (ENGINE_KEYS.has(key) || declared.has(key)) continue;
+            if (!written.has(key)) {
+                found.push([step.id, `Reads “${key}”, which no step writes, so it always reads empty. Write it in an earlier step, or give it a default in Shared state.`]);
+                continue;
+            }
+            if (!walks.has(key)) walks.set(key, firstUnwritten(key, orch.entry_step_id, byId));
+            if (walks.get(key)!.has(step.id)) {
+                found.push([step.id, `Reads “${key}” before any step writes it, so its first pass reads it empty. Give “${key}” a default in Shared state if it should read something.`]);
+            }
+        }
+    }
+    return found;
+}

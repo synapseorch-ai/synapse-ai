@@ -19,15 +19,11 @@ about (tens of MB per namespace) this is well under a millisecond.
 """
 import hashlib
 import json
-import os
 import threading
 import time
-from pathlib import Path
 from typing import Any, Optional
 
-from core.config import DATA_DIR
-
-CACHE_ROOT = Path(DATA_DIR) / "cache"
+from core.storage import get_blob_store
 
 _lock = threading.Lock()
 
@@ -36,8 +32,16 @@ def _hash_key(key: str) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
-def _path_for(namespace: str, key_hash: str) -> Path:
-    return CACHE_ROOT / namespace / key_hash[:2] / f"{key_hash}.json"
+def _blob_key(namespace: str, key_hash: str) -> str:
+    """Blob key for a cache entry.
+
+    The blob store prefixes this with the tenant, which is the whole point of
+    routing the cache through it. Cache keys are content hashes — model plus
+    messages, or tool name plus arguments — so without a tenant dimension two
+    tenants asking the same question share an answer. That is a cross-tenant
+    read on an ordinary request, no race required.
+    """
+    return f"cache/{namespace}/{key_hash[:2]}/{key_hash}.json"
 
 
 def make_key(*parts: Any) -> str:
@@ -60,12 +64,12 @@ def make_key(*parts: Any) -> str:
 def get(namespace: str, key: str) -> Optional[dict]:
     """Return the cached entry dict, or None if missing/expired."""
     key_hash = key if len(key) == 64 and all(c in "0123456789abcdef" for c in key) else _hash_key(key)
-    path = _path_for(namespace, key_hash)
-    if not path.exists():
+    blob = _blob_key(namespace, key_hash)
+    raw = get_blob_store().get(blob)
+    if raw is None:
         return None
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            entry = json.load(f)
+        entry = json.loads(raw)
     except Exception:
         return None
     ttl = entry.get("ttl_seconds")
@@ -73,7 +77,7 @@ def get(namespace: str, key: str) -> Optional[dict]:
         age = time.time() - entry.get("created_at", 0)
         if age > ttl:
             try:
-                path.unlink()
+                get_blob_store().delete(blob)
             except Exception:
                 pass
             return None
@@ -83,7 +87,6 @@ def get(namespace: str, key: str) -> Optional[dict]:
 def set(namespace: str, key: str, value: Any, ttl_seconds: Optional[int] = None, meta: Optional[dict] = None) -> str:
     """Persist `value` under `key` in `namespace`. Returns the key hash."""
     key_hash = key if len(key) == 64 and all(c in "0123456789abcdef" for c in key) else _hash_key(key)
-    path = _path_for(namespace, key_hash)
     entry = {
         "value": value,
         "created_at": time.time(),
@@ -91,36 +94,34 @@ def set(namespace: str, key: str, value: Any, ttl_seconds: Optional[int] = None,
         "meta": meta or {},
     }
     with _lock:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(entry, f, ensure_ascii=False, default=str)
-        os.replace(tmp, path)
+        get_blob_store().put(
+            _blob_key(namespace, key_hash),
+            json.dumps(entry, ensure_ascii=False, default=str),
+        )
     return key_hash
 
 
 def delete(namespace: str, key: str) -> bool:
     key_hash = key if len(key) == 64 and all(c in "0123456789abcdef" for c in key) else _hash_key(key)
-    path = _path_for(namespace, key_hash)
-    if path.exists():
-        try:
-            path.unlink()
-            return True
-        except Exception:
-            return False
-    return False
+    blob = _blob_key(namespace, key_hash)
+    store = get_blob_store()
+    if not store.exists(blob):
+        return False
+    try:
+        store.delete(blob)
+        return True
+    except Exception:
+        return False
 
 
 def clear_namespace(namespace: str) -> int:
-    """Delete every entry under a namespace. Returns the count removed."""
-    base = CACHE_ROOT / namespace
-    if not base.exists():
-        return 0
+    """Delete every entry under a namespace, for this tenant only."""
+    store = get_blob_store()
     removed = 0
     with _lock:
-        for p in base.rglob("*.json"):
+        for key in store.list(f"cache/{namespace}"):
             try:
-                p.unlink()
+                store.delete(key)
                 removed += 1
             except Exception:
                 pass
@@ -128,20 +129,18 @@ def clear_namespace(namespace: str) -> int:
 
 
 def stats() -> dict:
-    """Return per-namespace entry count and total bytes on disk."""
+    """Per-namespace entry count and total bytes, for this tenant only."""
+    store = get_blob_store()
     out: dict[str, dict] = {}
-    if not CACHE_ROOT.exists():
-        return out
-    for ns_dir in CACHE_ROOT.iterdir():
-        if not ns_dir.is_dir():
+    for key in store.list("cache"):
+        parts = key.split("/")
+        # cache/<namespace>/<shard>/<hash>.json
+        if len(parts) < 2:
             continue
-        count = 0
-        size = 0
-        for p in ns_dir.rglob("*.json"):
-            try:
-                count += 1
-                size += p.stat().st_size
-            except Exception:
-                pass
-        out[ns_dir.name] = {"entries": count, "bytes": size}
+        ns = parts[1]
+        bucket = out.setdefault(ns, {"entries": 0, "bytes": 0})
+        bucket["entries"] += 1
+        raw = store.get(key)
+        if raw is not None:
+            bucket["bytes"] += len(raw.encode("utf-8"))
     return out

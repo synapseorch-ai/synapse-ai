@@ -2,11 +2,12 @@
 Pydantic models for the multi-agent orchestration system.
 Defines orchestrations (workflow graphs), steps (nodes), and run state.
 """
-from typing import Any
+from typing import Any, Literal
 from enum import Enum
-from pydantic import BaseModel
+from pydantic import BaseModel, PrivateAttr, field_validator, model_validator
 
 from core.config import ORCH_GLOBAL_TIMEOUT_MIN, ORCH_HUMAN_TIMEOUT, ORCH_STEP_TIMEOUT
+from core.state_types import normalize_state_type
 
 
 class StepType(str, Enum):
@@ -24,6 +25,13 @@ class StepType(str, Enum):
     SWITCH = "switch"
     PRINT = "print"
     END = "end"
+    # Knowledge (R1): search knowledge bases, and add records to one.
+    RETRIEVE = "retrieve"
+    INGEST = "ingest"
+    # E3 (F770, SAI2-P1): run another workflow by its id, as a nested run of this step.
+    WORKFLOW = "workflow"
+    # BRW1 F1146: replay a recording by code in the run's browser.
+    BROWSER = "browser"
 
 
 class StepConfig(BaseModel):
@@ -34,7 +42,7 @@ class StepConfig(BaseModel):
 
     # AGENT / EVALUATOR -- which agent to invoke
     agent_id: str | None = None
-    prompt_template: str | None = None  # Supports {state.key} references
+    prompt_template: str | None = None  # Supports {{ state.key }} references
 
     # EVALUATOR -- outgoing routes as tools for the agent to call
     # Maps decision label → target step_id (None = end orchestration)
@@ -43,8 +51,20 @@ class StepConfig(BaseModel):
     route_descriptions: dict[str, str] = {}
     # Evaluator-specific prompt for the routing decision (separate from agent's prompt_template)
     evaluator_prompt: str | None = None
+    # EVALUATOR -- which route to take when the model's reply does not parse.
+    #
+    # Unset means "the first key of `route_map`", which is only well-defined on
+    # a store that preserves object key order. It is not: `definition` is JSONB
+    # on Postgres, which sorts keys by (length, bytes). Any evaluator whose
+    # fallback matters should name it rather than rely on where a key happens
+    # to sort.
+    fallback_route: str | None = None
     # Per-step model override (especially useful for evaluators)
     model: str | None = None
+    #: A role the host resolves to a model for this step (BWA1, D274): the AI builder's quick steps (its routing
+    #: evaluators) are "quick". A run whose state maps the role (`OrchestrationEngine.MODEL_ROLES_KEY`) gives the step
+    #: that model, over the run's own; a role the run does not map leaves the step to the run's model, as before.
+    model_role: str | None = None
 
     # PARALLEL -- each inner list is a sequential chain of step IDs
     parallel_branches: list[list[str]] = []
@@ -55,12 +75,23 @@ class StepConfig(BaseModel):
     # LOOP -- run body steps N times, then follow next_step_id (done path)
     loop_count: int = 3
     loop_step_ids: list[str] = []  # ordered steps in loop body
+    # LOOP (for-each) -- expression over shared state yielding a list. When set
+    # it drives the iteration count instead of loop_count.
+    loop_over: str | None = None          # e.g. "state.items"
+    loop_item_key: str = "loop_item"      # per-iteration item written here
+    loop_index_key: str = "loop_index"    # per-iteration 0-based index written here
+    # LOOP (while) -- expression re-evaluated before each iteration
+    loop_while_condition: str | None = None
+    # LOOP (break) -- expression evaluated after each iteration; True stops the loop
+    loop_break_condition: str | None = None
+    # Hard ceiling for for-each/while, and the cap loop_count is clamped to
+    loop_max_iterations: int = 50
 
     # TRANSFORM -- Python code to run on shared state
     transform_code: str | None = None
 
     # PRINT -- user-defined text/markdown stored to output_key
-    print_content: str | None = None  # Supports {state.key} interpolation
+    print_content: str | None = None  # Supports {{ state.key }} interpolation
 
     # IF_ELSE -- Python condition evaluated against shared state
     if_condition: str | None = None       # e.g. "state.result.flag == True"
@@ -74,31 +105,137 @@ class StepConfig(BaseModel):
 
     # HUMAN -- pause for human input
     human_prompt: str | None = None
-    human_fields: list[dict[str, str]] = []  # [{name, type, label}]
+    # [{name, type, label}], and a dropdown's `options: [str]` (F455): `core/orchestration/human_fields.py`.
+    human_fields: list[dict[str, Any]] = []
     human_channel_id: str | None = None      # messaging channel to notify (optional)
     human_timeout_seconds: int = int(ORCH_HUMAN_TIMEOUT)  # how long to wait for messaging response
 
+    # RETRIEVE / INGEST -- Knowledge's two steps (R1). Each holds the contract's
+    # own body, `core.knowledge.api_models.RetrieveStepConfig` /
+    # `IngestStepConfig`, as stored: {"kb_ids": [...], "query": "{{ state.q }}", ...}.
+    # Held to it when the step runs, not here, so the editor saves a step that is
+    # still being filled in (as it saves an agent step with no agent yet) and a
+    # bad body never stops an orchestration from loading.
+    retrieve: dict[str, Any] | None = None
+    ingest: dict[str, Any] | None = None
+
+    # WORKFLOW -- the workflow this step runs as a nested run (E3, F770). Its rendered `prompt_template` is the
+    # child's input (the run's own input when it has none), and what the child made (its `result_key`, else its
+    # last content step) is this step's output. An Agent step whose agent is a workflow does the same through the
+    # agent, which stays for chat and channels (D204).
+    workflow_id: str | None = None
+
     # I/O mapping
+    # Whether this step's agent sees the attachments the caller sent. Off by
+    # default and opt-in per step, because the images are worth real tokens and
+    # most steps of most orchestrations have no use for them — on the builder
+    # only the analyst and the reporter do.
+    #
+    # They deliberately do NOT arrive as an `input_keys` entry: those are
+    # injected into the prompt as text, and a base64 data URI there would blow
+    # the context window and the bill. They ride on the engine instead.
+    pass_images: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _templates_in_one_form(cls, data: Any) -> Any:
+        """Every template over state in the one form, `{{ state.x }}` (F1252, Naveen 10-30): an older `{state.x}` in a
+        step's templates is written that way as the step is read, so a workflow saved before keeps working."""
+        from core.templating import one_form_step
+
+        return one_form_step(data)
+
+    @model_validator(mode="after")
+    def _images_only_where_they_are_read(self):
+        """`pass_images` is read by the agent executor and nowhere else.
+
+        Accepting it on an `llm` or `tool` step would store a flag that does
+        nothing, with no warning — the worst kind of setting, because it looks
+        like it worked. Say so at the point it is set instead.
+        """
+        if self.pass_images and self.type != StepType.AGENT:
+            raise ValueError(
+                f"pass_images is only read by agent steps; step '{self.id}' is '{self.type.value}'."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _finish_tools_only_on_an_agent_step(self):
+        """`finish_tools` is read by the Agent step and nowhere else (E2): refused elsewhere, as `pass_images` is."""
+        if self.finish_tools and self.type != StepType.AGENT:
+            raise ValueError(
+                f"finish_tools are only read by agent steps; step '{self.id}' is '{self.type.value}'."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _a_fallback_only_with_finish_tools(self):
+        """`finish_fallback` is what a step that finishes with a tool ends with otherwise (F958): nothing without
+        them."""
+        if self.finish_fallback is not None and not self.finish_tools:
+            raise ValueError(f"finish_fallback needs finish_tools; step '{self.id}' has none.")
+        return self
+
+    @model_validator(mode="after")
+    def _arguments_only_on_a_tool_step(self):
+        """`tool_arguments` is read by the Tool step and nowhere else: refused elsewhere, as `pass_images` is."""
+        if self.tool_arguments is not None and self.type != StepType.TOOL:
+            raise ValueError(
+                f"tool_arguments are only read by tool steps; step '{self.id}' is '{self.type.value}'."
+            )
+        return self
+
     input_keys: list[str] = []    # Keys to pull from shared state as context
     output_key: str | None = None  # Key to write result into shared state
 
+    #: AGENT -- the tools the step finishes with (E2, SAI2-P1): its loop ends when one of them is called and
+    #: succeeds, and the step's output is that call's result as an object, not the agent's prose. Each must be among
+    #: the agent's tools. Empty, the default, is an agent step as before.
+    finish_tools: list[str] = []
+    #: AGENT -- what the step's output is when the agent answers in words, not with a finish (after its one reminder,
+    #: or on its last turn with no room for one; F958): an
+    #: object, marked `"fallback": true`, so the next step knows it is code's and not the agent's finish. Only with
+    #: `finish_tools`; None, the default, fails the step as before. A turn limit or a spend stop still fails it.
+    finish_fallback: dict[str, Any] | None = None
+
     # TOOL — forced single tool call with ReAct retry
     forced_tool: str | None = None  # Tool name for TOOL type steps
+    #: TOOL -- the arguments, set on the step (E1, SAI2-P1): the tool is called with these and no model is asked.
+    #: Values are templates over state: `{{state.x}}` standing alone keeps its type, inside text it is written as
+    #: text (an object as JSON); an older `{state.x}` is written so as the step is read (F1252). None, the default,
+    #: is "ask the model", as every Tool step did before.
+    tool_arguments: dict[str, Any] | None = None
 
     # Per-step guardrails
     max_turns: int = 15
     timeout_seconds: int = int(ORCH_STEP_TIMEOUT)
     allowed_tools: list[str] | None = None  # Override agent's tools (narrows only)
+    #: Kept sessions this step's Browser agent starts with (F1140), nearest of the levels: the step's win over the
+    #: run's, the chat's and the agent's on a site. Ids from the Sessions library; None = none picked here.
+    browser_sessions: list[str] | None = None
+    #: Recordings this step's Browser agent may run (F1145), beside its own picks; the Browser step's fixer gets its
+    #: recording this way.
+    browser_recordings: list[str] | None = None
+
+    # BROWSER (F1146; DESIGN §v5.4): a recording replayed by code, no model unless a page changed.
+    recording_id: str | None = None
+    #: Its inputs by name, each a template over the run's state ("{{ state.order }}").
+    recording_inputs: dict[str, str] = {}
+    #: Its steps (ids) that may send on their own: a workflow run is never watched, so any other recorded send
+    #: is the person's turn (Naveen 2026-10-29).
+    may_send_steps: list[str] = []
+    #: A step the page no longer matches: "agent" (the step's `agent_id`, a Browser agent, finds the way and its
+    #: path is kept as an edit to approve) or "pause" (the person's turn; what they do is kept the same way).
+    on_miss: Literal["agent", "pause"] = "pause"
 
     # Response cache (skipped for AGENT steps — state-dependent behaviour)
     cache_responses_enabled: bool = False
     cache_semantic_enabled: bool = False
     cache_response_ttl_seconds: int = 3600
     cache_response_threshold: float = 0.95
-    # Tool cache (always-on for tools in DETERMINISTIC_TOOLS registry; this toggle
-    # lets a step opt OUT, e.g. when freshness is critical for a specific run).
-    cache_tools_enabled: bool = True
-    cache_tool_ttl_seconds: int = 3600
+    # `cache_tools_enabled` / `cache_tool_ttl_seconds` were here: the tool cache
+    # they configured was removed (F67) and the panel's toggle went with batch 3.
+    # A document that still carries them validates — unknown keys are ignored.
 
     # On re-invocation (evaluator feedback or loop), include every prior turn's
     # inputs/tools/output in the prompt instead of only the last attempt.
@@ -109,6 +246,9 @@ class StepConfig(BaseModel):
     # Graph routing
     next_step_id: str | None = None  # Linear next step / loop "done" path
     max_iterations: int = 3  # Max times this step can execute in one run (loop guard)
+    # Where a route to this step goes once it has run `max_iterations` times.
+    # Unset, the run fails: "'Coder' gave up after 3 attempts" (F248).
+    on_exhausted_step_id: str | None = None
 
     # Visual canvas position (for @xyflow/react)
     position_x: float = 0
@@ -125,14 +265,107 @@ class Orchestration(BaseModel):
     entry_step_id: str = ""
     state_schema: dict[str, Any] = {}  # {key: {type, default, description}}
 
+    @field_validator("state_schema")
+    @classmethod
+    def _canonicalise_state_types(cls, schema: Any) -> Any:
+        """Store one spelling of `type` — see core.state_types.
+
+        The editor wrote `string`/`number`/`boolean` and the AI builder wrote
+        `str`/`float`/`bool` for the same thing. Every save path runs through
+        here, so a row saved with either spelling is stored canonically and no
+        migration is needed. A type we cannot read is left exactly as it was:
+        `_validate_orchestration` has to be able to name it back to the builder,
+        and the editor has to be able to show the person what is really stored
+        rather than a guess.
+        """
+        if not isinstance(schema, dict):
+            return schema
+        out: dict[str, Any] = {}
+        for key, entry in schema.items():
+            if isinstance(entry, dict) and "type" in entry:
+                canonical = normalize_state_type(entry["type"])
+                if canonical is not None and canonical != entry["type"]:
+                    entry = {**entry, "type": canonical}
+            out[key] = entry
+        return out
+
     # Global guardrails
     max_total_turns: int = 100
-    max_total_cost_usd: float | None = None
+    # `max_total_cost_usd` was here and read by nothing (F76). A document that
+    # still carries it validates: unknown keys are ignored.
     timeout_minutes: int = ORCH_GLOBAL_TIMEOUT_MIN
 
+    #: What one run may spend (CAP1, D272): credits (cloud's; self-hosted has
+    #: none) and model dollars. None is no cap, the default. The engine asks
+    #: before every step (`core/orchestration/run_cap.py`) — not another F76.
+    max_run_credits: float | None = None
+    max_run_usd: float | None = None
+
+    #: Offered to MCP clients as a tool of its own, `run_<name>` with its inputs (F466, MCP2, D292). Off by
+    #: default: every workflow is a tool otherwise, and a workspace's dozens fill a client's context on every
+    #: turn. Off, a client still runs it by id or name through `run_orchestration`.
+    offer_to_mcp: bool = False
+
+    @field_validator("max_run_credits", "max_run_usd", mode="before")
+    @classmethod
+    def _a_cap_or_none(cls, value: Any, info) -> float | None:
+        """A stored cap that is not one reads as no cap.
+
+        Every run and resume validates its definition, and a writer that skips
+        this model (a bundle, the builder) must not leave a workflow that cannot
+        run: a nonsense cap is no cap, never a stop. `OrchestrationIn` refuses
+        one where a person saves it.
+        """
+        from core.orchestration.run_cap import MIN_CREDITS, _positive
+
+        at_least = MIN_CREDITS if info.field_name == "max_run_credits" else None
+        return _positive(value, at_least=at_least)
+
+    #: Stop a run when a step's text will not become the type its state key
+    #: declares. Off by default, and deliberately: until the engine began
+    #: reading `state_schema.type` at all, every type value in every
+    #: orchestration was metadata nobody was ever held to — 21% of runs on the
+    #: dev stack held something that contradicted one, the AI builder's own
+    #: among them. Enforcing unverified annotations by default fails good runs.
+    #: Only a failed *text* conversion stops a run: a value that is simply of
+    #: another type is a wrong schema, which warns and carries on.
+    strict_state_types: bool = False
+
     trigger: str = "manual"  # "manual" | "scheduled"
+
+    #: The rubric every run of this orchestration is scored against
+    #: (core/evals). Empty means "not evaluated", which is the opt-in: binding
+    #: a rubric is what consents to the judge call's cost. A dangling id — the
+    #: rubric was deleted — reads the same as unset rather than failing a run.
+    rubric_id: str = ""
+
+    #: Judge one finished run in this many (D340 F, Naveen 10-30): 1 judges every run; a workflow a schedule runs
+    #: often may be judged on a sample, since each judged run is one more model call. Golden-set runs are always
+    #: judged. Counted per workflow in the evals store, so a restart keeps the count.
+    judge_every: int = 1
+
+    #: The state key whose value is what a run of this orchestration made (F249):
+    #: its chat answer as an agent, v1's `response`, what the judge scores, and
+    #: what a parent gets back when this runs nested. Empty means the last step
+    #: that produced content — a person's answer, an evaluator's route label and
+    #: an End are not what a run made (`core.orchestration.results`).
+    result_key: str = ""
+
     created_at: str | None = None
     updated_at: str | None = None
+
+
+class OrchestrationIn(Orchestration):
+    """An orchestration as a person saves it: a cap that is not one is refused
+    (422) with a sentence, where it can be said. Read anywhere else, it is no
+    cap (`Orchestration._a_cap_or_none`)."""
+
+    @field_validator("max_run_credits", "max_run_usd", mode="before")
+    @classmethod
+    def _a_cap_or_none(cls, value: Any, info) -> float | None:
+        from core.orchestration.run_cap import clean
+
+        return clean(value, credits=info.field_name == "max_run_credits")
 
 
 class OrchestrationRun(BaseModel):
@@ -144,11 +377,18 @@ class OrchestrationRun(BaseModel):
     shared_state: dict[str, Any] = {}
     step_history: list[dict[str, Any]] = []
     current_step_id: str | None = None
+    # The run's task list (core/task_list.py): written through on every
+    # accepted update_tasks call, shared across steps, survives a resume.
+    tasks: list[dict[str, Any]] = []
+    # Mid-step progress by step id — an agent step's transcript after each
+    # completed tool turn, so a crash resumes mid-step. Kept apart from
+    # shared_state so the per-turn checkpoint writes only this.
+    step_progress: dict[str, dict[str, Any]] = {}
 
     # Human-in-the-loop
     waiting_for_human: bool = False
     human_prompt: str | None = None
-    human_fields: list[dict[str, str]] = []
+    human_fields: list[dict[str, Any]] = []
     # Nested-orchestration human-in-the-loop tracking
     nested_run_id: str | None = None   # sub-run paused waiting for human input
     nested_orch_id: str | None = None  # sub-orchestration definition ID
@@ -165,3 +405,18 @@ class OrchestrationRun(BaseModel):
 
     started_at: str | None = None
     ended_at: str | None = None
+
+    #: The workflow as the run started it (F443): what every answer, tool
+    #: approval, nested sub-run and job handed out again carries on with, so an
+    #: edit made while the run waits is for the runs after it. A person's
+    #: Replay takes the workflow as it is saved then, and this becomes that.
+    #: `None` on a run started before the copy was kept. Written once, by the
+    #: first full checkpoint after it is set, never by the ones after.
+    definition: dict[str, Any] | None = None
+    #: Set with `definition` until a checkpoint has stored it.
+    _definition_unsaved: bool = PrivateAttr(default=False)
+
+    def keep_definition(self, definition: dict[str, Any]) -> None:
+        """Make `definition` the run's copy, for the next full checkpoint to store."""
+        self.definition = definition
+        self._definition_unsaved = True

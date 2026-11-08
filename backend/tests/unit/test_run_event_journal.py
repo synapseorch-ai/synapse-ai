@@ -201,3 +201,85 @@ class TestBroker:
             seen.append(entry["id"])
         assert seen == [1, 2, 3, 4]
         j.close()
+
+
+class TestOffLoopWriter:
+    """`append` assigns the id on the loop; the write happens on one writer
+    thread. Ids stay synchronous and monotonic, lines land in order, and a
+    reader that wants everything so far drains first."""
+
+    async def test_ids_are_synchronous_and_lines_land_in_order(self):
+        j = FileRunJournal("run_order")
+        ids = [j.append({"type": "thinking", "n": n}) for n in range(500)]
+        assert ids == list(range(1, 501))
+        await j.drain()
+        seen = [e["event"]["n"] for e in FileRunJournal("run_order").read(limit=1000)]
+        assert seen == list(range(500))
+        j.close()
+
+    async def test_the_file_write_is_not_on_the_event_loop_thread(self, monkeypatch):
+        import threading
+        threads: set[str] = set()
+        real = FileRunJournal._write_line
+
+        def spy(self, line):
+            threads.add(threading.current_thread().name)
+            return real(self, line)
+
+        monkeypatch.setattr(FileRunJournal, "_write_line", spy)
+        j = FileRunJournal("run_thread")
+        j.append({"type": "step_start"})
+        await j.drain()
+        j.close()
+        assert threads and threading.current_thread().name not in threads
+        assert all(t.startswith("synapse-journal") for t in threads)
+
+    async def test_drain_makes_a_throwaway_reader_complete(self):
+        j = FileRunJournal("run_drain")
+        for n in range(3):
+            j.append({"type": "step_start", "n": n})
+        await j.drain()
+        assert [e["id"] for e in FileRunJournal("run_drain").read()] == [1, 2, 3]
+        j.close()
+
+    async def test_aclose_journal_drains_and_evicts(self):
+        from core.orchestration.journal import aclose_journal, open_journal
+        j = get_journal("run_aclose")
+        j.append({"type": "step_start"})
+        j.append({"type": "orchestration_complete"})
+        assert open_journal("run_aclose") is j
+        await aclose_journal("run_aclose")
+        assert open_journal("run_aclose") is None
+        assert [e["id"] for e in FileRunJournal("run_aclose").read()] == [1, 2]
+
+    async def test_a_large_event_costs_the_loop_one_serialisation_not_the_disk(self):
+        import time as _time
+        j = FileRunJournal("run_big")
+        big = {"type": "final", "response": "x" * 200_000}
+        t0 = _time.perf_counter()
+        j.append(big)
+        on_loop_ms = (_time.perf_counter() - t0) * 1000
+        await j.drain()
+        j.close()
+        # One json.dumps of 200 KB plus a shrink; no write, no flush.
+        assert on_loop_ms < 25, on_loop_ms
+        entry = FileRunJournal("run_big").read()[0]
+        assert entry["event"]["truncated"] is True
+
+    async def test_the_event_is_serialised_before_append_returns(self):
+        """The terminal events reference the run's live state; a later
+        mutation must not reach the journal (and cannot race the writer)."""
+        j = FileRunJournal("run_mut")
+        state = {"a": 1}
+        j.append({"type": "orchestration_complete", "final_state": state})
+        state["a"] = 2
+        await j.drain()
+        j.close()
+        assert FileRunJournal("run_mut").read()[0]["event"]["final_state"] == {"a": 1}
+
+    async def test_sync_close_waits_for_the_writer(self):
+        j = FileRunJournal("run_syncclose")
+        for n in range(50):
+            j.append({"type": "thinking", "n": n})
+        j.close()   # no drain first: close itself must wait
+        assert len(FileRunJournal("run_syncclose").read()) == 50

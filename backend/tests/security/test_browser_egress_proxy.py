@@ -251,9 +251,7 @@ async def scraper(monkeypatch):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(web_scraper, "_crawler", None)
     yield web_scraper
-    if web_scraper._crawler is not None:  # 1.9.x has no close_crawler()
-        await web_scraper._crawler.close()
-        web_scraper._crawler = None
+    await web_scraper.close_crawler()
 
 
 @pytest.mark.skipif(not _chromium(), reason="no Playwright Chromium on this machine")

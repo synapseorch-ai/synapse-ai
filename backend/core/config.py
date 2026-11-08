@@ -1,22 +1,17 @@
+"""
+Engine configuration: timeouts, the shipped settings defaults, and the settings
+provider hook.
+
+There is no `DATA_DIR` here, and there is no directory created at import. The
+engine's documents live in `core/store/`, its tenant content in
+`core/storage/`, and the handful of things that genuinely need a directory on
+disk in `core/runtime_dirs.py`. One constant that meant all three is what made
+the engine a thing you installed on a laptop rather than something a request
+can be served by.
+"""
 import os
-import json
 import secrets as _secrets
-from pathlib import Path
 from urllib.parse import urlparse, urlunparse
-
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-_data_dir_env = os.getenv("SYNAPSE_DATA_DIR", "")
-if _data_dir_env:
-    _p = Path(_data_dir_env)
-    DATA_DIR = str(_p if _p.is_absolute() else _PROJECT_ROOT / _p)
-else:
-    DATA_DIR = str(Path(__file__).resolve().parent.parent / "data")
-if not os.path.exists(DATA_DIR):
-    os.makedirs(DATA_DIR, exist_ok=True)
-
-SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
-CREDENTIALS_FILE = os.path.join(DATA_DIR, "credentials.json")
-TOKEN_FILE = os.path.join(DATA_DIR, "token.json")
 
 
 # ── Configurable timeouts ────────────────────────────────────────────────────
@@ -47,17 +42,141 @@ ORCH_STEP_TIMEOUT        = _env_float("SYNAPSE_ORCH_STEP_TIMEOUT", 300.0)
 ORCH_GLOBAL_TIMEOUT_MIN  = _env_int("SYNAPSE_ORCH_GLOBAL_TIMEOUT_MINUTES", 30)
 ORCH_HUMAN_TIMEOUT       = _env_float("SYNAPSE_ORCH_HUMAN_TIMEOUT", 3600.0)
 
+# `run_bash`'s own timeout: its default and the most it accepts (tools/bash.py
+# clamps a call's `timeout` to these), and so how long a caller waits for it.
+BASH_TIMEOUT_DEFAULT = 30
+BASH_TIMEOUT_MAX = 120
+
+
+def mcp_call_timeout(tool_name: str, arguments: dict | None) -> float:
+    """How long a caller waits for one MCP tool call, in seconds.
+
+    `MCP_TOOL_CALL_TIMEOUT`, except for `run_bash`, which takes a timeout of its
+    own: it is waited for that long plus 5 s for the reply (F300). It offers up
+    to 120 s, and a caller that stopped at 60 s told the model the call timed out
+    while the command ran on with nobody reading it. The command is killed at its
+    own timeout, so a caller that waits this long hears how it ended.
+    """
+    if tool_name == "run_bash" and isinstance(arguments, dict):
+        try:
+            own = float(arguments.get("timeout") or BASH_TIMEOUT_DEFAULT)
+        except (TypeError, ValueError):
+            own = float(BASH_TIMEOUT_DEFAULT)
+        own = min(max(own, 1.0), float(BASH_TIMEOUT_MAX))
+        return max(MCP_TOOL_CALL_TIMEOUT, own + 5.0)
+    return MCP_TOOL_CALL_TIMEOUT
+# A Parallel step's branches run at the same time, at most
+# PARALLEL_MAX_BRANCHES at once (F255). A branch that can stop to ask a person,
+# holds a Loop or a nested Parallel, drives the browser, or reads what another
+# branch writes runs afterwards, in order (`ParallelStepExecutor`). Set
+# SYNAPSE_PARALLEL_BRANCHES to 0 to run every branch one after another.
+PARALLEL_BRANCHES_CONCURRENT = os.getenv("SYNAPSE_PARALLEL_BRANCHES", "1").strip().lower() not in ("0", "false", "no", "off")
+PARALLEL_MAX_BRANCHES = max(1, _env_int("SYNAPSE_PARALLEL_MAX_BRANCHES", 4))
+
+
+# ── Settings provider ────────────────────────────────────────────────────────
+# `load_settings()` is called from ~16 places on the orchestration execution
+# path, in modules that have no business knowing where settings come from. A
+# provider hook lets an embedder answer all of them at once — per tenant, from
+# a database, decrypting secrets on the way — without any of those call sites
+# changing.
+#
+# Process-global by design. The *tenant* varies per execution and is read from
+# a ContextVar (see core/tenancy.py); the *source* does not vary at all.
+
+_settings_provider = None
+
+
+def set_settings_provider(fn) -> None:
+    """Install a callable returning the settings dict for the current tenant.
+
+    `fn` takes no arguments and reads `core.tenancy.get_tenant()` if it needs
+    to know whose settings to return. Passing None restores the built-in
+    behaviour.
+    """
+    global _settings_provider
+    _settings_provider = fn
+
+
+def get_settings_provider():
+    return _settings_provider
+
+
+def default_settings() -> dict:
+    """The shipped defaults, before any file, environment or provider overlay.
+
+    Exposed so a provider can overlay a tenant's stored values onto the same
+    baseline the engine expects, rather than reconstructing ~85 keys and
+    silently omitting whichever ones it forgot.
+    """
+    return dict(_DEFAULTS)
+
 
 def load_settings():
-    default_settings = {
+    """The current tenant's settings, or the shipped defaults.
+
+    A provider is installed at startup (`core/settings_runtime.py`) and serves
+    the store. Without one — during import, in a test that has not booted the
+    engine, or in an embedder that has not registered anything yet — this is
+    the shipped baseline. It is deliberately not a file read: settings were a
+    JSON document under a data directory, and the last thing an engine serving
+    many tenants should do is answer from one.
+    """
+    if _settings_provider is not None:
+        return _settings_provider()
+    return dict(_DEFAULTS)
+
+
+#: Settings that are secrets (F201). `GET /api/settings` and the POST's answer
+#: serve each as "" beside `<name>_set` and `<name>_hint`; a POST that sends one
+#: blank keeps what is stored (the page posts its whole form back), and
+#: `clear_secrets` removes one. A field named like a secret that is missing here
+#: fails a test, so a new key is masked by default rather than by memory.
+SECRET_SETTINGS = (
+    "openai_key", "anthropic_key", "gemini_key", "grok_key", "deepseek_key",
+    "openai_compatible_key", "local_compatible_key", "model_gateway_key",
+    "huggingface_token", "bedrock_api_key", "aws_secret_access_key", "aws_session_token",
+    "n8n_api_key", "metrics_token", "s3_secret_access_key",
+    # Knowledge's bring-your-own rerankers (B2a, D163; `core/knowledge/rerankers.py`).
+    "cohere_key", "voyage_key", "jina_key", "knowledge_rerank_key",
+    # The hosted OpenAI-style providers (PROV1, D245; `core/providers/registry.py`).
+    "moonshot_key", "mistral_key", "nvidia_key", "openrouter_key", "qwen_key", "zai_key",
+    "groq_key", "cerebras_key", "together_key", "fireworks_key", "minimax_key",
+)
+
+
+#: Shipped defaults. Module-level so a settings provider can overlay a tenant's
+#: stored values onto the same baseline rather than reconstructing every key.
+_DEFAULTS = {
         "agent_name": "Synapse",
         "model": "ollama.mistral",
+        # Which model the AI builder itself runs on. Empty means "whatever
+        # `model` is" — the builder is a long multi-step run, so it is worth
+        # being able to point it at a stronger model than the day-to-day one
+        # without changing every agent.
+        "builder_model": "",
+        # The web app's first-run model step (ONB2, D303) was closed: it opens on
+        # its own only until then; Home's "Connect a model" opens it again.
+        "first_run_models_closed": False,
+        "builder_quick_model": "",
+        "judge_model": "",
         "mode": "local",
         "openai_key": "",
         "anthropic_key": "",
         "gemini_key": "",
         "grok_key": "",
         "deepseek_key": "",
+        "moonshot_key": "",
+        "mistral_key": "",
+        "nvidia_key": "",
+        "openrouter_key": "",
+        "qwen_key": "",
+        "zai_key": "",
+        "groq_key": "",
+        "cerebras_key": "",
+        "together_key": "",
+        "fireworks_key": "",
+        "minimax_key": "",
         "openai_compatible_key": "",
         "openai_compatible_base_url": "",
         "openai_compatible_models": "",
@@ -66,6 +185,10 @@ def load_settings():
         "local_compatible_models": "",
         "openai_compatible_embed_models": "",
         "local_compatible_embed_models": "",
+        "model_gateway_base_url": "",
+        "model_gateway_key": "",
+        "model_gateway_models": "",
+        "model_gateway_embed_models": "",
         "huggingface_token": "",
         "huggingface_models": "",
         "huggingface_max_new_tokens": 1024,
@@ -74,7 +197,6 @@ def load_settings():
         "codex_cli_models": "",
         "github_copilot_cli_models": "",
         "bedrock_api_key": "",
-        "bedrock_inference_profile": "",
         "embedding_model": "",
         "aws_access_key_id": "",
         "aws_secret_access_key": "",
@@ -83,29 +205,38 @@ def load_settings():
         "sql_connection_string": "",
         "n8n_url": "http://localhost:5678",
         "n8n_api_key": "",
-        "n8n_table_id": "",
+        # Empty uses the OLLAMA_BASE_URL env var.
+        "ollama_base_url": "",
         "global_config": {},
         "vault_enabled": True,
         "vault_threshold": 100000,
         "auto_compact_enabled": True,
         "auto_compact_threshold": 80000,
+        # A step compacts at this share of its model's window, and spills and reads by it; 0 keeps the two fixed
+        # limits (D339; Naveen, 10-30).
+        "auto_compact_window_pct": 50,
         # Prompt caching: decorate provider payloads with cache_control markers
         # so subsequent ReAct turns reuse the cached system + tools prefix.
         # ~50–80% cost reduction on multi-turn agents at the cost of a 25% write
         # surcharge on the first turn. Disable only if a provider misbehaves.
         "prompt_cache_enabled": True,
-        # Transform step Python execution runtime.
-        # "docker" (default): runs in the sandbox-python container — 512 MB / 1 CPU /
-        # 60s, isolated from the host.
-        # "host": runs as a subprocess on the host with full RAM, GPU, filesystem,
-        # and network access. Required for HuggingFace / RecursiveMAS workflows that
-        # need torch + GPU but removes the sandbox security boundary. Self-hosted
-        # single-user deployments only.
+        # Transform step Python execution runtime — kept for old settings files and shown read-only;
+        # it no longer chooses anything (F968). Transforms run in the sandbox-python container
+        # (512 MB / 1 CPU / 60s) with no network. The host runtime (full RAM, GPU, filesystem,
+        # network; for HuggingFace / RecursiveMAS on one machine) is the server operator's choice
+        # alone: SYNAPSE_TRANSFORM_RUNTIME=host in the server's environment. It runs transforms as
+        # the server, able to read everything the server can, including stored keys: only for a
+        # single-user machine you trust every workflow on. POST /api/settings refuses "host".
         "transform_runtime": "docker",
         "allow_db_write": False,
+        # Tool policy's deployment-wide floor — see core/tool_policy.py. Empty
+        # is `allow` everywhere, deliberately: a closed default would change the
+        # behaviour of every agent already running on upgrade.
+        "tool_policy_defaults": {},
+        # An install choice, read at startup — see core/models.py.
         "coding_agent_enabled": True,
-        "report_agent_enabled": True,
         "messaging_enabled": True,
+        "messaging_webhook_base_url": "",
         "embed_code": False,
         "bash_allowed_dirs": [],
         # ── MCP stdio server registration (security) ──
@@ -125,41 +256,54 @@ def load_settings():
         "redis_url": "",
         "scale_postgres_url": "",
         "scale_mode_enabled": False,
-        "scale_auto_sync": False,
-        "worker_concurrency": 10,
+            "worker_concurrency": 10,
         "otlp_endpoint": "",
         "metrics_token": "",
         "max_global_queue_depth": 1_000_000,
         "rate_limit_per_tenant_rps": 1000,
         "pgbouncer_mode": False,
-        "num_queue_shards": 1,
-    }
-    
-    if not os.path.exists(SETTINGS_FILE):
-        file_settings = {}
-    else:
-        try:
-            with open(SETTINGS_FILE, 'r', encoding="utf-8") as f:
-                file_settings = json.load(f)
-        except Exception as e:
-            print(f"DEBUG: Error loading settings: {e}")
-            file_settings = {}
+        # Knowledge — document retrieval (D153): off until its release. The same
+        # keys and values as core/knowledge/config.py DEFAULTS (a test holds them equal).
+        "knowledge_enabled": False,
+        "knowledge_max_file_mb": 100,
+        "knowledge_max_file_pages": 2000,
+        "knowledge_crawl_max_depth": 3,
+        "knowledge_crawl_max_pages": 500,
+        "knowledge_crawl_rps_per_host": 1.0,
+        "knowledge_crawl_max_hours": 0.0,
+        "knowledge_recrawl_days": 7,
+        "knowledge_trace_retention_days": 30,
+        "knowledge_api_search_per_min": 120,
+        "knowledge_embedding_model": "",
+        "knowledge_rerank_model": "",
+        "knowledge_ingest_concurrency": 2,
+        "knowledge_snapshot_grace_days": 7,
+        "knowledge_rerank_base_url": "",
+        "knowledge_rerank_key": "",
+        "knowledge_contextual_model": "",
+        # Boards (BOARD1a, D280): off by default. The same keys and values as core/boards/config.py DEFAULTS
+        # (a test holds them equal).
+        "boards_enabled": False,
+        "boards_max_open_cards": 2000,
+        "boards_max_shared": 0,
+        # Teams (TEAM1a, D283): the most members at once, whatever an agent asks for. Equal to core/team.py DEFAULTS.
+        "team_at_once_ceiling": 10,
+        # At an agent's turn limit (F1219): "" = ask in a chat, stop in a run nobody watches (core/turn_limit.py).
+        "turn_limit_mode": "",
+        # A `cohere.`, `voyage.` or `jina.` rerank model's own key (B2a, D163).
+        "cohere_key": "",
+        "voyage_key": "",
+        "jina_key": "",
+}
 
-    settings = {**default_settings, **file_settings}
 
-    # In scale worker mode, inject_llm_env() populates SYNAPSE_SETTING_* env vars
-    # from Postgres. Overlay them here so all callers of load_settings() see the
-    # Postgres-sourced values without needing access to the local settings.json.
-    _prefix = "SYNAPSE_SETTING_"
-    for _env_key, _env_val in os.environ.items():
-        if _env_key.startswith(_prefix):
-            _setting_key = _env_key[len(_prefix):].lower()
-            try:
-                settings[_setting_key] = json.loads(_env_val)
-            except Exception:
-                settings[_setting_key] = _env_val
-
-    return settings
+# There is no settings file, and no SYNAPSE_SETTING_* overlay. Workers used to
+# receive their settings by having every one of them — provider API keys
+# included — written into the process environment at startup and read back out
+# here. That put secrets in /proc/<pid>/environ and in every subprocess the
+# worker spawns, and it fixed a worker's settings for its lifetime, which one
+# shared fleet cannot do. Settings come from a provider; see
+# set_settings_provider above.
 
 
 def get_or_create_jwt_secret() -> str:
@@ -169,7 +313,9 @@ def get_or_create_jwt_secret() -> str:
     If the secret is missing here (e.g. server run directly without the CLI),
     an ephemeral in-memory value is used for this session only.
     """
-    env_file = _PROJECT_ROOT / ".env"
+    from core.paths import env_file as _env_file
+
+    env_file = _env_file()
     var = "SYNAPSE_JWT_SECRET"
 
     existing = os.environ.get(var, "")

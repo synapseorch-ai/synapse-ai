@@ -19,9 +19,9 @@ import asyncio
 # Ensure backend/ is on sys.path so `from core.xxx` works
 sys.path.insert(0, os.path.dirname(__file__))
 
-# Mark this process as a scale worker — all resolvers will prefer Postgres
-import core.scale.context as _scale_ctx  # noqa: E402
-_scale_ctx.IS_SCALE_WORKER = True
+# No process-wide "this is a worker" flag any more. Resolvers read the store
+# directly, scoped to the tenant in context, in every process — so there is
+# nothing for a worker to switch on. See core/scale/context.py.
 
 
 # ---------------------------------------------------------------------------
@@ -32,7 +32,9 @@ def _start_health_server():
     import uvicorn
     from fastapi import FastAPI
 
-    health_app = FastAPI()
+    from core.telemetry import fastapi_options
+
+    health_app = FastAPI(**fastapi_options())  # FastAPI's own telemetry off
     _start_time = time.time()
 
     @health_app.get("/health")
@@ -69,6 +71,8 @@ def main():
     time.sleep(0.5)
 
     # Run the ARQ worker (blocks until SIGTERM / SIGINT)
+    from core.log import configure as _configure_logging
+    _configure_logging()
     from arq import run_worker
     from core.scale.worker import WorkerSettings
 

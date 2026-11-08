@@ -2,309 +2,384 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { memo } from 'react';
 import { Handle, Position } from '@xyflow/react';
-import { Bot, Scale, GitBranch, GitMerge, RefreshCw, User, Code, Square, Zap, Wrench, Braces, GitFork, ArrowLeftRight, FileText } from 'lucide-react';
+import { AlertTriangle, Check, PanelRightOpen, X } from 'lucide-react';
 import { STEP_TYPE_META } from '@/types/orchestration';
-import type { StepConfig, StepType } from '@/types/orchestration';
+import type { StepConfig, StepIssue, StepNodeData, StepType } from '@/types/orchestration';
+import { cn } from '@/lib/cn';
+import { reasonHeadline } from '@/lib/runErrors';
+import { Spinner } from '@/components/ui';
+import { StepIcon } from '../run/StepIcon';
+import { pillText } from '../run/model';
+import { roleOf } from './roles';
+import { KIND_WORD, type AgentKind } from './agentKind';
+import { EditorBoundary } from './EditorBoundary';
 
-const ICONS: Record<string, React.FC<{ size?: number; className?: string }>> = {
-    Bot, Scale, GitBranch, GitMerge, RefreshCw, User, Code, Square, Zap, Wrench, Braces, GitFork, ArrowLeftRight, FileText,
-};
+/**
+ * A connection's handle and its word. Every handle is the same quiet grey: the
+ * word says which road it is (true, false, a route's name), and colour on the
+ * canvas is kept for who does the work and for a run in progress (D211).
+ */
+const HANDLE_INK = 'var(--text-faint)';
 
-// Consistent color palette for evaluator routes (avoids red which implies error)
-const ROUTE_COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4'];
+/** Evenly distribute n source handles down the right edge. */
+function handleOffsets(n: number): number[] {
+    return Array.from({ length: n }, (_, i) => ((i + 1) / (n + 1)) * 100);
+}
+
+/** A right-edge source handle with its floating label, at `top` percent. */
+function LabelledHandle({ id, top, label }: { id: string; top: number; label: string }) {
+    return (
+        <>
+            <Handle
+                type="source"
+                position={Position.Right}
+                id={id}
+                className="!size-2.5 !border-2 !border-[var(--bg)]"
+                style={{ top: `${top}%`, backgroundColor: HANDLE_INK }}
+            />
+            <span
+                className="pointer-events-none absolute -right-2 translate-x-full -translate-y-1/2 rounded-sm bg-bg px-0.5 text-[10px] leading-none"
+                style={{ top: `${top}%`, color: HANDLE_INK }}
+                translate="no"
+            >
+                {label}
+            </span>
+        </>
+    );
+}
+
+/** One line of per-type context in the card body. */
+function summaryFor(step: StepConfig, agentName?: string, workflowName?: string): string | null {
+    const clip = (s: string, n = 40) => (s.length > n ? s.slice(0, n) + '…' : s);
+    switch (step.type) {
+        case 'agent': return agentName ?? 'No agent selected';
+        case 'browser':
+            // A recording replayed by code (F1146); the panel names it.
+            return step.recording_id ? 'Replays a recording' : 'No recording selected';
+        case 'workflow':
+            if (!step.workflow_id) return 'No workflow selected';
+            return workflowName ? `Run workflow: ${workflowName}` : 'Runs another workflow';
+        case 'tool': return step.forced_tool ? (step.tool_arguments != null ? `${step.forced_tool} · set arguments` : step.forced_tool) : 'No tool selected';
+        case 'llm': return step.prompt_template ? clip(step.prompt_template) : 'No prompt set';
+        case 'evaluator': {
+            const labels = Object.keys(step.route_map || {});
+            return labels.length ? `${labels.length} route${labels.length !== 1 ? 's' : ''}: ${labels.join(', ')}` : 'No routes yet';
+        }
+        case 'parallel': {
+            const n = (step.parallel_branches || []).length;
+            return `${n} branch${n !== 1 ? 'es' : ''}`;
+        }
+        case 'merge': return step.merge_strategy || 'list';
+        case 'loop':
+            if (step.loop_over) return `for each ${clip(step.loop_over, 24)}`;
+            if (step.loop_while_condition) return `while ${clip(step.loop_while_condition, 24)}`;
+            return `${step.loop_count || 3}× iterations`;
+        case 'human': return step.human_prompt ? clip(step.human_prompt) : 'Awaiting input…';
+        case 'end': return 'Terminates flow';
+        case 'extract_json':
+            return step.input_keys?.length ? `From: ${step.input_keys.join(', ')}` : 'No input configured';
+        case 'print': return step.print_content ? clip(step.print_content) : 'No content set';
+        case 'if_else': return step.if_condition ? clip(step.if_condition) : 'No condition set';
+        case 'switch': {
+            const cases = Object.keys(step.switch_cases || {});
+            return cases.length ? `${cases.length} case${cases.length !== 1 ? 's' : ''}: ${cases.join(', ')}` : 'No cases yet';
+        }
+        case 'transform': return step.transform_code ? 'Python transform' : 'No code set';
+        case 'retrieve': {
+            const n = step.retrieve?.kb_ids?.length ?? 0;
+            if (!n) return 'No knowledge base';
+            return step.retrieve?.query ? clip(step.retrieve.query) : `${n} knowledge base${n !== 1 ? 's' : ''}, no query`;
+        }
+        case 'ingest':
+            if (!step.ingest?.kb_id) return 'No knowledge base';
+            return step.ingest.records_from ? `From: ${step.ingest.records_from}` : 'No records key';
+        default: return null;
+    }
+}
 
 function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }) {
     const step: StepConfig = data.step;
     const isEntry: boolean = data.isEntry;
     const runStatus: string | undefined = data.runStatus;
+    const runError: string | undefined = runStatus === 'failed' ? data.runError : undefined;
     const agentName: string | undefined = data.agentName;
-    // Last-run cache stats injected by WorkflowCanvas: { hits, misses } per step.
-    const cacheStats: { hits?: number; misses?: number } | undefined = data.cacheStats;
+    const agentKindOf: string | undefined = step.type === 'agent' ? data.agentKind : undefined;
+    const issues: StepIssue[] | undefined = data.issues;
+    // The open canvas shows how the run stands in words on the step too (M3a-2).
+    const runDetail = data.runDetail === true;
+    const lastRun = data.lastRun as StepNodeData['lastRun'];
+    const live = runStatus === 'running' || runStatus === 'paused';
+    const hasResult = data.hasResult === true && typeof data.openResult === 'function';
+    const openResult = data.openResult as StepNodeData['openResult'];
     const meta = STEP_TYPE_META[step.type as StepType];
     if (!meta) return null;
-    const IconComp = ICONS[meta.icon] || Bot;
+    const role = roleOf(step.type);
 
-    const statusColors: Record<string, string> = {
-        pending: 'border-zinc-600',
-        running: 'border-blue-400 shadow-blue-400/30 shadow-lg animate-pulse',
-        paused: 'border-amber-400 shadow-amber-400/30 shadow-lg',
-        completed: 'border-green-500',
-        failed: 'border-red-500',
+    // Run state paints the frame; selection paints the ring. Both are tokens,
+    // so the card is legible on either theme. A working step glows by who does
+    // the work (D211): cyan for a model, a neutral ring for logic — a Parallel
+    // or a Loop stays working through its whole body — and amber for a person.
+    // A step waiting on a person also pulses (the overlay below), unless the
+    // reader asked for less motion. Nothing on the frame itself animates.
+    const statusFrame: Record<string, string> = {
+        pending: 'border-border-strong',
+        running: role === 'model' ? 'border-machine' : role === 'person' ? 'border-person' : 'border-text-muted',
+        paused: 'border-person',
+        completed: 'border-success',
+        failed: 'border-danger',
     };
+    // Kept apart from the frame so `cn` lets a status glow win over the resting shadow.
+    const statusShadow: Record<string, string> = {
+        running: role === 'model'
+            ? 'shadow-[0_0_0_3px_color-mix(in_oklab,var(--machine)_24%,transparent),0_0_24px_-4px_var(--machine)]'
+            : role === 'person'
+                ? 'shadow-[0_0_0_3px_color-mix(in_oklab,var(--person)_30%,transparent)]'
+                : 'shadow-[0_0_0_3px_color-mix(in_oklab,var(--text-muted)_22%,transparent)]',
+        paused: 'shadow-[0_0_0_3px_color-mix(in_oklab,var(--person)_30%,transparent)]',
+    };
+    const frame = runStatus
+        ? statusFrame[runStatus] || 'border-border-strong'
+        : selected
+            ? 'border-accent'
+            : 'border-border-strong';
 
-    const borderClass = runStatus ? statusColors[runStatus] || 'border-zinc-600' : selected ? 'border-blue-500' : 'border-zinc-600';
+    const errorCount = (issues || []).filter((i) => i.severity === 'error').length;
+    const warningCount = (issues || []).length - errorCount;
+
     const routeLabels = step.type === 'evaluator' ? Object.keys(step.route_map || {}) : [];
     const switchCaseLabels = step.type === 'switch' ? Object.keys(step.switch_cases || {}) : [];
-    const isEnd = step.type === 'end';
-    const isLoop = step.type === 'loop';
-    const isEvaluator = step.type === 'evaluator';
-    const isIfElse = step.type === 'if_else';
-    const isSwitch = step.type === 'switch';
+
+    // Multi-handle nodes need vertical room for their fan-out.
+    const handleCount =
+        step.type === 'evaluator' ? routeLabels.length
+        : step.type === 'switch' && switchCaseLabels.length > 0 ? switchCaseLabels.length + 1
+        : step.type === 'loop' || step.type === 'if_else' ? 2
+        : 1;
+    const minHeight = handleCount > 2 ? handleCount * 24 + 48 : undefined;
+
+    const summary = summaryFor(step, agentName, data.workflowName);
 
     return (
+        // The status class comes first among the frame's `border-*` classes:
+        // ui-smoke reads the first one as the step's state.
         <div
-            className={`relative bg-zinc-800 rounded-lg border-2 ${borderClass} min-w-[160px] max-w-[220px] transition-all`}
-            style={{ borderColor: selected ? meta.color : undefined }}
+            data-tour="canvas-step"
+            className={cn(
+                'relative min-w-[176px] max-w-[232px] rounded-xl border',
+                frame,
+                'bg-surface shadow-[0_1px_2px_rgb(0_0_0/0.06)] transition-[border-color,box-shadow,opacity]',
+                data.unreached === true && 'opacity-55',
+                runStatus && statusShadow[runStatus],
+                selected && 'shadow-[0_0_0_3px_var(--ring)]',
+            )}
+            style={{ minHeight }}
         >
-            {/* Input handle — left side */}
-            <Handle type="target" position={Position.Left} className="!bg-zinc-400 !w-3 !h-3 !border-2 !border-zinc-700" />
+            {/* Waiting on a person: an amber ring that breathes, and holds still with reduced motion. */}
+            {runStatus === 'paused' && (
+                <span
+                    aria-hidden
+                    className="pointer-events-none absolute -inset-[6px] rounded-[16px] border-2 border-person/70 motion-safe:animate-pulse"
+                />
+            )}
+            {/* Issue badge — errors take precedence over warnings */}
+            {(errorCount > 0 || warningCount > 0) && (
+                <span
+                    className={`absolute -right-2 -top-2 z-10 flex size-[18px] items-center justify-center rounded-full border border-[var(--bg)] text-[10px] font-semibold ${
+                        errorCount > 0 ? 'bg-danger text-danger-fg' : 'bg-warning text-bg'
+                    }`}
+                    title={(issues || []).map((i) => i.message).join('\n')}
+                >
+                    {errorCount > 0 ? errorCount : <AlertTriangle size={10} aria-hidden />}
+                </span>
+            )}
 
-            {/* Header */}
-            <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-700" style={{ backgroundColor: meta.color + '20' }}>
-                <div style={{ color: meta.color }}><IconComp size={14} /></div>
-                <span className="text-xs font-medium text-zinc-300 truncate">{step.name}</span>
-                {isEntry && <span className="text-[10px] bg-green-600 text-white px-1.5 py-0.5 rounded-full ml-auto">START</span>}
+            {/* Input handle — left side */}
+            <Handle type="target" position={Position.Left} className="!size-2.5 !border-2 !border-[var(--bg)] !bg-text-faint" />
+
+            {/* What the step returned in the run on the canvas (F902): a button in its corner opens it. */}
+            {hasResult && (
+                <button
+                    type="button"
+                    aria-label={`See what ${step.name || 'this step'} returned`}
+                    title="See this step's result"
+                    onClick={(event) => { event.stopPropagation(); openResult?.(step.id); }}
+                    className="nodrag nopan absolute right-1.5 top-1.5 z-10 grid size-6 place-items-center rounded-md border border-border bg-surface text-accent-ink transition-colors hover:bg-accent-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                >
+                    <PanelRightOpen className="size-3.5" aria-hidden />
+                </button>
+            )}
+
+            {/* Header: the type's icon on its role's tint (D211), the name, Start */}
+            <div className={cn('flex items-center gap-2 px-3 pb-1 pt-2.5', hasResult && 'pr-9')}>
+                <StepIcon type={step.type} kind={agentKindOf} />
+                <span className="min-w-0 flex-1 truncate text-[13px] font-semibold tracking-[-0.01em] text-text" translate="no">{step.name}</span>
+                {isEntry && (
+                    <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-accent-ink">
+                        START
+                    </span>
+                )}
             </div>
 
             {/* Body */}
-            <div className="px-3 py-2 space-y-1">
-                <div className="text-[10px] uppercase tracking-wider text-zinc-500">{meta.label}</div>
+            <div className="space-y-0.5 px-3 pb-2.5">
+                <div className="text-[10.5px] font-medium uppercase tracking-wider text-text-faint">
+                    {/* An Agent step names what it holds (TEAM1e): "Agent · Team", "Agent · Workflow". */}
+                    {agentKindOf && agentKindOf !== 'agent' ? `${meta.label} · ${KIND_WORD[agentKindOf as AgentKind]}` : meta.label}
+                </div>
 
-                {/* Agent — show agent name */}
-                {step.type === 'agent' && agentName && (
-                    <div className="text-xs text-zinc-400 truncate">{agentName}</div>
+                {summary && (
+                    <div className="truncate text-xs text-text-muted" translate="no">{summary}</div>
                 )}
-
-                {/* Tool — show forced tool name */}
-                {step.type === 'tool' && (
-                    <div className="text-[10px] text-purple-400 truncate">
-                        {step.forced_tool ? step.forced_tool : 'No tool selected'}
+                {/* An agent step's own prompt template wins over the text typed
+                    into the run box (context.py gives it precedence) — invisible
+                    here is how a run "ignores" its input. Show it. */}
+                {step.type === 'agent' && step.prompt_template && (
+                    <div className="truncate text-[11px] text-text-faint" translate="no">
+                        <span className="opacity-70">prompt:</span>{' '}
+                        {step.prompt_template.slice(0, 40) + (step.prompt_template.length > 40 ? '…' : '')}
                     </div>
                 )}
-
-                {/* LLM — show prompt snippet */}
-                {step.type === 'llm' && (
-                    <div className="text-[10px] text-teal-400 truncate">
-                        {step.prompt_template ? step.prompt_template.slice(0, 40) + (step.prompt_template.length > 40 ? '…' : '') : 'No prompt set'}
-                    </div>
-                )}
-
-                {/* Evaluator — show route count */}
-                {isEvaluator && routeLabels.length > 0 && (
-                    <div className="text-[10px] text-emerald-400">
-                        {routeLabels.length} route{routeLabels.length !== 1 ? 's' : ''}: {routeLabels.join(', ')}
-                    </div>
-                )}
-
-                {/* Parallel — show branch count */}
-                {step.type === 'parallel' && (
-                    <div className="text-[10px] text-purple-400">
-                        {(step.parallel_branches || []).length} branch{(step.parallel_branches || []).length !== 1 ? 'es' : ''}
-                    </div>
-                )}
-
-                {/* Merge — show strategy */}
-                {step.type === 'merge' && (
-                    <div className="text-[10px] text-pink-400">{step.merge_strategy || 'list'}</div>
-                )}
-
-                {/* Loop — show count */}
-                {isLoop && (
-                    <div className="text-[10px] text-amber-400">{step.loop_count || 3}× iterations</div>
-                )}
-
-                {/* Human */}
-                {step.type === 'human' && (
-                    <div className="text-[10px] text-red-400 truncate">{step.human_prompt || 'Awaiting input...'}</div>
-                )}
-
-                {/* End — minimal */}
-                {isEnd && (
-                    <div className="text-[10px] text-zinc-500">Terminates flow</div>
-                )}
-
-                {/* Extract JSON — show input info */}
-                {step.type === 'extract_json' && (
-                    <div className="text-[10px] text-orange-400 truncate">
-                        {step.input_keys && step.input_keys.length > 0
-                            ? `From: ${step.input_keys.join(', ')}`
-                            : 'No input configured'}
-                    </div>
-                )}
-
-                {/* Print — show content preview */}
-                {step.type === 'print' && (
-                    <div className="text-[10px] text-lime-400 truncate">
-                        {step.print_content
-                            ? step.print_content.slice(0, 40) + (step.print_content.length > 40 ? '…' : '')
-                            : 'No content set'}
-                    </div>
-                )}
-
-                {/* IF/Else — show condition */}
-                {isIfElse && (
-                    <div className="text-[10px] text-yellow-400 truncate">
-                        {step.if_condition
-                            ? step.if_condition.slice(0, 40) + (step.if_condition.length > 40 ? '…' : '')
-                            : 'No condition set'}
-                    </div>
-                )}
-
-                {/* Switch — show case count + expression */}
-                {isSwitch && switchCaseLabels.length > 0 && (
-                    <div className="text-[10px] text-cyan-400">
-                        {switchCaseLabels.length} case{switchCaseLabels.length !== 1 ? 's' : ''}: {switchCaseLabels.join(', ')}
-                    </div>
-                )}
-                {isSwitch && step.switch_expression && (
-                    <div className="text-[10px] text-cyan-300/60 truncate">
+                {step.type === 'switch' && step.switch_expression && (
+                    <div className="truncate font-code text-[11px] text-text-faint" translate="no">
                         {step.switch_expression.slice(0, 35) + (step.switch_expression.length > 35 ? '…' : '')}
                     </div>
                 )}
 
-                {/* Input keys */}
+                {/* I/O keys */}
                 {step.input_keys && step.input_keys.length > 0 && (
-                    <div className="text-[10px] text-zinc-500">
-                        <span className="text-zinc-600">in:</span> {step.input_keys.join(', ')}
+                    <div className="truncate text-[11px] text-text-faint" translate="no">
+                        <span className="opacity-70">in:</span> {step.input_keys.join(', ')}
                     </div>
                 )}
-
-                {/* Output key */}
                 {step.output_key && (
-                    <div className="text-[10px] text-zinc-500">
-                        <span className="text-zinc-600">out:</span> {step.output_key}
+                    <div className="truncate text-[11px] text-text-faint" translate="no">
+                        <span className="opacity-70">out:</span> {step.output_key}
                     </div>
                 )}
-
-                {/* Loop guard */}
-                {step.max_iterations && step.max_iterations > 1 && step.max_iterations < 100 && (
-                    <div className="text-[10px] text-purple-400">max {step.max_iterations}x</div>
+                {/* Why it failed, where the eye already is (F195). The run log
+                    has the whole text; the card keeps it for a hover. */}
+                {runError && (
+                    <div className="line-clamp-2 break-words text-[11px] text-danger" title={runError} translate="no">
+                        {reasonHeadline(runError)}
+                    </div>
                 )}
-
-                {/* Cache hit-rate badge — only shown after a run with cache activity */}
-                {cacheStats && ((cacheStats.hits ?? 0) + (cacheStats.misses ?? 0)) > 0 && (() => {
-                    const hits = cacheStats.hits ?? 0;
-                    const total = hits + (cacheStats.misses ?? 0);
-                    const rate = hits / total;
-                    const color = rate >= 0.8 ? 'text-emerald-400 bg-emerald-950/40 border-emerald-800/40'
-                                : rate >= 0.4 ? 'text-amber-400 bg-amber-950/40 border-amber-800/40'
-                                : 'text-zinc-400 bg-zinc-900 border-zinc-700';
-                    return (
-                        <div className={`text-[10px] inline-flex items-center gap-1 px-1.5 py-0.5 rounded border ${color}`}>
-                            <span>cache:</span>
-                            <span className="font-mono">{hits}/{total}</span>
-                        </div>
-                    );
-                })()}
             </div>
 
             {/* Output handles — right side */}
-            {isEnd ? (
-                // End node — no output handles
-                null
-            ) : isEvaluator && routeLabels.length > 0 ? (
-                // Evaluator — one handle per route label, stacked vertically on right
+            {step.type === 'end' ? null : step.type === 'evaluator' && routeLabels.length > 0 ? (
+                handleOffsets(routeLabels.length).map((top, idx) => (
+                    <LabelledHandle
+                        key={`route_${routeLabels[idx]}`}
+                        id={`route_${routeLabels[idx]}`}
+                        top={top}
+                        label={routeLabels[idx]}
+                    />
+                ))
+            ) : step.type === 'loop' ? (
                 <>
-                    {routeLabels.map((label, idx) => {
-                        const total = routeLabels.length;
-                        const offset = total === 1 ? 50 : 20 + (idx * 60) / (total - 1);
-                        const color = ROUTE_COLORS[idx % ROUTE_COLORS.length];
-                        return (
-                            <Handle
-                                key={`route_${label}`}
-                                type="source"
-                                position={Position.Right}
-                                id={`route_${label}`}
-                                className="!w-3 !h-3 !border-2 !border-zinc-700"
-                                style={{ top: `${offset}%`, backgroundColor: color }}
-                            />
-                        );
-                    })}
-                    <div className="absolute -right-1 translate-x-full text-[9px] flex flex-col gap-0.5 pointer-events-none" style={{ top: '20%' }}>
-                        {routeLabels.map((label, idx) => {
-                            const color = ROUTE_COLORS[idx % ROUTE_COLORS.length];
-                            return (
-                                <span key={label} className="leading-tight" style={{ color }}>{label}</span>
-                            );
-                        })}
-                    </div>
+                    <LabelledHandle id="body" top={35} label="body" />
+                    <LabelledHandle id="done" top={65} label="done" />
                 </>
-            ) : isLoop ? (
-                // Loop — "body" (top-right, amber) and "done" (bottom-right, green) handles
+            ) : step.type === 'if_else' ? (
                 <>
-                    <Handle
-                        type="source"
-                        position={Position.Right}
-                        id="body"
-                        className="!w-3 !h-3 !border-2 !border-zinc-700 !bg-amber-400"
-                        style={{ top: '35%' }}
-                    />
-                    <Handle
-                        type="source"
-                        position={Position.Right}
-                        id="done"
-                        className="!w-3 !h-3 !border-2 !border-zinc-700 !bg-green-500"
-                        style={{ top: '65%' }}
-                    />
-                    <div className="absolute -right-1 translate-x-full text-[9px] flex flex-col pointer-events-none" style={{ top: '25%' }}>
-                        <span className="text-amber-400 leading-relaxed">body</span>
-                        <span className="text-green-500 leading-relaxed">done</span>
-                    </div>
+                    <LabelledHandle id="if_true" top={35} label="true" />
+                    <LabelledHandle id="if_false" top={65} label="false" />
                 </>
-            ) : isIfElse ? (
-                // IF/Else — "true" (green, top) and "false" (red, bottom) handles
-                <>
-                    <Handle
-                        type="source"
-                        position={Position.Right}
-                        id="if_true"
-                        className="!w-3 !h-3 !border-2 !border-zinc-700 !bg-green-500"
-                        style={{ top: '35%' }}
-                    />
-                    <Handle
-                        type="source"
-                        position={Position.Right}
-                        id="if_false"
-                        className="!w-3 !h-3 !border-2 !border-zinc-700 !bg-red-500"
-                        style={{ top: '65%' }}
-                    />
-                    <div className="absolute -right-1 translate-x-full text-[9px] flex flex-col pointer-events-none" style={{ top: '25%' }}>
-                        <span className="text-green-500 leading-relaxed">true</span>
-                        <span className="text-red-500 leading-relaxed">false</span>
-                    </div>
-                </>
-            ) : isSwitch && switchCaseLabels.length > 0 ? (
-                // Switch — one handle per case + default, stacked vertically (like evaluator)
-                <>
-                    {switchCaseLabels.map((caseVal, idx) => {
-                        const total = switchCaseLabels.length + 1; // +1 for default
-                        const offset = total === 1 ? 50 : 15 + (idx * 70) / (total - 1);
-                        const color = ROUTE_COLORS[idx % ROUTE_COLORS.length];
-                        return (
-                            <Handle
-                                key={`case_${caseVal}`}
-                                type="source"
-                                position={Position.Right}
-                                id={`case_${caseVal}`}
-                                className="!w-3 !h-3 !border-2 !border-zinc-700"
-                                style={{ top: `${offset}%`, backgroundColor: color }}
-                            />
-                        );
-                    })}
-                    {/* Default handle at the bottom */}
-                    <Handle
-                        type="source"
-                        position={Position.Right}
-                        id="default"
-                        className="!w-3 !h-3 !border-2 !border-zinc-700 !bg-zinc-400"
-                        style={{ top: `${15 + (switchCaseLabels.length * 70) / switchCaseLabels.length}%` }}
-                    />
-                    <div className="absolute -right-1 translate-x-full text-[9px] flex flex-col gap-0.5 pointer-events-none" style={{ top: '15%' }}>
-                        {switchCaseLabels.map((caseVal, idx) => {
-                            const color = ROUTE_COLORS[idx % ROUTE_COLORS.length];
-                            return (
-                                <span key={caseVal} className="leading-tight" style={{ color }}>{caseVal}</span>
-                            );
-                        })}
-                        <span className="leading-tight text-zinc-400">default</span>
-                    </div>
-                </>
+            ) : step.type === 'switch' && switchCaseLabels.length > 0 ? (
+                handleOffsets(switchCaseLabels.length + 1).map((top, idx) =>
+                    idx < switchCaseLabels.length ? (
+                        <LabelledHandle
+                            key={`case_${switchCaseLabels[idx]}`}
+                            id={`case_${switchCaseLabels[idx]}`}
+                            top={top}
+                            label={switchCaseLabels[idx]}
+                        />
+                    ) : (
+                        <LabelledHandle key="default" id="default" top={top} label="default" />
+                    ),
+                )
             ) : (
-                // Default single output handle — right side
-                <Handle type="source" position={Position.Right} className="!bg-zinc-400 !w-3 !h-3 !border-2 !border-zinc-700" />
+                <Handle type="source" position={Position.Right} className="!size-2.5 !border-2 !border-[var(--bg)] !bg-text-faint" />
+            )}
+            {/* How the run stands, on the open canvas: a pill on the bottom edge, placed
+                over the border so the step's size — and its handles — never move. */}
+            {runDetail && !live && lastRun && lastRun.state !== 'not-reached' && (
+                <TimePill time={lastRun} />
+            )}
+            {runDetail && live && (
+                <span
+                    data-run-pill={runStatus}
+                    className="pointer-events-none absolute -bottom-[9px] right-3 inline-flex h-[18px] items-center gap-1 whitespace-nowrap rounded-full border border-border bg-surface px-1.5 text-[10.5px] font-medium leading-none text-text-muted"
+                >
+                    {runStatus === 'running' ? (
+                        <>
+                            <Spinner size={11} className={role === 'model' ? 'text-machine' : 'text-text-muted'} />
+                            Working
+                        </>
+                    ) : (
+                        <>
+                            <span className="size-1.5 rounded-full bg-person" aria-hidden />
+                            <span className="text-person-ink">Needs you</span>
+                        </>
+                    )}
+                </span>
+            )}
+
+            {/* Where a route to this step goes at its Max iterations (F248), when it names one. */}
+            {step.type !== 'end' && step.on_exhausted_step_id && (
+                <Handle
+                    type="source"
+                    position={Position.Bottom}
+                    id="limit"
+                    title="When it reaches the limit"
+                    className="!size-2.5 !border-2 !border-[var(--bg)]"
+                    style={{ backgroundColor: HANDLE_INK }}
+                />
             )}
         </div>
     );
 }
 
-export const StepNode = memo(StepNodeComponent);
+/**
+ * Last run on a step (M3a-2): how it ended and how long it took, with what it
+ * spent where the run prices steps. Over the bottom border, like the live pill.
+ */
+function TimePill({ time }: { time: NonNullable<StepNodeData['lastRun']> }) {
+    const { short: parts, full } = pillText(time);
+    const lead = time.state === 'done'
+        ? <Check className="size-3 text-success" aria-hidden />
+        : time.state === 'failed'
+            // The stroke, not the text colour: on a step, danger-inked text is its failure reason (F195).
+            ? <X className="size-3 stroke-danger" aria-hidden />
+            : time.state === 'waiting'
+                ? <span className="size-1.5 rounded-full bg-person" aria-hidden />
+                : null;
+    const word = time.state === 'failed' ? 'Failed'
+        : time.state === 'waiting' ? 'Waiting'
+            : time.state === 'cancelled' ? 'Cancelled'
+                : time.state === 'running' ? 'Running'
+                    : 'Done';
+    return (
+        <span
+            data-run-pill={time.state}
+            data-step-seconds={time.seconds ?? undefined}
+            title={`Last run: ${word.toLowerCase()}${full ? `, ${full}` : ''}`}
+            className="pointer-events-none absolute -bottom-[9px] right-3 inline-flex h-[18px] items-center gap-1 whitespace-nowrap rounded-full border border-border bg-surface px-1.5 text-[10.5px] font-medium tabular-nums leading-none text-text-muted"
+        >
+            {lead}
+            {parts || word}
+        </span>
+    );
+}
+
+/** A step the canvas cannot draw is a card naming it, and every other step still draws (F1054). */
+function GuardedStepNode(props: { data: any; selected?: boolean }) {
+    const step = props.data?.step;
+    return (
+        <EditorBoundary compact what={`Step “${step?.name || step?.id || '?'}”`} resetKey={step}>
+            <StepNodeComponent {...props} />
+        </EditorBoundary>
+    );
+}
+
+export const StepNode = memo(GuardedStepNode);

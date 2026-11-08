@@ -1,0 +1,1135 @@
+"""The browser component against a real Chromium (BRW1, D328).
+
+Starts `core.browser.host` as its own process, as the backend does, and drives it
+through its routes against a page served here. What it proves needs a real
+browser: the network gate stops a send that Playwright MCP's own click triggered,
+a private address is refused even when the agent navigates to it, every action is
+logged with a screenshot, and the person's view streams frames. Skipped where
+Chromium or npx is missing.
+"""
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+import os
+import re
+import secrets
+import shutil
+import sys
+from pathlib import Path
+
+import aiohttp
+import pytest
+from aiohttp import web
+
+
+def _chromium_installed() -> bool:
+    try:
+        from playwright._impl._driver import compute_driver_executable  # noqa: F401
+        root = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or Path.home() / ".cache/ms-playwright")
+        return any(root.glob("chromium-*"))
+    except Exception:
+        return False
+
+
+pytestmark = pytest.mark.skipif(not (shutil.which("npx") and _chromium_installed()),
+                                reason="needs Chromium (playwright install chromium) and npx")
+
+BACKEND = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture
+async def site():
+    hits = {"submit": 0, "ws": 0, "spawn": 0}
+
+    async def index(_):
+        return web.Response(content_type="text/html", text=(
+            "<html><body><h1>Fixture</h1><form method='post' action='/submit'>"
+            "<input name='q' aria-label='Query'><button type='submit'>Send it</button></form>"
+            "<a href='/two'>Page two</a></body></html>"))
+
+    async def submit(_):
+        hits["submit"] += 1
+        return web.Response(text="submitted")
+
+    async def live(request):
+        port = request.url.port
+        return web.Response(content_type="text/html", text=(
+            "<html><body><p id='out'>waiting</p><script>"
+            "const seen = []; const show = () => { document.getElementById('out').textContent = seen.join(' '); };"
+            f"for (const [name, url] of [['inside', 'ws://127.0.0.1:{port}/ws'], ['public', 'ws://localhost:{port}/ws']]) {{"
+            "  const ws = new WebSocket(url);"
+            "  ws.onopen = () => ws.send('hi');"
+            "  ws.onmessage = (e) => { seen.push(name + '-got-' + e.data); show(); };"
+            "  ws.onclose = () => { seen.push(name + '-closed'); show(); };"
+            "}</script></body></html>"))
+
+    async def workers(request):
+        port = request.url.port
+        return web.Response(content_type="text/html", text=(
+            "<html><body><p id='out'>waiting</p><script>"
+            "const src = (u) => URL.createObjectURL(new Blob([`new WebSocket('${u}')`]));"
+            f"const inside = 'ws://127.0.0.1:{port}/ws', outside = 'ws://localhost:{port}/ws';"
+            "let made = 0;"
+            "for (const u of [inside, outside]) { try { new Worker(src(u)); made++; } catch (e) {} }"
+            "try { new SharedWorker(src(inside)); made++; } catch (e) {}"
+            # A fresh frame's own globals, used before anything could load in it.
+            "const f = document.createElement('iframe'); document.body.append(f);"
+            "try { new f.contentWindow.Worker(src(inside)); made++; } catch (e) {}"
+            "try { const w = window.open(''); new w.Worker(src(inside)); made++; } catch (e) {}"
+            "try { const w = f.contentWindow.open(''); new w.Worker(src(inside)); made++; } catch (e) {}"
+            # A popup that loads a page of its own, which starts its own worker.
+            "window.open('/spawn');"
+            "document.getElementById('out').textContent = 'made-' + made;"
+            "</script></body></html>"))
+
+    async def spawn(request):
+        hits["spawn"] += 1
+        port = request.url.port
+        return web.Response(content_type="text/html", text=(
+            "<html><body><script>"
+            f"try {{ new Worker(URL.createObjectURL(new Blob([\"new WebSocket('ws://localhost:{port}/ws')\"]))); }}"
+            " catch (e) {}</script></body></html>"))
+
+    async def socket(request):
+        hits["ws"] += 1
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        async for msg in ws:
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                await ws.send_str("echo-" + msg.data)
+        return ws
+
+    app = web.Application()
+    app.router.add_get("/", index)
+    app.router.add_post("/submit", submit)
+    app.router.add_get("/live", live)
+    app.router.add_get("/ws", socket)
+    app.router.add_get("/workers", workers)
+    app.router.add_get("/spawn", spawn)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    tcp = web.TCPSite(runner, "127.0.0.1", 0)
+    await tcp.start()
+    port = tcp._server.sockets[0].getsockname()[1]
+    yield port, hits
+    await runner.cleanup()
+
+
+@pytest.fixture
+async def host():
+    token = secrets.token_urlsafe(32)
+    env = {**os.environ, "SYNAPSE_BROWSER_TOKEN": token, "EGRESS_ALLOW_HOSTS": "localhost",
+           "PYTHONPATH": str(BACKEND)}
+    proc = await asyncio.create_subprocess_exec(sys.executable, "-m", "core.browser.host", cwd=str(BACKEND),
+                                                env=env, stdout=asyncio.subprocess.PIPE,
+                                                stderr=asyncio.subprocess.DEVNULL)
+    line = (await asyncio.wait_for(proc.stdout.readline(), 60)).decode().split()
+    assert line[0] == "BROWSER_HOST_READY"
+    http = aiohttp.ClientSession(headers={"X-Browser-Token": token})
+    yield http, int(line[1]), int(line[2])
+    await http.close()
+    proc.terminate()
+    await proc.wait()
+
+
+async def _post(http, port, path, body):
+    async with http.post(f"http://127.0.0.1:{port}{path}", json=body) as resp:
+        return await resp.json()
+
+
+async def test_the_component_reads_but_never_sends_and_never_reaches_inside(site, host):
+    port, hits = site
+    http, control, viewer = host
+
+    async with aiohttp.ClientSession() as anon:
+        async with anon.post(f"http://127.0.0.1:{control}/session", json={}) as resp:
+            assert resp.status == 401  # no token, no browser
+
+    sid = (await _post(http, control, "/session", {"owner": "chat:e2e", "mode": "read_only"}))["session_id"]
+    nav = await _post(http, control, "/tool", {"session_id": sid, "name": "browser_navigate",
+                                               "args": {"url": f"http://localhost:{port}/"}})
+    assert not nav["is_error"] and 'button "Send it"' in nav["text"]  # the snapshot comes back inline
+
+    refused = await _post(http, control, "/tool", {"session_id": sid, "name": "browser_evaluate",
+                                                   "args": {"function": "() => document.cookie"}})
+    assert refused == {"refused": "browser_evaluate is not available in Synapse's browser."}
+
+    ref = re.search(r'button "Send it" \[ref=(e\d+)\]', nav["text"]).group(1)
+    click = await _post(http, control, "/tool", {"session_id": sid, "name": "browser_click",
+                                                 "args": {"element": "Send it button", "target": ref}})
+    assert hits["submit"] == 0, "a read-only browser sent a form"
+    assert f"a POST to localhost: this browser is read-only" in click["text"]
+
+    inside = await _post(http, control, "/tool", {"session_id": sid, "name": "browser_navigate",
+                                                  "args": {"url": f"http://127.0.0.1:{port}/"}})
+    assert inside["is_error"] and "ERR_BLOCKED_BY_CLIENT" in inside["text"]
+
+    async with http.get(f"http://127.0.0.1:{control}/log", params={"session_id": sid}) as resp:
+        entries = (await resp.json())["entries"]
+    agent = [e for e in entries if e["actor"] == "agent"]
+    assert [e["action"] for e in agent] == ["browser_navigate", "browser_click", "browser_navigate"]
+    assert all(e["shot_ref"] for e in agent)
+    assert any(e["actor"] == "guard" and "127.0.0.1" in e["target"] for e in entries)
+    async with http.get(f"http://127.0.0.1:{control}/shot",
+                        params={"session_id": sid, "ref": agent[0]["shot_ref"]}) as resp:
+        assert resp.content_type == "image/jpeg" and (await resp.read())[:2] == b"\xff\xd8"
+
+    frames = 0
+    try:
+        async with http.get(f"http://127.0.0.1:{viewer}/frames", params={"session_id": sid},
+                            timeout=aiohttp.ClientTimeout(total=3)) as resp:
+            async for chunk in resp.content:
+                frames += chunk.startswith(b"data:")
+    except asyncio.TimeoutError:
+        pass
+    assert frames >= 1
+
+    async with http.post(f"http://127.0.0.1:{viewer}/input", params={"session_id": sid},
+                         json={"type": "mouse"}) as resp:
+        assert resp.status == 409  # the agent holds the wheel: the person's input waits for Take over
+
+    closed = await _post(http, control, "/close", {"session_id": sid})
+    assert closed["closed"] is True
+    async with http.get(f"http://127.0.0.1:{control}/log", params={"session_id": sid}) as resp:
+        assert resp.status == 404
+
+
+async def test_a_page_s_socket_passes_the_same_guard(site, host):
+    """F1122: a WebSocket never passes the request route. A read-only browser opens none; co-drive opens one to a
+    public address and its messages flow, and none reaches a private address either way."""
+    port, hits = site
+    http, control, _viewer = host
+
+    async def opened(mode: str, wait_for: str) -> str:
+        # v2: while the agent drives, a socket opens only on its sites (the next test).
+        sid = (await _post(http, control, "/session", {"owner": f"chat:ws-{mode}", "mode": mode,
+                                                       "sites": ["localhost"]}))["session_id"]
+        await _post(http, control, "/tool", {"session_id": sid, "name": "browser_navigate",
+                                             "args": {"url": f"http://localhost:{port}/live"}})
+        await _post(http, control, "/tool", {"session_id": sid, "name": "browser_wait_for",
+                                             "args": {"text": wait_for}})
+        snap = await _post(http, control, "/tool", {"session_id": sid, "name": "browser_snapshot", "args": {}})
+        async with http.get(f"http://127.0.0.1:{control}/log", params={"session_id": sid}) as resp:
+            guard = [e["target"] for e in (await resp.json())["entries"] if e["actor"] == "guard"]
+        await _post(http, control, "/close", {"session_id": sid})
+        return snap["text"], guard
+
+    text, guard = await opened("read_only", "public-closed")
+    assert hits["ws"] == 0, "a read-only browser opened a socket"
+    assert "inside-got" not in text and "public-got" not in text
+    assert any("this browser is read-only" in g for g in guard)
+    assert any("127.0.0.1 is not a public address" in g for g in guard)
+
+    text, guard = await opened("co_drive", "public-got-echo-hi")
+    assert hits["ws"] == 1, "only the public socket reached the server"
+    assert "inside-got" not in text and "inside-closed" in text
+    assert any("127.0.0.1 is not a public address" in g for g in guard)
+
+
+async def test_a_read_only_page_starts_no_worker(site, host):
+    """F1122: a worker's own WebSocket passes no socket route, so a read-only browser, which opens no socket at all,
+    starts no worker either (SEC2's review): not from the page, a fresh frame's own globals, or a popup it opened.
+    Eight loads in one warm browser: a popup is a new target, and Playwright MCP, a second client of the same
+    Chromium, may let it run before the guard reaches it (found by BRW2), so the page gets no handle on one."""
+    port, hits = site
+    http, control, _viewer = host
+    sid = (await _post(http, control, "/session", {"owner": "chat:workers", "mode": "read_only"}))["session_id"]
+    for _ in range(8):
+        await _post(http, control, "/tool", {"session_id": sid, "name": "browser_navigate",
+                                             "args": {"url": f"http://localhost:{port}/workers"}})
+        await _post(http, control, "/tool", {"session_id": sid, "name": "browser_wait_for",
+                                             "args": {"text": "made-"}})
+        snap = await _post(http, control, "/tool", {"session_id": sid, "name": "browser_snapshot", "args": {}})
+        assert "made-0" in snap["text"], snap["text"]
+    await asyncio.sleep(1.5)  # time for any socket a worker opened to arrive
+    assert hits["spawn"] >= 1, "the popup's own page loaded"
+    assert hits["ws"] == 0, "a worker opened a socket from a read-only browser"
+    await _post(http, control, "/close", {"session_id": sid})
+
+
+# ── v2: co-driving (F1096, F1097, F1098, F1101) ──────────────────────────────
+
+@pytest.fixture
+async def form_site():
+    hits = {"submit": 0, "read": 0}
+
+    async def index(request):
+        port = request.url.port
+        return web.Response(content_type="text/html", text=(
+            # An orders address behind a plain label: the click stop lets it run on the person's words, and the
+            # network's backstop holds it (F1125).
+            "<html><body><h1>Form</h1><form method='post' action='/orders/submit'>"
+            "<input name='q' aria-label='Query'><input type='password' name='pw' aria-label='Password'>"
+            "<button type='submit'>Send it</button></form>"
+            f"<a href='http://other.localhost:{port}/'>Elsewhere</a></body></html>"))
+
+    async def submit(_):
+        hits["submit"] += 1
+        return web.Response(content_type="text/html", text="<h1>Sent</h1>")
+
+    app = web.Application()
+    app.router.add_get("/", index)
+    app.router.add_post("/orders/submit", submit)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    tcp = web.TCPSite(runner, "127.0.0.1", 0)
+    await tcp.start()
+    yield tcp._server.sockets[0].getsockname()[1], hits
+    await runner.cleanup()
+
+
+@pytest.fixture
+async def codrive_host():
+    token = secrets.token_urlsafe(32)
+    env = {**os.environ, "SYNAPSE_BROWSER_TOKEN": token, "EGRESS_ALLOW_HOSTS": "localhost,other.localhost",
+           "PYTHONPATH": str(BACKEND)}
+    proc = await asyncio.create_subprocess_exec(sys.executable, "-m", "core.browser.host", cwd=str(BACKEND),
+                                                env=env, stdout=asyncio.subprocess.PIPE,
+                                                stderr=asyncio.subprocess.DEVNULL)
+    line = (await asyncio.wait_for(proc.stdout.readline(), 60)).decode().split()
+    http = aiohttp.ClientSession(headers={"X-Browser-Token": token})
+    yield http, int(line[1]), int(line[2])
+    await http.close()
+    proc.terminate()
+    try:  # a component stuck in a page call must not hold the suite: it is killed after a while
+        await asyncio.wait_for(proc.wait(), timeout=15)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+
+
+async def _tool(http, control, sid, name, args, press=None):
+    return await _post(http, control, "/tool", {"session_id": sid, "name": name, "args": args, "press": press})
+
+
+#: The engine's word that the agent quoted the person asking for this press (F1124).
+ASKED = {"because": "send it for me please", "confirmed": True}
+
+
+async def _view(http, viewer, sid, path, body=None):
+    async with http.post(f"http://127.0.0.1:{viewer}{path}", params={"session_id": sid}, json=body or {}) as r:
+        return r.status, await r.json()
+
+
+async def _state(http, control, sid):
+    async with http.get(f"http://127.0.0.1:{control}/state", params={"session_id": sid}) as r:
+        return await r.json()
+
+
+def _ref(text, role, name):
+    return re.search(rf'{role} "{name}" \[ref=(\w+)\]', text).group(1)  # e5, or f2e5 after a reload
+
+
+async def test_an_agents_send_waits_for_the_person(form_site, codrive_host):
+    port, hits = form_site
+    http, control, viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "chat:v2", "mode": "co_drive",
+                                                   "sites": ["localhost"]}))["session_id"]
+    page = await _tool(http, control, sid, "browser_navigate", {"url": f"http://localhost:{port}/"})
+    typed = await _tool(http, control, sid, "browser_type",
+                        {"element": "Query", "target": _ref(page["text"], "textbox", "Query"), "text": "hello"})
+    assert not typed.get("handover"), typed  # a listed site takes typing
+
+    pw = await _tool(http, control, sid, "browser_type",
+                     {"element": "Password", "target": _ref(page["text"], "textbox", "Password"), "text": "x"})
+    assert pw["handover"]["kind"] == "sensitive" and pw["is_error"]
+    assert (await _state(http, control, sid))["wheel"] == "person"
+    await _view(http, viewer, sid, "/wheel/hand-back", {})
+
+    click = await _tool(http, control, sid, "browser_click",
+                        {"element": "Send it", "target": _ref(page["text"], "button", "Send it")}, ASKED)
+    assert click["handover"]["kind"] == "send", click  # the press ran on the person's words; its order is held
+    state = await _state(http, control, sid)
+    assert state["wheel"] == "nobody" and state["held"]["method"] == "POST" and state["held"]["money"] is True
+    assert hits["submit"] == 0
+
+    status, body = await _view(http, viewer, sid, "/release", {})
+    assert status == 409 and "take over" in body["error"], "a payment is never let go by the agent's side"
+    await asyncio.sleep(0.3)
+    assert hits["submit"] == 0
+    status, _ = await _view(http, viewer, sid, "/wheel/take")
+    assert status == 200
+    await asyncio.sleep(0.5)
+    assert hits["submit"] == 0 and not (await _state(http, control, sid)).get("held"), "taking over drops it"
+
+
+async def test_taking_over_drops_the_agents_send_and_the_person_sends_it(form_site, codrive_host):
+    port, hits = form_site
+    http, control, viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "chat:v2b", "mode": "co_drive",
+                                                   "sites": ["localhost"]}))["session_id"]
+    page = await _tool(http, control, sid, "browser_navigate", {"url": f"http://localhost:{port}/"})
+    query = _ref(page["text"], "textbox", "Query")
+    await _tool(http, control, sid, "browser_type", {"element": "Query", "target": query, "text": "hi"})
+    status, _ = await _view(http, viewer, sid, "/input", {"type": "text", "text": "x"})
+    assert status == 409  # the agent holds the wheel
+    click = await _tool(http, control, sid, "browser_click",
+                        {"element": "Send it", "target": _ref(page["text"], "button", "Send it")}, ASKED)
+    assert click["handover"]["kind"] == "send"
+
+    heard: list[dict] = []
+
+    async def listen():  # frames are long lines: read chunks and split events, as the app's relay does
+        pending = b""
+        async with http.get(f"http://127.0.0.1:{viewer}/frames", params={"session_id": sid}) as resp:
+            async for chunk in resp.content.iter_any():
+                *events, pending = (pending + chunk).split(b"\n\n")
+                heard.extend(json.loads(e[6:])["log"] for e in events if e.startswith(b'data: {"log"'))
+
+    listening = asyncio.ensure_future(listen())  # the pane, open while the person drives
+    await asyncio.sleep(0.3)
+    status, body = await _view(http, viewer, sid, "/wheel/take")
+    assert status == 200 and body["wheel"] == "person"
+    await asyncio.sleep(0.5)
+    assert hits["submit"] == 0, "taking over drops the agent's send"
+    waiting = await _tool(http, control, sid, "browser_snapshot", {})
+    assert waiting == {"waiting": "person_driving"}
+
+    await _view(http, viewer, sid, "/input", {"type": "nav", "url": f"http://localhost:{port}/"})
+    await asyncio.sleep(0.5)
+    status, _ = await _view(http, viewer, sid, "/input", {"type": "mouse", "event": "click", "x": 60, "y": 75})
+    assert status == 200
+    await _view(http, viewer, sid, "/input", {"type": "text", "text": "mine"})
+    await _view(http, viewer, sid, "/input", {"type": "key", "key": "Enter"})
+    for _ in range(50):
+        if hits["submit"]:
+            break
+        await asyncio.sleep(0.1)
+    assert hits["submit"] == 1, "the person's own send goes"
+    async with http.get(f"http://127.0.0.1:{control}/log", params={"session_id": sid}) as resp:
+        mine = [(e["actor"], e["action"], e["target"]) for e in (await resp.json())["entries"] if e["actor"] == "person"]
+    assert ("person", "sent", "POST localhost") in mine, "the record says who sent it, never what"
+    listening.cancel()
+    assert any(e["action"] == "sent" and e["session_id"] == sid for e in heard), "person lines reach the pane"
+
+    await _view(http, viewer, sid, "/wheel/hand-back", {"note": "I sent it"})
+    after = await _tool(http, control, sid, "browser_snapshot", {})
+    assert 'said: "I sent it"' in after["text"]
+
+
+async def test_typing_on_an_unlisted_site_asks_first_and_scope_holds_redirects_too(form_site, codrive_host):
+    port, _ = form_site
+    http, control, viewer = codrive_host
+    open_sid = (await _post(http, control, "/session", {"owner": "chat:v2c", "mode": "co_drive"}))["session_id"]
+    page = await _tool(http, control, open_sid, "browser_navigate", {"url": f"http://localhost:{port}/"})
+    ask = await _tool(http, control, open_sid, "browser_type",
+                      {"element": "Query", "target": _ref(page["text"], "textbox", "Query"), "text": "hi"})
+    assert ask["handover"]["kind"] == "allow_typing" and ask["handover"]["host"] == "localhost"
+    await _view(http, viewer, open_sid, "/allow-site", {"host": "localhost"})
+    typed = await _tool(http, control, open_sid, "browser_type",
+                        {"element": "Query", "target": _ref(page["text"], "textbox", "Query"), "text": "hi"})
+    assert not typed.get("handover") and not typed["is_error"]
+
+    scoped = (await _post(http, control, "/session", {"owner": "run:v2d", "mode": "co_drive",
+                                                      "sites": ["localhost"]}))["session_id"]
+    off = await _tool(http, control, scoped, "browser_navigate", {"url": f"http://other.localhost:{port}/"})
+    assert off["is_error"] and "ERR_BLOCKED_BY_CLIENT" in off["text"]
+    assert "other.localhost is not one of this agent's sites" in off["text"]
+
+
+async def test_a_saved_login_reaches_the_site_and_comes_back_at_close(codrive_host):
+    seen = {}
+
+    async def whoami(request):
+        seen["cookie"] = request.headers.get("Cookie", "")
+        return web.Response(content_type="text/html", text="<h1>Account</h1>")
+
+    app = web.Application()
+    app.router.add_get("/", whoami)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    tcp = web.TCPSite(runner, "127.0.0.1", 0)
+    await tcp.start()
+    port = tcp._server.sockets[0].getsockname()[1]
+    http, control, _ = codrive_host
+    try:
+        state = {"cookies": [{"name": "sid", "value": "abc123", "domain": "localhost", "path": "/",
+                              "expires": -1, "httpOnly": True, "secure": False, "sameSite": "Lax"}], "origins": []}
+        sid = (await _post(http, control, "/session", {"owner": "run:login", "mode": "read_only",
+                                                       "login_state": state}))["session_id"]
+        await _tool(http, control, sid, "browser_navigate", {"url": f"http://localhost:{port}/"})
+        assert "sid=abc123" in seen["cookie"]
+        closed = await _post(http, control, "/close", {"session_id": sid, "keep_login": True})
+        assert any(c["name"] == "sid" and c["value"] == "abc123" for c in closed["login_state"]["cookies"])
+    finally:
+        await runner.cleanup()
+
+
+async def test_the_pane_draws_the_popups_the_screencast_cannot(codrive_host):
+    picked = {}
+
+    async def page(_):
+        return web.Response(content_type="text/html", text=(
+            "<html><body style='margin:0'>"
+            "<select id='s' aria-label='Size' style='position:absolute;left:20px;top:20px;width:200px;height:30px'>"
+            "<option value='s'>Small</option><option value='l'>Large</option></select>"
+            "<button onclick=\"alert('Saved!')\" style='position:absolute;left:20px;top:80px;width:120px;"
+            "height:30px'>Save</button>"
+            "<input id='f' type='file' accept='.pdf' style='position:absolute;left:20px;top:140px;width:200px;"
+            "height:30px'></body></html>"))
+
+    app = web.Application()
+    app.router.add_get("/", page)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    tcp = web.TCPSite(runner, "127.0.0.1", 0)
+    await tcp.start()
+    port = tcp._server.sockets[0].getsockname()[1]
+    http, control, viewer = codrive_host
+    try:
+        sid = (await _post(http, control, "/session", {"owner": "login:p", "mode": "co_drive",
+                                                       "person_only": True}))["session_id"]
+        await _view(http, viewer, sid, "/input", {"type": "nav", "url": f"http://localhost:{port}/"})
+        await asyncio.sleep(0.8)
+
+        status, body = await _view(http, viewer, sid, "/input", {"type": "mouse", "event": "click", "x": 100, "y": 35})
+        assert status == 200 and [o["label"] for o in body["select"]["options"]] == ["Small", "Large"]
+        status, _ = await _view(http, viewer, sid, "/select", {"target": body["select"]["target"], "value": "l"})
+        assert status == 200 and "select" not in await _state(http, control, sid)
+
+        await _view(http, viewer, sid, "/input", {"type": "mouse", "event": "click", "x": 60, "y": 95})
+        for _ in range(30):
+            state = await _state(http, control, sid)
+            if state.get("dialog"):
+                break
+            await asyncio.sleep(0.1)
+        assert state["dialog"] == {"type": "alert", "message": "Saved!", "default": None}
+        status, _ = await _view(http, viewer, sid, "/dialog", {"accept": True})
+        assert status == 200 and "dialog" not in await _state(http, control, sid)
+
+        await _view(http, viewer, sid, "/input", {"type": "mouse", "event": "click", "x": 100, "y": 155})
+        for _ in range(30):
+            state = await _state(http, control, sid)
+            if state.get("file"):
+                break
+            await asyncio.sleep(0.1)
+        assert state["file"] == {"multiple": False, "accept": ".pdf"}
+        import base64
+        status, _ = await _view(http, viewer, sid, "/file", {"name": "invoice.pdf",
+                                                              "b64": base64.b64encode(b"%PDF-1.4").decode()})
+        assert status == 200 and "file" not in await _state(http, control, sid)
+        status, _ = await _view(http, viewer, sid, "/dialog", {"accept": True})
+        assert status == 409  # nothing open
+    finally:
+        await runner.cleanup()
+
+
+async def test_while_the_agent_drives_a_socket_opens_only_on_its_sites(site, host):
+    """F1122 in co-drive: with no listed site, the agent's page opens no socket until the person allows the site;
+    while the person drives, a socket opens to any public address (V2-CONTRACT, Naveen 2026-10-28)."""
+    port, hits = site
+    http, control, viewer = host
+    sid = (await _post(http, control, "/session", {"owner": "chat:ws-scope", "mode": "co_drive"}))["session_id"]
+
+    async def agent_opens(wait_for: str) -> list[str]:
+        await _post(http, control, "/tool", {"session_id": sid, "name": "browser_navigate",
+                                             "args": {"url": f"http://localhost:{port}/live"}})
+        await _post(http, control, "/tool", {"session_id": sid, "name": "browser_wait_for",
+                                             "args": {"text": wait_for}})
+        async with http.get(f"http://127.0.0.1:{control}/log", params={"session_id": sid}) as resp:
+            return [e["target"] for e in (await resp.json())["entries"] if e["actor"] == "guard"]
+
+    guard = await agent_opens("public-closed")
+    assert hits["ws"] == 0, "the agent's page opened a socket off its sites"
+    assert any("a WebSocket to localhost: not one of the agent's sites" in g for g in guard)
+
+    await _view(http, viewer, sid, "/allow-site", {"host": "localhost"})
+    await agent_opens("public-got-echo-hi")
+    assert hits["ws"] == 1
+
+    status, _ = await _view(http, viewer, sid, "/wheel/take")
+    assert status == 200
+    await _view(http, viewer, sid, "/input", {"type": "nav", "url": f"http://localhost:{port}/live"})
+    for _ in range(50):
+        if hits["ws"] == 2:
+            break
+        await asyncio.sleep(0.1)
+    assert hits["ws"] == 2, "the person's page opens its socket"
+    await _post(http, control, "/close", {"session_id": sid})
+
+
+# ── final buttons: the click stop (F1124; Naveen 2026-10-28) ──────────────────
+
+@pytest.fixture
+async def press_site():
+    hits = {"feedback": 0, "search": 0, "pay": 0, "message": 0}
+
+    async def index(_):
+        return web.Response(content_type="text/html", text=(
+            "<html><body><h1>Shop</h1>"
+            "<form method='get' action='/search'><input name='q' aria-label='Find'><button>Search</button></form>"
+            "<form method='post' action='/feedback'><input name='note' aria-label='Note'>"
+            "<button type='submit'>Submit feedback</button></form>"
+            "<button onclick=\"fetch('/pay', {method: 'POST'})\">Pay now</button>"
+            "<textarea aria-label='Message' onkeydown=\"if (event.key === 'Enter') "
+            "fetch('/message', {method: 'POST', body: this.value})\"></textarea></body></html>"))
+
+    def counter(name):
+        async def count(_):
+            hits[name] += 1
+            return web.Response(content_type="text/html", text=f"<h1>{name} done</h1>")
+        return count
+
+    app = web.Application()
+    app.router.add_get("/", index)
+    app.router.add_get("/search", counter("search"))
+    for name in ("feedback", "pay", "message"):
+        app.router.add_post(f"/{name}", counter(name))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    tcp = web.TCPSite(runner, "127.0.0.1", 0)
+    await tcp.start()
+    yield tcp._server.sockets[0].getsockname()[1], hits
+    await runner.cleanup()
+
+
+async def test_a_press_that_acts_for_the_person_runs_only_on_their_words(press_site, codrive_host):
+    port, hits = press_site
+    http, control, viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "chat:press", "mode": "co_drive",
+                                                   "sites": ["localhost"]}))["session_id"]
+
+    async def page():
+        return (await _tool(http, control, sid, "browser_navigate", {"url": f"http://localhost:{port}/"}))["text"]
+
+    text = await page()
+    search = await _tool(http, control, sid, "browser_click", {"element": "Search", "target": _ref(text, "button", "Search")})
+    assert not search.get("handover") and hits["search"] == 1, "a search is pressed freely"
+
+    text = await page()
+    submit = {"element": "Submit feedback", "target": _ref(text, "button", "Submit feedback")}
+    told = await _tool(http, control, sid, "browser_click", submit)
+    assert told["text"].startswith("Not pressed: 'Submit feedback': it submits the form on localhost.")
+    assert not told.get("handover") and hits["feedback"] == 0
+    assert (await _state(http, control, sid))["wheel"] == "agent", "the agent decides; nobody is asked yet"
+
+    wrong = await _tool(http, control, sid, "browser_click", submit, {"because": "go on", "confirmed": False})
+    assert wrong["handover"]["kind"] == "press" and wrong["handover"]["press"]["tier"] == "acts"
+    assert wrong["handover"]["press"]["label"] == "Submit feedback" and hits["feedback"] == 0
+    assert (await _state(http, control, sid))["wheel"] == "person"
+    await _view(http, viewer, sid, "/wheel/hand-back", {})
+
+    text = await page()
+    pay = await _tool(http, control, sid, "browser_click",
+                      {"element": "Pay now", "target": _ref(text, "button", "Pay now")}, ASKED)
+    assert pay["handover"]["press"]["tier"] == "money", "money is the person's whatever was said"
+    await asyncio.sleep(0.5)
+    assert hits["pay"] == 0
+    await _view(http, viewer, sid, "/wheel/hand-back", {})
+
+    text = await page()
+    asked = await _tool(http, control, sid, "browser_click",
+                        {"element": "Submit feedback", "target": _ref(text, "button", "Submit feedback")}, ASKED)
+    assert asked.get("handover", {}).get("kind") != "press", asked
+    async with http.get(f"http://127.0.0.1:{control}/log", params={"session_id": sid}) as resp:
+        pressed = [e for e in (await resp.json())["entries"] if e["action"] == "pressed"]
+    assert pressed and pressed[-1]["target"] == "Submit feedback" and pressed[-1]["because"] == ASKED["because"]
+    for _ in range(50):  # feedback takes no money: nothing holds it at the network (F1125)
+        if hits["feedback"]:
+            break
+        await asyncio.sleep(0.1)
+    assert hits["feedback"] == 1
+
+    text = await page()
+    await _tool(http, control, sid, "browser_click", {"element": "Message", "target": _ref(text, "textbox", "Message")})
+    enter = await _tool(http, control, sid, "browser_press_key", {"key": "Enter"})
+    assert enter["text"].startswith("Not pressed: 'Enter in Message': Enter sends what is in the message box"), \
+        enter["text"]
+    assert hits["message"] == 0
+
+    over = await _tool(http, control, sid, "browser_hand_over", {"reason": "Pick the delivery slot you want."})
+    assert over["handover"]["kind"] == "asked" and over["handover"]["reason"] == "Pick the delivery slot you want."
+    assert (await _state(http, control, sid))["wheel"] == "person"
+    await _post(http, control, "/close", {"session_id": sid})
+
+
+async def test_a_prelaunched_browser_is_adopted_with_its_sessions_mode(site):
+    """F1135: `--prelaunch` starts a browser before any session; the first session adopts it, and a read-only one
+    still gets the read-only rules (no worker, so no socket), which are applied on adoption."""
+    port, hits = site
+    token = secrets.token_urlsafe(32)
+    env = {**os.environ, "SYNAPSE_BROWSER_TOKEN": token, "EGRESS_ALLOW_HOSTS": "localhost", "PYTHONPATH": str(BACKEND)}
+    proc = await asyncio.create_subprocess_exec(sys.executable, "-m", "core.browser.host", "--prelaunch",
+                                                cwd=str(BACKEND), env=env, stdout=asyncio.subprocess.PIPE,
+                                                stderr=asyncio.subprocess.DEVNULL)
+    try:
+        line = (await asyncio.wait_for(proc.stdout.readline(), 90)).decode().split()
+        assert line[0] == "BROWSER_HOST_READY"
+        async with aiohttp.ClientSession(headers={"X-Browser-Token": token}) as http:
+            control = int(line[1])
+            async def warm():
+                async with http.get(f"http://127.0.0.1:{control}/health") as resp:
+                    return (await resp.json())["warm"]
+
+            assert await warm(), "a browser is up before any session asks"
+            sid = (await _post(http, control, "/session", {"owner": "chat:warm", "mode": "read_only"}))["session_id"]
+            assert not await warm(), "the first session adopted it"
+            await _post(http, control, "/tool", {"session_id": sid, "name": "browser_navigate",
+                                                 "args": {"url": f"http://localhost:{port}/workers"}})
+            await _post(http, control, "/tool", {"session_id": sid, "name": "browser_wait_for", "args": {"text": "made-"}})
+            snap = await _post(http, control, "/tool", {"session_id": sid, "name": "browser_snapshot", "args": {}})
+            assert "made-0" in snap["text"], snap["text"]
+            await asyncio.sleep(1)
+            assert hits["ws"] == 0
+            await _post(http, control, "/close", {"session_id": sid})
+    finally:
+        proc.terminate()
+        await proc.wait()
+
+
+
+async def test_an_idle_browser_is_the_agents_again_on_its_next_call(site, host):
+    port, _hits = site
+    http, control, _viewer = host
+    sid = (await _post(http, control, "/session", {"owner": "chat:idle", "mode": "read_only"}))["session_id"]
+    await _post(http, control, "/tool", {"session_id": sid, "name": "browser_navigate",
+                                         "args": {"url": f"http://localhost:{port}/"}})
+    assert (await _post(http, control, "/idle", {"session_id": sid})) == {"wheel": "nobody"}
+    snap = await _post(http, control, "/tool", {"session_id": sid, "name": "browser_snapshot", "args": {}})
+    assert "Fixture" in snap["text"], "the agent's next call takes its idle browser back"
+    async with http.get(f"http://127.0.0.1:{control}/state", params={"session_id": sid}) as resp:
+        assert (await resp.json())["wheel"] == "agent"
+    await _post(http, control, "/close", {"session_id": sid})
+
+
+@pytest.fixture
+async def record_site():
+    async def index(_):
+        return web.Response(content_type="text/html", text=(
+            "<html><body style='margin:0'>"
+            "<form method='get' action='/results'>"
+            "<label for='order' style='position:absolute;left:10px;top:10px'>Order number</label>"
+            "<input id='order' name='q' style='position:absolute;left:150px;top:10px;width:200px;height:30px'>"
+            "<label for='pw' style='position:absolute;left:10px;top:60px'>Password</label>"
+            "<input id='pw' type='password' style='position:absolute;left:150px;top:60px;width:200px;height:30px'>"
+            "<button id='go' style='position:absolute;left:150px;top:110px;width:100px;height:30px'>Search</button>"
+            "</form></body></html>"))
+
+    async def results(request):
+        return web.Response(content_type="text/html", text=f"<h1>Results for {request.query.get('q', '')}</h1>")
+
+    app = web.Application()
+    app.router.add_get("/", index)
+    app.router.add_get("/results", results)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    tcp = web.TCPSite(runner, "127.0.0.1", 0)
+    await tcp.start()
+    yield tcp._server.sockets[0].getsockname()[1]
+    await runner.cleanup()
+
+
+async def test_a_task_the_person_does_is_recorded_and_their_password_is_not(record_site, codrive_host):
+    """F1141: open, type, a password (never kept, nor pictured), Search; the steps come back with their pictures."""
+    port = record_site
+    http, control, viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "record:r1", "mode": "co_drive",
+                                                   "person_only": True}))["session_id"]
+    status, body = await _view(http, viewer, sid, "/record/start", {})
+    assert status == 200 and body == {"recording": True}
+    await _view(http, viewer, sid, "/input", {"type": "nav", "url": f"http://localhost:{port}/"})
+    await asyncio.sleep(0.5)
+    await _view(http, viewer, sid, "/input", {"type": "mouse", "event": "click", "x": 250, "y": 25})
+    await _view(http, viewer, sid, "/input", {"type": "text", "text": "A-1001"})
+    await _view(http, viewer, sid, "/input", {"type": "mouse", "event": "click", "x": 250, "y": 75})
+    await _view(http, viewer, sid, "/input", {"type": "text", "text": "hunter2-secret"})
+    assert (await _state(http, control, sid))["recording"]["holding"] == "password"
+    await _view(http, viewer, sid, "/input", {"type": "mouse", "event": "click", "x": 200, "y": 125})
+    await asyncio.sleep(0.5)
+    status, done = await _view(http, viewer, sid, "/record/stop", {})
+    assert status == 200
+    steps = done["steps"]
+    assert [s["action"] for s in steps] == ["open", "type", "type", "click"], steps
+    assert steps[1]["value"] == {"fixed": "A-1001"} and steps[1]["target"]["label"] == "Order number"
+    assert steps[2]["value"] == {"person": "password"} and steps[2]["line"] == "You sign in here"
+    assert steps[3]["line"] == "Click Search" and steps[3]["target"]["css"] == "#go"
+    assert steps[3]["wait"] == {"for": "url", "url": f"http://localhost:{port}/results"}, "where Search led (F1143)"
+    assert "hunter2" not in json.dumps(done), "the password is in no step and no picture's name"
+    assert steps[3]["after_shot"] in done["shots"], "the results page, after leaving the login page, is pictured"
+    assert not steps[1]["after_shot"] and not steps[2]["after_shot"]
+    assert (await _view(http, viewer, sid, "/record/stop", {}))[0] == 409
+    await _post(http, control, "/close", {"session_id": sid})
+
+
+@pytest.fixture
+async def far_site():
+    """MEDIA1's dry run as a page (F1196): what the person clicks after the first click sits at the page's right and
+    bottom, where a page left drawn smaller than its viewport would put something else, or nothing. The dates Save
+    sends are kept."""
+    saved: list[str] = []
+
+    async def orders(_):
+        return web.Response(content_type="text/html", text=(
+            "<html><body style='margin:0;width:1280px;height:800px'>"
+            "<a id='hp' href='/order' style='position:absolute;left:1100px;top:700px;width:120px;height:30px;"
+            "display:block'>HP-2211</a></body></html>"))
+
+    async def order(_):
+        await asyncio.sleep(0.4)  # a real site's next page takes a while: the first step's picture meets it loading
+        return web.Response(content_type="text/html", text=(
+            "<html><body style='margin:0;height:800px'>"
+            "<div id='bar' style='position:absolute;left:0;top:0;width:100%;height:40px;background:#0b6e4f'></div>"
+            "<form method='get' action='/saved'>"
+            "<label for='delivery_date' style='position:absolute;left:950px;top:440px'>Delivery date</label>"
+            "<input id='delivery_date' name='d' style='position:absolute;left:950px;top:480px;width:200px;height:30px'>"
+            "<button id='save' style='position:absolute;left:950px;top:560px;width:200px;height:40px'>Save delivery date"
+            "</button></form></body></html>"))
+
+    async def done(request):
+        saved.append(request.query.get("d", ""))
+        return web.Response(content_type="text/html", text="<h1>Saved</h1>")
+
+    app = web.Application()
+    app.router.add_get("/", orders)
+    app.router.add_get("/order", order)
+    app.router.add_get("/saved", done)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    tcp = web.TCPSite(runner, "127.0.0.1", 0)
+    await tcp.start()
+    yield tcp._server.sockets[0].getsockname()[1], saved
+    await runner.cleanup()
+
+
+async def test_every_step_after_the_first_click_is_recorded_where_the_person_saw_it(far_site, codrive_host):
+    """F1196: the first step's picture scaled the page itself (CDP `clip.scale`), so from then on it was drawn and
+    clicked at 80%: the date typed and Save were lost, and the recording kept two steps. Each step's picture is made
+    smaller off the page; the page stays at its viewport, and every step is kept."""
+    import io
+
+    from PIL import Image
+
+    port, saved = far_site
+    http, control, viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "record:r3", "mode": "co_drive",
+                                                   "person_only": True}))["session_id"]
+    frames: list[dict] = []
+
+    async def pane():  # the person's pane, open while they record, as in MEDIA1's take: the screencast runs
+        pending = b""
+        async with http.get(f"http://127.0.0.1:{viewer}/frames", params={"session_id": sid}) as resp:
+            async for chunk in resp.content.iter_any():
+                *events, pending = (pending + chunk).split(b"\n\n")
+                frames.extend(json.loads(e[6:]) for e in events if e.startswith(b'data: {"jpeg_b64"'))
+
+    watching = asyncio.ensure_future(pane())
+    try:
+        await asyncio.sleep(0.3)
+        assert (await _view(http, viewer, sid, "/record/start", {}))[0] == 200
+        await _view(http, viewer, sid, "/input", {"type": "nav", "url": f"http://localhost:{port}/"})
+        await asyncio.sleep(0.5)
+        # Each reply comes at once: a click's picture that met its next page loading once held it a minute, the page
+        # drawn and clicked at 80% the while.
+        for body, pause in (({"type": "mouse", "event": "click", "x": 1150, "y": 712}, 0.8),
+                            ({"type": "mouse", "event": "click", "x": 1050, "y": 495}, 0),
+                            ({"type": "text", "text": "2026-11-06"}, 0),
+                            ({"type": "mouse", "event": "click", "x": 1050, "y": 580}, 0.8)):
+            status, _ = await asyncio.wait_for(_view(http, viewer, sid, "/input", body), timeout=10)
+            assert status == 200, body
+            await asyncio.sleep(pause)
+        on_order = [f for f in frames if "/order" in (f.get("url") or "")]
+        late = on_order[-1] if on_order else None
+        status, done = await _view(http, viewer, sid, "/record/stop", {})
+    finally:
+        watching.cancel()
+    assert status == 200
+    steps = done["steps"]
+    assert [s["action"] for s in steps] == ["open", "click", "type", "click"], steps
+    assert steps[1]["line"] == "Click HP-2211"
+    assert steps[2]["value"] == {"fixed": "2026-11-06"} and steps[2]["target"]["label"] == "Delivery date"
+    assert steps[3]["line"] == "Click Save delivery date"
+    assert saved == ["2026-11-06"], "the person's date reached the site"
+    for step in steps[1:2] + steps[3:]:
+        with Image.open(io.BytesIO(base64.b64decode(done["shots"][step["after_shot"]]))) as picture:
+            assert picture.width == 1024, picture.size
+            low, high = picture.convert("L").getextrema()
+            assert high - low > 30, f"step {step['n']}'s picture is blank"
+    assert late is not None, "the pane got frames while the person recorded"
+    with Image.open(io.BytesIO(base64.b64decode(late["jpeg_b64"]))) as frame:
+        r, g, b = frame.convert("RGB").getpixel((frame.width - 8, 20))
+        assert g > r + 40 and g > b, f"the page's full-width bar reaches the pane's right edge, not 80% of it: {(r, g, b)}"
+    await _post(http, control, "/close", {"session_id": sid})
+
+
+# ── replaying a recording by code (F1143) ────────────────────────────────────
+
+@pytest.fixture
+async def replay_site(record_site):
+    """record_site's search, plus a message form that posts and a checkout; the posts that arrive are counted."""
+    posts: list[str] = []
+
+    async def msg(_):
+        return web.Response(content_type="text/html", text=(
+            "<form method='post' action='/sent'><textarea name='m'>hi</textarea>"
+            "<button id='send'>Send message</button></form>"))
+
+    async def pay(_):
+        return web.Response(content_type="text/html", text=(
+            "<form method='post' action='/paid'><button id='pay'>Pay now</button></form>"))
+
+    async def posted(request):
+        posts.append(request.path)
+        return web.Response(content_type="text/html", text="<h1>Done</h1>")
+
+    async def late(_):  # a page that sends a while after its button, when the replay has long returned
+        return web.Response(content_type="text/html", text=(
+            "<button id='later' onclick=\"setTimeout(() => fetch('/late-sent', {method: 'POST', body: 'x'}), 3500)\">"
+            "Send later</button>"))
+
+    app = web.Application()
+    app.router.add_get("/msg", msg)
+    app.router.add_get("/late", late)
+    app.router.add_post("/late-sent", posted)
+    app.router.add_get("/pay", pay)
+    app.router.add_post("/sent", posted)
+    app.router.add_post("/paid", posted)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    tcp = web.TCPSite(runner, "127.0.0.1", 0)
+    await tcp.start()
+    yield record_site, tcp._server.sockets[0].getsockname()[1], posts
+    await runner.cleanup()
+
+
+def _search_steps(port: int) -> list[dict]:
+    return [
+        {"id": "s1", "n": 1, "action": "open", "url": f"http://localhost:{port}/", "line": "Open the portal"},
+        {"id": "s2", "n": 2, "action": "type", "target": {"label": "Order number", "css": "#order"},
+         "value": {"input": "order"}, "line": "Type {order} into Order number"},
+        {"id": "s3", "n": 3, "action": "click", "target": {"role": "button", "name": "Search", "css": "#go"},
+         "wait": {"for": "url", "url": f"http://localhost:{port}/results"}, "line": "Click Search"},
+        {"id": "s4", "n": 4, "action": "read", "target": {"css": "h1"}, "output": "heading", "line": "Read the heading"},
+    ]
+
+
+async def _replay(http, control, sid, steps, inputs=None, unattended=False):
+    return await _post(http, control, "/replay", {"session_id": sid, "steps": steps, "inputs": inputs or {},
+                                                  "unattended": unattended})
+
+
+async def test_a_recording_replays_by_code_with_its_inputs_and_returns_what_it_read(replay_site, codrive_host):
+    port, _other, _posts = replay_site
+    http, control, _viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "agent:a1", "mode": "co_drive"}))["session_id"]
+    done = await _replay(http, control, sid, _search_steps(port), {"order": "B-7"})
+    assert done == {"done": 4, "outputs": {"heading": "Results for B-7"}}, done
+    missing = await _replay(http, control, sid, _search_steps(port), {})
+    assert missing["miss"]["n"] == 2 and "order" in missing["miss"]["why"], "a missing input stops its step"
+    await _post(http, control, "/close", {"session_id": sid})
+
+
+async def test_a_step_that_lost_its_target_stops_with_the_page_and_carries_on_after_a_fix(replay_site, codrive_host):
+    port, _other, _posts = replay_site
+    http, control, _viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "agent:a1", "mode": "co_drive"}))["session_id"]
+    steps = _search_steps(port)
+    steps[2] = {**steps[2], "target": {"css": "#search-button-renamed"}}  # the site changed
+    stopped = await _replay(http, control, sid, steps, {"order": "B-8"})
+    miss = stopped["miss"]
+    assert miss["n"] == 3 and miss["step_id"] == "s3" and miss["line"] == "Click Search"
+    assert "Order number" in miss["snapshot"], "the page as it is, for the agent's fix"
+    assert miss["shot_ref"] and stopped["done"] == 2
+    # The agent finds its way for this run (F1144 proposes it as an edit); the replay carries on after the step.
+    await _tool(http, control, sid, "browser_navigate", {"url": f"http://localhost:{port}/results?q=B-8"})
+    status_after = await _post(http, control, "/replay/continue", {"session_id": sid, "from_n": 4})
+    assert status_after["done"] == 4 and status_after["outputs"] == {"heading": "Results for B-8"}, status_after
+    fix = status_after["fix"]  # the agent's way through step 3, for an edit to approve (F1144)
+    assert fix["step_id"] == "s3" and [(s["action"], s["actor"]) for s in fix["steps"]] == [("open", "agent")]
+    async with http.post(f"http://127.0.0.1:{control}/replay/continue", json={"session_id": sid}) as r:
+        assert r.status == 409, "nothing left to carry on"
+    await _post(http, control, "/close", {"session_id": sid})
+
+
+async def test_replay_keeps_sends_the_persons_where_they_must_be(replay_site, codrive_host):
+    """Decision #11 and F1124 in replay: a recorded send runs with someone there; alone only if its step may and only
+    to where the recording sent; a payment and the person's own step always hand over."""
+    port, other, posts = replay_site
+    http, control, viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "agent:a1", "mode": "co_drive"}))["session_id"]
+    send = [{"id": "m1", "n": 1, "action": "open", "url": f"http://localhost:{other}/msg"},
+            {"id": "m2", "n": 2, "action": "click", "target": {"role": "button", "name": "Send message", "css": "#send"},
+             "line": "Click Send message"}]
+
+    alone = await _replay(http, control, sid, send, unattended=True)
+    assert alone["handover"]["kind"] == "press" and alone["at"] == 2 and posts == [], alone
+    assert (await _replay(http, control, sid, send))["refused"], "the wheel is the person's until they hand it back"
+    await _view(http, viewer, sid, "/wheel/hand-back", {})
+    send[1]["may_send"] = True
+    elsewhere = await _replay(http, control, sid, send, unattended=True)
+    await asyncio.sleep(1.5)  # longer than the per-host pace a send may wait out
+    assert elsewhere.get("handover", {}).get("kind") == "send" and elsewhere["at"] == 2 and posts == [], (
+        f"allowed to send, but not to an address the recording never sent to: kept back, the person's turn {elsewhere}")
+    send[1]["sends"] = ["POST localhost"]
+    recorded = await _replay(http, control, sid, send, unattended=True)
+    await asyncio.sleep(0.5)
+    assert posts == ["/sent"], f"to where the recording sent, it sends: {recorded}"
+    with_someone = await _replay(http, control, sid, [send[0], {**send[1], "may_send": False, "sends": []}])
+    await asyncio.sleep(0.5)
+    assert with_someone.get("outputs") == {} and posts == ["/sent", "/sent"], \
+        f"the person pressed it when recording: {with_someone}"
+
+    pay = [{"id": "p1", "n": 1, "action": "open", "url": f"http://localhost:{other}/pay"},
+           {"id": "p2", "n": 2, "action": "click", "target": {"role": "button", "name": "Pay now", "css": "#pay"},
+            "may_send": True, "sends": ["POST localhost"], "line": "Click Pay now"}]
+    paying = await _replay(http, control, sid, pay)
+    await asyncio.sleep(1.5)
+    assert paying["handover"]["kind"] == "press" and paying["handover"]["press"]["tier"] == "money", paying
+    assert "/paid" not in posts
+    sid2 = (await _post(http, control, "/session", {"owner": "agent:a2", "mode": "co_drive"}))["session_id"]
+    signin = [{"id": "q1", "n": 1, "action": "open", "url": f"http://localhost:{port}/"},
+              {"id": "q2", "n": 2, "action": "type", "target": {"css": "#pw"}, "value": {"person": "password"},
+               "line": "You sign in here"}]
+    turn = await _replay(http, control, sid2, signin)
+    assert turn["handover"]["kind"] == "sensitive" and turn["at"] == 2
+    await _view(http, viewer, sid2, "/wheel/hand-back", {})
+    typed_into_password = await _replay(http, control, sid2, [
+        signin[0], {"id": "q3", "n": 2, "action": "type", "target": {"css": "#pw"}, "value": {"fixed": "x"}}])
+    assert typed_into_password["handover"]["kind"] == "sensitive", "a field that became the person's hands over"
+    for s in (sid, sid2):
+        await _post(http, control, "/close", {"session_id": s})
+
+
+async def test_re_recording_from_a_step_replays_the_steps_before_it_and_records_only_what_follows(
+        replay_site, codrive_host):
+    port, _other, _posts = replay_site
+    http, control, viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "record:r2", "mode": "co_drive",
+                                                   "person_only": True}))["session_id"]
+    first = _search_steps(port)[:2]
+    first[1] = {**first[1], "value": {"fixed": "A-1001"}}
+    status, body = await _view(http, viewer, sid, "/record/start", {"replay_first": first})
+    assert status == 200 and body == {"recording": True}, body
+    assert (await _state(http, control, sid))["wheel"] == "person", "the person carries on from there"
+    await _view(http, viewer, sid, "/input", {"type": "mouse", "event": "click", "x": 200, "y": 125})
+    await asyncio.sleep(0.5)
+    status, done = await _view(http, viewer, sid, "/record/stop", {})
+    assert [s["line"] for s in done["steps"]] == ["Click Search"], "the replayed steps are not recorded again"
+    assert done["steps"][0]["wait"]["url"] == f"http://localhost:{port}/results"
+    broken = [{**first[0]}, {**first[1], "target": {"css": "#gone"}}]
+    status, body = await _view(http, viewer, sid, "/record/start", {"replay_first": broken})
+    assert status == 409 and body["replayed"]["miss"]["n"] == 2
+    assert (await _state(http, control, sid))["recording"] is None, "nothing records after a replay that stopped"
+    # The person's own step stops the replay (a sign-in); they do it, and the re-record carries on after it.
+    signin = [{**first[0]}, {"id": "s2p", "n": 2, "action": "type", "target": {"css": "#pw"},
+                             "value": {"person": "password"}, "line": "You sign in here"},
+              {**first[1], "n": 3}]
+    status, body = await _view(http, viewer, sid, "/record/start", {"replay_first": signin})
+    assert status == 409 and body["replayed"]["handover"]["kind"] == "sensitive" and body["replayed"]["at"] == 2
+    state = await _state(http, control, sid)
+    assert state["wheel"] == "person" and state["banner"]["kind"] == "sensitive", "their turn, said on the pane"
+    status, body = await _view(http, viewer, sid, "/record/start", {"carry_on": True})
+    assert status == 200 and body == {"recording": True}, body
+    status, done = await _view(http, viewer, sid, "/record/stop", {})
+    assert done["steps"] == [], "the replayed steps, before and after their turn, are not recorded"
+    assert (await _view(http, viewer, sid, "/record/start", {"carry_on": True}))[0] == 409, "nothing to carry on"
+    await _post(http, control, "/close", {"session_id": sid})
+
+
+async def test_an_unattended_replays_sends_stay_its_recordings_after_it_returns(replay_site, codrive_host):
+    """A page may send long after the press that caused it: the replay has returned by then, and the send is still
+    held to where the recording sent until the agent's own next call."""
+    _port, other, posts = replay_site
+    http, control, _viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "agent:a1", "mode": "co_drive"}))["session_id"]
+    steps = [{"id": "l1", "n": 1, "action": "open", "url": f"http://localhost:{other}/late"},
+             {"id": "l2", "n": 2, "action": "click", "target": {"role": "button", "name": "Send later", "css": "#later"},
+              "may_send": True, "sends": ["POST elsewhere.example"], "line": "Click Send later"}]
+    done = await _replay(http, control, sid, steps, unattended=True)
+    assert done == {"done": 2, "outputs": {}}, done
+    await asyncio.sleep(5)
+    assert posts == [], "a late send to an address the recording never sent to stays in the browser"
+    await _post(http, control, "/close", {"session_id": sid})
+
+
+# ── an agent's fix of a missed step (F1144) ──────────────────────────────────
+
+async def _missed(http, control, sid, url, line):
+    steps = [{"id": "x1", "n": 1, "action": "open", "url": url},
+             {"id": "x2", "n": 2, "action": "click", "target": {"css": "#renamed-since"}, "line": line}]
+    stopped = await _replay(http, control, sid, steps)
+    assert stopped["miss"]["n"] == 2, stopped
+    return stopped
+
+
+async def test_a_fix_may_redo_the_persons_press_once_and_comes_back_as_its_steps(replay_site, codrive_host):
+    _port, other, posts = replay_site
+    http, control, _viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "chat:f1", "mode": "co_drive"}))["session_id"]
+    await _missed(http, control, sid, f"http://localhost:{other}/msg", "Click Send")
+    page = await _tool(http, control, sid, "browser_snapshot", {})
+    first = await _tool(http, control, sid, "browser_click",
+                        {"element": "Send message", "target": _ref(page["text"], "button", "Send message")})
+    await asyncio.sleep(1.5)
+    assert posts == ["/sent"] and not first.get("handover"), "what the person pressed when recording, redone"
+    page = await _tool(http, control, sid, "browser_navigate", {"url": f"http://localhost:{other}/msg"})
+    again = await _tool(http, control, sid, "browser_click",
+                        {"element": "Send message", "target": _ref(page["text"], "button", "Send message")})
+    await asyncio.sleep(1.5)
+    assert posts == ["/sent"] and "Not pressed" in again["text"], "only once: a second send needs the person's words"
+    done = await _post(http, control, "/replay/continue", {"session_id": sid})
+    assert done["done"] == 2 and done["fix"]["step_id"] == "x2", done
+    click, opened = done["fix"]["steps"]
+    assert (click["action"], click["actor"], click["target"]["name"]) == ("click", "agent", "Send message")
+    assert opened["action"] == "open", "the refused press is not a step"
+    await _post(http, control, "/close", {"session_id": sid})
+
+
+async def test_a_fix_redoes_a_press_only_on_the_site_the_step_missed_on(replay_site, codrive_host):
+    _port, other, posts = replay_site
+    http, control, _viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "chat:f2", "mode": "co_drive"}))["session_id"]
+    await _missed(http, control, sid, f"http://localhost:{other}/msg", "Click Send")
+    page = await _tool(http, control, sid, "browser_navigate", {"url": f"http://other.localhost:{other}/msg"})
+    elsewhere = await _tool(http, control, sid, "browser_click",
+                            {"element": "Send message", "target": _ref(page["text"], "button", "Send message")})
+    await asyncio.sleep(1.5)
+    assert posts == [] and "Not pressed" in elsewhere["text"], "another site: the person's words, as ever"
+    await _post(http, control, "/close", {"session_id": sid})
+
+
+async def test_a_fix_never_pays_or_deletes_even_with_its_redo_unspent(replay_site, codrive_host):
+    _port, other, posts = replay_site
+    http, control, _viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "chat:f3", "mode": "co_drive"}))["session_id"]
+    await _missed(http, control, sid, f"http://localhost:{other}/pay", "Click Pay now")
+    page = await _tool(http, control, sid, "browser_snapshot", {})
+    paying = await _tool(http, control, sid, "browser_click",
+                         {"element": "Pay now", "target": _ref(page["text"], "button", "Pay now")})
+    await asyncio.sleep(1.5)
+    assert paying["handover"]["kind"] == "press" and paying["handover"]["press"]["tier"] == "money", paying
+    assert "/paid" not in posts
+    await _post(http, control, "/close", {"session_id": sid})
+
+
+async def test_a_replay_started_without_waiting_runs_once_and_is_polled_to_its_answer(replay_site, codrive_host):
+    """BRW3: started, then polled at the control port, so no request has to stay open for a whole replay; one at a
+    time, so a start sent twice never replays twice."""
+    port, _other, _posts = replay_site
+    http, control, viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "agent:p1", "mode": "co_drive"}))["session_id"]
+    body = {"session_id": sid, "steps": _search_steps(port), "inputs": {"order": "P-1"}, "unattended": False,
+            "wait": False, "replay_id": "rp_mine"}
+    async with http.post(f"http://127.0.0.1:{control}/replay", json=body) as r:
+        assert r.status == 202 and (await r.json()) == {"replay_id": "rp_mine"}
+    async with http.post(f"http://127.0.0.1:{control}/replay", json={**body, "replay_id": "rp_again"}) as r:
+        assert r.status == 409 and (await r.json())["replay_id"] == "rp_mine", "one replay at a time"
+    async with http.get(f"http://127.0.0.1:{control}/replay/status",
+                        params={"session_id": sid, "replay_id": "rp_mine"}) as r:
+        first = await r.json()
+    assert first.get("running") is True or first.get("done") == 4, first
+    for _ in range(60):
+        async with http.get(f"http://127.0.0.1:{control}/replay/status",
+                            params={"session_id": sid, "replay_id": "rp_mine"}) as r:
+            now = await r.json()
+        if not now.get("running"):
+            break
+        await asyncio.sleep(0.5)
+    assert now == {"replay_id": "rp_mine", "done": 4, "outputs": {"heading": "Results for P-1"}}, now
+    async with http.get(f"http://127.0.0.1:{control}/replay/status",
+                        params={"session_id": sid, "replay_id": "rp_again"}) as r:
+        assert r.status == 404, "the second start never ran"
+    async with http.get(f"http://127.0.0.1:{viewer}/replay/status", params={"session_id": sid}) as r:
+        assert r.status in (401, 403, 404, 405), "the status is the control port's, never the viewer's"
+    await _post(http, control, "/close", {"session_id": sid})

@@ -1,0 +1,19 @@
+# OpenTelemetry export — optional. Installed, it still does nothing until an
+# operator turns it on (SYNAPSE_TELEMETRY=otlp, OTLP_ENDPOINT, or the Scale
+# tab's OTLP endpoint — see backend/core/telemetry/config.py); METRICS_TOKEN
+# turns on the pull-only /api/v2/metrics. Nothing is ever sent to us.
+#
+#   pip install 'synapse-orch-ai[telemetry]'        (a packaged install)
+#   pip install -r backend/requirements-telemetry.txt   (from source)
+#
+# Upper bounds are mandatory here too — see the header of requirements.txt.
+opentelemetry-api>=1.44,<2
+opentelemetry-sdk>=1.44,<2
+opentelemetry-exporter-otlp-proto-grpc>=1.44,<2
+opentelemetry-exporter-otlp-proto-http>=1.44,<2
+opentelemetry-instrumentation-asgi>=0.65b0,<1
+opentelemetry-instrumentation-httpx>=0.65b0,<1
+opentelemetry-instrumentation-redis>=0.65b0,<1
+opentelemetry-instrumentation-sqlalchemy>=0.65b0,<1
+opentelemetry-exporter-prometheus>=0.65b0,<1
+prometheus-client>=0.19,<1

@@ -17,6 +17,12 @@ the address checks, for installs that genuinely scrape an intranet or a
 localhost dev server, and for tests dialing loopback stand-ins. Empty —
 deny — is the default.
 
+Behind DNS64/NAT64 a public host resolves to its IPv4 inside an IPv6 prefix,
+and that IPv4 is what is judged (F1238): always in the well-known
+`64:ff9b::/96`, and in a local-use or network-specific prefix only when the
+install declares it in `EGRESS_NAT64_PREFIXES` (comma-separated, RFC 6052
+lengths), because the prefix length decides where the IPv4 sits.
+
 The DNS-rebinding window (resolution here vs. resolution at connect time) is
 deliberately not closed: closing it means owning socket creation and TLS SNI
 handling in every fetch path. Network-level egress control is the layer for
@@ -38,6 +44,14 @@ from urllib.parse import urlparse
 #: Carrier-grade NAT. Not covered by `is_private`, and it is where several
 #: managed-Kubernetes overlays put internal services.
 _CGNAT = ipaddress.ip_network("100.64.0.0/10")
+
+#: NAT64's well-known prefix (RFC 6052): the IPv4 is its low 32 bits.
+_NAT64_WELL_KNOWN = ipaddress.ip_network("64:ff9b::/96")
+#: The local-use range (RFC 8215), whose prefix length is the operator's: read only under a declared prefix.
+_NAT64_LOCAL_USE = ipaddress.ip_network("64:ff9b:1::/48")
+#: Where the IPv4's four bytes sit for each prefix length RFC 6052 allows; byte 8 (the u-octet) is never one of them.
+_NAT64_IPV4_BYTES = {32: (4, 5, 6, 7), 40: (5, 6, 7, 9), 48: (6, 7, 9, 10), 56: (7, 9, 10, 11), 64: (9, 10, 11, 12),
+                     96: (12, 13, 14, 15)}
 
 #: One resolution per host per window is enough for a page's subresources;
 #: short enough that the cache is not itself a rebinding aid.
@@ -64,6 +78,17 @@ class MalformedUrl(BlockedEgress):
     """
 
 
+class BlockedAddress(BlockedEgress):
+    """The host resolves into a range this guard refuses — loopback, private
+    space, link-local, CGNAT. The one refusal `EGRESS_ALLOW_HOSTS` can lift,
+    so the one a caller may say that about (F78). `host` is what was asked for.
+    """
+
+    def __init__(self, message: str, host: str):
+        super().__init__(message)
+        self.host = host
+
+
 class UnresolvedHost(BlockedEgress):
     """The host could not be resolved, so nothing is known about where it points.
 
@@ -86,6 +111,36 @@ def allowed_hosts() -> frozenset[str]:
     return frozenset(h.strip().lower() for h in raw.split(",") if h.strip())
 
 
+def nat64_prefixes() -> tuple[ipaddress.IPv6Network, ...]:
+    """The NAT64 prefixes this install declares (`EGRESS_NAT64_PREFIXES`), longest first. One that isn't an IPv6
+    network of an RFC 6052 length is left out, so its addresses stay refused."""
+    found = []
+    for raw in os.environ.get("EGRESS_NAT64_PREFIXES", "").split(","):
+        try:
+            net = ipaddress.IPv6Network(raw.strip())
+        except ValueError:
+            continue
+        if net.prefixlen in _NAT64_IPV4_BYTES:
+            found.append(net)
+    return tuple(sorted(found, key=lambda n: n.prefixlen, reverse=True))
+
+
+def nat64_ipv4(ip: ipaddress.IPv6Address) -> ipaddress.IPv4Address | str | None:
+    """The IPv4 a NAT64 address reaches; a reason to refuse it when it is one this guard can't read; None when it
+    is no NAT64 address. The cloud's guard reads it here too (F1238)."""
+    prefix = next((n for n in nat64_prefixes() if ip in n), None)
+    if prefix is None and ip in _NAT64_WELL_KNOWN:
+        prefix = _NAT64_WELL_KNOWN
+    if prefix is None:
+        if ip in _NAT64_LOCAL_USE:
+            return "a NAT64 address whose prefix this install hasn't declared (EGRESS_NAT64_PREFIXES)"
+        return None
+    packed = ip.packed
+    if prefix.prefixlen != 96 and packed[8]:
+        return "not a NAT64 address: its u-octet isn't zero"
+    return ipaddress.IPv4Address(bytes(packed[i] for i in _NAT64_IPV4_BYTES[prefix.prefixlen]))
+
+
 def reject_address(address: str) -> str | None:
     """Return a reason to refuse this IP, or None to allow it.
 
@@ -101,6 +156,11 @@ def reject_address(address: str) -> str | None:
     # host while failing every IPv4 range check, so unwrap before testing.
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
+    # Behind DNS64, a NAT64 address reaches the IPv4 inside it: that is what is judged (F1238).
+    if isinstance(ip, ipaddress.IPv6Address) and (inner := nat64_ipv4(ip)) is not None:
+        if isinstance(inner, str):
+            return inner
+        ip = inner
 
     if ip.is_loopback:
         return "loopback"
@@ -183,32 +243,7 @@ def _check_addresses(host: str, addresses: list[str]) -> None:
             # `host` is echoed because the caller supplied it. The addresses
             # it resolved to are not: that is internal topology, and reading
             # it back is exactly what an attacker is probing for.
-            raise BlockedEgress(f"{host} resolves to a blocked range: {reason}")
-
-
-async def check_tool_url(url: str) -> None:
-    """`check_url`, with the posture a *saved* custom tool needs.
-
-    The scraper is handed URLs a model invented, so refusing whatever it cannot
-    evaluate is right for it. A custom HTTP tool is different: its URL was
-    written by a person, saved, and may name an internal API, a service not yet
-    deployed, or a host this machine simply cannot resolve. Refusing those is a
-    guess about somebody else's network, and it concedes nothing to allow them —
-    httpx resolves through the same stack a moment later and fails the same
-    lookup, and a string with no scheme is one httpx will not send anywhere.
-
-    What is *not* conceded is an address: an IP literal always resolves, so the
-    cloud metadata endpoint and loopback are refused here exactly as they are
-    for the scraper.
-
-    One function because there are two call sites — the ReAct loop and the
-    orchestration TOOL step — and a control written twice is a control that
-    drifts. That is the lesson the stdio-MCP gate had to be moved for.
-    """
-    try:
-        await check_url(url)
-    except (UnresolvedHost, MalformedUrl):
-        return
+            raise BlockedAddress(f"{host} resolves to a blocked range: {reason}", host)
 
 
 async def check_url(url: str) -> None:

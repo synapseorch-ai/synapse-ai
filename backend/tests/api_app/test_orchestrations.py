@@ -38,7 +38,7 @@ class _FakeEngine:
 # ── CRUD ──────────────────────────────────────────────────────────────────────
 class TestOrchestrationCrud:
     async def test_list_get_delete(self, client, seed_orchestration):
-        orch = seed_orchestration(name="My Orch")
+        orch = await seed_orchestration(name="My Orch")
         # get
         resp = await client.get(f"/api/orchestrations/{orch['id']}")
         assert resp.status_code == 200
@@ -58,7 +58,7 @@ class TestOrchestrationCrud:
 # ── execution (SSE) ───────────────────────────────────────────────────────────
 class TestOrchestrationRun:
     async def test_run_streams_lifecycle_then_done(self, client, seed_orchestration, monkeypatch):
-        orch = seed_orchestration()
+        orch = await seed_orchestration()
         import core.orchestration.engine as engine_mod
         _FakeEngine.events = [
             E.orch_start(orch_id=orch["id"]),
@@ -84,7 +84,7 @@ class TestOrchestrationRun:
         assert resp.status_code == 404
 
     async def test_engine_error_surfaces_as_orchestration_error(self, client, seed_orchestration, monkeypatch):
-        orch = seed_orchestration()
+        orch = await seed_orchestration()
 
         class _BoomEngine(_FakeEngine):
             async def run(self, user_input, run_id, **kwargs):

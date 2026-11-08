@@ -3,14 +3,14 @@
 
 import { useState, useCallback } from "react";
 import {
-  Download, Package, AlertTriangle, XCircle, Loader2,
-  Workflow, Bot, Server, Wrench,
+  Download, Package, AlertTriangle, Workflow, Bot, Server, Wrench,
 } from "lucide-react";
 import type { ExportData } from "./types";
 import { orchAgentDeps, agentMcpDeps, agentToolDeps, agentDelegateDeps } from "./utils";
 import { SectionTable } from "./SectionTable";
 
-const inputCls = "w-full bg-zinc-900 border border-zinc-800 p-2 text-sm text-white focus:border-white focus:outline-none placeholder:text-zinc-700";
+import { Button, ErrorNote, Input, Section } from '@/components/ui';
+import { FORM } from "../form";
 
 export function ExportView() {
   const [data, setData] = useState<ExportData | null>(null);
@@ -108,88 +108,79 @@ export function ExportView() {
 
   if (!data) {
     return (
-      <div className="space-y-4">
-        <div className="p-8 text-center border border-dashed border-zinc-800 bg-zinc-900/30">
-          <Package className="h-8 w-8 mx-auto text-zinc-700 mb-3" />
-          <p className="text-zinc-400 text-sm font-bold">Export your configurations</p>
-          <p className="text-zinc-600 text-xs mt-1">Select orchestrations, agents, MCP servers, and tools to export as a portable bundle</p>
-          <button
-            onClick={loadData}
-            disabled={loading}
-            className="mt-4 flex items-center gap-2 px-5 py-2 bg-white text-black text-sm font-bold hover:bg-zinc-200 transition-colors disabled:opacity-50 mx-auto"
-          >
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Package className="h-4 w-4" />}
-            {loading ? "Loading…" : "Load Export Data"}
-          </button>
+      <div className={`${FORM} space-y-4`}>
+        <div className="p-8 text-center border border-dashed border-border rounded-md">
+          <Package className="h-8 w-8 mx-auto text-text-faint mb-3" />
+          <p className="text-text text-sm font-medium">Export your configurations</p>
+          <p className="text-text-muted text-sm mt-1">Select workflows, agents, apps and tools to export as a portable bundle</p>
+          <Button onClick={loadData} loading={loading} className="mt-4 mx-auto">
+            {!loading && <Package className="h-4 w-4" />}
+            {loading ? "Loading…" : "Load export data"}
+          </Button>
         </div>
         {error && (
-          <div className="flex items-center gap-2 text-red-400 text-xs p-3 border border-red-900/50 bg-red-950/10">
-            <XCircle className="h-4 w-4 flex-shrink-0" /> {error}
-          </div>
+          <ErrorNote>{error}</ErrorNote>
         )}
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
 
       {hasPythonTool && (
-        <div className="flex items-start gap-3 p-4 border border-yellow-900/50 bg-yellow-950/10">
-          <AlertTriangle className="h-4 w-4 text-yellow-500 flex-shrink-0 mt-0.5" />
+        <div className={`${FORM} flex items-start gap-3 rounded-md border border-warning/25 bg-warning-subtle px-3 py-2.5`}>
+          <AlertTriangle className="h-4 w-4 text-warning flex-shrink-0 mt-0.5" />
           <div>
-            <p className="text-yellow-400 text-xs font-bold uppercase tracking-wider">Python Tool Warning</p>
-            <p className="text-yellow-600 text-xs mt-1 leading-relaxed">
+            <p className="text-text text-xs font-semibold">Python tool warning</p>
+            <p className="text-text text-xs mt-1 leading-relaxed">
               One or more selected agents use a custom Python tool. Python code is exported as-is —
-              make sure it does <strong className="text-yellow-500">not contain hardcoded secrets, API keys, or passwords</strong>.
+              make sure it does <strong className="font-semibold">not contain hardcoded secrets, API keys, or passwords</strong>.
             </p>
           </div>
         </div>
       )}
 
-      <div className="space-y-0 border border-zinc-800 divide-y divide-zinc-800">
-        <SectionTable title="Orchestrations" icon={Workflow} items={data.orchestrations} selected={selOrch} locked={new Set()} getId={o => o.id} getLabel={o => o.name} getDesc={o => o.description} onToggle={toggleOrch} />
+      <div className="space-y-3">
+        <SectionTable title="Workflows" icon={Workflow} items={data.orchestrations} selected={selOrch} locked={new Set()} getId={o => o.id} getLabel={o => o.name} getDesc={o => o.description} onToggle={toggleOrch} />
         <SectionTable title="Agents" icon={Bot} items={data.agents} selected={selAgent} locked={lockedAgent} getId={a => a.id} getLabel={a => a.name} getDesc={a => a.description} onToggle={toggleAgent} />
-        <SectionTable title="MCP Servers" icon={Server} items={data.mcp_servers} selected={selMcp} locked={lockedMcp} getId={m => m.name} getLabel={m => m.label || m.name} onToggle={toggleMcp} />
+        <SectionTable title="Apps" icon={Server} items={data.mcp_servers} selected={selMcp} locked={lockedMcp} getId={m => m.name} getLabel={m => m.label || m.name} onToggle={toggleMcp} />
         <SectionTable title="Custom Tools" icon={Wrench} items={data.custom_tools} selected={selTool} locked={lockedTool} getId={t => t.name} getLabel={t => t.generalName || t.name} getDesc={t => t.description} onToggle={toggleTool} />
       </div>
 
       {(data.orchestrations.length + data.agents.length + data.mcp_servers.length + data.custom_tools.length) === 0 && (
-        <p className="text-zinc-600 text-sm text-center py-4">Nothing to export yet — add orchestrations, agents, MCP servers, or tools first.</p>
+        <p className="text-text-faint text-sm text-center py-4">Nothing to export yet — add workflows, agents, apps or tools first.</p>
       )}
 
       {total > 0 && (
-        <div className="border border-zinc-800 bg-zinc-900/40 p-5 space-y-4">
-          <h4 className="text-[10px] uppercase font-bold tracking-wider text-zinc-500">Export File</h4>
-          <div className="flex items-center gap-2">
-            <input
-              type="text"
-              value={exportName}
-              onChange={e => setExportName(e.target.value)}
-              className={`${inputCls} flex-1`}
-              placeholder="synapse_export"
-            />
-            <span className="text-zinc-600 text-sm font-mono">.json</span>
+        <Section variant="plain" collapsible={false} title="Export file">
+          <div className={`${FORM} space-y-4`}>
+            <div className="flex items-center gap-2">
+              <Input
+                type="text"
+                value={exportName}
+                onChange={e => setExportName(e.target.value)}
+                className="flex-1 font-code"
+                placeholder="synapse_export"
+              />
+              <span className="text-text-faint text-sm font-code">.json</span>
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <p className="text-sm text-text-muted">
+                <span className="text-text font-semibold">{total}</span> item{total !== 1 ? "s" : ""} selected
+                {selOrch.size > 0 && ` · ${selOrch.size} workflow${selOrch.size !== 1 ? "s" : ""}`}
+                {selAgent.size > 0 && ` · ${selAgent.size} agent${selAgent.size !== 1 ? "s" : ""}`}
+                {selMcp.size > 0 && ` · ${selMcp.size} app${selMcp.size !== 1 ? "s" : ""}`}
+                {selTool.size > 0 && ` · ${selTool.size} tool${selTool.size !== 1 ? "s" : ""}`}
+              </p>
+              <Button onClick={handleExport} loading={exporting} className="shrink-0">
+                {!exporting && <Download className="h-4 w-4" />}
+                {exporting ? "Exporting…" : "Export & download"}
+              </Button>
+            </div>
+            {error && <p className="text-danger text-xs">{error}</p>}
           </div>
-          <div className="flex items-center justify-between gap-4 pt-1">
-            <p className="text-xs text-zinc-500">
-              <span className="text-white font-bold">{total}</span> item{total !== 1 ? "s" : ""} selected
-              {selOrch.size > 0 && ` · ${selOrch.size} orchestration${selOrch.size !== 1 ? "s" : ""}`}
-              {selAgent.size > 0 && ` · ${selAgent.size} agent${selAgent.size !== 1 ? "s" : ""}`}
-              {selMcp.size > 0 && ` · ${selMcp.size} MCP server${selMcp.size !== 1 ? "s" : ""}`}
-              {selTool.size > 0 && ` · ${selTool.size} tool${selTool.size !== 1 ? "s" : ""}`}
-            </p>
-            <button
-              onClick={handleExport}
-              disabled={exporting}
-              className="flex items-center gap-2 px-6 py-2 bg-white text-black text-sm font-bold hover:bg-zinc-200 transition-colors disabled:opacity-50 shrink-0"
-            >
-              {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-              {exporting ? "Exporting…" : "Export & Download"}
-            </button>
-          </div>
-          {error && <p className="text-red-400 text-xs">{error}</p>}
-        </div>
+        </Section>
       )}
     </div>
   );

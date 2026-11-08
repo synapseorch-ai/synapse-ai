@@ -65,37 +65,50 @@ class TeamsAdapter(MessagingAdapter):
         logger.warning("[Teams] Proactive send not implemented yet. "
                        "Teams replies are sent within request context.")
 
-    async def process_request(self, request, response):
-        """Process an aiohttp request from the Teams webhook endpoint."""
+    async def process_request(self, auth_header: str, body: dict):
+        """One Bot Framework delivery: its token checked, then `_on_turn`.
+
+        `CloudAdapter.process_activity` authenticates `auth_header` — the JWT
+        Microsoft signs for this app id — before running the turn, and raises
+        `PermissionError` when it is not one; the webhook route answers 401.
+        Returns the SDK's invoke response, None for an ordinary message.
+        """
         if not self._adapter_bot:
-            return
+            raise RuntimeError("Teams adapter is not started.")
+        from botbuilder.schema import Activity
 
-        async def _turn_handler(turn_context):
-            text = turn_context.activity.text or ""
-            chat_id = turn_context.activity.conversation.id
-            user_id = turn_context.activity.from_property.id if turn_context.activity.from_property else chat_id
-            session_id = f"teams_{self.channel_id}_{chat_id}"
+        activity = Activity().deserialize(body)
+        return await self._adapter_bot.process_activity(auth_header, activity, self._on_turn)
 
-            if text.startswith("/"):
-                parts = text.split(" ", 1)
-                consumed = await self._handle_command(
-                    chat_id, parts[0], parts[1] if len(parts) > 1 else "", session_id
-                )
-                if consumed:
-                    return
+    async def _on_turn(self, turn_context) -> None:
+        """One Teams message: a command, else `_dispatch` like every other adapter.
 
-            response_text = await self.manager.run_agent(
-                message=text,
-                agent_id=self.manager.get_chat_agent(self.channel_id, chat_id) or self.agent_id,
-                session_id=session_id,
+        This used to be a copy of `_dispatch`'s agent half, so it never reached
+        the half before it: a reply to a human step's question went to the agent
+        as chat and the run stayed paused (F94), and a reply past the question's
+        window was never refused (F93). Replies go back in the same request,
+        through the turn context — Teams has no proactive send here.
+        """
+        from botbuilder.core import MessageFactory
+
+        text = turn_context.activity.text or ""
+        chat_id = turn_context.activity.conversation.id
+        user_id = turn_context.activity.from_property.id if turn_context.activity.from_property else chat_id
+        session_id = f"teams_{self.channel_id}_{chat_id}"
+
+        if text.startswith("/"):
+            parts = text.split(" ", 1)
+            consumed = await self._handle_command(
+                chat_id, parts[0], parts[1] if len(parts) > 1 else "", session_id
             )
-            if response_text:
-                from botbuilder.core import MessageFactory
-                chunks = self._format_chunks(response_text)
-                for chunk in chunks:
-                    await turn_context.send_activity(MessageFactory.text(chunk))
+            if consumed:
+                return
 
-        await self._adapter_bot.process_activity(request, response, _turn_handler)
+        async def reply(_chat_id: str, message: str) -> None:
+            for chunk in self._format_chunks(message):
+                await turn_context.send_activity(MessageFactory.text(chunk))
+
+        await self._dispatch(chat_id, text, user_id, session_id=session_id, send=reply)
 
     def _format_chunks(self, text: str) -> list[str]:
         from core.messaging.markdown import to_teams

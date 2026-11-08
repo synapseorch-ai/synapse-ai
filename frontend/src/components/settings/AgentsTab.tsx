@@ -1,49 +1,131 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { Bot, Plus, Save, Trash, Copy, ChevronDown, ChevronRight, Lock, Sparkles, Eye, EyeOff, Loader2, MessageSquare, ExternalLink, CheckCircle, XCircle, Square } from 'lucide-react';
-import { VaultTextarea } from '@/components/VaultMention';
+import { AlertTriangle, Bot, Trash, Copy, ChevronDown, ChevronRight, Lock, Sparkles, MessageSquare, ExternalLink, CheckCircle, XCircle, Square, PanelRightOpen, Image as ImageIcon } from 'lucide-react';
+import { Badge, Button, Checkbox, Combobox, Drawer, ErrorNote, Input, Label, MarkdownEditor, Modal, SearchInput, Section, Select, Spinner, Switch } from '@/components/ui';
+import Link from 'next/link';
+import { matchesQuery } from '@/lib/search';
+import { humanizeToolName } from '@/lib/toolNames';
+import { toolContext } from '@/lib/toolTokens';
+import { HELPERS_TOOL, selectedToolNames, sizedTools, type ToolDetail } from './hooks/useCapabilities';
+import { tagChips, tagsOf } from '@/lib/toolHints';
+import { vaultMentions } from '@/components/VaultMention';
 import { CAPABILITIES, AUTO_TOOLS_BY_TYPE } from './types';
-import { renderTextContent } from '@/lib/utils';
 import { useDispatch } from 'react-redux';
 import { AppDispatch } from '@/store';
-import { addAgent, updateAgent } from '@/store/settingsSlice';
+import { addAgent, removeAgent, updateAgent } from '@/store/settingsSlice';
 import { ToastNotification } from './ToastNotification';
+import { AgentActivity, ActivityTab, ThisMonth, WhereItWorks } from './AgentActivity';
+import { AgentTest, toolNamesOf, type AgentStatus } from './AgentTest';
+import { AgentMemory } from './AgentMemory';
+import { ToolPolicyFields, gatingCategories, POLICY_CATEGORIES, toolRules, type ToolPolicy } from './ToolPolicy';
+import { AGENT_TURN_LIMIT_CHOICES } from './turnLimit';
+import { KnowledgeBasePicker } from '@/components/knowledge/KnowledgeBasePicker';
+import { AgentBoards } from '@/components/boards/AgentBoards';
+import { TeamSetup, newTeamBlock } from '@/components/team';
+import { BrowserSetup, browserConfig, listSessions, type SiteSession } from '@/components/browser';
+import { OSS_SESSIONS_HOST } from '@/lib/sessionsHost';
+import { useNavFlags } from '@/components/app/NavFlags';
+import { OssBoardsHost } from '@/lib/boardsHost';
+import { knowledgeApi, useKnowledgeEnabled, type KnowledgeBase } from '@/lib/knowledge';
+import { cn } from '@/lib/cn';
+import { ifMatch, problemLabel, saveProblem, type SaveProblem } from '@/components/orchestration/saveConflict';
+import { SaveConflictDialog } from '@/components/orchestration/workbench/SaveConflictDialog';
+import { providerLabel } from '@/lib/models';
+
+/** The longest name the server accepts (core/models.py `AGENT_NAME_MAX`, F217). */
+const AGENT_NAME_MAX = 100;
 
 interface AgentsTabProps {
     agents: any[];
     selectedAgentId: string | null;
     setSelectedAgentId: (id: string | null) => void;
     draftAgent: any;
+    /** An edit to the open draft. */
     setDraftAgent: (agent: any) => void;
+    /** Open a draft: it becomes both the draft and what "unsaved" is measured from. */
+    loadDraftAgent: (agent: any) => void;
+    /** Run `go` now, or once the person agrees to lose an unsaved edit (F73). */
+    guard: (go: () => void) => void;
     availableCapabilities: any[];
     loadingCapabilities?: boolean;
     customTools: any[];
     onDeleteAgent: (id: string) => void;
     providers?: Record<string, { available: boolean; models: string[] }>;
+    /** Models with a native reasoning channel, from the models endpoint. The
+     *  list is served rather than restated here: a second copy of the
+     *  capability table would be wrong the first time a family ships and only
+     *  one of them was updated. */
+    reasoningCapable?: string[];
+    /** Of those, the ones with no "off" — the Claude CLI, which runs off as low.
+     *  Served for the same reason as the list above. */
+    reasoningWithoutOff?: string[];
+    /** Where Off is the model's lowest thinking level rather than none (F269). */
+    reasoningOffMinimum?: string[];
     defaultModel?: string;
+    /** The workspace's "Model for quick steps" (empty when none is set): a choice for "Helper model". */
+    quickModel?: string;
+    /** The workspace's `reasoning_effort`, which an agent with none of its own
+     *  runs at. Absent when the workspace never set one. */
+    workspaceEffort?: string;
     loadingAgents?: boolean;
+    /** The open draft differs from what was opened or saved (F73). */
+    dirty: boolean;
+    /** Put the draft back as it was opened or saved, after asking (the Save bar's Discard). */
+    onDiscard: () => void;
+    /** What `/api/status` says about each agent: whether it sees images. */
+    agentStatus: Record<string, AgentStatus>;
+    /** The test chat's column is open (wide screens); the person's choice, remembered. */
+    testOpen: boolean;
+    setTestOpen: (open: boolean) => void;
+    /** "Build with AI" for one agent: opened from New agent's menu (M2d, Naveen). */
+    aiBuilderOpen: boolean;
+    setAiBuilderOpen: (open: boolean) => void;
 }
 
 import React, { useState, useEffect } from 'react';
 
+
 export const AgentsTab = ({
     agents, selectedAgentId, setSelectedAgentId,
-    draftAgent, setDraftAgent, availableCapabilities, loadingCapabilities = false, customTools,
-    onDeleteAgent, providers, defaultModel, loadingAgents = false
+    draftAgent, setDraftAgent, loadDraftAgent, guard, availableCapabilities, loadingCapabilities = false, customTools,
+    onDeleteAgent, providers, reasoningCapable, reasoningWithoutOff, reasoningOffMinimum, defaultModel, quickModel = '', workspaceEffort, loadingAgents = false,
+    dirty, onDiscard, agentStatus, testOpen, setTestOpen, aiBuilderOpen, setAiBuilderOpen,
 }: AgentsTabProps) => {
     const dispatch = useDispatch<AppDispatch>();
     const [repos, setRepos] = useState<any[]>([]);
+    const [allSkills, setAllSkills] = useState<any[]>([]);
+    const knowledgeOn = useKnowledgeEnabled();
+    const boardsOn = !!useNavFlags().boards_enabled;
+    const [allBases, setAllBases] = useState<KnowledgeBase[]>([]);
+    const [basesRead, setBasesRead] = useState(false);
     const [dbConfigs, setDbConfigs] = useState<any[]>([]);
-    const [agentTypes, setAgentTypes] = useState<{ value: string; label: string; description: string }[]>([]);
+    const [agentTypes, setAgentTypes] = useState<{ value: string; label: string; description: string; disabled?: boolean }[]>([]);
+    // The kept sessions a Browser agent may start signed in with (Agents › Browser › Sessions, BRW2); null while read.
+    const [siteSessions, setSiteSessions] = useState<SiteSession[] | null>(null);
     const [expandedCaps, setExpandedCaps] = useState<Set<string>>(new Set());
     const [promptDescription, setPromptDescription] = useState('');
     const [isGenerating, setIsGenerating] = useState(false);
-    const [showPreview, setShowPreview] = useState(false);
-    const [agentSubTab, setAgentSubTab] = useState<'config' | 'messaging'>('config');
+    // Why the Prompt Writer wrote nothing, shown under its field (F183). Kept
+    // with the agent it was for, so opening another agent does not show it.
+    const [promptFailure, setPromptFailure] = useState<{ agentId: string; text: string } | null>(null);
+    const promptError = promptFailure && promptFailure.agentId === (draftAgent?.id ?? '') ? promptFailure.text : null;
+    const setPromptError = (text: string | null) =>
+        setPromptFailure(text === null ? null : { agentId: draftAgent?.id ?? '', text });
+    const [agentSubTab, setAgentSubTab] = useState<'config' | 'messaging' | ActivityTab>('config');
     const [agentChannels, setAgentChannels] = useState<any[]>([]);
+    // The workspace floor an unset category inherits, and the widgets that
+    // publish this agent — both read-only here, both needed to say what a
+    // choice will actually do before it is saved.
+    const [policyDefaults, setPolicyDefaults] = useState<ToolPolicy>({});
+    // The most members any Team agent here may run at once (Settings → General; TEAM1b, Q2a).
+    const [teamCeiling, setTeamCeiling] = useState<number>(10);
+    const [widgets, setWidgets] = useState<any[]>([]);
     const [isSaving, setIsSaving] = useState(false);
     const [toast, setToast] = useState<{ show: boolean; message: string; type: 'success' | 'error' } | null>(null);
-    const [aiBuilderOpen, setAiBuilderOpen] = useState(false);
+    const [toolQuery, setToolQuery] = useState('');
+    // Tools the agent names that nothing here provides (F526): run without them, so said here.
+    const [unknownTools, setUnknownTools] = useState<{ name: string; nearest: string[] }[]>([]);
     const [aiBuilderDesc, setAiBuilderDesc] = useState('');
+    const [agentQuery, setAgentQuery] = useState('');
     const [isBuilding, setIsBuilding] = useState(false);
 
     const showToast = (message: string, type: 'success' | 'error') => {
@@ -51,9 +133,34 @@ export const AgentsTab = ({
         setTimeout(() => setToast(null), 4000);
     };
 
-    const handleDuplicate = async (agent: any, e: React.MouseEvent) => {
+    const handleDuplicate = (agent: any, e: React.MouseEvent) => {
         e.stopPropagation();
-        const copy = { ...agent, id: `agent_${Date.now()}`, name: `${agent.name} (Copy)` };
+        guard(() => { void duplicate(agent); });
+    };
+
+    // A copy's knowledge bases come with it where they can (Naveen, 10-30): those here and on. A copy is a new agent,
+    // so the save asks about each of its bases (F1223); the rest are left out and said, never a failed copy.
+    const copyableBases = (ids: string[]): { kept: string[]; leftOut: string } => {
+        if (!ids.length) return { kept: [], leftOut: '' };
+        // Not read yet: sent as it is, and the save says why if it refuses.
+        if (knowledgeOn === null || (knowledgeOn && !basesRead)) return { kept: ids, leftOut: '' };
+        if (!knowledgeOn) {
+            return { kept: [], leftOut: `its knowledge base${ids.length > 1 ? 's' : ''} (Knowledge is off: turn it on in Settings › General › Knowledge)` };
+        }
+        const kept = ids.filter(id => allBases.some(kb => kb.id === id && kb.status === 'active'));
+        const off = ids.map(id => allBases.find(kb => kb.id === id)).filter(kb => kb && kb.status !== 'active');
+        const gone = ids.filter(id => !allBases.some(kb => kb.id === id)).length;
+        const said = [
+            ...off.map(kb => `“${kb!.name}” (turned off)`),
+            ...(gone ? [`${gone} knowledge base${gone > 1 ? 's' : ''} no longer here`] : []),
+        ];
+        return { kept, leftOut: said.join(' and ') };
+    };
+
+    const duplicate = async (agent: any) => {
+        // The original is clipped, not the marker, so a copy of a long name still says so.
+        const { kept, leftOut } = copyableBases(Array.isArray(agent.knowledge) ? agent.knowledge : []);
+        const copy = { ...agent, id: `agent_${Date.now()}`, name: `${String(agent.name).slice(0, AGENT_NAME_MAX - 7).trimEnd()} (Copy)`, knowledge: kept };
         delete copy.created_at;
         delete copy.updated_at;
         try {
@@ -63,13 +170,17 @@ export const AgentsTab = ({
                 body: JSON.stringify(copy),
             });
             if (res.ok) {
-                const saved = await res.json();
+                const { unknown_tools, ...saved } = await res.json();
+                setUnknownTools(Array.isArray(unknown_tools) ? unknown_tools : []);
                 dispatch(addAgent(saved));
                 setSelectedAgentId(saved.id);
-                setDraftAgent(saved);
-                showToast('Agent duplicated', 'success');
+                loadDraftAgent(saved);
+                showToast(leftOut ? `Agent duplicated without ${leftOut}` : 'Agent duplicated', 'success');
             } else {
-                showToast('Failed to duplicate agent', 'error');
+                // Why it was not made, in the save's own words, never a bare failure.
+                const err = await res.json().catch(() => null);
+                const why = typeof err?.detail === 'string' ? err.detail : '';
+                showToast(why ? `Not duplicated: ${why}` : 'Failed to duplicate agent', 'error');
             }
         } catch {
             showToast('Error duplicating agent', 'error');
@@ -97,7 +208,7 @@ export const AgentsTab = ({
                 const saved = await res.json();
                 dispatch(addAgent(saved));
                 setSelectedAgentId(saved.id);
-                setDraftAgent(saved);
+                loadDraftAgent(saved);
                 setAiBuilderDesc('');
                 setAiBuilderOpen(false);
                 showToast(`Agent "${saved.name}" created`, 'success');
@@ -111,27 +222,48 @@ export const AgentsTab = ({
         }
     };
 
-    const handleSaveAgent = async () => {
+    // F891: a save says what it read (`If-Match`), so one from a stale copy, or of an agent deleted meanwhile, is
+    // refused rather than written over the other or brought back. `seen`: the time a 409 named (keep mine), or null
+    // to save without the check (save as a new agent).
+    const [refused, setRefused] = useState<{ id: string; problem: SaveProblem; open: boolean } | null>(null);
+    const handleSaveAgent = async (opts?: { seen: string | null }) => {
         if (!draftAgent) return;
+        // An agent saved before the limit can hold a longer name; say so rather
+        // than let the server's 422 read as "Failed to save agent".
+        if ((draftAgent.name || '').length > AGENT_NAME_MAX) {
+            showToast(`An agent's name is at most ${AGENT_NAME_MAX} characters.`, 'error');
+            return;
+        }
         setIsSaving(true);
         try {
+            const read = opts ? { updated_at: opts.seen } : draftAgent;
             const res = await fetch('/api/agents', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...ifMatch(read) },
                 body: JSON.stringify(draftAgent),
             });
             if (res.ok) {
-                const saved = await res.json();
+                setRefused(null);
+                const { unknown_tools, ...saved } = await res.json();
+                setUnknownTools(Array.isArray(unknown_tools) ? unknown_tools : []);
                 const isNew = !agents.some((a: any) => a.id === draftAgent.id);
                 if (isNew) {
                     dispatch(addAgent(saved));
                     setSelectedAgentId(saved.id);
-                    setDraftAgent(saved);
                 } else {
                     dispatch(updateAgent(saved));
                 }
+                // The route answers with what it stored, which is not always what
+                // was sent (a tool policy is cleaned). That is the new baseline.
+                loadDraftAgent(saved);
                 showToast('Agent saved successfully', 'success');
             } else {
+                const err = await res.json().catch(() => null);
+                const problem = saveProblem(res.status, err?.detail);
+                if (problem) {
+                    setRefused({ id: draftAgent.id, problem, open: true });
+                    return;
+                }
                 showToast('Failed to save agent', 'error');
             }
         } catch {
@@ -140,18 +272,80 @@ export const AgentsTab = ({
             setIsSaving(false);
         }
     };
+    const saveRefused = refused && draftAgent && refused.id === draftAgent.id ? refused : null;
+    const reloadTheirs = async () => {
+        const id = draftAgent?.id;
+        const res = await fetch('/api/agents').catch(() => null);
+        const theirs = res?.ok ? ((await res.json()) as any[]).find((a) => a.id === id) : null;
+        if (!theirs) {
+            showToast('Could not load their version. Try again.', 'error');
+            return;
+        }
+        setRefused(null);
+        dispatch(updateAgent(theirs));
+        loadDraftAgent(theirs);
+    };
+    const discardDeleted = () => {
+        const id = draftAgent?.id;
+        setRefused(null);
+        if (id) dispatch(removeAgent(id));
+        setSelectedAgentId(null);
+    };
 
-    // Reset sub-tab and re-fetch channels whenever the selected agent changes
+    const [testDrawer, setTestDrawer] = useState(false);
+
+    // An agent opened here asks which of its tools nothing provides (F526): one saved by a script or the API never
+    // went through this page's save, and Harbor's `web_search` went unnoticed for two sessions.
+    const openedId = draftAgent?.id;
+    useEffect(() => {
+        const tools: string[] = (draftAgent?.tools || []).filter((t: string) => t !== 'all' && !t.startsWith('group:'));
+        if (!openedId || !tools.length) { setUnknownTools([]); return; }
+        let gone = false;
+        fetch('/api/agents/tool-check', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tools }),
+        })
+            .then(r => (r.ok ? r.json() : { unknown_tools: [] }))
+            .then(body => { if (!gone) setUnknownTools(Array.isArray(body.unknown_tools) ? body.unknown_tools : []); })
+            .catch(() => { if (!gone) setUnknownTools([]); });
+        return () => { gone = true; };
+        // Asked when an agent opens, not on every tick of a box: a save answers for the rest.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [openedId]);
+
+    // Reset the sub-tab whenever the selected agent changes, and read its
+    // channels: the setup's "Where it works" names them, as the two tabs do.
+    const savedAgent = draftAgent ? agents.find((a: any) => a.id === draftAgent.id) ?? null : null;
+    const savedId: string | null = savedAgent?.id ?? null;
+    const loadChannels = (id: string) => {
+        fetch(`/api/messaging/channels?agent_id=${encodeURIComponent(id)}`)
+            .then(r => r.ok ? r.json() : [])
+            .then(d => setAgentChannels(Array.isArray(d) ? d : []))
+            .catch(() => setAgentChannels([]));
+    };
     useEffect(() => {
         setAgentSubTab('config');
         setAgentChannels([]);
-    }, [selectedAgentId]);
+        if (savedId) loadChannels(savedId);
+    }, [selectedAgentId, savedId]);
+
+    useEffect(() => {
+        if (!knowledgeOn) return;
+        let live = true;
+        knowledgeApi.bases()
+            .then(list => { if (live) { setAllBases(list); setBasesRead(true); } })
+            .catch(err => console.error('Failed to fetch knowledge bases', err));
+        return () => { live = false; };
+    }, [knowledgeOn]);
 
     useEffect(() => {
         fetch('/api/repos')
             .then(res => res.json())
             .then(data => setRepos(data))
             .catch(err => console.error("Failed to fetch repos", err));
+        fetch('/api/skills')
+            .then(res => res.json())
+            .then(data => setAllSkills(Array.isArray(data) ? data : []))
+            .catch(err => console.error("Failed to fetch skills", err));
         fetch('/api/db-configs')
             .then(res => res.json())
             .then(data => setDbConfigs(data))
@@ -160,6 +354,21 @@ export const AgentsTab = ({
             .then(res => res.json())
             .then(data => setAgentTypes(data.types || []))
             .catch(err => console.error("Failed to fetch agent types", err));
+        listSessions(OSS_SESSIONS_HOST)
+            .then(setSiteSessions)
+            .catch(() => setSiteSessions([]));
+        fetch('/api/settings')
+            .then(res => res.json())
+            .then(data => {
+                setPolicyDefaults(data?.tool_policy_defaults || {});
+                const ceiling = Number(data?.team_at_once_ceiling);
+                if (Number.isFinite(ceiling) && ceiling >= 1) setTeamCeiling(Math.floor(ceiling));
+            })
+            .catch(err => console.error("Failed to fetch settings", err));
+        fetch('/api/widgets')
+            .then(res => res.json())
+            .then(data => setWidgets(Array.isArray(data) ? data : []))
+            .catch(err => console.error("Failed to fetch widgets", err));
     }, []);
 
     const toggleExpand = (capId: string) => {
@@ -172,17 +381,16 @@ export const AgentsTab = ({
     };
 
     const toggleGroupTools = (cap: any) => {
-        const allGroupEnabled = cap.tools.every((t: string) => draftAgent.tools.includes(t));
         if (draftAgent.tools.includes("all")) {
-            // Switch from "all" to explicit list minus this group
+            // "all" holds every group, so the only change is switching this one
+            // off: the explicit list minus this group. Asking whether the group's
+            // own names were listed read false, re-added them beside "all", and
+            // the box could never be turned off (F235).
             const allToolsFlat = availableCapabilities.flatMap((c: any) => c.tools);
-            if (allGroupEnabled) {
-                const newTools = allToolsFlat.filter((t: string) => !cap.tools.includes(t));
-                setDraftAgent({ ...draftAgent, tools: newTools });
-            } else {
-                setDraftAgent({ ...draftAgent, tools: [...draftAgent.tools, ...cap.tools] });
-            }
+            const newTools = [...allToolsFlat.filter((t: string) => !cap.tools.includes(t)), ...ownSwitches(draftAgent.tools)];
+            setDraftAgent({ ...draftAgent, tools: newTools });
         } else {
+            const allGroupEnabled = cap.tools.every((t: string) => draftAgent.tools.includes(t));
             if (allGroupEnabled) {
                 const newTools = draftAgent.tools.filter((t: string) => !cap.tools.includes(t));
                 setDraftAgent({ ...draftAgent, tools: newTools });
@@ -197,7 +405,7 @@ export const AgentsTab = ({
         if (draftAgent.tools.includes("all")) {
             // Switch from "all" to explicit list minus this tool
             const allToolsFlat = availableCapabilities.flatMap((c: any) => c.tools);
-            const newTools = allToolsFlat.filter((t: string) => t !== toolName);
+            const newTools = [...allToolsFlat.filter((t: string) => t !== toolName), ...ownSwitches(draftAgent.tools)];
             setDraftAgent({ ...draftAgent, tools: newTools });
         } else {
             if (draftAgent.tools.includes(toolName)) {
@@ -212,6 +420,7 @@ export const AgentsTab = ({
     const generatePrompt = async () => {
         if (!promptDescription.trim()) return;
         setIsGenerating(true);
+        setPromptError(null);
         try {
             // Collect selected tool names with descriptions
             const agentType = draftAgent.type || 'conversational';
@@ -247,677 +456,1342 @@ export const AgentsTab = ({
                     tools: selectedTools,
                     existing_prompt: draftAgent.system_prompt || '',
                     agents: delegateAgents,
+                    // What it answers from: the writer replaces its "use your own
+                    // knowledge" rule for such an agent (B1b).
+                    knowledge_bases: allBases
+                        .filter(kb => (draftAgent.knowledge || []).includes(kb.id))
+                        .map(kb => ({ name: kb.name, description: kb.description || '' })),
                 }),
                 signal: AbortSignal.timeout(180_000), // 3 minutes timeout for LLM generation
             });
-            if (!res.ok) throw new Error('Failed to generate prompt');
+            if (!res.ok) {
+                // A model that cannot answer is a 502 with the provider's words; say
+                // them here rather than only in the console (F183).
+                const failure = await res.json().catch(() => ({}));
+                const detail = typeof failure?.detail === 'string' ? failure.detail : '';
+                setPromptError(detail || `The prompt writer failed (${res.status}). The prompt was not changed.`);
+                return;
+            }
             const data = await res.json();
             setDraftAgent({ ...draftAgent, system_prompt: data.system_prompt });
             setPromptDescription('');
         } catch (err) {
             console.error('Failed to generate prompt:', err);
+            setPromptError(err instanceof DOMException && err.name === 'TimeoutError'
+                ? 'The model took more than 3 minutes and was stopped. The prompt was not changed.'
+                : 'The prompt writer could not be reached. The prompt was not changed.');
         } finally {
             setIsGenerating(false);
         }
     };
 
-    return (
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-10">
-            {toast && <ToastNotification show={toast.show} message={toast.message} type={toast.type} />}
-            {/* List */}
-            <div className="md:col-span-4 border-r border-zinc-800 pr-4 flex flex-col max-h-[calc(100vh-180px)] sticky top-0 self-start">
-                <div className="mb-4 flex justify-between items-center">
-                    <h3 className="text-sm font-bold text-zinc-400">YOUR AGENTS</h3>
-                    <div className="flex items-center gap-1.5">
-                        <button
-                            onClick={() => setAiBuilderOpen(v => !v)}
-                            className={`p-1.5 transition-colors ${aiBuilderOpen ? 'bg-purple-500 text-white' : 'bg-purple-600 hover:bg-purple-500 text-white'}`}
-                            title="Build Agent with AI"
-                        >
-                            <Sparkles className="h-4 w-4" />
-                        </button>
-                        <button
-                            onClick={() => {
-                                const newAgent = {
-                                    id: `agent_${Date.now()}`,
-                                    name: "New Agent",
-                                    description: "A custom agent.",
-                                    system_prompt: "You are a helpful assistant.",
-                                    tools: [],
-                                    repos: [],
-                                    type: "conversational",
-                                    avatar: "default",
-                                    max_turns: 30,
-                                };
-                                setDraftAgent(newAgent);
-                                setSelectedAgentId(newAgent.id);
-                            }}
-                            className="p-1.5 hover:bg-zinc-800 text-white transition-colors border border-dashed border-zinc-600 hover:border-white"
-                            title="Create New Agent"
-                        >
-                            <Plus className="h-4 w-4" />
-                        </button>
-                    </div>
-                </div>
+    const visibleAgents = Array.isArray(agents)
+        ? agents.filter((a: any) => matchesQuery(agentQuery, a.name, a.description, a.id))
+        : [];
 
-                {aiBuilderOpen && (
-                    <div className="mb-3 p-3 border border-dashed border-purple-800 bg-purple-950/20 space-y-2">
-                        <p className="text-[9px] text-purple-400 font-bold uppercase">Build with AI</p>
-                        <textarea
-                            value={aiBuilderDesc}
-                            onChange={e => setAiBuilderDesc(e.target.value)}
-                            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); buildAgentWithAI(); } }}
-                            placeholder="Describe what this agent should do... e.g. 'A customer support agent that searches our knowledge base'"
-                            rows={3}
-                            className="w-full bg-zinc-950 border border-zinc-800 p-2 text-xs text-white focus:border-purple-500 focus:outline-none placeholder:text-zinc-600 resize-none"
+    const isNew = !!draftAgent && !savedAgent;
+    const typeLabel = (type?: string) => {
+        const t = type || 'conversational';
+        return agentTypes.find(x => x.value === t)?.label || t.charAt(0).toUpperCase() + t.slice(1);
+    };
+    const knowledgeNames = (savedAgent?.knowledge || [])
+        .map((id: string) => allBases.find(kb => kb.id === id)?.name)
+        .filter(Boolean) as string[];
+    const status = savedId ? agentStatus[savedId] : undefined;
+
+    // The test chat: a column beside the setup on a wide screen, a drawer on a
+    // narrow one. It always tests the agent as saved (D211).
+    const test = (onCollapse?: () => void, className?: string) => (
+        <AgentTest
+            agent={savedAgent}
+            dirty={dirty}
+            onSave={() => void handleSaveAgent()}
+            saving={isSaving}
+            status={status}
+            toolNames={toolNamesOf(savedAgent)}
+            knowledgeNames={knowledgeNames}
+            onCollapse={onCollapse}
+            className={className}
+        />
+    );
+
+    const tabs: { id: 'config' | 'messaging' | ActivityTab; label: string }[] = [
+        { id: 'config', label: 'Setup' },
+        { id: 'messaging', label: 'Messaging Channels' },
+        { id: 'runs', label: 'Runs' },
+        { id: 'metrics', label: 'Metrics' },
+        { id: 'usedby', label: 'Used by' },
+    ];
+
+    return (
+        <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+            {toast && <ToastNotification show={toast.show} message={toast.message} type={toast.type} />}
+            <SaveConflictDialog
+                noun="agent"
+                problem={saveRefused?.open ? saveRefused.problem : null}
+                busy={isSaving}
+                onReload={() => void reloadTheirs()}
+                onKeepMine={() => saveRefused?.problem.kind === 'changed' && void handleSaveAgent({ seen: saveRefused.problem.at })}
+                onSaveAsNew={() => void handleSaveAgent({ seen: null })}
+                onDiscard={discardDeleted}
+                onClose={() => setRefused((r) => (r ? { ...r, open: false } : r))}
+            />
+
+            {/* ── The list ─────────────────────────────────────────────── */}
+            <aside aria-label="Your agents" data-tour="agents-list" className="flex max-h-[40vh] shrink-0 flex-col border-b border-border md:max-h-none md:w-64 md:border-b-0 md:border-r">
+                {Array.isArray(agents) && agents.length > 4 && (
+                    <div className="px-3 pb-2 pt-3">
+                        <SearchInput
+                            value={agentQuery}
+                            onChange={setAgentQuery}
+                            placeholder="Search agents…"
                         />
-                        <button
-                            onClick={buildAgentWithAI}
-                            disabled={isBuilding || !aiBuilderDesc.trim()}
-                            className="w-full py-1.5 bg-purple-700 hover:bg-purple-600 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-xs font-bold flex items-center justify-center gap-2 transition-colors"
-                        >
-                            {isBuilding
-                                ? <><Loader2 className="h-3 w-3 animate-spin" /> BUILDING…</>
-                                : <><Sparkles className="h-3 w-3" /> CREATE AGENT</>}
-                        </button>
                     </div>
                 )}
 
-                <div className="space-y-2 flex-1 overflow-y-auto modern-scrollbar">
+                <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 py-3 modern-scrollbar">
                     {loadingAgents && agents.length === 0 && (
-                        <div className="flex items-center gap-2 text-zinc-500 text-sm py-4">
-                            <Loader2 className="w-4 h-4 animate-spin" />
+                        <div className="flex items-center gap-2 px-2 py-4 text-sm text-text-faint">
+                            <Spinner size={16} />
                             Loading agents…
                         </div>
                     )}
-                    {Array.isArray(agents) && agents.map((a: any) => (
-                        <div
-                            key={a.id}
-                            onClick={() => {
-                                setSelectedAgentId(a.id);
-                                setDraftAgent({ ...a }); // Deep copy to draft
-                            }}
-                            className={`p-3 border cursor-pointer transition-all group relative
-                            ${selectedAgentId === a.id
-                                    ? 'bg-zinc-900 border-white shadow-lg'
-                                    : 'bg-black border-zinc-800 hover:border-zinc-600'
-                                }`}
-                        >
-                            <div className="flex items-center gap-3">
-                                <div className={`h-8 w-8 rounded-full flex items-center justify-center text-xs font-bold
-                                ${selectedAgentId === a.id ? 'bg-white text-black' : 'bg-zinc-800 text-zinc-400'}
-                            `}>
-                                    {a.name.substring(0, 2).toUpperCase()}
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                    <div className="text-xs font-bold text-white truncate">{a.name}</div>
-                                    <div className="text-[10px] text-zinc-500 truncate">{a.description}</div>
-                                </div>
-                            </div>
-                            <button
-                                onClick={(e) => handleDuplicate(a, e)}
-                                className="absolute top-2 right-7 p-1 text-zinc-600 hover:text-blue-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                                title="Duplicate agent"
-                            >
-                                <Copy className="h-3 w-3" />
-                            </button>
-                            <button
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    onDeleteAgent(a.id);
-                                }}
-                                className="absolute top-2 right-2 p-1 text-zinc-600 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                            >
-                                <Trash className="h-3 w-3" />
-                            </button>
+                    {Array.isArray(agents) && visibleAgents.length === 0 && agentQuery && (
+                        <div className="py-6 text-center text-sm text-text-faint">
+                            No agents match “{agentQuery}”.
                         </div>
-                    ))}
+                    )}
+                    {visibleAgents.map((a: any) => {
+                        const selected = selectedAgentId === a.id;
+                        return (
+                            // The row is a button, so a keyboard opens an agent as a click
+                            // does (F219); Duplicate and Delete are its siblings, shown
+                            // whenever the row has focus as well as on hover.
+                            <div key={a.id} className="group relative">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        if (a.id === selectedAgentId) return;
+                                        guard(() => {
+                                            setSelectedAgentId(a.id);
+                                            loadDraftAgent({ ...a });
+                                        });
+                                    }}
+                                    aria-current={selected ? 'true' : undefined}
+                                    title={a.description || undefined}
+                                    className={cn(
+                                        'flex w-full items-center gap-2.5 rounded-md px-2 py-2 pr-14 text-left transition-colors',
+                                        selected ? 'bg-surface-2 ring-1 ring-inset ring-border' : 'hover:bg-row-hover',
+                                    )}
+                                >
+                                    <span aria-hidden className={cn(
+                                        'flex size-7 shrink-0 items-center justify-center rounded-md text-2xs font-semibold',
+                                        selected ? 'bg-accent text-accent-fg' : 'bg-surface-2 text-text-muted',
+                                    )}>
+                                        {a.name.substring(0, 2).toUpperCase()}
+                                    </span>
+                                    <span className="block min-w-0 flex-1">
+                                        <span className="block truncate text-sm font-medium text-text">{a.name}</span>
+                                        <span className="block truncate text-xs text-text-faint">
+                                            {a.type === 'orchestrator' ? 'Workflow' : (a.model || 'Default model')} · {typeLabel(a.type)}
+                                        </span>
+                                    </span>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={(e) => handleDuplicate(a, e)}
+                                    className="absolute right-7 top-1/2 -translate-y-1/2 rounded p-1 text-text-faint opacity-0 transition-opacity hover:text-text group-hover:opacity-100 group-focus-within:opacity-100"
+                                    aria-label={`Duplicate ${a.name}`}
+                                    title="Duplicate agent"
+                                >
+                                    <Copy className="size-3.5" />
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        onDeleteAgent(a.id);
+                                    }}
+                                    aria-label={`Delete ${a.name}`}
+                                    title={`Delete ${a.name}`}
+                                    className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-text-faint opacity-0 transition-opacity hover:text-danger group-hover:opacity-100 group-focus-within:opacity-100"
+                                >
+                                    <Trash className="size-3.5" />
+                                </button>
+                            </div>
+                        );
+                    })}
                 </div>
-            </div>
+            </aside>
 
-            {/* Edit Form */}
-            <div className="md:col-span-8 pl-4">
-                {draftAgent ? (
-                    <div className="space-y-6 h-full flex flex-col pb-4">
-                        {/* ── Orchestration agents are read-only here ─────────── */}
-                        {draftAgent.type === 'orchestrator' ? (
-                            <div className="flex flex-col items-center justify-center h-full min-h-[400px] gap-6 text-center">
-                                <div className="relative">
-                                    <div className="h-20 w-20 rounded-full bg-gradient-to-br from-purple-900/60 to-violet-900/40 border border-purple-700/50 flex items-center justify-center">
-                                        <svg className="h-9 w-9 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+            {/* One agent from a description (POST /api/agents/build): New agent's
+                menu opens it (M2d). The rail's Build with AI is the workflow builder. */}
+            <Modal
+                open={aiBuilderOpen}
+                onClose={() => setAiBuilderOpen(false)}
+                title="Build with AI"
+                description="Describe the agent; the AI picks its tools and writes its instructions, and it opens here."
+                footer={(
+                    <>
+                        <Button variant="secondary" onClick={() => setAiBuilderOpen(false)}>Cancel</Button>
+                        <Button
+                            // The built agent replaces the open draft, so this is a switch too.
+                            onClick={() => guard(() => { void buildAgentWithAI(); })}
+                            disabled={isBuilding || !aiBuilderDesc.trim()}
+                        >
+                            {isBuilding
+                                ? <><Spinner size={12} /> BUILDING…</>
+                                : <><Sparkles className="size-3.5" aria-hidden /> CREATE AGENT</>}
+                        </Button>
+                    </>
+                )}
+            >
+                <label id="agent-ai-builder-label" htmlFor="agent-ai-builder" className="sr-only">Build with AI</label>
+                <textarea
+                    id="agent-ai-builder"
+                    aria-labelledby="agent-ai-builder-label"
+                    value={aiBuilderDesc}
+                    onChange={e => setAiBuilderDesc(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); guard(() => { void buildAgentWithAI(); }); } }}
+                    placeholder="Describe what this agent should do... e.g. 'A customer support agent that searches our knowledge base'"
+                    rows={4}
+                    autoFocus
+                    className="w-full resize-none rounded-md border border-border bg-surface p-3 text-sm text-text placeholder:text-text-faint focus:border-accent focus:outline-none"
+                />
+            </Modal>
+
+            {/* ── The setup ────────────────────────────────────────────── */}
+            <div className="@container flex min-h-0 min-w-0 flex-1 flex-col">
+                {draftAgent ? (<>
+                    {/* `relative`: the setup's screen-reader-only labels position against
+                        it, not the document, which they would stretch (M2a's trap). */}
+                    <div className="relative min-h-0 flex-1 overflow-y-auto modern-scrollbar">
+                        <div className="px-4 pb-10 pt-5 md:px-8">
+                            {/* ── Orchestration agents are read-only here ─────────── */}
+                            {draftAgent.type === 'orchestrator' ? (
+                                <div className="flex min-h-[360px] flex-col items-center justify-center gap-5 text-center">
+                                    <span className="relative flex size-16 items-center justify-center rounded-2xl bg-machine-subtle text-machine">
+                                        <svg className="size-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} aria-hidden>
                                             <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" />
                                         </svg>
+                                        <span className="absolute -right-1 -top-1 flex size-5 items-center justify-center rounded-full border border-border bg-surface">
+                                            <Lock className="size-2.5 text-text-muted" aria-hidden />
+                                        </span>
+                                    </span>
+                                    <div className="space-y-2">
+                                        <h4 className="text-base font-semibold text-text">{draftAgent.name}</h4>
+                                        <p className="max-w-[340px] text-sm leading-relaxed text-text-muted">
+                                            This agent <span className="font-semibold text-text">runs a workflow</span>. Its steps and configuration are edited in Workflows.
+                                        </p>
                                     </div>
-                                    <div className="absolute -top-1 -right-1 h-5 w-5 rounded-full bg-purple-600 flex items-center justify-center">
-                                        <Lock className="h-2.5 w-2.5 text-white" />
+                                    <div className="flex items-center gap-2 rounded-md border border-border bg-surface-2 px-4 py-2.5 text-xs text-text-muted">
+                                        <ExternalLink className="size-3.5 shrink-0" aria-hidden />
+                                        <span>Open <strong className="text-text">Workflows</strong> to edit this agent&apos;s workflow</span>
                                     </div>
+                                    <Button variant="secondary" size="sm" className="lg:hidden" onClick={() => setTestDrawer(true)}>
+                                        Try {draftAgent.name}
+                                    </Button>
                                 </div>
-                                <div className="space-y-2">
-                                    <h4 className="text-sm font-bold text-white">{draftAgent.name}</h4>
-                                    <p className="text-[11px] text-zinc-500 max-w-[280px] leading-relaxed">
-                                        This is an <span className="text-purple-400 font-semibold">Orchestration Agent</span>. Its workflow, steps, and configuration are managed in the dedicated Orchestrations editor.
-                                    </p>
-                                </div>
-                                <div className="px-5 py-3 border border-dashed border-purple-800/60 bg-purple-950/20 rounded text-[10px] text-purple-300 flex items-center gap-2">
-                                    <ExternalLink className="h-3 w-3 flex-shrink-0" />
-                                    Open the <strong>Orchestrations</strong> menu to edit this agent's workflow
-                                </div>
-                            </div>
-                        ) : (<>
-                            <div className="flex items-center justify-between">
-                                <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                                    <div className="h-2 w-2 rounded-full bg-purple-500" />
-                                    {agents.some((a: any) => a.id === draftAgent.id) ? `EDITING: ${draftAgent.name.toUpperCase()}` : 'NEW AGENT'}
-                                </h3>
-                                {agentSubTab === 'config' && (
-                                    <button
-                                        onClick={handleSaveAgent}
-                                        disabled={isSaving}
-                                        className="flex items-center gap-2 px-4 py-1.5 bg-white text-black text-xs font-bold hover:bg-zinc-200 disabled:opacity-60 disabled:cursor-not-allowed"
-                                    >
-                                        {isSaving
-                                            ? <><Loader2 className="h-3 w-3 animate-spin" /> SAVING…</>
-                                            : <><Save className="h-3 w-3" /> SAVE AGENT</>}
-                                    </button>
-                                )}
-                            </div>
-
-                            {/* Sub-tab row */}
-                            <div className="flex gap-0 border-b border-zinc-800">
-                                {[{ id: 'config', label: 'Configuration' }, { id: 'messaging', label: 'Messaging Channels' }].map(t => (
-                                    <button
-                                        key={t.id}
-                                        onClick={() => {
-                                            setAgentSubTab(t.id as any);
-                                            if (t.id === 'messaging' && draftAgent.id) {
-                                                fetch(`/api/messaging/channels?agent_id=${draftAgent.id}`)
-                                                    .then(r => r.ok ? r.json() : [])
-                                                    .then(d => setAgentChannels(Array.isArray(d) ? d : []))
-                                                    .catch(() => setAgentChannels([]));
-                                            }
-                                        }}
-                                        className={`px-4 py-2 text-xs font-bold transition-all border-b-2 -mb-px
-                                    ${agentSubTab === t.id ? 'text-white border-white' : 'text-zinc-500 border-transparent hover:text-zinc-300'}`}
-                                    >
-                                        {t.label}
-                                    </button>
-                                ))}
-                            </div>
-
-                            {/* ── Configuration sub-tab ──────────────────────── */}
-                            {agentSubTab === 'config' && (
-                                <div className="space-y-6 flex-1 flex flex-col min-h-0">
-                                    <div className="grid grid-cols-2 gap-6">
+                            ) : (<>
+                                {/* The agent: who it is */}
+                                <div className="flex items-end gap-3">
+                                    <div className="grid min-w-0 flex-1 gap-3 @xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
                                         <div className="space-y-1">
-                                            <label className="text-[10px] font-bold text-zinc-500 uppercase">Name</label>
-                                            <input
+                                            <Label htmlFor="age-draftagent-name" className="block">Name</Label>
+                                            <Input id="age-draftagent-name"
                                                 type="text"
+                                                maxLength={AGENT_NAME_MAX}
                                                 value={draftAgent.name}
                                                 onChange={e => setDraftAgent({ ...draftAgent, name: e.target.value })}
-                                                className="w-full bg-zinc-950 border border-zinc-800 p-3 text-xs text-white focus:border-white focus:outline-none"
                                             />
                                         </div>
                                         <div className="space-y-1">
-                                            <label className="text-[10px] font-bold text-zinc-500 uppercase">Description</label>
-                                            <input
+                                            <Label htmlFor="age-draftagent-description" className="block">Description</Label>
+                                            <Input id="age-draftagent-description"
                                                 type="text"
                                                 value={draftAgent.description}
                                                 onChange={e => setDraftAgent({ ...draftAgent, description: e.target.value })}
-                                                className="w-full bg-zinc-950 border border-zinc-800 p-3 text-xs text-white focus:border-white focus:outline-none"
                                             />
-                                        </div>
-                                        <div className="space-y-1">
-                                            <label className="text-[10px] font-bold text-zinc-500 uppercase">Agent Type</label>
-                                            <select
-                                                value={draftAgent.type || 'conversational'}
-                                                onChange={e => {
-                                                    const newType = e.target.value;
-                                                    const oldAutoTools = AUTO_TOOLS_BY_TYPE[draftAgent.type] || [];
-                                                    const cleanedTools = draftAgent.tools.filter(
-                                                        (t: string) => !oldAutoTools.includes(t)
-                                                    );
-                                                    const defaultMaxTurns = newType === 'code' ? 50 : 30;
-                                                    setDraftAgent({
-                                                        ...draftAgent,
-                                                        type: newType,
-                                                        tools: cleanedTools,
-                                                        max_turns: draftAgent.max_turns ?? defaultMaxTurns,
-                                                    });
-                                                }}
-                                                className="w-full bg-zinc-950 border border-zinc-800 p-3 text-xs text-white focus:border-white focus:outline-none"
-                                            >
-                                                {agentTypes.map(t => (
-                                                    <option key={t.value} value={t.value}>{t.label}</option>
-                                                ))}
-                                            </select>
-                                            <p className="text-[9px] text-zinc-500 mt-1">
-                                                {agentTypes.find(t => t.value === (draftAgent.type || 'conversational'))?.description}
-                                            </p>
-                                        </div>
-
-                                        {/* Model Selection */}
-                                        <div className="space-y-1">
-                                            <label className="text-[10px] font-bold text-zinc-500 uppercase">Model</label>
-                                            <select
-                                                value={draftAgent.model || ''}
-                                                onChange={e => setDraftAgent({ ...draftAgent, model: e.target.value || null })}
-                                                className="w-full bg-zinc-950 border border-zinc-800 p-3 text-xs text-white focus:border-white focus:outline-none"
-                                            >
-                                                <option value="">Use Default ({defaultModel || 'not set'})</option>
-                                                {providers && Object.entries(providers).map(([providerKey, info]) => {
-                                                    if (!info.available || info.models.length === 0) return null;
-                                                    const providerLabel = providerKey.charAt(0).toUpperCase() + providerKey.slice(1);
-                                                    return (
-                                                        <optgroup key={providerKey} label={providerLabel}>
-                                                            {info.models.map((m: string) => (
-                                                                <option key={m} value={m}>{m}</option>
-                                                            ))}
-                                                        </optgroup>
-                                                    );
-                                                })}
-                                            </select>
-                                            <p className="text-[9px] text-zinc-500 mt-1">Override the default model for this agent. Leave empty to use the system default.</p>
-                                        </div>
-
-                                        {/* Max Turns */}
-                                        <div className="space-y-1">
-                                            <label className="text-[10px] font-bold text-zinc-500 uppercase">Max Turns</label>
-                                            <input
-                                                type="number"
-                                                min={1}
-                                                max={200}
-                                                value={draftAgent.max_turns ?? (draftAgent.type === 'code' ? 50 : 30)}
-                                                onChange={e => setDraftAgent({ ...draftAgent, max_turns: parseInt(e.target.value) || 30 })}
-                                                className="w-full bg-zinc-950 border border-zinc-800 p-3 text-xs text-white focus:border-white focus:outline-none"
-                                            />
-                                            <p className="text-[9px] text-zinc-500 mt-1">Max reasoning turns per request. Orchestration steps override this value.</p>
                                         </div>
                                     </div>
+                                    <Button variant="secondary" className="shrink-0 lg:hidden" onClick={() => setTestDrawer(true)} data-tour="agent-try">
+                                        Try it
+                                    </Button>
+                                </div>
+                                {isNew && <p className="mt-2 text-xs text-text-faint">New agent: not saved yet.</p>}
 
-                                    {draftAgent.type === 'code' && (
-                                        <div className="space-y-1">
-                                            <label className="text-[10px] font-bold text-zinc-500 uppercase">Linked Repositories</label>
-                                            <div className="bg-zinc-950 border border-zinc-800 p-3 flex flex-wrap gap-2 min-h-[50px]">
-                                                {repos.length === 0 && <span className="text-xs text-zinc-500">No repositories indexed yet.</span>}
-                                                {repos.map(repo => {
-                                                    const isLinked = draftAgent.repos?.includes(repo.id);
-                                                    return (
-                                                        <button
-                                                            key={repo.id}
-                                                            onClick={() => {
-                                                                const currentRepos = draftAgent.repos || [];
-                                                                if (isLinked) {
-                                                                    setDraftAgent({ ...draftAgent, repos: currentRepos.filter((id: string) => id !== repo.id) });
-                                                                } else {
-                                                                    setDraftAgent({ ...draftAgent, repos: [...currentRepos, repo.id] });
-                                                                }
-                                                            }}
-                                                            className={`px-3 py-1.5 text-xs font-bold border transition-colors ${isLinked
-                                                                ? 'bg-white text-black border-white'
-                                                                : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:border-zinc-500'
-                                                                }`}
-                                                        >
-                                                            {repo.name} {isLinked && '✓'}
-                                                        </button>
-                                                    );
-                                                })}
+                                {/* Sub-tab row */}
+                                <div role="tablist" aria-label="Agent" className="mt-5 flex flex-wrap items-center gap-1.5">
+                                    {tabs.map(t => (
+                                        <button
+                                            key={t.id}
+                                            type="button"
+                                            role="tab"
+                                            aria-selected={agentSubTab === t.id}
+                                            onClick={() => {
+                                                setAgentSubTab(t.id);
+                                                // "Used by" names the agent's channels too, so both tabs
+                                                // want the same fetch.
+                                                if ((t.id === 'messaging' || t.id === 'usedby') && savedId) loadChannels(savedId);
+                                            }}
+                                            // The Runs page's pills (Naveen, M2d).
+                                            className={cn(
+                                                'inline-flex h-[30px] shrink-0 items-center whitespace-nowrap rounded-full border px-3 text-[13px] font-medium transition-colors',
+                                                agentSubTab === t.id
+                                                    ? 'border-transparent bg-text text-bg'
+                                                    : 'border-border text-text-muted hover:border-border-strong hover:text-text',
+                                            )}
+                                        >
+                                            {t.label}
+                                        </button>
+                                    ))}
+                                </div>
+
+                                {/* ── Setup ─────────────────────────────────────── */}
+                                {agentSubTab === 'config' && (
+                                    <div role="tabpanel" aria-label="Setup" className="mt-2">
+                                        <SetupSection id="setup-model" title="Model">
+                                            <div className="grid gap-x-6 gap-y-4 @xl:grid-cols-2">
+                                                <div className="space-y-1">
+                                                    <Label className="block">Agent Type</Label>
+                                                    <Select
+                                                        value={draftAgent.type || 'conversational'}
+                                                        aria-label="Agent type"
+                                                        options={agentTypes.map(t => ({ value: t.value, label: t.label, disabled: t.disabled, hint: t.disabled ? t.description : undefined }))}
+                                                        onChange={newType => {
+                                                            const oldAutoTools = AUTO_TOOLS_BY_TYPE[draftAgent.type] || [];
+                                                            const cleanedTools = draftAgent.tools.filter(
+                                                                (t: string) => !oldAutoTools.includes(t)
+                                                            );
+                                                            const defaultMaxTurns = newType === 'code' ? 50 : 30;
+                                                            setDraftAgent({
+                                                                ...draftAgent,
+                                                                type: newType,
+                                                                tools: cleanedTools,
+                                                                max_turns: draftAgent.max_turns ?? defaultMaxTurns,
+                                                                // A new Team agent starts as a team (Q1); one that has its block keeps it.
+                                                                ...(newType === 'delegate' && !draftAgent.team ? { team: newTeamBlock() } : {}),
+                                                                // A Browser agent starts read-only, 40 actions a task (BRW2, F1080).
+                                                                ...(newType === 'browser' && !draftAgent.browser ? { browser: browserConfig(null) } : {}),
+                                                            });
+                                                        }}
+                                                    />
+                                                    <p className="mt-1 text-xs text-text-faint">
+                                                        {agentTypes.find(t => t.value === (draftAgent.type || 'conversational'))?.description}
+                                                    </p>
+                                                </div>
+
+                                                {/* Model Selection */}
+                                                <div className="space-y-1">
+                                                    <Label className="block">Model</Label>
+                                                    <Combobox
+                                                        value={draftAgent.model || '__default__'}
+                                                        onChange={v => setDraftAgent({ ...draftAgent, model: v === '__default__' ? null : v })}
+                                                        aria-label="Model"
+                                                        searchPlaceholder="Search models…"
+                                                        options={[
+                                                            { value: '__default__', label: `Use default (${defaultModel || 'not set'})` },
+                                                            ...Object.entries(providers ?? {}).flatMap(([providerKey, info]: [string, any]) =>
+                                                                !info.available || info.models.length === 0
+                                                                    ? []
+                                                                    : info.models.map((m: string) => ({
+                                                                        value: m,
+                                                                        label: m,
+                                                                        group: providerLabel(providerKey),
+                                                                    }))),
+                                                        ]}
+                                                    />
+                                                    <p className="mt-1 text-xs text-text-faint">Override the default model for this agent. Leave empty to use the system default.</p>
+                                                </div>
                                             </div>
-                                            <p className="text-[9px] text-zinc-500 mt-1">Select indexed repositories for semantic code search access.</p>
-                                        </div>
-                                    )}
 
-                                    {draftAgent.type === 'code' && (
-                                        <div className="space-y-1">
-                                            <label className="text-[10px] font-bold text-zinc-500 uppercase">Linked Databases</label>
-                                            <div className="bg-zinc-950 border border-zinc-800 p-3 flex flex-wrap gap-2 min-h-[50px]">
-                                                {dbConfigs.length === 0 && <span className="text-xs text-zinc-500">No databases configured yet.</span>}
-                                                {dbConfigs.map((db: any) => {
-                                                    const isLinked = draftAgent.db_configs?.includes(db.id);
-                                                    return (
-                                                        <button
-                                                            key={db.id}
-                                                            onClick={() => {
-                                                                const currentDbs = draftAgent.db_configs || [];
-                                                                if (isLinked) {
-                                                                    setDraftAgent({ ...draftAgent, db_configs: currentDbs.filter((id: string) => id !== db.id) });
-                                                                } else {
-                                                                    setDraftAgent({ ...draftAgent, db_configs: [...currentDbs, db.id] });
-                                                                }
-                                                            }}
-                                                            className={`px-3 py-1.5 text-xs font-bold border transition-colors ${isLinked
-                                                                ? 'bg-white text-black border-white'
-                                                                : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:border-zinc-500'
-                                                                }`}
-                                                        >
-                                                            {db.name} <span className="opacity-50">{db.db_type}</span> {isLinked && '✓'}
-                                                        </button>
-                                                    );
-                                                })}
-                                            </div>
-                                            <p className="text-[9px] text-zinc-500 mt-1">Select databases to inject schema context into the agent's system prompt.</p>
-                                        </div>
-                                    )}
+                                            {/* Reasoning effort.
 
-                                    {draftAgent.type === 'delegate' ? (
-                                        /* ── Delegate Agent: Sub-Agent Selector ── */
-                                        <div className="space-y-3">
-                                            <label className="text-[10px] font-bold text-zinc-500 uppercase">Sub-Agents (Delegation Targets)</label>
-                                            <p className="text-[9px] text-zinc-500 -mt-1">
-                                                Select which agents this delegate can route tasks to. Leave all unchecked to allow delegation to any agent.
-                                            </p>
-                                            {(() => {
-                                                const otherAgents = agents.filter((a: any) =>
-                                                    a.id !== draftAgent.id && a.type !== 'builder'
-                                                );
-                                                const selectedIds: string[] = draftAgent.delegate_agent_ids || [];
-                                                const allSelected = selectedIds.length === 0;
-                                                if (otherAgents.length === 0) {
-                                                    return (
-                                                        <div className="p-6 border border-dashed border-zinc-800 text-center text-zinc-600">
-                                                            <Bot className="h-6 w-6 mx-auto opacity-20 mb-2" />
-                                                            <p className="text-xs">No other agents available. Create agents first, then assign them here.</p>
-                                                        </div>
-                                                    );
-                                                }
-                                                return (
-                                                    <div className="space-y-2">
-                                                        {/* All agents toggle */}
-                                                        <div
-                                                            onClick={() => setDraftAgent({ ...draftAgent, delegate_agent_ids: [] })}
-                                                            className={`p-3 border cursor-pointer transition-all flex items-center gap-3
-                                                                ${allSelected ? 'bg-zinc-900 border-zinc-600' : 'bg-black border-zinc-800 hover:border-zinc-600'}`}
-                                                        >
-                                                            <div className={`w-3 h-3 border flex-shrink-0 flex items-center justify-center
-                                                                ${allSelected ? 'bg-green-500 border-green-500' : 'border-zinc-600'}`}
+                                                Hidden — not disabled — when the
+                                                resolved model has no reasoning
+                                                channel. A control that cannot
+                                                affect anything is worse than an
+                                                absent one: it invites the reading
+                                                that reasoning was set and ignored. */}
+                                            {(reasoningCapable ?? []).includes(draftAgent.model || defaultModel || '') && (
+                                                <div className="space-y-1">
+                                                    <Label className="block">Reasoning</Label>
+                                                    {/* A dropdown (Naveen, M2d); it was a row of buttons. No Off
+                                                        where the model has none: an Off that quietly runs as Low is
+                                                        the "set and ignored" reading this control exists to avoid (F65). */}
+                                                    {(() => {
+                                                        const withoutOff = (reasoningWithoutOff ?? []).includes(draftAgent.model || defaultModel || '');
+                                                        // What an agent with no effort of its own runs at (F99): the
+                                                        // workspace's setting, else the engine's default — Low for the
+                                                        // Claude CLI (F65), Medium for the rest. Off shows as Low where
+                                                        // the model has none. The CLI by its prefix, not by "has no Off":
+                                                        // a Gemini 3 Pro and a Claude 5 have no Off either (F269), and
+                                                        // with nothing set they run at Medium.
+                                                        const cli = (draftAgent.model || defaultModel || '').startsWith('cli.');
+                                                        const set = (workspaceEffort || '').trim().toLowerCase();
+                                                        const inherited = ['off', 'low', 'medium', 'high'].includes(set)
+                                                            ? (set === 'off' && withoutOff ? 'low' : set)
+                                                            : (cli ? 'low' : 'medium');
+                                                        const stored = draftAgent.reasoning_effort || null;
+                                                        const shown = stored === 'off' && withoutOff ? 'low' : stored;
+                                                        const cap = (w: string) => w.charAt(0).toUpperCase() + w.slice(1);
+                                                        return (
+                                                            <Select
+                                                                className="max-w-xs"
+                                                                aria-label="Reasoning"
+                                                                value={shown ?? '__default__'}
+                                                                // `null`, not undefined, for the default: a stored agent reads
+                                                                // back `null`, and the unsaved-changes guard compares JSON (F73).
+                                                                onChange={v => setDraftAgent({ ...draftAgent, reasoning_effort: v === '__default__' ? null : v })}
+                                                                options={[
+                                                                    { value: '__default__', label: `Default · ${cap(inherited)}` },
+                                                                    ...(withoutOff ? ['low', 'medium', 'high'] : ['off', 'low', 'medium', 'high'])
+                                                                        .map(level => ({ value: level, label: cap(level) })),
+                                                                ]}
                                                             />
-                                                            <div className="flex-1 min-w-0">
-                                                                <div className="text-xs font-bold text-white">All Agents</div>
-                                                                <div className="text-[9px] text-zinc-500">Allow delegation to any available agent</div>
-                                                            </div>
-                                                            {allSelected && <span className="text-[9px] px-1.5 py-0.5 bg-green-900/50 text-green-400 border border-green-900 rounded">ACTIVE</span>}
-                                                        </div>
+                                                        );
+                                                    })()}
+                                                    <p className="mt-1 text-xs text-text-faint">How much this model thinks before it answers. Higher costs more and takes longer; thinking tokens are billed as output.</p>
+                                                    {/* What Off does on this model, served by the models
+                                                        endpoint rather than restated here (F269). */}
+                                                    {(reasoningOffMinimum ?? []).includes(draftAgent.model || defaultModel || '') && (
+                                                        <p className="mt-1 text-xs text-text-muted">This model can&apos;t stop thinking entirely: Off runs at its lowest thinking level.</p>
+                                                    )}
+                                                    {(reasoningWithoutOff ?? []).includes(draftAgent.model || defaultModel || '') && (
+                                                        <p className="mt-1 text-xs text-text-muted">This model has no Off: the least it thinks is Low.</p>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </SetupSection>
 
-                                                        {/* Individual agents */}
-                                                        <div className="grid grid-cols-2 gap-2">
-                                                            {otherAgents.map((a: any) => {
-                                                                const isSelected = selectedIds.includes(a.id);
+                                        <SetupSection id="setup-instructions" title="Instructions">
+                                            {/* Prompt Generator — above the editor, because it writes what goes in it (Naveen, M2d). */}
+                                            <div className="space-y-2 rounded-lg border border-border bg-surface-2/50 p-3">
+                                                <Label htmlFor="agn-prompt-description" className="flex items-center gap-1.5">
+                                                    <Sparkles className="size-3.5 text-machine" aria-hidden /> AI Prompt Writer
+                                                </Label>
+                                                <div className="flex gap-2">
+                                                    <Input
+                                                        id="agn-prompt-description"
+                                                        type="text"
+                                                        value={promptDescription}
+                                                        onChange={e => setPromptDescription(e.target.value)}
+                                                        onKeyDown={e => e.key === 'Enter' && !isGenerating && generatePrompt()}
+                                                        placeholder="Describe what this agent should do... e.g. 'A customer support agent for a SaaS product'"
+                                                        className="flex-1"
+                                                    />
+                                                    <Button
+                                                        variant="secondary"
+                                                        onClick={generatePrompt}
+                                                        disabled={isGenerating || !promptDescription.trim()}
+                                                    >
+                                                        {isGenerating ? (
+                                                            <><Spinner size={12} /> GENERATING...</>
+                                                        ) : (
+                                                            <><Sparkles className="size-3.5" aria-hidden /> GENERATE</>
+                                                        )}
+                                                    </Button>
+                                                </div>
+                                                <p className="text-xs text-text-faint">Describe the agent&apos;s purpose and the AI will generate a comprehensive system prompt. Tools and date/time context are auto-injected at runtime.</p>
+                                                {promptError && (
+                                                    <ErrorNote className="text-xs">
+                                                        {promptError}{' '}
+                                                        <Link href="/settings/models" className="whitespace-nowrap font-medium underline underline-offset-2">Settings → Models</Link>
+                                                    </ErrorNote>
+                                                )}
+                                            </div>
+                                            {/* The kit's markdown editor. `global` because a system
+                                                prompt fills in `{{ global.key }}` and nothing else; the
+                                                vault's `@` rides the same suggestion list. */}
+                                            <div className="space-y-1">
+                                                <Label htmlFor="agent-system-prompt" className="sr-only">Instructions</Label>
+                                                <MarkdownEditor
+                                                    key={draftAgent.id || 'new'}
+                                                    id="agent-system-prompt"
+                                                    rows={14}
+                                                    profile="global"
+                                                    mentions={vaultMentions}
+                                                    value={draftAgent.system_prompt || ''}
+                                                    onChange={system_prompt => setDraftAgent({ ...draftAgent, system_prompt })}
+                                                    placeholder="You are a helpful assistant. Type {{ for a variable, @ for a vault file…"
+                                                    previewEmpty="No system prompt yet."
+                                                />
+                                                <p className="text-xs text-text-faint">
+                                                    Type <code className="font-code">{'{{'}</code> for a variable — <code className="font-code">{'{{ global.key }}'}</code> is filled in each time the agent runs.
+                                                </p>
+                                            </div>
+
+                                        </SetupSection>
+
+                                        {draftAgent.type === 'browser' && (
+                                            /* ── A Browser agent: what bounds it, set here so no page can change it (BRW2, F1080) ── */
+                                            <SetupSection id="setup-browser" title="Browser">
+                                                <BrowserSetup
+                                                    value={draftAgent.browser}
+                                                    onChange={browser => setDraftAgent({ ...draftAgent, browser })}
+                                                    sessions={siteSessions}
+                                                    libraryHref={OSS_SESSIONS_HOST.libraryHref}
+                                                />
+                                            </SetupSection>
+                                        )}
+
+                                        {draftAgent.type === 'delegate' && (
+                                            /* ── A Team agent (stored `delegate`): its members and how they work (TEAM1b; Q1, Q2a, Q11) ── */
+                                            <SetupSection id="setup-members" title="Members">
+                                                <TeamSetup
+                                                    block={draftAgent.team}
+                                                    onChange={team => setDraftAgent({ ...draftAgent, team })}
+                                                    ceiling={teamCeiling}
+                                                    ceilingNote={`Up to ${teamCeiling} on this install (Settings → General). Others wait for a free slot.`}
+                                                    members={(
+                                                <div className="space-y-3">
+                                                    <p className="text-xs text-text-faint">
+                                                        The agents this Team agent can hand work to. Each works with its own tools and approvals. Leave all unticked to allow any agent.
+                                                    </p>
+                                                    {(() => {
+                                                        const otherAgents = agents.filter((a: any) =>
+                                                            a.id !== draftAgent.id && a.type !== 'builder'
+                                                        );
+                                                        const selectedIds: string[] = draftAgent.delegate_agent_ids || [];
+                                                        const allSelected = selectedIds.length === 0;
+                                                        if (otherAgents.length === 0) {
+                                                            return (
+                                                                <div className="rounded-lg border border-dashed border-border p-6 text-center text-text-faint">
+                                                                    <Bot className="mx-auto mb-2 size-6 opacity-30" aria-hidden />
+                                                                    <p className="text-xs">No other agents available. Create agents first, then assign them here.</p>
+                                                                </div>
+                                                            );
+                                                        }
+                                                        return (
+                                                            <div className="space-y-2">
+                                                                {/* All agents: ticked while no agent is picked. Ticking it
+                                                                    clears the picks; it is unticked by picking agents below,
+                                                                    so while ticked it is disabled rather than a box that
+                                                                    refuses to untick (F184). */}
+                                                                <label
+                                                                    className={cn(
+                                                                        'flex items-center gap-3 rounded-lg border p-3 transition-colors',
+                                                                        allSelected ? 'border-border-strong bg-surface-2' : 'cursor-pointer border-border bg-surface hover:border-border-strong',
+                                                                    )}
+                                                                >
+                                                                    <Checkbox
+                                                                        checked={allSelected}
+                                                                        disabled={allSelected}
+                                                                        onChange={() => setDraftAgent({ ...draftAgent, delegate_agent_ids: [] })}
+                                                                        label="All Agents"
+                                                                        className="disabled:opacity-100"
+                                                                    />
+                                                                    <span className="block min-w-0 flex-1">
+                                                                        <span className="block text-sm font-medium text-text">All Agents</span>
+                                                                        <span className="block text-xs text-text-faint">Any agent here can be a member</span>
+                                                                    </span>
+                                                                    {allSelected && <span className="rounded-md bg-success-subtle px-1.5 py-0.5 text-2xs font-medium text-success">ACTIVE</span>}
+                                                                </label>
+
+                                                                {/* Individual agents */}
+                                                                <div className="grid gap-2 @xl:grid-cols-2">
+                                                                    {otherAgents.map((a: any) => {
+                                                                        const isSelected = selectedIds.includes(a.id);
+                                                                        return (
+                                                                            <label
+                                                                                key={a.id}
+                                                                                className={cn(
+                                                                                    'block cursor-pointer rounded-lg border p-3 transition-colors',
+                                                                                    isSelected ? 'border-border-strong bg-surface-2' : allSelected ? 'border-border bg-surface opacity-60' : 'border-border bg-surface hover:border-border-strong',
+                                                                                )}
+                                                                            >
+                                                                                <span className="flex items-center gap-2">
+                                                                                    <Checkbox
+                                                                                        checked={isSelected}
+                                                                                        onChange={() => {
+                                                                                            const newIds = isSelected
+                                                                                                ? selectedIds.filter((id: string) => id !== a.id)
+                                                                                                : [...selectedIds, a.id];
+                                                                                            setDraftAgent({ ...draftAgent, delegate_agent_ids: newIds });
+                                                                                        }}
+                                                                                        label={a.name}
+                                                                                    />
+                                                                                    <span className="block min-w-0 flex-1">
+                                                                                        <span className="block truncate text-sm font-medium text-text">{a.name}</span>
+                                                                                        <span className="block truncate text-xs text-text-faint">{a.description}</span>
+                                                                                    </span>
+                                                                                    <span className="shrink-0 rounded-md bg-surface-2 px-1 text-2xs text-text-faint">{typeLabel(a.type)}</span>
+                                                                                </span>
+                                                                            </label>
+                                                                        );
+                                                                    })}
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })()}
+                                                </div>
+                                                    )}
+                                                />
+                                            </SetupSection>
+                                        )}
+
+                                        <SetupSection id="setup-tools" title="Tools">
+                                            <div className="space-y-3">
+                                                <Label className="sr-only">Capabilities (Tools)</Label>
+                                                {unknownTools.length > 0 && (
+                                                    <div role="note" data-unknown-tools className="grid gap-1.5 rounded-md border border-person/40 bg-person-subtle px-3 py-2.5 text-sm text-text">
+                                                        <span>
+                                                            Nothing here provides {unknownTools.map((t, i) => (
+                                                                <span key={t.name}>{i ? ', ' : ''}<span className="font-code">{t.name}</span>{t.nearest.length ? <span className="text-text-muted"> (nearest: {t.nearest.join(', ')})</span> : null}</span>
+                                                            ))}, so this agent runs without {unknownTools.length > 1 ? 'them' : 'it'}.
+                                                        </span>
+                                                        <div>
+                                                            <Button
+                                                                size="sm"
+                                                                variant="secondary"
+                                                                onClick={() => {
+                                                                    const drop = new Set(unknownTools.map(t => t.name));
+                                                                    setDraftAgent({ ...draftAgent, tools: draftAgent.tools.filter((t: string) => !drop.has(t)) });
+                                                                    setUnknownTools([]);
+                                                                }}
+                                                            >
+                                                                Remove {unknownTools.length > 1 ? 'them' : 'it'} from this agent
+                                                            </Button>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                                {loadingCapabilities ? (
+                                                    /* ── Skeleton loader ── */
+                                                    <div className="grid gap-3 @2xl:grid-cols-2">
+                                                        {Array.from({ length: 8 }).map((_, i) => (
+                                                            <div key={i} className="animate-pulse space-y-2 rounded-lg border border-border bg-surface p-4">
+                                                                <div className="flex items-center gap-2">
+                                                                    <div className="size-3 rounded-sm bg-surface-2" />
+                                                                    <div className="h-2.5 w-24 rounded-md bg-surface-2" />
+                                                                </div>
+                                                                <div className="ml-5 h-2 w-32 rounded-md bg-surface-2/70" />
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                ) : (() => {
+                                                    const agentType = draftAgent.type || 'conversational';
+                                                    const autoTools = new Set([
+                                                        ...(AUTO_TOOLS_BY_TYPE.all_types || []),
+                                                        ...(AUTO_TOOLS_BY_TYPE[agentType] || []),
+                                                    ]);
+                                                    // One line per group (Naveen, M2d: the section was too tall);
+                                                    // a group's description on hover and in its opened list. A
+                                                    // search once there are more than 8, as cloud's editor has.
+                                                    const q = toolQuery.trim();
+                                                    const detailsOf = (cap: any): ToolDetail[] =>
+                                                        cap.toolDetails || cap.tools.map((t: string) => ({ name: t, description: '' }));
+                                                    const shown = availableCapabilities
+                                                        .map((cap: any) => ({
+                                                            cap,
+                                                            groupHit: !q || matchesQuery(q, cap.label, cap.description, cap.server),
+                                                            tools: detailsOf(cap).filter(t => !q || matchesQuery(q, t.name, humanizeToolName(t.name), t.description)),
+                                                        }))
+                                                        .filter((x: any) => x.groupHit || x.tools.length > 0);
+                                                    return (<>
+                                                        {availableCapabilities.length > 8 && (
+                                                            <SearchInput value={toolQuery} onChange={setToolQuery} placeholder="Search tools…" className="max-w-sm" />
+                                                        )}
+                                                        {q && shown.length === 0 && <p className="text-sm text-text-faint">Nothing matches that.</p>}
+                                                        {/* A fixed height that scrolls, so the section stays short (Naveen, M2d). */}
+                                                        <div className="max-h-[440px] overflow-y-auto rounded-lg border border-border bg-surface-2/40 p-2 modern-scrollbar">
+                                                        <div className="grid items-start gap-2 @2xl:grid-cols-2">
+                                                            {shown.map(({ cap, groupHit, tools: matched }: any) => {
+                                                                const toolDetails: ToolDetail[] = q && !groupHit ? matched : detailsOf(cap);
+                                                                const hasMultipleTools = detailsOf(cap).length > 1;
+                                                                // A search opens the groups it found tools in.
+                                                                const isExpanded = expandedCaps.has(cap.id) || (!!q && !groupHit);
+                                                                const isAutoGroup = cap.tools.every((t: string) => autoTools.has(t));
+                                                                const enabledCount = cap.tools.filter((t: string) =>
+                                                                    isAutoGroup || draftAgent.tools.includes("all") || draftAgent.tools.includes(t)
+                                                                ).length;
+                                                                const allGroupEnabled = enabledCount === cap.tools.length;
+                                                                const someEnabled = enabledCount > 0 && !allGroupEnabled;
+                                                                const badges = (
+                                                                    <>
+                                                                        {cap.toolType === 'custom' && <span className="rounded-md bg-surface-2 px-1 text-2xs text-text-muted">CUSTOM</span>}
+                                                                        {cap.toolType === 'mcp' && <span className="rounded-md bg-surface-2 px-1 text-2xs text-text-muted">MCP</span>}
+                                                                    </>
+                                                                );
+
                                                                 return (
                                                                     <div
-                                                                        key={a.id}
-                                                                        onClick={() => {
-                                                                            let newIds: string[];
-                                                                            if (isSelected) {
-                                                                                newIds = selectedIds.filter((id: string) => id !== a.id);
-                                                                            } else {
-                                                                                newIds = [...selectedIds, a.id];
-                                                                            }
-                                                                            setDraftAgent({ ...draftAgent, delegate_agent_ids: newIds });
-                                                                        }}
-                                                                        className={`p-3 border cursor-pointer transition-all
-                                                                            ${isSelected ? 'bg-zinc-900 border-zinc-600' : allSelected ? 'bg-zinc-900/30 border-zinc-800 opacity-60' : 'bg-black border-zinc-800 hover:border-zinc-600'}`}
+                                                                        key={cap.id}
+                                                                        className={cn(
+                                                                            'rounded-lg border bg-surface transition-colors',
+                                                                            allGroupEnabled || someEnabled ? 'border-border-strong' : 'border-border',
+                                                                        )}
                                                                     >
-                                                                        <div className="flex items-center gap-2">
-                                                                            <div className={`w-3 h-3 border flex-shrink-0
-                                                                                ${isSelected ? 'bg-green-500 border-green-500' : 'border-zinc-600'}`}
-                                                                            />
-                                                                            <div className="flex-1 min-w-0">
-                                                                                <div className="text-xs font-bold text-white truncate">{a.name}</div>
-                                                                                <div className="text-[9px] text-zinc-500 truncate">{a.description}</div>
+                                                                        {/* A real control per group, so a keyboard can give an agent
+                                                                            tools and a screen reader hears each one's state (F184). A
+                                                                            group of several tools keeps its box and its expander apart:
+                                                                            one ticks the whole group, the other opens it. A group of one
+                                                                            is that one tool, so it is a switch (M2d). */}
+                                                                        {isAutoGroup ? (
+                                                                            <div className="flex items-center gap-2 px-3 py-2" title={`Included by default for ${agentType} agents`}>
+                                                                                <Lock className="size-3 shrink-0 text-text-faint" aria-hidden />
+                                                                                <span className="flex-1 truncate text-sm font-medium text-text">{cap.label}</span>
+                                                                                <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-2xs text-text-muted">DEFAULT</span>
                                                                             </div>
-                                                                            <span className="text-[9px] px-1 bg-zinc-800 text-zinc-500 rounded capitalize flex-shrink-0">{a.type}</span>
-                                                                        </div>
+                                                                        ) : hasMultipleTools ? (
+                                                                            <div className="flex items-center gap-2.5 px-3 py-2" title={cap.description || undefined}>
+                                                                                <Checkbox
+                                                                                    checked={allGroupEnabled ? true : someEnabled ? 'indeterminate' : false}
+                                                                                    onChange={() => toggleGroupTools(cap)}
+                                                                                    label={cap.label}
+                                                                                />
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={() => toggleExpand(cap.id)}
+                                                                                    aria-expanded={isExpanded}
+                                                                                    aria-label={`${cap.label} tools, ${enabledCount} of ${cap.tools.length} on`}
+                                                                                    className="flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left"
+                                                                                >
+                                                                                    <span className="flex-1 truncate text-sm font-medium text-text">{cap.label}</span>
+                                                                                    {badges}
+                                                                                    <span className="text-xs tabular-nums text-text-faint">{enabledCount}/{cap.tools.length}</span>
+                                                                                    {isExpanded
+                                                                                        ? <ChevronDown className="size-3.5 shrink-0 text-text-faint" aria-hidden />
+                                                                                        : <ChevronRight className="size-3.5 shrink-0 text-text-faint" aria-hidden />}
+                                                                                </button>
+                                                                            </div>
+                                                                        ) : (
+                                                                            <label className="flex cursor-pointer items-center gap-2.5 px-3 py-2" title={cap.description || undefined}>
+                                                                                <span className="flex-1 truncate text-sm font-medium text-text">{cap.label}</span>
+                                                                                {badges}
+                                                                                <Switch
+                                                                                    checked={allGroupEnabled}
+                                                                                    onChange={() => toggleGroupTools(cap)}
+                                                                                    label={cap.label}
+                                                                                />
+                                                                            </label>
+                                                                        )}
+
+                                                                        {!isExpanded && (
+                                                                            <p className="-mt-1 line-clamp-2 px-3 pb-2 text-xs text-text-faint">
+                                                                                {isAutoGroup ? `Included by default for ${agentType} agents` : cap.description}
+                                                                            </p>
+                                                                        )}
+
+                                                                        {isExpanded && hasMultipleTools && !isAutoGroup && (
+                                                                            <div className="divide-y divide-border border-t border-border px-3">
+                                                                                {cap.description && <p className="py-2 text-xs text-text-faint">{cap.description}</p>}
+                                                                                {toolDetails.map((tool: ToolDetail) => {
+                                                                                    const isToolAuto = autoTools.has(tool.name);
+                                                                                    const isToolEnabled = isToolAuto || draftAgent.tools.includes("all") || draftAgent.tools.includes(tool.name);
+                                                                                    const Row = isToolAuto ? 'div' : 'label';
+                                                                                    return (
+                                                                                        <Row
+                                                                                            key={tool.name}
+                                                                                            className={cn('flex items-start gap-3 py-2', isToolAuto ? 'cursor-default opacity-60' : 'cursor-pointer')}
+                                                                                        >
+                                                                                            <span className="block min-w-0 flex-1">
+                                                                                                {/* Humanized name leads; the dispatch key stays beside it
+                                                                                                    (small, mono) because it is what a step stores and what
+                                                                                                    a run log prints. */}
+                                                                                                <span className="block text-xs text-text">
+                                                                                                    {humanizeToolName(tool.name)}
+                                                                                                    <span className="ml-1.5 font-mono text-[10px] text-text-faint" translate="no">{tool.name}</span>
+                                                                                                </span>
+                                                                                                {tool.description && (
+                                                                                                    <span className="mt-0.5 line-clamp-2 block text-xs leading-tight text-text-faint">{tool.description}</span>
+                                                                                                )}
+                                                                                                {/* What it says it does (TAG1), as its server or person declared it. */}
+                                                                                                {tool.annotations && (
+                                                                                                    <span className="mt-1 flex flex-wrap gap-1" data-tool-chips={tool.name}>
+                                                                                                        {tagChips(tagsOf(tool.annotations), tool.trusted !== false).map(c => (
+                                                                                                            <Badge key={c} size="sm" tone="neutral">{c}</Badge>
+                                                                                                        ))}
+                                                                                                    </span>
+                                                                                                )}
+                                                                                            </span>
+                                                                                            {isToolAuto ? (
+                                                                                                <Lock className="mt-0.5 size-3 shrink-0 text-text-faint" aria-hidden />
+                                                                                            ) : (
+                                                                                                <Switch
+                                                                                                    size="sm"
+                                                                                                    checked={isToolEnabled}
+                                                                                                    onChange={() => toggleSingleTool(tool.name, cap)}
+                                                                                                    label={humanizeToolName(tool.name)}
+                                                                                                    className="mt-0.5"
+                                                                                                />
+                                                                                            )}
+                                                                                        </Row>
+                                                                                    );
+                                                                                })}
+                                                                            </div>
+                                                                        )}
                                                                     </div>
                                                                 );
                                                             })}
                                                         </div>
+                                                        </div>
+                                                        {/* What these tools add to every model call, and the warning past
+                                                            the budget "every tool" is held to at run time (F483). */}
+                                                        {(() => {
+                                                            const context = toolContext(
+                                                                sizedTools(availableCapabilities),
+                                                                selectedToolNames(availableCapabilities, draftAgent.tools),
+                                                                draftAgent.tools.includes('all'),
+                                                            );
+                                                            if (!context.text) return null;
+                                                            return (
+                                                                <p className={cn('flex items-start gap-1.5 text-xs', context.warn ? 'text-warning' : 'text-text-faint')}>
+                                                                    {context.warn && <AlertTriangle className="mt-px size-3.5 shrink-0" aria-hidden />}
+                                                                    <span>{context.text}</span>
+                                                                </p>
+                                                            );
+                                                        })()}
+                                                    </>);
+                                                })()}
+                                            </div>
+
+                                            {draftAgent.type === 'code' && (
+                                                <div className="space-y-1">
+                                                    <Label className="block">Linked Repositories</Label>
+                                                    <div className={boxed}>
+                                                        {repos.length === 0 && <span className="text-sm text-text-muted">No repositories indexed yet.</span>}
+                                                        {repos.map(repo => {
+                                                            const isLinked = draftAgent.repos?.includes(repo.id);
+                                                            return (
+                                                                <button
+                                                                    key={repo.id}
+                                                                    type="button"
+                                                                    aria-pressed={!!isLinked}
+                                                                    onClick={() => {
+                                                                        const currentRepos = draftAgent.repos || [];
+                                                                        if (isLinked) {
+                                                                            setDraftAgent({ ...draftAgent, repos: currentRepos.filter((id: string) => id !== repo.id) });
+                                                                        } else {
+                                                                            setDraftAgent({ ...draftAgent, repos: [...currentRepos, repo.id] });
+                                                                        }
+                                                                    }}
+                                                                    className={chip(!!isLinked)}
+                                                                >
+                                                                    {repo.name} {isLinked && '✓'}
+                                                                </button>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                    <p className="mt-1 text-xs text-text-faint">Select indexed repositories for semantic code search access.</p>
+                                                </div>
+                                            )}
+
+                                            {draftAgent.type === 'code' && (
+                                                <div className="space-y-1">
+                                                    <Label className="block">Linked Databases</Label>
+                                                    <div className={boxed}>
+                                                        {dbConfigs.length === 0 && <span className="text-sm text-text-muted">No databases configured yet.</span>}
+                                                        {dbConfigs.map((db: any) => {
+                                                            const isLinked = draftAgent.db_configs?.includes(db.id);
+                                                            return (
+                                                                <button
+                                                                    key={db.id}
+                                                                    type="button"
+                                                                    aria-pressed={!!isLinked}
+                                                                    onClick={() => {
+                                                                        const currentDbs = draftAgent.db_configs || [];
+                                                                        if (isLinked) {
+                                                                            setDraftAgent({ ...draftAgent, db_configs: currentDbs.filter((id: string) => id !== db.id) });
+                                                                        } else {
+                                                                            setDraftAgent({ ...draftAgent, db_configs: [...currentDbs, db.id] });
+                                                                        }
+                                                                    }}
+                                                                    className={chip(!!isLinked)}
+                                                                >
+                                                                    {db.name} <span className="opacity-60">{db.db_type}</span> {isLinked && '✓'}
+                                                                </button>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                    <p className="mt-1 text-xs text-text-faint">Select databases to inject schema context into the agent&apos;s system prompt.</p>
+                                                </div>
+                                            )}
+
+                                            {/* Tool policy — what the agent may DO with the tools above.
+                                                The list is about which tools it holds; this is about what
+                                                a call costs. Enforced in core/tool_policy.py. */}
+                                            {/* Folded (Naveen, M2d); the closed row still says what is set. */}
+                                            <Section
+                                                title="Tool Policy"
+                                                description="Decided by what a tool does, not by its name — so a destructive call can wait for a person without taking the tool away from the agent."
+                                                summary={policySummary(draftAgent.tool_policy || {})}
+                                                className="mt-2"
+                                            >
+                                                <ToolPolicyFields
+                                                    value={draftAgent.tool_policy || {}}
+                                                    onChange={(next) => setDraftAgent({ ...draftAgent, tool_policy: next })}
+                                                    inheritFrom={policyDefaults}
+                                                    tools={(draftAgent.tools || []).filter((t: string) => t !== 'all' && !t.startsWith('group:'))}
+                                                />
+                                            </Section>
+                                            {/* Outside the fold: a warning is never folded away. */}
+                                            {(() => {
+                                                const gating = gatingCategories(draftAgent.tool_policy || {}, policyDefaults);
+                                                const bound = widgets.filter((w: any) => w.agent_id === draftAgent.id);
+                                                if (gating.length === 0 || bound.length === 0) return null;
+                                                const names = bound.map((w: any) => w.name || 'Untitled widget').join(', ');
+                                                const asked = gating
+                                                    .map(id => POLICY_CATEGORIES.find(c => c.id === id)?.clause)
+                                                    .filter(Boolean)
+                                                    .join(', or ');
+                                                return (
+                                                    <div className="rounded-md border border-warning/50 bg-warning-subtle p-3">
+                                                        <p className="text-xs text-text">
+                                                            <span className="font-semibold">{bound.length === 1 ? 'A chat widget publishes' : 'Chat widgets publish'} this agent</span>{' '}
+                                                            ({names}). A visitor there is not a member of this workspace and cannot
+                                                            answer an approval, so a call to {asked} will end their turn with a note
+                                                            asking them to get in touch. Saving is fine — but nobody will be asked.
+                                                        </p>
                                                     </div>
                                                 );
                                             })()}
-                                        </div>
-                                    ) : (
-                                    <div className="space-y-3">
-                                        <label className="text-[10px] font-bold text-zinc-500 uppercase">Capabilities (Tools)</label>
-                                        {loadingCapabilities ? (
-                                            /* ── Skeleton loader ── */
-                                            <div className="grid grid-cols-2 gap-4">
-                                                {Array.from({ length: 8 }).map((_, i) => (
-                                                    <div key={i} className="border border-zinc-800 bg-black p-4 space-y-2 animate-pulse">
-                                                        <div className="flex items-center gap-2">
-                                                            <div className="w-3 h-3 rounded-sm bg-zinc-800" />
-                                                            <div className="h-2.5 bg-zinc-800 rounded w-24" />
-                                                        </div>
-                                                        <div className="h-2 bg-zinc-800/70 rounded w-32 ml-5" />
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        ) : (() => {
-                                            const agentType = draftAgent.type || 'conversational';
-                                            const autoTools = new Set([
-                                                ...(AUTO_TOOLS_BY_TYPE.all_types || []),
-                                                ...(AUTO_TOOLS_BY_TYPE[agentType] || []),
-                                            ]);
-                                            return (
-                                                <div className="grid grid-cols-2 gap-4">
-                                                    {availableCapabilities.map((cap: any) => {
-                                                        const toolDetails: { name: string, description: string }[] = cap.toolDetails || cap.tools.map((t: string) => ({ name: t, description: '' }));
-                                                        const hasMultipleTools = toolDetails.length > 1;
-                                                        const isExpanded = expandedCaps.has(cap.id);
-                                                        const isAutoGroup = cap.tools.every((t: string) => autoTools.has(t));
-                                                        const enabledCount = cap.tools.filter((t: string) =>
-                                                            isAutoGroup || draftAgent.tools.includes("all") || draftAgent.tools.includes(t)
-                                                        ).length;
-                                                        const allGroupEnabled = enabledCount === cap.tools.length;
-                                                        const someEnabled = enabledCount > 0 && !allGroupEnabled;
+                                        </SetupSection>
 
+                                        <SetupSection id="setup-skills" title="Skills and knowledge">
+                                            {/* Skills — roster in the prompt, bodies on demand via load_skill */}
+                                            <div className="space-y-2">
+                                                <Label className="block">Skills</Label>
+                                                <div className={boxed}>
+                                                    {allSkills.filter((s: any) => !s.shadowed).length === 0 && (
+                                                        <span className="text-sm text-text-muted">No skills yet — create one on the Skills page.</span>
+                                                    )}
+                                                    {allSkills.filter((s: any) => !s.shadowed).map((skill: any) => {
+                                                        const isSelected = draftAgent.skills?.includes(skill.name);
                                                         return (
-                                                            <div
-                                                                key={cap.id}
-                                                                className={`border transition-colors
-                                                            ${isAutoGroup
-                                                                        ? 'bg-zinc-900/60 border-blue-900/40'
-                                                                        : allGroupEnabled
-                                                                            ? 'bg-zinc-900 border-zinc-600'
-                                                                            : someEnabled
-                                                                                ? 'bg-zinc-900/50 border-zinc-700'
-                                                                                : 'bg-black border-zinc-800 opacity-50'
-                                                                    }`}
+                                                            <button
+                                                                key={skill.name}
+                                                                type="button"
+                                                                aria-pressed={!!isSelected}
+                                                                title={skill.description}
+                                                                onClick={() => {
+                                                                    const current = draftAgent.skills || [];
+                                                                    setDraftAgent(isSelected
+                                                                        ? { ...draftAgent, skills: current.filter((n: string) => n !== skill.name) }
+                                                                        : { ...draftAgent, skills: [...current, skill.name] });
+                                                                }}
+                                                                className={chip(!!isSelected)}
                                                             >
-                                                                <div className={`p-4 flex items-center gap-2 transition-colors ${isAutoGroup ? 'cursor-default' : 'cursor-pointer hover:bg-zinc-800/30'}`}
-                                                                    onClick={() => {
-                                                                        if (isAutoGroup) return;
-                                                                        if (hasMultipleTools) {
-                                                                            toggleExpand(cap.id);
-                                                                        } else {
-                                                                            toggleGroupTools(cap);
-                                                                        }
-                                                                    }}
-                                                                >
-                                                                    {isAutoGroup ? (
-                                                                        <Lock className="w-3 h-3 text-blue-400 flex-shrink-0" />
-                                                                    ) : (
-                                                                        <div
-                                                                            onClick={(e) => {
-                                                                                if (hasMultipleTools) {
-                                                                                    e.stopPropagation();
-                                                                                    toggleGroupTools(cap);
-                                                                                }
-                                                                            }}
-                                                                            className={`w-3 h-3 border flex-shrink-0 flex items-center justify-center cursor-pointer
-                                                                        ${allGroupEnabled
-                                                                                    ? 'bg-green-500 border-green-500'
-                                                                                    : someEnabled
-                                                                                        ? 'bg-yellow-500 border-yellow-500'
-                                                                                        : 'border-zinc-600'
-                                                                                }`}
-                                                                        >
-                                                                            {someEnabled && <div className="w-1.5 h-0.5 bg-white"></div>}
-                                                                        </div>
-                                                                    )}
-                                                                    <span className="text-xs font-bold text-white truncate flex-1">{cap.label}</span>
-                                                                    {isAutoGroup && <span className="text-[9px] px-1.5 py-0.5 bg-blue-900/50 text-blue-400 border border-blue-900 rounded">DEFAULT</span>}
-                                                                    {!isAutoGroup && cap.toolType === 'custom' && <span className="text-[9px] px-1 bg-zinc-800 text-zinc-400 rounded">CUSTOM</span>}
-                                                                    {!isAutoGroup && cap.toolType === 'mcp' && <span className="text-[9px] px-1 bg-blue-900/50 text-blue-400 border border-blue-900 rounded">MCP</span>}
-                                                                    {!isAutoGroup && hasMultipleTools && (
-                                                                        <span className="text-[9px] text-zinc-500">{enabledCount}/{cap.tools.length}</span>
-                                                                    )}
-                                                                    {!isAutoGroup && hasMultipleTools && (
-                                                                        isExpanded
-                                                                            ? <ChevronDown className="h-3 w-3 text-zinc-500 flex-shrink-0" />
-                                                                            : <ChevronRight className="h-3 w-3 text-zinc-500 flex-shrink-0" />
-                                                                    )}
-                                                                </div>
-
-                                                                {!isExpanded && (
-                                                                    <div className="px-4 pb-3 -mt-1">
-                                                                        <p className="text-[9px] text-zinc-500 pl-5 line-clamp-2">
-                                                                            {isAutoGroup ? `Included by default for ${agentType} agents` : cap.description}
-                                                                        </p>
-                                                                    </div>
-                                                                )}
-
-                                                                {isExpanded && hasMultipleTools && !isAutoGroup && (
-                                                                    <div className="border-t border-zinc-800 px-3 py-2 space-y-1 max-h-[200px] overflow-y-auto">
-                                                                        {toolDetails.map((tool: { name: string, description: string }) => {
-                                                                            const isToolAuto = autoTools.has(tool.name);
-                                                                            const isToolEnabled = isToolAuto || draftAgent.tools.includes("all") || draftAgent.tools.includes(tool.name);
-                                                                            return (
-                                                                                <div
-                                                                                    key={tool.name}
-                                                                                    onClick={() => !isToolAuto && toggleSingleTool(tool.name, cap)}
-                                                                                    className={`flex gap-2.5 py-1.5 px-2 rounded transition-colors ${isToolAuto ? 'cursor-default opacity-60' : 'cursor-pointer hover:bg-zinc-800/40'}`}
-                                                                                >
-                                                                                    {isToolAuto ? (
-                                                                                        <Lock className="w-2.5 h-2.5 text-blue-400 flex-shrink-0 mt-[3px]" />
-                                                                                    ) : (
-                                                                                        <div className={`w-2.5 h-2.5 border flex-shrink-0 mt-[3px]
-                                                                                    ${isToolEnabled
-                                                                                                ? 'bg-green-500 border-green-500'
-                                                                                                : 'border-zinc-600'
-                                                                                            }`}
-                                                                                        ></div>
-                                                                                    )}
-                                                                                    <div className="min-w-0 flex-1">
-                                                                                        <div className="text-[10px] font-mono text-zinc-300">{tool.name}</div>
-                                                                                        {tool.description && (
-                                                                                            <p className="text-[9px] text-zinc-600 mt-0.5 leading-tight line-clamp-2">{tool.description}</p>
-                                                                                        )}
-                                                                                    </div>
-                                                                                </div>
-                                                                            );
-                                                                        })}
-                                                                    </div>
-                                                                )}
-                                                            </div>
+                                                                {skill.name} {isSelected && '✓'}
+                                                            </button>
                                                         );
                                                     })}
                                                 </div>
-                                            );
-                                        })()}
-                                    </div>
-                                    )}
-
-                                    {/* Prompt Generator */}
-                                    <div className="space-y-2">
-                                        <label className="text-[10px] font-bold text-zinc-500 uppercase flex items-center gap-1.5">
-                                            <Sparkles className="h-3 w-3" /> AI Prompt Writer
-                                        </label>
-                                        <div className="flex gap-2">
-                                            <input
-                                                type="text"
-                                                value={promptDescription}
-                                                onChange={e => setPromptDescription(e.target.value)}
-                                                onKeyDown={e => e.key === 'Enter' && !isGenerating && generatePrompt()}
-                                                placeholder="Describe what this agent should do... e.g. 'A customer support agent for a SaaS product'"
-                                                className="flex-1 bg-zinc-950 border border-zinc-800 px-3 py-2 text-xs text-white focus:border-purple-500 focus:outline-none placeholder:text-zinc-600"
-                                            />
-                                            <button
-                                                onClick={generatePrompt}
-                                                disabled={isGenerating || !promptDescription.trim()}
-                                                className="px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-xs font-bold flex items-center gap-2 transition-colors"
-                                            >
-                                                {isGenerating ? (
-                                                    <><Loader2 className="h-3 w-3 animate-spin" /> GENERATING...</>
-                                                ) : (
-                                                    <><Sparkles className="h-3 w-3" /> GENERATE</>
-                                                )}
-                                            </button>
-                                        </div>
-                                        <p className="text-[9px] text-zinc-600">Describe the agent&apos;s purpose and the AI will generate a comprehensive system prompt. Tools and date/time context are auto-injected at runtime.</p>
-                                    </div>
-
-                                    {/* System Prompt with Preview */}
-                                    <div className="space-y-1 flex-1 flex flex-col min-h-0">
-                                        <div className="flex items-center justify-between">
-                                            <label className="text-[10px] font-bold text-zinc-500 uppercase">System Prompt (The Brain)</label>
-                                            <button
-                                                onClick={() => setShowPreview(!showPreview)}
-                                                className="flex items-center gap-1.5 text-[10px] font-bold text-zinc-500 hover:text-white transition-colors px-2 py-1"
-                                            >
-                                                {showPreview ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
-                                                {showPreview ? 'EDIT' : 'PREVIEW'}
-                                            </button>
-                                        </div>
-                                        {showPreview ? (
-                                            <div className="w-full flex-1 min-h-[200px] max-h-[500px] overflow-y-auto bg-zinc-950 border border-zinc-800 p-4 text-sm text-zinc-300 leading-relaxed">
-                                                {renderTextContent(draftAgent.system_prompt || '*No system prompt yet.*')}
+                                                <p className="text-2xs text-text-faint">A selected skill costs one roster line in the prompt; the agent loads its full instructions with load_skill only when needed.</p>
                                             </div>
-                                        ) : (
-                                            <VaultTextarea
-                                                value={draftAgent.system_prompt}
-                                                onChange={e => setDraftAgent({ ...draftAgent, system_prompt: e.target.value })}
-                                                className="w-full flex-1 min-h-[200px] bg-zinc-950 border border-zinc-800 p-3 text-xs font-mono text-zinc-300 focus:border-white focus:outline-none resize-none leading-relaxed"
-                                                placeholder="You are a helpful assistant. Type @ to reference a vault file..."
-                                            />
+
+                                            {/* Knowledge bases — what this agent answers from, with sources (B1b) */}
+                                            {knowledgeOn && (
+                                                <KnowledgeBasePicker
+                                                    variant="switches"
+                                                    value={draftAgent.knowledge || []}
+                                                    onChange={ids => setDraftAgent({ ...draftAgent, knowledge: ids })}
+                                                    bases={allBases}
+                                                />
+                                            )}
+                                        </SetupSection>
+
+                                        {/* Boards (BOARD1b): its own board's switch, and the shared boards that name it; folded, its
+                                            fold the section's head (no second title above it). */}
+                                        {boardsOn && draftAgent.type !== 'orchestrator' && (
+                                            <section id="setup-boards" aria-label="Boards" className="border-b border-border py-6 last:border-b-0">
+                                                <OssBoardsHost>
+                                                    <AgentBoards
+                                                        agentId={isNew ? null : (draftAgent.id || null)}
+                                                        own={draftAgent.boards?.own !== false}
+                                                        onOwn={own => setDraftAgent({ ...draftAgent, boards: { ...(draftAgent.boards || {}), own } })}
+                                                    />
+                                                </OssBoardsHost>
+                                            </section>
+                                        )}
+
+                                        <SetupSection id="setup-limits" title="Limits">
+                                            <div className="grid gap-x-6 gap-y-4 @xl:grid-cols-2">
+                                                {/* Max Turns */}
+                                                <div className="space-y-1">
+                                                    <Label htmlFor="age-max-turns" className="block">Max Turns</Label>
+                                                    <Input id="age-max-turns"
+                                                        type="number"
+                                                        min={1}
+                                                        max={200}
+                                                        value={draftAgent.max_turns ?? (draftAgent.type === 'code' ? 50 : 30)}
+                                                        onChange={e => setDraftAgent({ ...draftAgent, max_turns: parseInt(e.target.value) || 30 })}
+                                                    />
+                                                    <p className="mt-1 text-xs text-text-faint">Max reasoning turns per request. A workflow&apos;s steps override this value.</p>
+                                                </div>
+
+                                                {/* At the turn limit (F1219): this agent's own choice; Default follows
+                                                    Settings → General. `null`, not undefined, for Default (F73). */}
+                                                <div className="space-y-1">
+                                                    <Label className="block">At the Turn Limit</Label>
+                                                    <Select
+                                                        className="max-w-xs"
+                                                        aria-label="At the turn limit"
+                                                        aria-describedby="age-turn-limit-help"
+                                                        value={draftAgent.turn_limit_mode ?? '__default__'}
+                                                        onChange={v => setDraftAgent({ ...draftAgent, turn_limit_mode: v === '__default__' ? null : v })}
+                                                        options={AGENT_TURN_LIMIT_CHOICES}
+                                                    />
+                                                    <p id="age-turn-limit-help" className="mt-1 text-xs text-text-faint">What it does when it reaches Max Turns without finishing, after one last turn to answer with what it has. Extra turns are billed as any turn is.</p>
+                                                </div>
+
+                                                {/* Max response length (F263) — this agent's own cap; blank
+                                                    leaves it to Settings → Models. `null`, not undefined, when
+                                                    cleared: a stored agent reads back `null` (F73). */}
+                                                <div className="space-y-1">
+                                                    <Label htmlFor="age-max-output" className="block">Max Response Length</Label>
+                                                    <Input id="age-max-output"
+                                                        type="number"
+                                                        inputMode="numeric"
+                                                        min={256}
+                                                        max={262144}
+                                                        step={1024}
+                                                        placeholder="Workspace default"
+                                                        value={draftAgent.max_output_tokens ?? ''}
+                                                        onChange={e => setDraftAgent({
+                                                            ...draftAgent,
+                                                            max_output_tokens: e.target.value.trim() ? parseInt(e.target.value, 10) : null,
+                                                        })}
+                                                        aria-describedby="age-max-output-help"
+                                                    />
+                                                    <p id="age-max-output-help" className="mt-1 text-xs text-text-faint">The most this agent&apos;s model may write in one response, thinking included, in tokens. A model that thinks gets it raised to fit its thinking, so its answer may run past it; the run log says when. Blank uses the workspace&apos;s (Settings → Models).</p>
+                                                </div>
+                                            </div>
+
+                                            <div className="divide-y divide-border rounded-lg border border-border bg-surface">
+                                                {/* Default tools (F414) — the Vault's file tools, a code
+                                                    agent's code search and the task list, which the engine
+                                                    hands every agent whatever its tools say. Off saves
+                                                    `skip_default_tools: true`: the agent gets exactly what
+                                                    is ticked. Absent reads as on. */}
+                                                <label className="flex cursor-pointer items-start gap-4 p-3">
+                                                    <span className="min-w-0 flex-1">
+                                                        <span className="block text-sm font-medium text-text">Default tools</span>
+                                                        <span id="age-defaults-help" className="mt-0.5 block text-xs text-text-muted">
+                                                            Whatever is ticked above, it can always read files (<span className="font-mono">read_file</span>,{' '}
+                                                            <span className="font-mono">search_files</span>, <span className="font-mono">list_files</span>…)
+                                                            and keep a plan. Turn it off for an agent that only writes what it is asked: it then
+                                                            gets exactly the tools ticked, and nothing else.
+                                                        </span>
+                                                    </span>
+                                                    <Switch
+                                                        label="Default tools"
+                                                        aria-describedby="age-defaults-help"
+                                                        checked={draftAgent.skip_default_tools !== true}
+                                                        onChange={(on) => setDraftAgent({ ...draftAgent, skip_default_tools: !on })}
+                                                        className="mt-0.5"
+                                                    />
+                                                </label>
+
+                                                {/* Planning — the native task list, on unless this agent
+                                                    has no use for one. Above Memory because it is the
+                                                    cheaper and more commonly wanted of the two. Off with
+                                                    the default tools, which take the task list with them;
+                                                    its own value is kept. */}
+                                                <label className="flex cursor-pointer items-start gap-4 p-3">
+                                                    <span className="min-w-0 flex-1">
+                                                        <span id="age-planning-label" className="block text-sm font-medium text-text">Planning</span>
+                                                        {/* Named by its heading, described by its sentence (F265). */}
+                                                        <span id="age-planning-help" className="mt-0.5 block text-xs text-text-muted">
+                                                            Let this agent write a plan with <span className="font-mono">update_tasks</span> and
+                                                            keep it up to date as it works. The list shows live in the run log. Turn it off for
+                                                            one-shot agents, where announcing three tasks costs a turn and tells nobody anything.
+                                                            {draftAgent.skip_default_tools === true && (
+                                                                <span className="mt-1 block text-text-faint">Off with the default tools.</span>
+                                                            )}
+                                                        </span>
+                                                    </span>
+                                                    <Switch
+                                                        label="Planning"
+                                                        aria-describedby="age-planning-help"
+                                                        checked={draftAgent.planning !== false && draftAgent.skip_default_tools !== true}
+                                                        disabled={draftAgent.skip_default_tools === true}
+                                                        onChange={(on) => setDraftAgent({ ...draftAgent, planning: on })}
+                                                        className="mt-0.5"
+                                                    />
+                                                </label>
+
+                                                {/* Memory — persistent per-agent memory (index eager, rest on demand) */}
+                                                <label className="flex cursor-pointer items-start gap-4 p-3">
+                                                    <span className="min-w-0 flex-1">
+                                                        <span className="block text-sm font-medium text-text">Memory</span>
+                                                        <span id="age-memory-help" className="mt-0.5 block text-xs text-text-muted">
+                                                            Give this agent persistent memory: it can save facts with <span className="font-mono">remember</span>,
+                                                            search past sessions with <span className="font-mono">search_memory</span>, and its memory index
+                                                            rides the prompt. Sessions leave summaries automatically.
+                                                        </span>
+                                                    </span>
+                                                    <Switch
+                                                        label="Memory"
+                                                        aria-describedby="age-memory-help"
+                                                        checked={!!draftAgent.memory}
+                                                        onChange={(on) => setDraftAgent({ ...draftAgent, memory: on })}
+                                                        className="mt-0.5"
+                                                    />
+                                                </label>
+
+                                                {/* Helpers (SUB1a, S1): the agent may hand a focused task to a
+                                                    throwaway agent of its own. Stored as `spawn_subtask` in its
+                                                    tools, as it always was (D204); the grid has no row for it.
+                                                    Not for a workflow agent, which runs its workflow. */}
+                                                {draftAgent.type !== 'orchestrator' && (
+                                                    <div className="p-3">
+                                                        <label className="flex cursor-pointer items-start gap-4">
+                                                            <span className="min-w-0 flex-1">
+                                                                <span className="block text-sm font-medium text-text">Can send helpers</span>
+                                                                <span id="age-helpers-help" className="mt-0.5 block text-xs text-text-muted">
+                                                                    Let it hand a focused task to a helper with <span className="font-mono">spawn_subtask</span>:
+                                                                    a short-lived agent with some of its tools, which asks nobody and sends no helpers of its own.
+                                                                    Up to three work at once, each shown in the chat as it works. In the app&apos;s chat a helper
+                                                                    can also work in the background and post its result when it is done.
+                                                                </span>
+                                                            </span>
+                                                            <Switch
+                                                                label="Can send helpers"
+                                                                aria-describedby="age-helpers-help"
+                                                                checked={(draftAgent.tools || []).includes(HELPERS_TOOL)}
+                                                                onChange={(on) => setDraftAgent({
+                                                                    ...draftAgent,
+                                                                    tools: on
+                                                                        ? [...(draftAgent.tools || []).filter((t: string) => t !== HELPERS_TOOL), HELPERS_TOOL]
+                                                                        : (draftAgent.tools || []).filter((t: string) => t !== HELPERS_TOOL),
+                                                                })}
+                                                                className="mt-0.5"
+                                                            />
+                                                        </label>
+                                                        {(draftAgent.tools || []).includes(HELPERS_TOOL) && (
+                                                            <div className="mt-3 space-y-1">
+                                                                <Label className="block">Helper model</Label>
+                                                                <Combobox
+                                                                    value={draftAgent.helper_model || '__same__'}
+                                                                    onChange={v => setDraftAgent({ ...draftAgent, helper_model: v === '__same__' ? null : v })}
+                                                                    aria-label="Helper model"
+                                                                    searchPlaceholder="Search models…"
+                                                                    options={helperModelOptions(providers, draftAgent.model || defaultModel || '', quickModel, draftAgent.helper_model)}
+                                                                />
+                                                                <p className="mt-1 text-xs text-text-faint">What its helpers run on. The quick-step model is set in Settings → Models.</p>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
+
+                                                {/* Whether a picture reaches it: computed from its saved
+                                                    model, not a setting (M2d). A workflow step passes
+                                                    images on with its own "Sees attachments". */}
+                                                <div className="flex items-start gap-4 p-3">
+                                                    <span className="min-w-0 flex-1">
+                                                        <span className="block text-sm font-medium text-text">Sees attachments</span>
+                                                        <span className="mt-0.5 block text-xs text-text-muted">
+                                                            {!savedId
+                                                                ? 'Known once the agent is saved.'
+                                                                : status?.can_see_images === false
+                                                                    ? (status.attach_problem || "This agent's model cannot read images.")
+                                                                    : 'People can attach images in chat. Decided by its saved model; a workflow step passes images on with its own setting.'}
+                                                        </span>
+                                                    </span>
+                                                    {savedId && (
+                                                        <span className="mt-0.5 inline-flex shrink-0 items-center gap-1.5 text-xs font-medium text-text-muted">
+                                                            <ImageIcon className="size-3.5" aria-hidden />
+                                                            {status?.can_see_images === false ? 'No' : status ? 'Yes' : '—'}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                            </div>
+
+                                            {/* A saved agent's memory, whether or not it is on now: what
+                                                it remembered before being switched off can still be read
+                                                and deleted (F270). */}
+                                            {savedId && (
+                                                <AgentMemory key={draftAgent.id} agentId={draftAgent.id} />
+                                            )}
+                                        </SetupSection>
+
+                                        {savedId && (
+                                            <SetupSection id="setup-where" title="Where it works">
+                                                <WhereItWorks agentId={savedId} channels={agentChannels} agents={agents} widgets={widgets} />
+                                            </SetupSection>
+                                        )}
+
+                                        {savedId && (
+                                            <SetupSection id="setup-month" title="This month">
+                                                <ThisMonth key={savedId} agentId={savedId} />
+                                            </SetupSection>
                                         )}
                                     </div>
-                                </div>
-                            )} {/* end agentSubTab === 'config' */}
+                                )} {/* end agentSubTab === 'config' */}
 
-                            {/* ── Messaging Channels sub-tab ─────────────────── */}
-                            {agentSubTab === 'messaging' && (
-                                <div className="space-y-4">
-                                    <p className="text-[10px] text-zinc-500">
-                                        Messaging channels bound to this agent. Configure them in full from <strong className="text-zinc-300">Settings → Messaging</strong>.
-                                    </p>
-                                    {agentChannels.length === 0 ? (
-                                        <div className="p-8 border border-dashed border-zinc-800 text-center text-zinc-600 space-y-3">
-                                            <MessageSquare className="h-8 w-8 mx-auto opacity-20" />
-                                            <p className="text-xs">No messaging channels bound to this agent yet.</p>
-                                            <p className="text-[10px]">Go to <strong className="text-zinc-400">Settings → Messaging</strong> and select this agent when creating a channel.</p>
-                                        </div>
-                                    ) : (
-                                        <div className="space-y-2">
-                                            {agentChannels.map((ch: any) => {
-                                                const EMOJI: Record<string, string> = { telegram: '✈️', discord: '🎮', slack: '💬', teams: '📘', whatsapp: '📱' };
-                                                return (
-                                                    <div key={ch.id} className="flex items-center gap-3 p-3 border border-zinc-800 bg-zinc-950">
-                                                        <span className="text-lg">{EMOJI[ch.platform] ?? '🤖'}</span>
-                                                        <div className="flex-1 min-w-0">
-                                                            <div className="text-xs font-bold text-white">{ch.name}</div>
-                                                            <div className="text-[10px] text-zinc-500 capitalize">{ch.platform}{ch.multi_agent_mode ? ' · multi-agent' : ''}</div>
+                                {/* ── Messaging Channels sub-tab ─────────────────── */}
+                                {agentSubTab === 'messaging' && (
+                                    <div role="tabpanel" aria-label="Messaging Channels" className="space-y-4 pt-5">
+                                        <p className="text-xs text-text-faint">
+                                            Channels this agent answers on. A channel can front several agents,
+                                            and an agent can answer on several channels — assign them from{' '}
+                                            <strong className="text-text">Channels</strong>.
+                                        </p>
+                                        {agentChannels.length === 0 ? (
+                                            <div className="space-y-3 rounded-lg border border-dashed border-border p-8 text-center text-text-faint">
+                                                <MessageSquare className="mx-auto size-8 opacity-30" aria-hidden />
+                                                <p className="text-xs">This agent is not assigned to any channel yet.</p>
+                                                <p className="text-xs">Go to <strong className="text-text-muted">Channels</strong>, pick a channel and add this agent to it.</p>
+                                            </div>
+                                        ) : (
+                                            <div className="space-y-2">
+                                                {agentChannels.map((ch: any) => {
+                                                    const EMOJI: Record<string, string> = { telegram: '✈️', discord: '🎮', slack: '💬', teams: '📘', whatsapp: '📱', twilio_voice: '📞' };
+                                                    return (
+                                                        <div key={ch.id} className="flex items-center gap-3 rounded-lg border border-border bg-surface p-3">
+                                                            <span className="text-lg">{EMOJI[ch.platform] ?? '🤖'}</span>
+                                                            <div className="min-w-0 flex-1">
+                                                                <div className="text-sm font-medium text-text">{ch.name}</div>
+                                                                <div className="text-xs capitalize text-text-faint">
+                                                                    {ch.platform === 'twilio_voice' ? `Phone · ${ch.voice?.number ?? ''}` : ch.platform}
+                                                                    {ch.agent_ids?.[0] === draftAgent.id ? ' · answers by default' : ''}
+                                                                    {(ch.agent_ids?.length ?? 0) > 1 ? ` · ${ch.agent_ids.length} agents` : ''}
+                                                                    {ch.multi_agent_mode ? ' · switchable' : ''}
+                                                                </div>
+                                                            </div>
+                                                            {ch.status === 'running'
+                                                                ? <span className="flex items-center gap-1 text-xs text-success"><CheckCircle className="size-3.5" aria-hidden /> Running</span>
+                                                                : ch.status === 'error'
+                                                                    ? <span className="flex items-center gap-1 text-xs text-danger"><XCircle className="size-3.5" aria-hidden /> Error</span>
+                                                                    : <span className="flex items-center gap-1 text-xs text-text-faint"><Square className="size-3.5" aria-hidden /> Stopped</span>
+                                                            }
                                                         </div>
-                                                        {ch.status === 'running'
-                                                            ? <span className="flex items-center gap-1 text-[10px] text-green-400"><CheckCircle className="h-3 w-3" /> Running</span>
-                                                            : ch.status === 'error'
-                                                                ? <span className="flex items-center gap-1 text-[10px] text-red-400"><XCircle className="h-3 w-3" /> Error</span>
-                                                                : <span className="flex items-center gap-1 text-[10px] text-zinc-500"><Square className="h-3 w-3" /> Stopped</span>
-                                                        }
-                                                    </div>
-                                                );
-                                            })}
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-                        </>)}
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+
+                                {/* ── Runs / Metrics / Used by ───────────────────── */}
+                                {(agentSubTab === 'runs' || agentSubTab === 'metrics' || agentSubTab === 'usedby') && (
+                                    <div role="tabpanel" aria-label={tabs.find(t => t.id === agentSubTab)?.label} className="pt-5">
+                                        <AgentActivity
+                                            /* Keyed by agent: switching agents remounts the tab, so its
+                                               loading state is its initial state rather than a reset. */
+                                            key={draftAgent.id}
+                                            agentId={savedId ?? ''}
+                                            tab={agentSubTab}
+                                            channels={agentChannels}
+                                            agents={agents}
+                                        />
+                                    </div>
+                                )}
+                            </>)}
+                        </div>
                     </div>
-                ) : (
-                    <div className="h-full flex flex-col items-center justify-center text-zinc-600 space-y-4">
-                        <Bot className="h-12 w-12 opacity-20" />
-                        <p className="text-sm">Select an agent to edit or create a new one.</p>
+
+                    {/* The Save bar: while there is something to save, on every tab. */}
+                    {draftAgent.type !== 'orchestrator' && (dirty || isNew) && (
+                        <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-t border-border bg-surface px-4 py-3 md:px-8">
+                            <span role="status" className="min-w-0 flex-1 text-sm text-text-muted">
+                                {saveRefused
+                                    ? <span className="font-medium text-danger">{problemLabel(saveRefused.problem)}.</span>
+                                    : isNew ? 'New agent, not saved yet.' : 'Unsaved changes.'}
+                                {savedAgent && <span className="hidden text-text-faint sm:inline"> The test on the right uses the saved version.</span>}
+                            </span>
+                            <Button variant="secondary" size="sm" onClick={onDiscard}>Discard</Button>
+                            <Button size="sm" onClick={() => void handleSaveAgent()} loading={isSaving} aria-label="Save agent">
+                                {isSaving ? 'Saving…' : 'Save'}
+                            </Button>
+                        </div>
+                    )}
+                </>) : (
+                    <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
+                        {loadingAgents ? (
+                            <span className="flex items-center gap-2 text-sm text-text-faint"><Spinner size={16} /> Loading agents…</span>
+                        ) : (<>
+                            <span className="flex size-12 items-center justify-center rounded-2xl bg-machine-subtle text-machine">
+                                <Bot className="size-6" aria-hidden />
+                            </span>
+                            <h2 className="text-base font-semibold text-text">No agents yet</h2>
+                            <p className="max-w-sm text-sm text-text-muted">
+                                An agent is a model with instructions, and the tools and knowledge it may use. Start one
+                                with New agent, or describe it and let Build with AI write it.
+                            </p>
+                            <Button variant="secondary" size="sm" onClick={() => setAiBuilderOpen(true)}>
+                                <Sparkles className="size-4 text-machine" aria-hidden /> Build with AI
+                            </Button>
+                        </>)}
                     </div>
                 )}
             </div>
+
+            {/* ── The test chat ────────────────────────────────────────── */}
+            {draftAgent && (testOpen ? (
+                test(() => setTestOpen(false), 'hidden min-h-0 w-[380px] shrink-0 flex-col border-l border-border lg:flex')
+            ) : (
+                <div className="hidden w-11 shrink-0 flex-col items-center border-l border-border py-3 lg:flex">
+                    <button
+                        type="button"
+                        onClick={() => setTestOpen(true)}
+                        aria-label={`Try ${savedAgent?.name || 'this agent'}`}
+                        title="Show the test chat"
+                        className="flex flex-col items-center gap-2 rounded-md px-1.5 py-2 text-text-muted transition-colors hover:bg-row-hover hover:text-text"
+                    >
+                        <PanelRightOpen className="size-4" aria-hidden />
+                        <span className="text-xs font-medium [writing-mode:vertical-rl]">Try {savedAgent?.name || 'it'}</span>
+                    </button>
+                </div>
+            ))}
+            {draftAgent && (
+                <Drawer open={testDrawer} onClose={() => setTestDrawer(false)} title="Test chat">
+                    {test(undefined, '-mx-5 -my-4 flex h-[calc(100%+2rem)] flex-col')}
+                </Drawer>
+            )}
         </div>
     );
 };
+
+/** The tool policy in one line, for its folded row: what is set, or that nothing is. */
+/** The agent's tools the grid has no row for, kept when an "every tool" agent's list is spelled out (SUB1a). */
+function ownSwitches(tools: string[]): string[] {
+    return tools.includes(HELPERS_TOOL) ? [HELPERS_TOOL] : [];
+}
+
+/** "Helper model"'s choices: the agent's own (stored as none), the workspace's quick-step model, then every model. */
+function helperModelOptions(providers: Record<string, any> | undefined, ownModel: string, quickModel: string,
+                            current: string | null | undefined) {
+    const models = Object.entries(providers ?? {}).flatMap(([providerKey, info]: [string, any]) =>
+        !info.available || info.models.length === 0
+            ? []
+            : info.models.map((m: string) => ({ value: m, label: m, group: providerLabel(providerKey) })));
+    const options = [
+        { value: '__same__', label: `Same as this agent (${ownModel || 'not set'})` },
+        { value: 'role:quick', label: quickModel ? `Quick-step model · ${quickModel}` : "Quick-step model (none set: runs on this agent's)" },
+        ...models,
+    ];
+    if (current && !options.some(o => o.value === current)) options.push({ value: current, label: `${current} (not available now)` });
+    return quickModel || current === 'role:quick' ? options : options.filter(o => o.value !== 'role:quick');
+}
+
+function policySummary(policy: ToolPolicy): string {
+    const rules = toolRules(policy).length;
+    const ruled = rules ? ` · ${rules} rule${rules === 1 ? '' : 's'} for one tool` : '';
+    const set = POLICY_CATEGORIES.filter(c => policy[c.id]);
+    if (set.length === 0) return `Default for all three${ruled}`;
+    const word: Record<string, string> = { allow: 'Allow', confirm: 'Ask first', deny: 'Block' };
+    if (set.length > 1) return `${set.length} of 3 set${ruled}`;
+    const c = set[0];
+    return `${word[policy[c.id]] ?? policy[c.id]}: ${c.label.toLowerCase()}${ruled}`;
+}
+
+/** The box a row of chips sits in, with even room above and below whether it holds chips or a note. */
+const boxed = 'flex min-h-12 flex-wrap items-center gap-2 rounded-lg border border-border bg-surface px-3 py-2.5';
+
+/** A chip that toggles one item (a repository, a database, a skill). */
+const chip = (selected: boolean) => cn(
+    'rounded-md border px-2.5 py-1 text-xs font-medium transition-colors',
+    selected ? 'border-accent bg-accent-subtle text-text' : 'border-border bg-surface text-text-muted hover:border-border-strong',
+);
+
+/** One part of the agent's setup: a heading, and its fields under it. */
+function SetupSection({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {
+    return (
+        // The section's id is also its guided-tour anchor (F1029: setup-model, setup-instructions, setup-tools…).
+        <section aria-labelledby={id} data-tour={id} className="space-y-4 border-b border-border py-6 last:border-b-0">
+            <h3 id={id} className="text-sm font-semibold text-text">{title}</h3>
+            {children}
+        </section>
+    );
+}

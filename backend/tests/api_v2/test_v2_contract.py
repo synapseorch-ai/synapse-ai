@@ -12,8 +12,10 @@ from _fakes.fake_pg import fake_session_factory
 
 
 @pytest.fixture
-def v2(scale_app, monkeypatch):
-    """scale_app + a working fake PG factory + a neutralized metrics counter."""
+async def v2(scale_app, monkeypatch, seed_agent):
+    """scale_app + a working fake PG factory + a neutralized metrics counter,
+    and `agent_1`, which chat now looks up before it queues (F69)."""
+    await seed_agent(id="agent_1", name="Agent One")
     scale_app.state.pg_session_factory = fake_session_factory()
     import core.scale.metrics as metrics
     monkeypatch.setattr(metrics, "record_run_enqueued", lambda **k: None, raising=False)
@@ -45,6 +47,13 @@ class TestV2Chat:
         args, kwargs = v2.state.arq_redis.enqueue_job.call_args
         assert args[0] == "run_agent_chat_job"
         assert kwargs["message"] == "hello"
+
+    async def test_chat_asks_the_worker_to_expand_mentions(self, client, v2, api_key):
+        """An API key is a member's; the widget and a channel never set this."""
+        await client.post("/api/v2/chat", json={"message": "read @[notes.md]", "agent": "agent_1"},
+                          headers=api_key["headers"])
+        _, kwargs = v2.state.arq_redis.enqueue_job.call_args
+        assert kwargs["expand_mentions"] is True
 
     async def test_chat_honors_supplied_session_id(self, client, v2, api_key):
         resp = await client.post("/api/v2/chat",
@@ -85,7 +94,10 @@ class TestV2Resume:
     async def test_resume_returns_202(self, client, v2, api_key):
         from _fakes.fake_pg import fake_session_factory, run_row
         # A paused run exists; resume publishes to Redis + enqueues a resume job.
-        v2.state.pg_session_factory = fake_session_factory(run_row("run_1", status="paused"))
+        # Paused *on a question* — the fake's row defaults to not waiting, which a
+        # paused run never is, and since F136 the route checks.
+        v2.state.pg_session_factory = fake_session_factory(
+            run_row("run_1", status="paused", waiting_for_human=True))
         resp = await client.post("/api/v2/orchestrations/runs/run_1/resume",
                                  json={"response": {"approved": True}},
                                  headers=api_key["headers"])
@@ -93,6 +105,38 @@ class TestV2Resume:
         body = resp.json()
         assert body["run_id"] == "run_1"
         assert body["status"] == "resuming"
+
+    async def test_resume_names_the_question_it_answers(self, client, v2, api_key):
+        """F111: the job is told which pause the answer is for, so a job that
+        finds the run asking another question does not answer it."""
+        from _fakes.fake_pg import fake_session_factory, run_row
+        history = [{"step_id": "h1", "status": "completed"}, {"step_id": "h2", "status": "paused"}]
+        v2.state.pg_session_factory = fake_session_factory(
+            run_row("run_1", status="paused", waiting_for_human=True, step_history=history))
+        await client.post("/api/v2/orchestrations/runs/run_1/resume",
+                          json={"response": "yes"}, headers=api_key["headers"])
+        _, kwargs = v2.state.arq_redis.enqueue_job.call_args
+        assert kwargs["pause_ordinal"] == 1
+
+    async def test_a_run_not_waiting_is_not_answered(self, client, v2, api_key):
+        """F136: a running run's resume used to be queued with no question to
+        check, and the worker applied it."""
+        from _fakes.fake_pg import fake_session_factory, run_row
+        v2.state.pg_session_factory = fake_session_factory(run_row("run_1", status="running"))
+        resp = await client.post("/api/v2/orchestrations/runs/run_1/resume",
+                                 json={"response": "yes"}, headers=api_key["headers"])
+        assert resp.status_code == 409
+        v2.state.arq_redis.enqueue_job.assert_not_called()
+
+    async def test_an_answer_arq_dropped_is_not_reported_as_queued(self, client, v2, api_key):
+        """ARQ keeps one job per id; a second answer queued the same moment is dropped."""
+        from _fakes.fake_pg import fake_session_factory, run_row
+        v2.state.pg_session_factory = fake_session_factory(
+            run_row("run_1", status="paused", waiting_for_human=True))
+        v2.state.arq_redis.enqueue_job.return_value = None
+        resp = await client.post("/api/v2/orchestrations/runs/run_1/resume",
+                                 json={"response": "yes"}, headers=api_key["headers"])
+        assert resp.status_code == 409
 
     async def test_resume_unknown_run_is_404(self, client, v2, api_key):
         from _fakes.fake_pg import fake_session_factory

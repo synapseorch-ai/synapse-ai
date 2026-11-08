@@ -3,23 +3,138 @@ Step executors for each orchestration step type.
 Each executor is an async generator that yields SSE-compatible events.
 """
 import asyncio
+import contextlib
 import datetime
 import json
-import os
 import re
-import subprocess
-import sys
 import time
-from typing import AsyncGenerator, TYPE_CHECKING
+from contextvars import ContextVar
+from typing import Any, AsyncGenerator, TYPE_CHECKING
 
 import anyio
 
-from core.config import HTTP_TOOL_TIMEOUT, MCP_TOOL_CALL_TIMEOUT, ORCH_STEP_TIMEOUT
+from core.config import HTTP_TOOL_TIMEOUT, mcp_call_timeout
 from core import expressions as _expressions
+from core import turn_limit
+from core.task_list import begin_step_tasks, end_step_tasks, with_step_tasks
 from core.models_orchestration import StepConfig, StepType, OrchestrationRun
+from core.templating import STATE_REF
+
+from core.log import get_logger
+from core.tool_scope import call_kwargs_for
+from .pauses import count_task, end_step, note_left_open, progress_key as _progress_key, take_tasks
+from .step_usage import exact_window, step_scope
+from .run_error import reason_of, set_run_error
+from .run_gate import stop_reason
+from .time_limits import CONTAINERS, body_step_limit, deadline_scope, step_deadline, timed_out
+
+_log = get_logger(__name__)
+
+
+def _resume_index(record: dict, step_ids: list[str]) -> int:
+    """Where a container's pause record says to pick up: the step that asked.
+
+    By position when the step is still there, else by id; from the top if the
+    definition was edited while the run waited and the step is gone.
+    """
+    step_id, index = record.get("step_id"), record.get("index")
+    if isinstance(index, int) and 0 <= index < len(step_ids) and step_ids[index] == step_id:
+        return index
+    return step_ids.index(step_id) if step_id in step_ids else 0
+
+
+def _mention_warnings(mentions) -> list[str]:
+    """A `step_warning` per `@[path]` that was left as typed — see core/vault.py."""
+    return [w for w in (m.warning() for m in mentions) if w]
 
 if TYPE_CHECKING:
     from .engine import OrchestrationEngine
+
+
+def role_fallback(step: StepConfig, run: OrchestrationRun, model: str) -> str | None:
+    """The model a step on a role falls back to when that role's model fails (BWA1, D274, 7a), or None.
+
+    The AI builder's quick steps run on their own model ("Builder model for quick steps", or a host's pick). A wrong
+    id, a key that lapsed or a wallet that ran dry must never stop a build the builder model could finish, so a step
+    whose model is its role's tries the run's own model once — the builder model — else the workspace default.
+    A step whose model is not its role's (no role, a role the run does not map) has none: its failure stops the run
+    as before.
+    """
+    roles = run.shared_state.get("_model_roles")
+    if not step.model_role or not isinstance(roles, dict) or roles.get(step.model_role) != model:
+        return None
+    from core.config import load_settings
+    fallback = run.shared_state.get("_model_override") or load_settings().get("model")
+    return fallback if isinstance(fallback, str) and fallback and fallback != model else None
+
+
+def _is_native_builder(engine: "OrchestrationEngine") -> bool:
+    """Whether this is Synapse AI's own run (`orch_native_builder`): its code reads its tool outputs from state."""
+    from core.native_builder.seed import NATIVE_BUILDER_ORCH_ID
+
+    return getattr(getattr(engine, "orch", None), "id", None) == NATIVE_BUILDER_ORCH_ID
+
+
+def _kept(value: Any, run: "OrchestrationRun", step: StepConfig, engine: "OrchestrationEngine") -> Any:
+    """A Tool or code step's output as state keeps it: over the spill line (`vault_threshold`), a file in the vault
+    and a reference to it (D339 P4), which code reads as the value it was. The native builder's own run keeps its
+    values: its code reads its tool outputs straight from state. A write that fails keeps the value, as before."""
+    if value is None or _is_native_builder(engine):
+        return value
+    from core.config import load_settings
+    from core.step_refs import spill
+    from core.vault import VAULT_THRESHOLD
+
+    try:
+        at = int(load_settings().get("vault_threshold") or VAULT_THRESHOLD)
+        return spill(run.run_id, step.id, value, at=at)
+    except Exception as exc:  # noqa: BLE001 — a quota or a store that refused: the value stays in state
+        _log.warning(f"step '{step.id}': its output stays in state, the vault refused it: {exc}")
+        return value
+
+
+def _preview(value: Any, *, whole: bool = False) -> str:
+    """What an event shows of a step's output: an excerpt and the file for a saved one; otherwise its first 500
+    characters, or all of it (`whole`) where the event always carried all of it."""
+    from core.step_refs import for_person, is_ref
+
+    if is_ref(value):
+        return for_person(value)
+    return str(value) if whole else str(value)[:500]
+
+
+def _reading_for(model: str | None, run: "OrchestrationRun"):
+    """While a model step builds its prompt: a saved output inline up to its model's read share (D339 P4)."""
+    from core.config import load_settings
+    from core.context_budget import budget
+    from core.step_refs import reading
+
+    settings = load_settings()
+    chosen = model or run.shared_state.get("_model_override") or settings.get("model") or ""
+    return reading(budget(str(chosen), settings).read_cap)
+
+
+async def on_model_or_fallback(call, model: str, fallback: str | None, used: list) -> str:
+    """`call(model)`; when it fails and the step has a `fallback`, `call(fallback)` once (BWA1, 7a).
+
+    `used` gets the model that answered and, after a fallback, why (`used[1]`), for the step to say so. A model's
+    failure is `LLMError` (every adapter raises it after its own retries); anything else — a cancel, a timeout —
+    is not the model's and is never retried here.
+    """
+    from core.llm_providers import LLMError
+    used[:] = [model]
+    try:
+        return await call(model)
+    except LLMError as exc:
+        if not fallback:
+            raise
+        _log.warning(f"model {model} failed for a step on a role; falling back to {fallback}: {exc}")
+        used[:] = [fallback, f"{model} failed ({str(exc)[:160]}), so this step ran on {fallback}."]
+        return await call(fallback)
+
+
+def _iso(ts: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
 
 
 def _datetime_context() -> str:
@@ -32,6 +147,111 @@ def _datetime_context() -> str:
         f"**Current Time:** {now.strftime('%I:%M %p')}\n"
         f"**Timezone:** {tz_name}\n"
     )
+
+
+#: How close to its end a run must be for a cancel to be its limit's (F420).
+_CUT_SLACK_S = 0.5
+
+#: Where an agent step keeps the calls its reply made after its finish tool, which were not made (F1242), by step id.
+NOT_MADE_PREFIX = "_not_made_"
+
+
+def cut_by_the_run(engine, run: OrchestrationRun, sub_step: StepConfig, step_start: float) -> None:
+    """Enter a Loop's or a Parallel's body step that the run's limit stopped mid-way (F420).
+
+    The container at the top holds what is left of the run; when that runs out,
+    the step inside sees a cancel, not its own timeout, and wrote nothing — the
+    log never named it and a host that prices a run by its history charged
+    neither its price nor its time. It is entered with the run's reason, as a
+    step cut at the top level is: `cut` for a plain step (one execution, as a
+    cancel's cut entry is, C3), and a plain `failed` for a container, whose own
+    time a host counts only when it is cut — its body's entries are here.
+
+    Only for the run's limit: a person's cancel or a parent's stop is the
+    host's to enter (the fleet's adapter enters the step at the top).
+    """
+    budget = getattr(engine, "run_budget", None)
+    if budget is None:
+        return
+    left, name = budget
+    if left() > _CUT_SLACK_S:
+        return
+    now = time.time()
+    entry = {
+        "step_id": sub_step.id, "step_name": sub_step.name, "step_type": sub_step.type.value,
+        "status": "failed", "error": f"Timed out {timed_out(now - step_start, f'what was left of {name}')}",
+        "started_at": _iso(step_start), "ended_at": _iso(now), **exact_window(step_start, now),
+        "duration_seconds": round(now - step_start, 2),
+    }
+    if sub_step.type not in CONTAINERS:
+        entry["cut"] = True
+    entry.update(take_tasks(run.shared_state, sub_step.id))
+    end_step(run.step_history, entry)
+
+
+def _is_a_task(event: dict) -> bool:
+    """A task a delegate's step ran (TEAM1d): a hand-off whose answer is back (the lead's own; a member it could not
+    reach is refused before it runs, and a hand-off a person approved midway is counted when its answer is back, after
+    the resume), or a helper waited for, the lead's or a member's.
+
+    A team's (TEAM1e): each member's task as it starts — once; the same task carried on after its question is
+    `resumed` — and each helper waited for, the lead's or, inside its `member_event`, a member's."""
+    kind = event.get("type")
+    if kind == "tool_result":
+        return bool(event.get("handed_off")) and not event.get("delegate_from")
+    if kind == "helper_finished":
+        return (event.get("record") or {}).get("mode", "wait") == "wait"
+    if kind == "member_started":
+        return not event.get("resumed")
+    if kind == "member_event":
+        return (event.get("event") or {}).get("type") == "helper_finished" and _is_a_task(event["event"])
+    return False
+
+
+async def team_step_limits(engine, run: OrchestrationRun, step: StepConfig, agent: dict | None, *,
+                           resumed: bool):
+    """A Team agent's step limits (TEAM1e, 20 Q2, Q8): the step's time, and what the run's cap leaves it, read as
+    the step starts or resumes. None for any other agent, whose step is checked between steps as before."""
+    from core import team as team_mod
+
+    block = (agent or {}).get("team")
+    if (agent or {}).get("type") != "delegate" or not isinstance(block, dict) or block.get("mode") != "team":
+        return None
+    deadline = step_deadline()
+    from .run_cap import room
+
+    left = await room(run.run_id, step.type.value, getattr(engine, "run_cap", None), resumed=resumed)
+    return team_mod.StepLimits(
+        deadline=deadline[0] if deadline else None, seconds=deadline[1] if deadline else None,
+        usd_left=left.usd, tasks_left=left.tasks,
+        cap_usd=left.cap.usd if left.cap else None, cap_credits=left.cap.credits if left.cap else None)
+
+
+def _no_answer_reason(step_name: str, no_answer: dict) -> str:
+    """Why an agent step has no answer, from the loop's `final.no_answer` (F413)."""
+    if no_answer.get("why") == "repeating" and no_answer.get("round"):
+        # A whole reply's calls made again (F476).
+        return (f"Agent step '{step_name}' stopped without an answer: it made the same {no_answer.get('round')} "
+                f"calls ({no_answer.get('tool_name')}) {no_answer.get('count')} times in a row and got the same "
+                "results each time.")
+    if no_answer.get("why") == "repeating":
+        return (f"Agent step '{step_name}' stopped without an answer: it called "
+                f"{no_answer.get('tool_name')} with the same arguments {no_answer.get('count')} times "
+                "in a row and got the same result each time.")
+    if no_answer.get("why") == "run_cap":
+        # A Team step's call would have passed the run's cap (TEAM1e, Q8): CAP1's own words.
+        from .run_cap import usd_sentence
+        return usd_sentence(float(no_answer.get("limit_usd") or 0), float(no_answer.get("spent_usd") or 0))
+    if no_answer.get("why") == "no_finish":
+        names = " or ".join(no_answer.get("tools") or [])
+        return (f"Agent step '{step_name}' ended without calling {names}, which is how it finishes: it answered in "
+                "words instead, after being reminded.")
+    if no_answer.get("why") == "spend_limit":
+        return (f"Agent step '{step_name}' stopped without an answer: another step would pass its team's spend "
+                f"limit (${float(no_answer.get('limit_usd') or 0):g}).")
+    # Its last turn was already an answer turn (F1219): what is left to say is where the limit is raised.
+    return (f"Agent step '{step_name}' ran out of turns ({no_answer.get('max_turns')}) before answering: raise the "
+            "step's turn limit (Max turns, in its settings) if it needs more.")
 
 
 class AgentStepExecutor:
@@ -47,32 +267,55 @@ class AgentStepExecutor:
     ) -> AsyncGenerator[dict, None]:
         from core.react_engine import run_agent_step
         from core.agent_logger import AgentLogger
-        from core.scale.context import resolve_agent
-        print(f"DEBUG AGENT EXEC: agent_id={step.agent_id} step={step.id}", flush=True)
+        from .resolved import resolve_for_run
+        _log.debug(f"AGENT EXEC: agent_id={step.agent_id} step={step.id}")
 
-        from .context import build_origin_aware_context, snapshot_inputs
+        from .context import build_step_prompt, build_task_text, snapshot_inputs
         transition = getattr(engine, "current_transition", None)
         if transition is None:
             from .context import TransitionContext
             transition = TransitionContext(origin_type="entry", execution_number=1)
-        prompt, system_prompt_extra, system_prompt_prefix = build_origin_aware_context(
-            step, run, engine, transition
-        )
+
+        # ── Orchestrator-as-agent: delegate to a nested OrchestrationEngine ──
+        # Resolved once per run: the agent, the custom tools and the aggregated
+        # tool set are the same for every step and delegate that uses it. An
+        # orchestrator agent needs no tools, so it is resolved without them.
+        resolved = await resolve_for_run(engine, step.agent_id, tools=False)
+        target_agent = resolved.agent if resolved else None
+        if target_agent and target_agent.get("type") == "orchestrator":
+            # The child is handed this step's task, not the prompt an agent here
+            # would get (F252): that prompt — this workflow's role, goal and
+            # context around the task — became the child's input, and so its
+            # questions, its conditions and its logs' titles, nested again at
+            # every level. Who called it reaches its steps' system text instead.
+            task, mentions = await build_task_text(step, run, engine)
+            yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": task,
+                   "system_prompt_extra": "", "system_prompt_prefix": "",
+                   "mentions": [m.summary() for m in mentions]}
+            for warning in _mention_warnings(mentions):
+                yield {"type": "step_warning", "orch_step_id": step.id, "message": warning}
+            async for ev in self._execute_nested_orchestration(
+                step, run, engine, transition, target_agent, task, snapshot_inputs(step, run, engine)
+            ):
+                yield ev
+            return
+
+        with _reading_for(step.model or (target_agent or {}).get("model"), run):
+            prompt, system_prompt_extra, system_prompt_prefix, mentions = await build_step_prompt(
+                step, run, engine, transition
+            )
         inputs_snapshot = snapshot_inputs(step, run, engine)
 
         # Emit prompt for the orchestration logger (filtered out before SSE)
         yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": prompt,
                "system_prompt_extra": system_prompt_extra,
-               "system_prompt_prefix": system_prompt_prefix}
+               "system_prompt_prefix": system_prompt_prefix,
+               "mentions": [m.summary() for m in mentions]}
+        for warning in _mention_warnings(mentions):
+            yield {"type": "step_warning", "orch_step_id": step.id, "message": warning}
 
-        # ── Orchestrator-as-agent: delegate to a nested OrchestrationEngine ──
-        target_agent = await resolve_agent(step.agent_id) if step.agent_id else None
-        if target_agent and target_agent.get("type") == "orchestrator":
-            async for ev in self._execute_nested_orchestration(
-                step, run, engine, transition, target_agent, prompt, inputs_snapshot
-            ):
-                yield ev
-            return
+        if resolved is not None:
+            resolved = await resolve_for_run(engine, step.agent_id, tools=True)
 
         agent_id = step.agent_id or "default"
         agent_name = engine.agent_names.get(agent_id, agent_id)
@@ -86,7 +329,8 @@ class AgentStepExecutor:
             user_message=prompt,
         )
         # Log the prompt in the agent log too
-        agent_log.log_event({"type": "_log_prompt", "prompt": prompt})
+        agent_log.log_event({"type": "_log_prompt", "prompt": prompt,
+                             "mentions": [m.summary() for m in mentions]})
 
         # ── Mid-node crash recovery ──────────────────────────────────────
         # A prior interrupted attempt leaves a turn-boundary transcript in
@@ -95,25 +339,48 @@ class AgentStepExecutor:
         # transcript is considered poisoned and we fall back to a fresh
         # rerun (which still sees the prior attempt via _exec_memory).
         from core.orchestration.state import SharedState
-        progress_key = f"_step_progress_{step.id}"
+        legacy_key = f"_step_progress_{step.id}"
         resume_state = None
         resume_attempt = 1
-        saved_progress = run.shared_state.get(progress_key)
-        if isinstance(saved_progress, dict) and saved_progress.get("context_text"):
+        saved_progress = run.step_progress.get(step.id)
+        if saved_progress is None and legacy_key in run.shared_state:
+            # A run checkpointed before progress had its own column. Taken
+            # out of shared_state at once so the next full checkpoint drops
+            # it: with two copies, a second crash could read the stale one's
+            # attempt counter.
+            saved_progress = run.shared_state.pop(legacy_key)
+        # A transcript to continue from, or an approval decision to apply —
+        # a step that paused on its very first tool call has the second and
+        # not the first, and dropping it would ask the same question forever.
+        _has_transcript = isinstance(saved_progress, dict) and bool(saved_progress.get("context_text"))
+        _has_verdict = isinstance(saved_progress, dict) and bool(
+            saved_progress.get("approved_calls") or saved_progress.get("denied_calls")
+        )
+        if _has_transcript or _has_verdict:
             prior_attempts = int(saved_progress.get("attempt") or 1)
-            if prior_attempts >= 3:
-                run.shared_state.pop(progress_key, None)
-                print(f"DEBUG AGENT EXEC: ⚠ discarding step progress for '{step.id}' "
-                      f"after {prior_attempts} attempts — fresh rerun", flush=True)
+            if _has_transcript and prior_attempts >= 3:
+                run.step_progress.pop(step.id, None)
+                _log.debug(f"AGENT EXEC: ⚠ discarding step progress for '{step.id}' "
+                      f"after {prior_attempts} attempts — fresh rerun")
             else:
                 resume_state = saved_progress
                 resume_attempt = prior_attempts + 1
-                print(f"DEBUG AGENT EXEC: ⏯ resuming step '{step.id}' mid-node "
-                      f"(attempt {resume_attempt}, turn {saved_progress.get('turn')})", flush=True)
+                _log.debug(f"AGENT EXEC: ⏯ resuming step '{step.id}' mid-node "
+                      f"(attempt {resume_attempt}, turn {saved_progress.get('turn')})")
 
         final_response = None
+        no_answer: dict | None = None
         _log_status = "completed"
         execution_events: list[dict] = []
+        # A board claim is this step's (BOARD1a): released when the step ends, kept while it waits for a person.
+        board_holder = f"{run.run_id}/{step.id}"
+        parked = False
+        # A delegate's step counts the tasks it ran, its entry priced 1 + them (TEAM1d, 20 Q7); a plain agent's none.
+        counts_tasks = (target_agent or {}).get("type") == "delegate"
+        # A Team agent works inside the step's time and the run's cap (TEAM1e).
+        limits = await team_step_limits(engine, run, step, target_agent, resumed=resume_state is not None)
+        # This run of the step and the list it starts with (F1249): its own, never the run's.
+        tasks_key, own_tasks = begin_step_tasks(run.run_id, step.id, run.tasks, resuming=resume_state is not None)
         try:
             async for event in run_agent_step(
                 message=prompt,
@@ -129,43 +396,201 @@ class AgentStepExecutor:
                 model_override=step.model,
                 resume_state=resume_state,
                 progress_events=True,
+                # At its turn limit (F1219): a person is in the run only when its starter said so (Synapse AI's panel),
+                # and going on is held by the run's own cost cap.
+                person_present=bool((run.shared_state or {}).get(turn_limit.ATTENDED_KEY)),
+                run_cap=getattr(engine, "run_cap", None),
+                # Its own list, never the run's (F1249): none on a fresh start, its own on a resume.
+                initial_tasks=own_tasks,
+                preresolved=resolved,
+                global_variables=getattr(engine, "global_variables", None),
+                # The step's own words, without what its placeholders brought in (V2-CONTRACT "Final buttons").
+                own_words=[re.sub(r"\{\{.*?\}\}", "\n", step.prompt_template or "", flags=re.S)],
+                # Kept sessions picked for this step and for the run (F1140); the agent's own join them in the engine.
+                browser_picks={"step": list(step.browser_sessions or []),
+                               "run": list(run.shared_state.get("_browser_sessions") or []),
+                               "recordings": list(step.browser_recordings or [])},
+                # Opt-in per step, and off the engine rather than out of shared
+                # state — see `StepConfig.pass_images`. `run_agent_step` applies
+                # them on its first turn only, so a step that crash-resumes
+                # mid-transcript will not see them again.
+                images=(getattr(engine, "images", None) or None) if step.pass_images else None,
+                should_stop=getattr(engine, "cancel_hook", None),
+                # The caller's own tools (a phone call's, F531), as a plain agent on the call holds them.
+                extra_tools=getattr(engine, "caller_tools", None) or None,
+                # The run's roles (BWA1's MODEL_ROLES_KEY), for a helper model that names one (SUB1a).
+                model_roles=run.shared_state.get("_model_roles"),
+                # A step's prompt is built from the run, not typed by a person: an
+                # earlier step's scraped page, a webhook's input, a vault file.
+                # So a `remember` in a workflow always asks (F279; Naveen,
+                # 2026-09-27: "every step asks"), and the run pauses for it.
+                untrusted_message=True,
+                # The workflow's own board (lasting across its runs), and this step as its claims' holder.
+                board_scope={"kind": "workflow", "id": run.orchestration_id, "holder": board_holder},
+                step_limits=limits,
+                # It finishes by calling one of these (E2): its output is that call's result, an object.
+                finish_tools=list(step.finish_tools) or None,
+                # With none, it may save files and finish with one (D339 P4): the output is then the file's reference.
+                # Not in the native builder's own run, whose steps' tools are its bundle's (and E's to measure).
+                output_step=None if step.finish_tools or _is_native_builder(engine) else step.id,
             ):
+                if event.get("type") == "human_input_required":
+                    parked = True
+                if counts_tasks and _is_a_task(event):
+                    count_task(run.shared_state, step.id)
+                    # The host hears it now, not when a new job next reads the history (F669).
+                    from .run_gate import note_task
+                    await note_task(run.run_id, step.type.value)
+                if event.get("type") == "tasks_updated" and not event.get("delegate_from"):
+                    # Task state lives on the run, not in a tool's process
+                    # memory: checkpointing here is what makes the plan survive
+                    # a resume on any worker. The event still falls through to
+                    # the journal (structural) and the live stream.
+                    #
+                    # Never a delegate's (F536): the engine re-yields its events
+                    # tagged `delegate_from`, and its plan is its own. Taking it
+                    # replaced the run's plan with the delegate's, seeded the next
+                    # step with it, and beside other branches dropped the lead's
+                    # tasks from the run as if the lead had removed them.
+                    # Its own entries in the run's list, each step's kept apart (F1249), branches included.
+                    run.tasks = with_step_tasks(run.tasks, run.run_id, step.id, tasks_key, event.get("tasks") or [])
+                    try:
+                        await SharedState(run).checkpoint(columns=("tasks",))
+                    except Exception as ckpt_err:
+                        _log.warning(f"task-list checkpoint failed: {ckpt_err}")
+                if event.get("type") == "human_input_required" and event.get("kind") == "browser_turn":
+                    # The person's turn in the browser (F1099): the step stops with its transcript kept,
+                    # and the answer re-enters it where it stopped, never past it.
+                    progress = dict(run.step_progress.get(step.id) or {})
+                    progress["pending_browser_turn"] = {"session_id": event.get("session_id"),
+                                                        "banner_kind": event.get("banner_kind"),
+                                                        "reason": event.get("prompt")}
+                    run.step_progress[step.id] = progress
+                    try:
+                        await SharedState(run).checkpoint(columns=("step_progress",))
+                    except Exception as ckpt_err:
+                        _log.warning(f"browser-turn checkpoint failed: {ckpt_err}")
+                    yield {**event, "orch_step_id": step.id, "step_name": step.name, "run_id": run.run_id}
+                    return
+                if event.get("type") == "human_input_required" and event.get("kind") == "tool_approval":
+                    # A tool call is waiting on a person. Record it on the run
+                    # so the resume can turn their answer into an approval the
+                    # loop understands, then let the engine pause as it does
+                    # for any human input.
+                    progress = dict(run.step_progress.get(step.id) or {})
+                    progress["pending_approval"] = {
+                        "approval_id": event.get("approval_id"),
+                        "tool_name": event.get("tool_name"),
+                        "tool_args": event.get("tool_args") or {},
+                        "category": event.get("category"),
+                    }
+                    if event.get("questions"):
+                        # A team's: every waiting member's question, each answered by its own id (TEAM1e).
+                        progress["pending_approval"]["questions"] = [dict(q) for q in event["questions"]]
+                    run.step_progress[step.id] = progress
+                    try:
+                        await SharedState(run).checkpoint(columns=("step_progress",))
+                    except Exception as ckpt_err:
+                        _log.warning(f"tool-approval checkpoint failed: {ckpt_err}")
+                    # Naming its run, so an answer given where it is shown —
+                    # a chat with this workflow's agent — resumes this run
+                    # rather than starting the workflow again (F290).
+                    yield {**event, "orch_step_id": step.id, "step_name": step.name, "run_id": run.run_id}
+                    return
+
                 if event.get("type") == "_step_progress":
                     # Turn-boundary transcript checkpoint: persist so a crash
                     # resumes mid-step. Swallowed here — never logged, never
-                    # forwarded to SSE/journal.
-                    run.shared_state[progress_key] = {
+                    # forwarded to SSE/journal. Only the progress column is
+                    # written: this fires every tool turn, and it used to
+                    # rewrite the whole run each time.
+                    run.step_progress[step.id] = {
                         "turn": event.get("turn"),
                         "context_text": event.get("context_text"),
                         "has_compacted": event.get("has_compacted"),
                         "browser_actions": event.get("browser_actions"),
                         "tools_used": event.get("tools_used"),
+                        # Whether the step has read content nobody typed (F279) —
+                        # a resume must not forget it.
+                        "memory_tainted": event.get("memory_tainted"),
                         "attempt": resume_attempt,
+                        # Past its turn limit (F1219): the turns it has, how often it went on, what it spent.
+                        # The repeat guard's reads since the last call that could change things (F1236), too.
+                        **{k: event[k] for k in ("turns_given", "turn_extensions", "turn_spent_usd", "repeat_window")
+                           if k in event},
                     }
+                    # A delegate's question the step is about to pause on (F286):
+                    # kept with the lead's snapshot, as chat parks it.
+                    if event.get("delegate_pending"):
+                        run.step_progress[step.id]["delegate_pending"] = event["delegate_pending"]
+                    # A team's: every waiting member's question, and the team itself (members, task list, inbox),
+                    # which the answered members resume from and the others keep waiting in (TEAM1e).
+                    for kept in ("team_pending", "team"):
+                        if event.get(kept):
+                            run.step_progress[step.id][kept] = event[kept]
+                    # The step's [K#] labels (Knowledge): a resumed step's answer
+                    # still cites what it searched before the crash.
+                    if event.get("knowledge"):
+                        run.step_progress[step.id]["knowledge"] = event["knowledge"]
                     try:
-                        SharedState(run).checkpoint()
+                        await SharedState(run).checkpoint(columns=("step_progress",))
                     except Exception as ckpt_err:
-                        print(f"WARNING: step-progress checkpoint failed: {ckpt_err}", flush=True)
+                        _log.warning(f"step-progress checkpoint failed: {ckpt_err}")
                     continue
                 execution_events.append(event)
                 agent_log.log_event(event)
+                if event.get("type") == "tasks_incomplete":
+                    # Accepted with its plan open (F862): its entry says so, and the run reads "with warnings".
+                    note_left_open(run.shared_state, step.id, len(event.get("tasks") or []),
+                                   turn_limit=bool(event.get("turn_limit")))
+                if event.get("type") == "final" and event.get("no_answer"):
+                    # The loop's words in place of an answer (the repeat guard,
+                    # out of turns): not the step's output, and not shown as
+                    # its answer in the run log. The step fails below (F413).
+                    no_answer = event["no_answer"]
+                    continue
                 yield {**event, "orch_step_id": step.id, "step_name": step.name}
                 if event.get("type") == "final":
-                    final_response = event.get("response", "")
+                    # A finish tool's result is the output as the object it is (E2); otherwise the reply's text.
+                    finish = event.get("finish")
+                    final_response = finish["result"] if isinstance(finish, dict) else event.get("response", "")
+                    if isinstance(finish, dict) and finish.get("not_made"):
+                        # The reply's calls after its finish, not made (F1242): kept for whoever checks the step.
+                        run.shared_state[f"{NOT_MADE_PREFIX}{step.id}"] = list(finish["not_made"])
+        except asyncio.CancelledError:
+            # A step timeout, a cancel, a parent's stop — not an Exception, so
+            # it used to reach the `finally` still reading "completed" (F257).
+            _log_status = "cancelled"
+            raise
         except Exception:
             _log_status = "error"
             raise
         finally:
+            end_step_tasks(run.run_id, step.id, tasks_key)
             agent_log.run_end(_log_status)
             agent_log.close()
+            if not parked:
+                from core.boards import resolve as _board_resolve
+                await _board_resolve.release(board_holder, settings=None, why="the step ended")
 
+        if no_answer is not None and no_answer.get("why") == "no_finish" and step.finish_fallback is not None:
+            # It answered in words after its reminder, and the step says what it ends with then (F958): code's object,
+            # marked so, never the agent's words as if they were its finish.
+            final_response, no_answer = {**step.finish_fallback, "fallback": True}, None
+        if no_answer is not None:
+            # A turn that ended without an answer fails the step with why, as a
+            # failed child, an exhausted route or a loop over its cap does: in
+            # chat the person reads the loop's sentence; in a workflow the next
+            # step would have taken it as this one's work (F413). Nothing is
+            # written to the output key and no memory trace is kept.
+            raise RuntimeError(_no_answer_reason(step.name, no_answer))
         if final_response is None:
             raise RuntimeError(f"Agent step '{step.name}' ended without producing a final response")
 
         # Clean completion leaves no transcript residue (deliberate
         # re-invocations — loops, evaluator retries — rely on _exec_memory,
         # not on step progress).
-        run.shared_state.pop(progress_key, None)
+        run.step_progress.pop(step.id, None)
 
         if step.output_key:
             run.shared_state[step.output_key] = final_response
@@ -187,7 +612,10 @@ class AgentStepExecutor:
     ) -> AsyncGenerator[dict, None]:
         """Run an orchestrator-type agent as a nested sub-orchestration.
 
-        Input mapping:  the resolved prompt becomes the sub-orch's user_input.
+        Input mapping:  the step's task — its rendered template, or the run's
+                        input when it has none — becomes the sub-orch's
+                        user_input (F252); who called it rides on the
+                        sub-engine as `caller`, for its steps' system text.
         State scoping:  sub-orch gets a FRESH shared_state — parent's private
                         keys (_loop_*, _routing_*, _exec_memory_*) are not shared
                         to avoid collisions.
@@ -199,111 +627,279 @@ class AgentStepExecutor:
         Events:         all sub-events tagged with parent orch_step_id +
                         nested_run_id so the UI can attribute them.
         """
-        from core.routes.orchestrations import load_orchestrations
-        from core.models_orchestration import Orchestration
-        from .engine import OrchestrationEngine, MAX_NESTED_DEPTH
-
         sub_orch_id = target_agent.get("orchestration_id")
         if not sub_orch_id:
             raise RuntimeError(
                 f"Orchestrator agent '{target_agent.get('id')}' has no orchestration_id"
             )
+        from core.react_engine import workflow_gone
 
-        parent_depth = getattr(engine, "depth", 0)
-        if parent_depth + 1 > MAX_NESTED_DEPTH:
-            raise RuntimeError(
-                f"Nested orchestration depth limit exceeded "
-                f"(max {MAX_NESTED_DEPTH}). Possible recursive agent loop."
-            )
+        async for event in run_nested_workflow(
+            step, run, engine, transition, sub_orch_id, prompt, inputs_snapshot,
+            source=f"agent '{target_agent.get('id')}'", gone=workflow_gone(target_agent),
+            label=target_agent.get("name") or target_agent.get("id") or "sub_orchestration",
+        ):
+            yield event
 
-        orchs = load_orchestrations()
-        sub_orch_data = next((o for o in orchs if o["id"] == sub_orch_id), None)
-        if not sub_orch_data:
-            raise RuntimeError(
-                f"Sub-orchestration '{sub_orch_id}' (from agent "
-                f"'{target_agent.get('id')}') not found"
-            )
 
-        sub_orch = Orchestration.model_validate(sub_orch_data)
-        sub_engine = OrchestrationEngine(sub_orch, engine.server_module, depth=parent_depth + 1)
-        sub_run_id = f"{run.run_id}__{step.id}_d{parent_depth + 1}"
-        sub_session = run.session_id or f"orch_{run.run_id}"
+async def run_nested_workflow(
+    step: StepConfig,
+    run: OrchestrationRun,
+    engine: "OrchestrationEngine",
+    transition,
+    sub_orch_id: str,
+    prompt: str,
+    inputs_snapshot: dict,
+    *,
+    source: str,
+    gone: str,
+    label: str,
+) -> AsyncGenerator[dict, None]:
+    """Run the workflow `sub_orch_id` as a nested run of `step`: in-process, inside its parent's run.
 
-        agent_name = target_agent.get("name") or target_agent.get("id") or "sub_orchestration"
-        yield {
-            "type": "thinking",
-            "orch_step_id": step.id,
-            "step_name": step.name,
-            "message": f"Delegating to sub-orchestration '{sub_orch.name}' (depth {parent_depth + 1})...",
-        }
+    The one nested executor. An Agent step whose agent is a workflow (`AgentStepExecutor`) and a Workflow step (E3,
+    F770) both come here, so what the docstring above says of one holds for both. `source` names what asked for it
+    in a not-found message, `gone` is the sentence for a workflow deleted and kept as a record (F408), and `label`
+    is the name its execution memory is kept under.
+    """
+    from core.scale.context import resolve_orchestration
+    from core.orchestration.read_shapes import load_to_start
+    from .engine import OrchestrationEngine, MAX_NESTED_DEPTH
 
-        # Lifecycle meta-events that belong to the sub-orch's own run; forwarding
-        # them would confuse the parent's frontend state (premature "complete" banners,
-        # wrong step-start banners, etc.).
-        _NESTED_FILTER_TYPES = {"orchestration_start", "orchestration_complete", "orchestration_end"}
+    parent_depth = getattr(engine, "depth", 0)
+    if parent_depth + 1 > MAX_NESTED_DEPTH:
+        raise RuntimeError(
+            f"Nested orchestration depth limit exceeded "
+            f"(max {MAX_NESTED_DEPTH}). Possible recursive agent loop."
+        )
 
-        final_response: str | None = None
-        sub_events: list[dict] = []
-        try:
-            async for sub_event in sub_engine.run(
-                initial_input=prompt,
-                run_id=sub_run_id,
-                session_id=sub_session,
-            ):
-                sub_events.append(sub_event)
-                # Capture the sub-engine's terminal final response
-                if sub_event.get("type") == "final" and sub_event.get("intent") == "orchestration":
-                    final_response = sub_event.get("response", "")
+    # By id, through the resource provider — the same path resume takes.
+    # This used to load every orchestration in the tenant and scan.
+    sub_orch_data = await resolve_orchestration(sub_orch_id)
+    if sub_orch_data and sub_orch_data.get("system"):
+        # Synapse AI's own orchestration acts for the person who asks it, so no workflow runs it (F1315).
+        raise RuntimeError(f"The {source} names Synapse AI's own workflow, which no workflow may run.")
+    if sub_orch_data and sub_orch_data.get("is_active", True) is False:
+        # Deleted and kept as a record: never run (F408).
+        raise RuntimeError(gone)
+    if not sub_orch_data:
+        raise RuntimeError(
+            f"Sub-orchestration '{sub_orch_id}' (from {source}) not found"
+        )
 
-                # Skip sub-orch lifecycle events — they pollute the parent's UI
-                if sub_event.get("type") in _NESTED_FILTER_TYPES:
-                    continue
+    sub_orch = load_to_start(sub_orch_data)
+    from core.run_ids import new_child_run_id
 
-                # Override run_id with the PARENT's run_id so the frontend routes
-                # human-input calls to the parent run (not the sub-run directly).
-                # The sub-run id is preserved in nested_run_id for backend resume logic.
-                yield {
-                    **sub_event,
-                    "run_id": run.run_id,
-                    "orch_step_id": step.id,
-                    "step_name": step.name,
-                    "nested_run_id": sub_run_id,
-                    "nested_orch_id": sub_orch.id,
-                    "nested_depth": parent_depth + 1,
-                }
-        except Exception:
-            raise
+    sub_engine = OrchestrationEngine(sub_orch, engine.server_module, depth=parent_depth + 1)
+    sub_engine.caller_tools = list(getattr(engine, "caller_tools", None) or [])
+    sub_engine.caller = engine.caller_for(run, step)
+    # What the run may spend is its root's: the child's own cap is for when
+    # it runs on its own (CAP1).
+    sub_engine.run_cap = getattr(engine, "run_cap", None)
+    # What the person attached reaches the child only through a step that
+    # passes it (F313); the child's own steps then decide, as here.
+    sub_engine.images = list(getattr(engine, "images", None) or []) if step.pass_images else []
+    # One id per run of this step (F251): each Loop iteration and each retry
+    # used to overwrite one record, one log and one set of usage rows.
+    sub_run_id = new_child_run_id(run.run_id, step.id, parent_depth + 1)
+    sub_session = run.session_id or f"orch_{run.run_id}"
 
-        if final_response is None:
-            # Sub-orch finished without a final event (failed or empty). Fall back
-            # to the orchestration_complete event's last shared_state value.
-            for ev in reversed(sub_events):
-                if ev.get("type") == "orchestration_complete":
-                    state = ev.get("final_state") or {}
-                    # last output_key in the sub-orch's steps
-                    for sub_step in reversed(sub_orch.steps):
-                        if sub_step.output_key and sub_step.output_key in state:
-                            final_response = str(state[sub_step.output_key])
-                            break
-                    break
+    yield {
+        "type": "thinking",
+        "orch_step_id": step.id,
+        "step_name": step.name,
+        "message": f"Delegating to sub-orchestration '{sub_orch.name}' (depth {parent_depth + 1})...",
+    }
 
-        if final_response is None:
-            raise RuntimeError(
-                f"Sub-orchestration '{sub_orch.name}' ended without a final response"
-            )
+    # Lifecycle meta-events that belong to the sub-orch's own run; forwarding
+    # them would confuse the parent's frontend state (premature "complete" banners,
+    # wrong step-start banners, etc.).
+    _NESTED_FILTER_TYPES = NESTED_OWN_EVENTS
 
-        if step.output_key:
-            run.shared_state[step.output_key] = final_response
+    outcome = NestedOutcome()
+    sub_events: list[dict] = []
+    try:
+        async for sub_event in sub_engine.run(
+            initial_input=prompt,
+            run_id=sub_run_id,
+            session_id=sub_session,
+        ):
+            sub_events.append(sub_event)
+            outcome.read(sub_event)
 
-        # Record memory so re-invocations see what the sub-orch returned.
-        from .context import build_execution_trace, store_execution_memory
-        synth_events = [
-            {"type": "tool_call", "tool_name": "sub_orchestration", "tool_input": {"orchestration": sub_orch.name}},
-            {"type": "tool_result", "result": str(final_response)},
-            {"type": "final", "response": str(final_response)},
-        ]
-        trace = build_execution_trace(synth_events)
-        store_execution_memory(run, step, trace, agent_name, transition, inputs_snapshot)
+            # Skip sub-orch lifecycle events — they pollute the parent's UI
+            if sub_event.get("type") in _NESTED_FILTER_TYPES:
+                continue
+
+            # Override run_id with the PARENT's run_id so the frontend routes
+            # human-input calls to the parent run (not the sub-run directly).
+            # The sub-run id is preserved in nested_run_id for backend resume logic.
+            yield {
+                **tag_nested_event(sub_event, run.run_id, step.id, step.name, sub_run_id, sub_orch.id),
+                "nested_depth": parent_depth + 1,
+            }
+    except Exception:
+        raise
+
+    # A child that did not complete fails this step, with its reason (F253).
+    # Its final text used to be taken as the result whatever its status, so
+    # "Orchestration failed. Error: … Traceback …" became the step's output,
+    # the next step used it, and the run completed; in a Loop the iteration
+    # was dropped and the loop carried on to the next item. Here, after the
+    # child's last event — a child that paused never gets this far, its
+    # parent stops at the pause.
+    failure = outcome.failure(sub_orch.name)
+    if failure:
+        raise RuntimeError(failure)
+
+    # What the child made, as the value it is (F249): its `result_key`, or
+    # its last content step — not its closing question or route label, which
+    # its final text used to be. A list stays a list.
+    from .results import nested_result
+    result = nested_result(sub_events, sub_orch.result_key)
+    if result is None:
+        raise RuntimeError(
+            f"Sub-orchestration '{sub_orch.name}' ended without a final response"
+        )
+
+    if step.output_key:
+        run.shared_state[step.output_key] = result
+    final_response = result if isinstance(result, str) else str(result)
+
+    # Record memory so re-invocations see what the sub-orch returned.
+    from .context import build_execution_trace, store_execution_memory
+    synth_events = [
+        {"type": "tool_call", "tool_name": "sub_orchestration", "tool_input": {"orchestration": sub_orch.name}},
+        {"type": "tool_result", "result": str(final_response)},
+        {"type": "final", "response": str(final_response)},
+    ]
+    trace = build_execution_trace(synth_events)
+    store_execution_memory(run, step, trace, label, transition, inputs_snapshot)
+
+
+#: A nested run's own lifecycle events, kept off its parent's stream. Its
+#: `orchestration_error` is one of them (F251): forwarded, the parent's run log
+#: failed the whole run and aborted its stream, and the bell announced the
+#: parent failed, while the parent was still working. `NestedOutcome` reads it
+#: first, and the parent's own `step_error` names it.
+NESTED_OWN_EVENTS = frozenset({"orchestration_start", "orchestration_complete", "orchestration_end",
+                               "orchestration_error"})
+
+
+def tag_nested_event(sub_event: dict, run_id: str, step_id: str, step_name: str,
+                     nested_run_id: str, nested_orch_id: str | None) -> dict:
+    """A nested run's event as its parent's stream carries it (F251).
+
+    Routed as the parent step's — `run_id`, `orch_step_id` and `step_name` are
+    the parent's, which is how an answer finds its way back — and still naming
+    the step it came from: `nested_step_id` is that step's id, and
+    `nested_step_name` the chain of step names below the parent's ("Pricing ›
+    Research" for a grandchild's step). The parent's run log used to read a
+    child step's start and end as its own step's.
+    """
+    tagged = {**sub_event, "run_id": run_id, "orch_step_id": step_id, "step_name": step_name,
+              "nested_run_id": nested_run_id, "nested_orch_id": nested_orch_id}
+    own_id = sub_event.get("nested_step_id") or sub_event.get("orch_step_id")
+    names = [n for n in (sub_event.get("step_name"), sub_event.get("nested_step_name")) if n]
+    if own_id:
+        tagged["nested_step_id"] = own_id
+    if names:
+        tagged["nested_step_name"] = " › ".join(names)
+    return tagged
+
+
+class NestedOutcome:
+    """How a nested run ended, read from its events as they pass (F253).
+
+    Its `orchestration_complete` says the status; its last `step_error` or
+    `orchestration_error` says why. The run's own final text is the fallback
+    reason: for a failed run it is "Orchestration failed. Error: …".
+    """
+
+    _FINAL_PREFIX = "Orchestration failed. Error: "
+    _PREFIX = "Sub-orchestration "
+
+    def __init__(self) -> None:
+        self.status: str | None = None
+        self.reason: str | None = None
+        self.response: str | None = None
+
+    def read(self, event: dict) -> None:
+        etype = event.get("type")
+        if etype == "orchestration_complete":
+            self.status = event.get("status")
+        elif etype == "step_error":
+            self.reason = event.get("reason") or event.get("error") or self.reason
+        elif etype == "orchestration_error":
+            self.reason = event.get("error") or self.reason
+        elif etype == "final" and event.get("intent") == "orchestration":
+            self.response = event.get("response")
+
+    def failure(self, name: str) -> str | None:
+        """Why the run did not complete, or None when it did.
+
+        A run that ended with no status at all — its resume gave up before it
+        started, say — did not complete either.
+        """
+        if self.status == "completed":
+            return None
+        reason = self.reason
+        if not reason and self.response:
+            reason = self.response.removeprefix(self._FINAL_PREFIX)
+        reason = (reason or "").removeprefix("RuntimeError: ")
+        if reason.startswith(self._PREFIX):
+            # A grandchild's failure, already named: one chain, so the innermost
+            # reason survives the engine's 300-character cap at every level.
+            return f"{self._PREFIX}'{name}' › {reason[len(self._PREFIX):]}"
+        verb = "was cancelled" if self.status == "cancelled" else "failed"
+        return f"{self._PREFIX}'{name}' {verb}: {reason or 'it ended without finishing'}"
+
+
+class ToolCallFailed(RuntimeError):
+    """A tool that ran and reported failure: an error, not the step's output (F90).
+
+    A Tool step used to hand a python tool's non-zero exit, an MCP result marked
+    `isError` and an HTTP tool's 4xx/5xx on as its result, and the run carried on.
+    `retryable` says whether other arguments might fix it — the step's attempts
+    are the model's to try again with. A server fault is not the model's to fix,
+    and re-sending a request that may already have had its effect could do the
+    thing twice.
+    """
+
+    def __init__(self, message: str, *, retryable: bool, ran: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
+        # The tool ran before it failed (a python tool's non-zero exit): what it did before failing is done (TAG1).
+        self.ran = ran
+
+
+class ToolUnavailable(ToolCallFailed):
+    """A tool the step names that isn't available now: its app disconnected, signed out or turned off, or the tool
+    gone (F1349). Said in `tool_availability`'s words, once: never retried, and the tool never ran, so Resume is
+    safe. `plain`: the run records its words without a class name (`run_error.reason_of`)."""
+
+    plain = True
+
+    def __init__(self, message: str):
+        super().__init__(message, retryable=False, ran=False)
+
+
+def _unavailable(tool_name: str, server_module, *, error: BaseException | str | None = None) -> ToolUnavailable:
+    from core.mcp_client import connect_failure
+    from core.tool_availability import why_unavailable
+
+    said = connect_failure(error) if isinstance(error, BaseException) else error
+    return ToolUnavailable(why_unavailable(tool_name, server_module, error=said).words())
+
+
+def _final_refusal(exc: BaseException) -> bool:
+    """A refusal no argument the model writes can change, so another attempt is a paid model call for
+    the same answer (F851): the egress guard's — a blocked range, no host, not a URL, a scheme that is
+    not http. The URL's host is the tool's own (one the model would fill is refused when the tool is
+    saved). A host that could not be resolved is not final: DNS can fail for a moment."""
+    from core import egress_guard
+
+    return isinstance(exc, egress_guard.BlockedEgress) and not isinstance(exc, egress_guard.UnresolvedHost)
 
 
 class ToolStepExecutor:
@@ -324,24 +920,43 @@ class ToolStepExecutor:
         from core.llm_providers import generate_response as llm_generate, detect_mode_from_model
         from core.config import load_settings
         from core.react_engine import parse_tool_call
-        from core.tools import aggregate_all_tools
-        from core.scale.context import resolve_agent, resolve_custom_tools
+        from core.tools import resolve_one_tool
+        from .resolved import resolve_for_run, run_custom_tools
 
         if not step.forced_tool:
-            yield {"type": "step_warning", "orch_step_id": step.id,
-                   "message": f"No tool configured for TOOL step '{step.name}'"}
-            return
+            # A step that cannot run is not a step that ran (F90): it used to
+            # warn and let the run carry on without it.
+            message = f"Tool step '{step.name}' has no tool configured"
+            yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
+            raise RuntimeError(message)
 
-        from .context import build_origin_aware_context, TransitionContext, snapshot_inputs
+        from core import visitor as _visitor_mod
+        _visitor = _visitor_mod.current()
+        if _visitor is not None and not _visitor.allows(step.forced_tool):
+            # A workflow on a widget runs in the visitor's turn, and a Tool step
+            # is a tool call like any other: the owner's list holds here as it
+            # does for an agent (F280). Refused before the model is asked for
+            # arguments, so nothing about the tool is spent on a stranger.
+            message = (f"Tool step '{step.name}' uses '{step.forced_tool}', which visitors "
+                       f"on this {_visitor.surface} may not use")
+            yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
+            raise RuntimeError(message)
+
+        from .context import build_step_prompt, TransitionContext, snapshot_inputs
         transition = getattr(engine, "current_transition", None)
         if transition is None:
             transition = TransitionContext(origin_type="entry", execution_number=1)
-        prompt, system_prompt_extra, system_prompt_prefix = build_origin_aware_context(step, run, engine, transition)
+        prompt, system_prompt_extra, system_prompt_prefix, mentions = await build_step_prompt(
+            step, run, engine, transition
+        )
         inputs_snapshot = snapshot_inputs(step, run, engine)
 
         yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": prompt,
                "system_prompt_extra": system_prompt_extra,
-               "system_prompt_prefix": system_prompt_prefix}
+               "system_prompt_prefix": system_prompt_prefix,
+               "mentions": [m.summary() for m in mentions]}
+        for warning in _mention_warnings(mentions):
+            yield {"type": "step_warning", "orch_step_id": step.id, "message": warning}
 
         # Model resolution — same pattern as EvaluatorStepExecutor and LLMStepExecutor
         settings = load_settings()
@@ -349,19 +964,100 @@ class ToolStepExecutor:
         model = _step_model if _step_model else settings.get("model", "mistral")
         mode = detect_mode_from_model(model)
 
-        # Load only the forced tool's schema — aggregate all tools then filter to one
-        active_agent = (await resolve_agent(step.agent_id) if step.agent_id else None) or {}
-        custom_tools = await resolve_custom_tools()
-        all_tools, _, _, _ = await aggregate_all_tools(
-            engine.server_module.agent_sessions, active_agent, custom_tools
-        )
+        # The forced tool's own declaration. This used to aggregate every
+        # server's tools — list, filter, schema-map, serialise — to find one.
+        resolved = await resolve_for_run(engine, step.agent_id, tools=False) if step.agent_id else None
+        active_agent = (resolved.agent if resolved else None) or {}
+        custom_tools = resolved.custom_tools if resolved else await run_custom_tools(engine)
 
         tool_name = step.forced_tool
-        tool_obj = next((t for t in all_tools if t.name == tool_name), None)
+        # A step with no agent names its own tool, and naming a tool is what opting in is: an opt-in builder tool
+        # (F495) is found here as by an agent that lists it. An agent's own list still governs a step that has one.
+        tool_obj = await resolve_one_tool(engine.server_module, tool_name, active_agent or {"tools": [tool_name]},
+                                          custom_tools)
         if not tool_obj:
-            yield {"type": "step_error", "orch_step_id": step.id,
-                   "error": f"Tool '{tool_name}' not found in available tools"}
-            return
+            # Failed the way a tool call that fails is, below: the step's own
+            # line says why (the engine's stream message is sanitised), and the
+            # run stops here rather than carrying on without it. A tool nothing
+            # here can answer now is said with its app's reason (F1349).
+            from core.tool_availability import is_live
+
+            if not is_live(tool_name, engine.server_module, custom_tools):
+                unavailable = _unavailable(tool_name, engine.server_module)
+                yield {"type": "final", "orch_step_id": step.id, "step_name": step.name,
+                       "response": str(unavailable)}
+                raise unavailable
+            message = f"Tool '{tool_name}' not found in available tools"
+            yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
+            raise RuntimeError(message)
+
+        # ── Tool policy (F267): the step's agent's, or the workspace's ──────
+        # An Agent step's calls went through the policy and a Tool step's did
+        # not, so `run_bash` forced in a Tool step ran under a `deny`.
+        from core import tool_policy as _tool_policy
+        from core.chat_approval import approval_prompt
+        from core.orchestration.state import SharedState
+        from core.react_engine import _approval_id
+
+        from core.tool_router import ToolRouter
+
+        _router = getattr(engine.server_module, "tool_router", None)
+        if not isinstance(_router, ToolRouter):
+            _router = ToolRouter(_router or {})
+
+        def _same_tool(named: str, forced: str) -> bool:
+            """`server__tool` and a bare `tool` the router sends to it are one tool."""
+            key = _router.resolve(named) if isinstance(named, str) else None
+            return key is not None and key == _router.resolve(forced)
+
+        _policy = _tool_policy.resolve_policy(active_agent, settings)
+        if _visitor is not None:
+            _policy = {c: ("deny" if d == "confirm" else d) for c, d in _policy.items()}
+        _decision, _category = _tool_policy.decide(tool_obj, _policy)
+
+        # A person's answer to a pause this step made: the call they allowed is
+        # the one that runs — the model is not asked again, it might ask for
+        # something else — and a refusal fails the step with their reason.
+        _answered = (run.step_progress.get(step.id) or {}).get("pending_call")
+        _replay: dict | None = None
+        if _answered:
+            run.step_progress.pop(step.id, None)
+            # Spent before the call runs, and saved: a crash mid-call must not
+            # find the approval again on recovery and run the call a second time.
+            try:
+                await SharedState(run).checkpoint(columns=("step_progress",))
+            except Exception as ckpt_err:
+                _log.warning(f"tool-approval checkpoint failed: {ckpt_err}")
+            if not _answered.get("approved"):
+                reason = _answered.get("reason") or ""
+                message = (f"Tool step '{step.name}' did not run '{tool_name}': a person refused it"
+                           + (f": {reason}" if reason else ""))
+                yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
+                raise RuntimeError(message)
+            _replay = {"tool": tool_name, "arguments": _answered.get("arguments") or {}}
+        elif _decision == "deny":
+            # Refused before the model is asked for arguments.
+            message = (f"Tool step '{step.name}' did not run '{tool_name}': the tool policy blocks it "
+                       f"because {_tool_policy.explain(_category)}")
+            yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
+            raise RuntimeError(message)
+
+        # Arguments set on the step (E1): rendered once from state, and no model is asked. An approved call being
+        # replayed is the call the person saw, so it is not rendered again.
+        _set_args: dict | None = None
+        if step.tool_arguments is not None and _replay is None:
+            try:
+                _set_args = render_tool_arguments(step.tool_arguments, run.shared_state,
+                                                  code_tool=tool_obj.name.split("__")[-1] in CODE_TOOLS)
+            except MissingStateRef as missing:
+                message = (f"Tool step '{step.name}' could not set its arguments: {missing} is not in the run's "
+                           "state")
+                yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
+                raise RuntimeError(message) from None
+            except UnsafeCodeRef as unsafe:  # never sent as text (F1212)
+                message = f"Tool step '{step.name}' could not set its code: {unsafe}"
+                yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
+                raise RuntimeError(message) from None
 
         # Build evaluator-style prompt: ask LLM to output JSON tool call (no tools= API param)
         tool_schema_str = str(tool_obj.inputSchema)
@@ -381,49 +1077,131 @@ class ToolStepExecutor:
         max_turns = max(1, step.max_turns or 3)
         last_error = None
         final_response = None
+        unavailable: ToolUnavailable | None = None  # its tool isn't available now: said in its own words (F1349)
         called_tool: str = ""
         last_tool_args: dict = {}
+        attempts = 0
+
+        # Whether a call that may have gone through can be made again (TAG1, F737): a custom tool's tags or method,
+        # else what the tool declares; a tool that declares nothing keeps the retry it always had.
+        from core.tool_tags import MAY_HAVE_RUN, may_have_reached, may_repeat
+        from core.tools import tool_hints
+        _own = next((t for t in custom_tools if isinstance(t, dict) and t.get("name") == tool_obj.name), None)
+        if _own is not None:
+            _repeatable = may_repeat(_own)
+        else:
+            _h = tool_hints(tool_obj)
+            _repeatable = not _h.declared or _h.read_only or _h.idempotent
 
         for turn in range(max_turns):
+            attempts = turn + 1
             turn_prompt = tool_prompt
             if last_error:
                 turn_prompt += f"\n\nPrevious attempt failed: {last_error}\nPlease try again with correct arguments."
 
-            print(f"DEBUG TOOL STEP: turn {turn + 1}/{max_turns} model={model} tool={tool_name}", flush=True)
-            try:
-                tool_sys_prompt = "You are a tool-calling assistant. Output ONLY valid JSON."
-                if system_prompt_prefix:
-                    tool_sys_prompt = system_prompt_prefix + "\n\n" + tool_sys_prompt
-                response = await llm_generate(
-                    prompt_msg=turn_prompt,
-                    sys_prompt=tool_sys_prompt,
-                    mode=mode,
-                    current_model=model,
-                    current_settings=settings,
-                    session_id=run.session_id,
-                    agent_id=step.agent_id or "tool_step",
-                    source="orchestration",
-                    run_id=run.run_id,
-                )
-            except Exception as e:
-                from core.llm_providers import LLMError
-                if isinstance(e, LLMError):
-                    raise
-                raise RuntimeError(f"Tool step '{step.name}' LLM call failed: {e}") from e
+            _log.debug(f"TOOL STEP: turn {turn + 1}/{max_turns} model={model} tool={tool_name}")
+            _replaying = _replay is not None
+            if _replaying:
+                # The approved call, as it was approved — once.
+                response, _replay = json.dumps(_replay), None
+            elif _set_args is not None:
+                response = None
+            else:
+                try:
+                    tool_sys_prompt = "You are a tool-calling assistant. Output ONLY valid JSON."
+                    if system_prompt_prefix:
+                        tool_sys_prompt = system_prompt_prefix + "\n\n" + tool_sys_prompt
+                    from core.model_wait import ModelWait
 
-            # Log the LLM response (mirrors _log_evaluator for evaluator steps)
-            yield {"type": "_log_tool_step_llm", "orch_step_id": step.id,
-                   "prompt": turn_prompt, "llm_response": response}
+                    _used: list = []
+                    _wait = ModelWait(on_model_or_fallback(lambda _model: llm_generate(
+                        prompt_msg=turn_prompt,
+                        sys_prompt=tool_sys_prompt,
+                        mode=mode if _model == model else detect_mode_from_model(_model),
+                        current_model=_model,
+                        current_settings=settings,
+                        # The workspace's effort, as an agent without its own gets
+                        # (F77); passing nothing meant "medium" whatever it said.
+                        reasoning_effort=settings.get("reasoning_effort"),
+                        session_id=run.session_id,
+                        agent_id=step.agent_id or "tool_step",
+                        source="orchestration",
+                        run_id=run.run_id,
+                    ), model, role_fallback(step, run, model), _used),
+                        label=f"Tool step '{step.name}'", extra={"orch_step_id": step.id})
+                    async for _wait_event in _wait.events():
+                        yield _wait_event
+                    response = _wait.result
+                    if len(_used) > 1:
+                        # The rest of the step's turns stay on the model that answered.
+                        model, mode = _used[0], detect_mode_from_model(_used[0])
+                        yield {"type": "step_warning", "orch_step_id": step.id, "message": _used[1]}
+                except Exception as e:
+                    from core.llm_providers import LLMError
+                    if isinstance(e, LLMError):
+                        raise
+                    raise RuntimeError(f"Tool step '{step.name}' LLM call failed: {e}") from e
 
-            tool_call, json_error = parse_tool_call(response)
+            if response is None:
+                # Set on the step: the call is the step's own, not parsed from anything a model wrote.
+                tool_call, json_error = {"tool": tool_obj.name, "arguments": _set_args}, None
+            else:
+                if not _replaying:
+                    # Log the LLM response (mirrors _log_evaluator for evaluator steps)
+                    yield {"type": "_log_tool_step_llm", "orch_step_id": step.id,
+                           "prompt": turn_prompt, "llm_response": response}
+                tool_call, json_error = parse_tool_call(response)
             if not tool_call:
                 last_error = json_error or "LLM did not return a valid tool call JSON"
-                print(f"DEBUG TOOL STEP: ⚠ parse failed turn={turn + 1}: {last_error}", flush=True)
+                _log.debug(f"TOOL STEP: ⚠ parse failed turn={turn + 1}: {last_error}")
                 continue
 
-            called_tool = tool_call.get("tool", "")
+            from core.react_engine import _offered_name
+
+            # A provider's namespace on the name (`default_api:clock`) is the step's own tool, never another (F779).
+            called_tool = _offered_name(tool_call.get("tool", ""), {tool_obj.name: None})
             tool_args = tool_call.get("arguments", {})
+            if called_tool != tool_obj.name and not _same_tool(called_tool, tool_obj.name):
+                # This step's tool is the only one it runs (F281). The name in
+                # the model's JSON used to be looked up across every server,
+                # custom tool and builder tool, so a reply naming `run_bash` on a
+                # step forced to read the clock ran `run_bash`.
+                last_error = (f"This step calls only '{tool_obj.name}'; '{called_tool}' is not it. "
+                              f'Answer with {{"tool": "{tool_obj.name}", "arguments": {{...}}}}')
+                _log.debug(f"TOOL STEP: ⚠ model named '{called_tool}' instead of '{tool_obj.name}'")
+                continue
+            # The forced tool runs, by its own name — a bare name the model used
+            # for a namespaced tool dispatches to the same place.
+            called_tool = tool_obj.name
             last_tool_args = tool_args
+
+            if _decision == "confirm" and not _replaying:
+                # Held for a person, exactly as an Agent step's gated call is: the
+                # run pauses here with the call, and the resume re-enters this
+                # step with the answer (`OrchestrationEngine._resume_tool_approval`).
+                approval_id = _approval_id(called_tool, tool_args)
+                progress = dict(run.step_progress.get(step.id) or {})
+                progress["pending_approval"] = {
+                    "approval_id": approval_id, "tool_name": called_tool,
+                    "tool_args": tool_args, "category": _category,
+                }
+                run.step_progress[step.id] = progress
+                try:
+                    await SharedState(run).checkpoint(columns=("step_progress",))
+                except Exception as ckpt_err:
+                    _log.warning(f"tool-approval checkpoint failed: {ckpt_err}")
+                yield {
+                    "type": "human_input_required", "kind": "tool_approval",
+                    "prompt": approval_prompt(called_tool, _category),
+                    "tool_name": called_tool, "tool_args": tool_args, "category": _category,
+                    "approval_id": approval_id,
+                    "fields": [
+                        {"name": "approve", "type": "boolean", "label": f"Run {called_tool}?"},
+                        {"name": "reason", "type": "text", "label": "Reason (optional)"},
+                    ],
+                    "orch_step_id": step.id, "step_name": step.name,
+                }
+                return
 
             # tool_execution matches the event type the logger and react_engine emit
             yield {
@@ -433,15 +1211,18 @@ class ToolStepExecutor:
                 "tool_name": called_tool,
                 "args": tool_args,
             }
-            print(f"DEBUG TOOL STEP: 🔧 Tool Call: {called_tool}", flush=True)
-            print(f"DEBUG TOOL STEP: 📥 Args: {json.dumps(tool_args, indent=2, default=str)[:1000]}", flush=True)
+            _log.debug(f"TOOL STEP: 🔧 Tool Call: {called_tool}")
+            _log.debug(f"TOOL STEP: 📥 Args: {json.dumps(tool_args, indent=2, default=str)[:1000]}")
 
             try:
-                result = await self._execute_tool(called_tool, tool_args, engine)
-                final_response = result
+                resource_events: list[dict] = []
+                result = await self._execute_tool(
+                    called_tool, tool_args, engine, resource_events, run_id=run.run_id
+                )
+                final_response = _kept(result, run, step, engine)
                 if step.output_key:
-                    run.shared_state[step.output_key] = result
-                preview = str(result)[:500] if result else ""
+                    run.shared_state[step.output_key] = final_response
+                preview = _preview(final_response) if result else ""
                 yield {
                     "type": "tool_result",
                     "orch_step_id": step.id,
@@ -449,30 +1230,65 @@ class ToolStepExecutor:
                     "tool_name": called_tool,
                     "preview": preview,
                 }
-                print(f"DEBUG TOOL STEP: 📤 Tool Result ({called_tool}): {preview}", flush=True)
-                print(f"DEBUG TOOL STEP: ✅ tool '{called_tool}' succeeded", flush=True)
+                for _saved in resource_events:
+                    yield {**_saved, "orch_step_id": step.id, "step_name": step.name}
+                _log.debug(f"TOOL STEP: 📤 Tool Result ({called_tool}): {preview}")
+                _log.debug(f"TOOL STEP: ✅ tool '{called_tool}' succeeded")
                 break
-            except Exception as e:
+            except ToolCallFailed as e:
                 last_error = str(e)
-                print(f"DEBUG TOOL STEP: ❌ tool execution failed turn={turn + 1}: {last_error}", flush=True)
+                _log.debug(f"TOOL STEP: ❌ tool reported failure turn={turn + 1}: {last_error}")
+                if isinstance(e, ToolUnavailable):
+                    unavailable = e  # nothing another attempt could change: the tool never ran
+                    break
+                if e.ran and not _repeatable:
+                    last_error = f"{last_error} — {MAY_HAVE_RUN}"
+                    break
+                # A tool's own error is retried with other arguments; set arguments cannot change, so the same call
+                # would fail the same way.
+                if not e.retryable or _replaying or _set_args is not None:
+                    break
+            except Exception as e:
+                last_error = str(e) or type(e).__name__
+                _log.debug(f"TOOL STEP: ❌ tool execution failed turn={turn + 1}: {last_error}")
+                if _final_refusal(e):
+                    # No argument changes it (F851): the guard refused where the tool's own URL points.
+                    break
+                if may_have_reached(e) and not _repeatable:
+                    # Not made again: the first may have booked, sent or charged (F737).
+                    last_error = f"{last_error} — {MAY_HAVE_RUN}"
+                    break
+                if _replaying:
+                    break
+            # A person approved one call and it failed: the step ends with its error (F668, Naveen). A retry would
+            # have the model write other arguments, ask again, and — each resume starting the attempts afresh —
+            # never end, a paid call and a new question each time.
 
+        from core.step_refs import is_ref
+
+        # A saved output (D339 P4) is said as its excerpt and file wherever the step's answer is words; state keeps
+        # the reference itself.
+        said = _preview(final_response, whole=True) if is_ref(final_response) else final_response
+        if final_response is None and unavailable is not None:
+            yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": str(unavailable)}
+            raise unavailable
         yield {
             "type": "final",
             "orch_step_id": step.id,
             "step_name": step.name,
-            "response": final_response if final_response is not None
-                        else f"Tool step '{step.name}' failed after {max_turns} attempt(s): {last_error}",
+            "response": said if final_response is not None
+                        else f"Tool step '{step.name}' failed after {attempts} attempt(s): {last_error}",
         }
 
         if final_response is None:
-            raise RuntimeError(f"Tool step '{step.name}' failed after {max_turns} attempt(s): {last_error}")
+            raise RuntimeError(f"Tool step '{step.name}' failed after {attempts} attempt(s): {last_error}")
 
         # Record execution memory so re-invocations can see prior turn's args + result.
         from .context import build_execution_trace, store_execution_memory
         synth_events = [
             {"type": "tool_call", "tool_name": called_tool, "tool_input": last_tool_args},
-            {"type": "tool_result", "result": str(final_response)},
-            {"type": "final", "response": str(final_response)},
+            {"type": "tool_result", "result": str(said)},
+            {"type": "final", "response": str(said)},
         ]
         trace = build_execution_trace(synth_events)
         store_execution_memory(
@@ -482,30 +1298,92 @@ class ToolStepExecutor:
             inputs_snapshot=inputs_snapshot,
         )
 
-    async def _execute_tool(self, tool_name: str, tool_args: dict, engine: "OrchestrationEngine") -> str:
-        """Execute a tool via MCP session or Docker sandbox (custom Python tools)."""
+    async def _execute_tool(
+        self, tool_name: str, tool_args: dict, engine: "OrchestrationEngine",
+        resource_events: list | None = None, *, run_id: str | None = None,
+    ) -> str:
+        """Execute a tool via MCP session or Docker sandbox (custom Python tools).
+
+        `resource_events`, when given, collects what a builder tool changed so
+        the caller can yield it after the result — this returns a string, and
+        the whole resource does not belong in one.
+        """
         from datetime import timedelta
         server_module = engine.server_module
 
         # Native builder tools (create_orchestration, list_agents, etc.) —
         # dispatched directly to execute_builder_tool so TOOL steps can drive
         # the builder primitives.
-        from core.builder_tools import BUILDER_TOOL_NAMES, execute_builder_tool
+        from core.builder_tools import BUILDER_TOOL_NAMES, execute_builder_tool_with_events
         if tool_name in BUILDER_TOOL_NAMES:
-            return await execute_builder_tool(tool_name, tool_args, server_module)
+            # The run's id lets a builder tool tell its own run's work from
+            # another's — `finish_build` removes only what this run left (F156).
+            output, saved = await execute_builder_tool_with_events(
+                tool_name, tool_args, server_module, run_id=run_id, door="step"
+            )
+            # Refused for whom the run acts or what it may call (F1315, F1319): the step fails and the run stops in
+            # those words, so no later step reads, or shows a person, what this one never wrote.
+            try:
+                answer = json.loads(output)
+            except ValueError:
+                answer = None
+            if isinstance(answer, dict) and answer.get("stops_the_step") is True:
+                raise ToolCallFailed(str(answer.get("error")), retryable=False)
+            if resource_events is not None:
+                resource_events.extend(saved)
+            return output
 
         tool_router = getattr(server_module, "tool_router", {})
         if tool_name in tool_router:
             agent_name, actual_tool_name = tool_router[tool_name]
             session = server_module.agent_sessions.get(agent_name)
             if session:
-                result = await session.call_tool(
-                    actual_tool_name, tool_args, read_timeout_seconds=timedelta(seconds=MCP_TOOL_CALL_TIMEOUT)
-                )
-                return result.content[0].text if result.content else ""
-        # Custom tools — Python or HTTP
-        from core.routes.tools import load_custom_tools
-        custom_tools = load_custom_tools()
+                # A run drives its own browser (BRW1); the component reads whose call this is.
+                from core.browser import client as browser_client
+                token = (browser_client.owner.set(browser_client.owner_for(None, run_id))
+                         if agent_name == browser_client.SERVER_NAME and run_id else None)
+                try:
+                    result = await session.call_tool(
+                        actual_tool_name, tool_args,
+                        read_timeout_seconds=timedelta(seconds=mcp_call_timeout(actual_tool_name, tool_args)),
+                        **(await call_kwargs_for(agent_name, run_id, tool_args)),
+                    )
+                except Exception as exc:
+                    # Its app refused the sign-in, the token expired mid-run (F1349): said as the app's, the tool
+                    # never ran. Any other failure is the call's own, as before.
+                    from core.mcp_client import connect_failure
+                    from core.tool_availability import signed_out
+
+                    if signed_out(connect_failure(exc)):
+                        raise _unavailable(tool_name, server_module, error=exc) from exc
+                    raise
+                finally:
+                    if token is not None:
+                        browser_client.owner.reset(token)
+                if token is not None and resource_events is not None and hasattr(session, "take_events"):
+                    # The pane's events, as the agent loop sends them: a browser opened, what each action did (F1356).
+                    resource_events.extend(session.take_events(browser_client.owner_for(None, run_id)))
+                from core.tool_result import mcp_text
+
+                text = mcp_text(result)  # as the agent path reads it: [] is "", a list whole (F1344)
+                if getattr(result, "isError", False):
+                    # MCP's own way of saying the call failed; it was never read.
+                    raise ToolCallFailed(
+                        f"Tool '{tool_name}' returned an error: {text[:500] or '(no detail)'}",
+                        retryable=True)
+                # One of the product's own servers that predates its `isError` (F1208) says a failure in its
+                # content: read its known shape. Never a third-party server's, whose "error" key may be data.
+                from core.tool_result import built_in_failure
+                from core.tools_registry import ALL_NATIVE_TOOLS
+                if agent_name in ALL_NATIVE_TOOLS and (why := built_in_failure(text)):
+                    raise ToolCallFailed(f"Tool '{tool_name}' failed: {why}", retryable=True)
+                return text
+        # Custom tools — Python or HTTP. The run's resolved list, the one the
+        # schema lookup above already used: the store's raw rows carry a hosted
+        # deployment's `synsec://` references, which went to the server as the
+        # header's value (F1).
+        from .resolved import run_custom_tools
+        custom_tools = await run_custom_tools(engine)
         target_tool = next((t for t in custom_tools if t["name"] == tool_name), None)
         if target_tool:
             tool_type = target_tool.get("tool_type", "http")
@@ -513,164 +1391,100 @@ class ToolStepExecutor:
                 return await self._execute_python_tool(target_tool, tool_args)
             # HTTP tool — with URL templating and method-aware arg routing
             return await self._execute_http_tool(target_tool, tool_args)
-        raise RuntimeError(f"Tool '{tool_name}' not found in tool router")
+        # Nothing answers it now: its app's session is gone, or the tool is (F1349).
+        raise _unavailable(tool_name, server_module)
 
     async def _execute_python_tool(self, tool: dict, tool_args: dict) -> str:
-        """Execute a custom Python tool in the Docker sandbox (sandbox-python:latest)."""
-        import shutil
-        import tempfile
-        from pathlib import Path
+        """Execute a custom Python tool through the registered code runner.
+
+        The same execution as `react_engine.run_agent_step`'s python branch, on
+        purpose: a tool called from a TOOL step and the same tool called by an
+        agent run identically. Both are one call to `core.execution`, which is
+        what stopped them drifting. What a failure *means* differs: an agent is
+        handed the error as the tool's answer and decides what to do with it; a
+        TOOL step has nobody to decide, so a non-zero exit is a failed call
+        (F90) — retried with the error, then the run fails.
+        """
+        from core import variables as _variables
+        from core.execution import (NO_DOCKER_FOR_TOOLS, DockerRunner, DockerUnavailable, ExecRequest, Network,
+                                    declared_globals, docker_not_running, get_runner, wrap_args)
+        from core.vault import _vault_root
 
         python_code = tool.get("code", "")
         if not python_code.strip():
             raise ValueError("Python tool has no code defined.")
-        if not shutil.which("docker"):
-            raise RuntimeError("Docker is not available. Cannot execute Python tool.")
 
-        args_json = json.dumps(tool_args)
-        escaped = args_json.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
-        injected_code = (
-            f'import json\n_args = json.loads("""{escaped}""")\n\n'
-            + python_code
-        )
+        # The arguments go in as written — a model wrote them — and only the
+        # globals the tool declares go in beside them (F28, `declared_globals`).
+        granted = declared_globals(tool, await _variables.load()) if tool.get("globals") else {}
 
-        DATA_DIR_PATH = Path(__file__).resolve().parent.parent.parent / "data"
-        vault_root = DATA_DIR_PATH / "vault"
-        docker_image = "sandbox-python:latest"
-
-        tmp_dir = tempfile.mkdtemp(prefix="pytool_")
-        script_path = f"{tmp_dir}/script.py"
+        runner = get_runner()
         try:
-            with open(script_path, "w", encoding="utf-8") as f:
-                f.write(injected_code)
+            result = await runner.run(ExecRequest(
+                code=wrap_args(python_code, tool_args, granted),
+                network=Network.INTERNET,
+                timeout_s=30,
+                vault_path=_vault_root(),
+            ))
+        except DockerUnavailable as exc:
+            raise ToolCallFailed(NO_DOCKER_FOR_TOOLS, retryable=False) from exc  # no docker here at all (F1353)
 
-            docker_cmd = [
-                "docker", "run", "--rm",
-                "--memory", "512m",
-                "--cpus", "1.0",
-                "--pids-limit", "64",
-                "--read-only",
-                "--tmpfs", "/tmp:rw,size=256m",
-                "--tmpfs", "/root:rw,size=256m",
-                "-v", f"{script_path}:/sandbox/script.py:ro",
-            ]
-            if vault_root.exists():
-                docker_cmd += ["-v", f"{vault_root}:/data:ro"]
-            docker_cmd += [docker_image, "python", "/sandbox/script.py"]
-
-            proc = await asyncio.create_subprocess_exec(
-                *docker_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            try:
-                stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=35)
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                raise RuntimeError("Python tool execution timed out after 30s")
-
-            stdout_text = stdout_b.decode("utf-8", errors="replace")[:20000]
-            stderr_text = stderr_b.decode("utf-8", errors="replace")[:5000]
-
-            if proc.returncode != 0:
-                return json.dumps({
-                    "error": f"Python tool exited with code {proc.returncode}",
-                    "stderr": stderr_text,
-                    "stdout": stdout_text,
-                })
-            try:
-                parsed = json.loads(stdout_text.strip())
-                return json.dumps(parsed)
-            except Exception:
-                return json.dumps({"output": stdout_text})
-        finally:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+        if result.exit_code != 0 and isinstance(runner, DockerRunner) and docker_not_running(result.stderr):
+            # Its daemon isn't running: what to do, not its socket; no other arguments change it (F1353).
+            raise ToolCallFailed(NO_DOCKER_FOR_TOOLS, retryable=False)
+        if result.exit_code != 0:
+            # The end of the output is where a traceback says what went wrong.
+            detail = (result.stderr or result.stdout or "").strip()[-800:]
+            raise ToolCallFailed(
+                f"Python tool exited with code {result.exit_code}: {detail or '(no output)'}",
+                retryable=True, ran=True)
+        try:
+            return json.dumps(json.loads(result.stdout.strip()))
+        except Exception:
+            return json.dumps({"output": result.stdout})
 
     async def _execute_http_tool(self, tool: dict, tool_args: dict) -> str:
-        """Execute a custom HTTP tool with URL templating and method-aware arg routing.
+        """Execute a custom HTTP tool.
 
-        URL template placeholders:
-          - ``{data}``       → replaced with the full JSON-encoded argument payload
-          - ``{data.field}`` → replaced with the value of ``field`` from tool_args
-                               (dot-notation supported for nested access)
+        The request is built by `core.http_tool`, which the agent's executor
+        also uses — so `{{global.key}}`, the request-body template and "an
+        argument the URL used is not sent twice" behave the same whether a tool
+        is called by an agent or by a TOOL step. They did not before: D69 fixed
+        all three in the agent's copy and this one kept none of them, so the
+        same tool sent a literal `{{global.api_base}}` to the server from here
+        and the real value from there.
 
-        Remaining (non-consumed) args are sent as:
-          - Query-string params for GET / DELETE
-          - JSON body for POST / PUT
+        `send` also checks where the request is going before it goes (S4).
         """
-        import re as _re
         import httpx as _httpx
 
-        method = tool.get("method", "POST").upper()
-        url = tool.get("url", "")
-        headers = tool.get("headers", {})
-        if not url:
-            raise ValueError("No URL configured for this tool.")
-
-        consumed_keys: set = set()
-
-        def _resolve_path(obj: dict, path: str):
-            parts = path.split(".")
-            cur = obj
-            for p in parts:
-                if not isinstance(cur, dict) or p not in cur:
-                    return None
-                cur = cur[p]
-            return str(cur) if not isinstance(cur, (dict, list)) else json.dumps(cur)
-
-        def _replace_placeholder(m: "_re.Match") -> str:
-            expr = m.group(1).strip()
-            # {data} → full JSON payload (legacy)
-            if expr == "data":
-                return json.dumps(tool_args)
-            # {data.key} → nested dot-notation (legacy)
-            if expr.startswith("data."):
-                path = expr[len("data."):]
-                top_key = path.split(".")[0]
-                val = _resolve_path(tool_args, path)
-                if val is not None:
-                    consumed_keys.add(top_key)
-                    return val
-            # {key} → bare input schema field name (preferred)
-            if expr in tool_args:
-                consumed_keys.add(expr)
-                v = tool_args[expr]
-                return str(v) if not isinstance(v, (dict, list)) else json.dumps(v)
-            return m.group(0)
-
-        url = _re.sub(r"\{([^}]+)\}", _replace_placeholder, url)
-
-        # Where this request is going, checked at the moment it is sent. The URL
-        # is templated just above, so the destination is not known any earlier —
-        # and a check at *save* time cannot hold anyway, because DNS can be
-        # re-pointed afterwards and the Tools screen writes a raw document.
-        from core import egress_guard as _egress
-
-        await _egress.check_tool_url(url)
+        from core import http_tool
+        from core import variables as _variables
 
         async with _httpx.AsyncClient() as client:
-            if method in ("GET", "DELETE"):
-                remaining_args = {k: v for k, v in tool_args.items() if k not in consumed_keys}
-                params = {k: (json.dumps(v) if isinstance(v, (dict, list)) else str(v))
-                          for k, v in remaining_args.items()}
-                resp = await client.request(method, url, params=params, headers=headers, timeout=HTTP_TOOL_TIMEOUT)
-            else:
-                # POST / PUT – all args in body even if some were used in the URL
-                resp = await client.request(method, url, json=tool_args, headers=headers, timeout=HTTP_TOOL_TIMEOUT)
+            resp = await http_tool.send(
+                client, tool, tool_args, await _variables.load(),
+                timeout=HTTP_TOOL_TIMEOUT,
+            )
+        if resp.status_code >= 400:
+            raise ToolCallFailed(
+                f"HTTP {resp.status_code} from '{tool.get('name', 'tool')}': {(resp.text or '')[:500]}",
+                retryable=resp.status_code < 500)
 
-        try:
-            return json.dumps(resp.json())
-        except Exception:
-            return resp.text or json.dumps({"error": f"Empty response (Status: {resp.status_code})"})
+        _, text = http_tool.decode(resp, tool)
+        return text
 
-    async def _load_custom_tools(self) -> list:
-        try:
-            from core.scale.context import resolve_custom_tools
-            return await resolve_custom_tools()
-        except Exception:
-            return []
 
+
+def route_named(reply: str, labels: list[str]) -> str | None:
+    """The route a model's reply names, or None. Asked for `route_<label>`, but the bare label counts too, in any case
+    (F491, BWA1): Nova Pro answers `{"tool": "manage", ...}`, and on cloud dev 49 of 80 of the AI builder's first
+    routing decisions, all right, were thrown away for it and fell back to the builder's first route, `create`; 102 of
+    Nova Pro's 663 evaluator decisions in all. A reply that is nothing but a label counts as well."""
+    raw = (reply or "").strip().strip("\"'`").strip()
+    bare = raw[len("route_"):] if raw.lower().startswith("route_") else raw
+    by_lower = {label.lower(): label for label in labels}
+    return by_lower.get(bare.lower())
 
 
 class EvaluatorStepExecutor:
@@ -724,12 +1538,15 @@ class EvaluatorStepExecutor:
         if step.evaluator_prompt:
             evaluator_instructions = f"EVALUATOR INSTRUCTIONS:\n{step.evaluator_prompt}\n\n"
 
+        # Date/time goes last: every provider's prompt cache is a prefix cache,
+        # and a minute-granular timestamp in the first 200 chars defeats it for
+        # the whole message. The routing instruction stays adjacent to it.
         prompt = (
             f"{evaluator_instructions}"
-            f"{_datetime_context()}\n"
             f"Based on the context below, decide which route to take.\n\n"
             f"CONTEXT:\n{context_block}\n\n"
             f"AVAILABLE ROUTES:\n{routes_text}\n\n"
+            f"{_datetime_context()}\n"
             f"Respond with ONLY a JSON object: {{\"tool\": \"route_<label>\", \"arguments\": {{\"reasoning\": \"your reason\"}}}}\n"
             f"Valid labels: {labels}"
         )
@@ -748,12 +1565,19 @@ class EvaluatorStepExecutor:
         from core.llm_providers import detect_mode_from_model
         eval_mode = detect_mode_from_model(eval_model)
         try:
-            response = await llm_generate_response(
+            from core.model_wait import ModelWait
+
+            # Out loud, as the agent loop waits: this step is the AI builder's
+            # first, and a hung call here was the full step timeout of silence
+            # under "Evaluator deciding route..." before the run failed.
+            _used: list = []
+            _wait = ModelWait(on_model_or_fallback(lambda _model: llm_generate_response(
                 prompt_msg=prompt,
                 sys_prompt="You are a routing decision maker. Output ONLY valid JSON.",
-                mode=eval_mode,
-                current_model=eval_model,
+                mode=eval_mode if _model == eval_model else detect_mode_from_model(_model),
+                current_model=_model,
                 current_settings=settings,
+                reasoning_effort=settings.get("reasoning_effort"),  # F77
                 session_id=run.session_id,
                 agent_id=step.agent_id or "evaluator",
                 source="orchestration",
@@ -763,43 +1587,67 @@ class EvaluatorStepExecutor:
                 cache_response_ttl=step.cache_response_ttl_seconds,
                 cache_response_step_id=step.id,
                 cache_response_threshold=step.cache_response_threshold,
-            )
-            print(f"DEBUG: 🔀 Evaluator LLM response: {response}")
+            ), eval_model, role_fallback(step, run, eval_model), _used), label="Evaluator", extra={"orch_step_id": step.id})
+            async for _wait_event in _wait.events():
+                yield _wait_event
+            response = _wait.result
+            if len(_used) > 1:
+                yield {"type": "step_warning", "orch_step_id": step.id, "message": _used[1]}
+            _log.debug(f"🔀 Evaluator LLM response: {response}")
 
             # Emit evaluator LLM response for the logger
             yield {"type": "_log_evaluator", "orch_step_id": step.id, "prompt": prompt, "llm_response": response}
 
             from core.react_engine import parse_tool_call
             tool_call, _ = parse_tool_call(response)
-            if tool_call:
-                tool_name = tool_call.get("tool", "")
-                if tool_name in {f"route_{l}" for l in labels}:
-                    routing_decision = {
-                        "type": "routing_decision",
-                        "tool_name": tool_name,
-                        "arguments": tool_call.get("arguments", {}),
-                    }
+            picked = route_named(tool_call.get("tool", "") if tool_call else response, labels)
+            if picked:
+                routing_decision = {
+                    # The step's own event: which route the model picked.
+                    # `routing_decision` is the ROUTER's name for the
+                    # resolved target, and this used to borrow it — two
+                    # payloads sharing no field, so the run log printed
+                    # `Evaluator routed → undefined` before every real
+                    # decision. Named for its step type now, exactly like
+                    # `if_decision` and `switch_decision`.
+                    "type": "evaluator_decision",
+                    "tool_name": f"route_{picked}",
+                    "arguments": (tool_call or {}).get("arguments", {}),
+                }
         except Exception as e:
             # LLM errors must propagate to stop orchestration
             from core.llm_providers import LLMError
             if isinstance(e, LLMError):
-                print(f"DEBUG: ❌ Evaluator LLM failed — stopping orchestration: {e}", flush=True)
+                _log.warning(f"❌ Evaluator LLM failed — stopping orchestration: {e}")
                 raise
-            print(f"DEBUG: Evaluator routing call failed: {e}")
+            _log.debug(f"Evaluator routing call failed: {e}")
 
-        # Fallback: pick the first route
+        # Fallback when the model's reply did not parse into a route.
+        #
+        # This used to be "the first key of `route_map`", which is not a thing
+        # that exists: `definition` is JSONB on Postgres, and JSONB sorts object
+        # keys by (length, bytes) rather than storing them in insertion order.
+        # The same orchestration therefore fell back one way on SQLite and
+        # another on Postgres — and adding a route could silently move it, which
+        # is exactly what happened when the builder gained `answer` (six
+        # characters, sorting ahead of `create`).
+        #
+        # `fallback_route` says which one out loud. `labels[0]` remains the
+        # default so every orchestration that predates the field behaves as it
+        # did on SQLite.
         if not routing_decision:
-            fallback_label = labels[0] if labels else None
+            declared = step.fallback_route
+            fallback_label = declared if declared in labels else (labels[0] if labels else None)
             if fallback_label:
-                print(f"DEBUG: Evaluator falling back to first route: {fallback_label}")
+                _log.debug(f"Evaluator falling back to route: {fallback_label}")
                 routing_decision = {
-                    "type": "routing_decision",
+                    "type": "evaluator_decision",
                     "tool_name": f"route_{fallback_label}",
                     "arguments": {"reasoning": "Fallback — LLM did not return a valid routing decision"},
                 }
 
         if routing_decision:
-            print(f"routing decision")
+            _log.info(f"routing decision")
             yield {**routing_decision, "orch_step_id": step.id}
             tool_name = routing_decision.get("tool_name", "")
             label = tool_name.replace("route_", "", 1) if tool_name.startswith("route_") else tool_name
@@ -812,6 +1660,141 @@ class EvaluatorStepExecutor:
                 run.shared_state[step.output_key] = label
 
 
+#: A container's own signal that a step inside it was an End: never yielded to
+#: the engine, which would take it as the run ending there and abandon the
+#: container mid-flight (F128). The container finishes, then yields the End
+#: event it carried — so the engine ends the run, and nothing inside was
+#: skipped to get there (F125).
+CONTAINER_END = "_container_end"
+
+
+#: Steps that keep their branch in order, after the branches that run at the
+#: same time, and why. A person's question pauses the whole run, and a run
+#: waits on one question at a time. A Loop and a nested Parallel are not here
+#: any more (F301): the engine's view of where a step is is each branch's own,
+#: their bodies are read for the reasons below, and a loop key two branches
+#: would share keeps one of them in order (`branch_keys.loop_key_conflicts`).
+_IN_ORDER_TYPES = {
+    StepType.HUMAN: "a person answers a step in it",
+}
+
+#: Set inside a branch that runs beside others; an agent step there merges its
+#: task list into the run's rather than replacing it (F255).
+IN_CONCURRENT_BRANCH: ContextVar[bool] = ContextVar("in_concurrent_branch", default=False)
+
+_BRANCH_DONE = object()
+#: A question from a branch running beside others, with the branch it came from.
+_BRANCH_ASKED = "_branch_asked"
+
+
+async def _why_in_order(engine: "OrchestrationEngine", step_ids: list[str],
+                        steps: dict[str, StepConfig], depth: int = 0,
+                        _seen: set[str] | None = None) -> str | None:
+    """Why a branch made of `step_ids` cannot run beside the others, or None.
+
+    A branch runs at the same time as its siblings unless one of its steps could
+    stop to ask a person — a run waits on one question at a time, and a pause
+    inside a branch is resumed by re-entering that branch — or holds what two
+    branches cannot share (F255). Generous by design: the cost of a wrong "in
+    order" is the old speed; of a wrong "together", a lost question.
+
+    `steps` is the workflow the ids belong to: a workflow step's child is read
+    the same way, for what could ask inside it.
+    """
+    from core import tool_policy as _tool_policy, visitor as _visitor_mod
+    from core.config import load_settings
+    from .resolved import resolve_for_run
+
+    settings = None
+    seen = _seen if _seen is not None else set()
+    for sid in step_ids:
+        sub = steps.get(sid)
+        if sub is None:
+            continue  # the branch fails on it, as it always has
+        if sid in seen:
+            continue  # a loop whose body reaches itself fails at its depth limit
+        seen.add(sid)
+        if sub.type in _IN_ORDER_TYPES:
+            return _IN_ORDER_TYPES[sub.type]
+        if sub.type in (StepType.LOOP, StepType.PARALLEL):
+            if depth:
+                continue  # inside a child workflow every step is in `step_ids` already
+            # What runs inside it, read as a branch's own steps are (F301).
+            inner = [sub.loop_step_ids or []] if sub.type == StepType.LOOP else _chains_of(sub, steps)
+            for body in inner:
+                why = await _why_in_order(engine, body, steps, depth, seen)
+                if why:
+                    return why
+            continue
+        if sub.type == StepType.WORKFLOW:
+            # Its child could ask (E3), as an orchestrator agent's could.
+            why = await _why_child_in_order(engine, {"orchestration_id": sub.workflow_id}, depth)
+            if why:
+                return why
+            continue
+        if sub.type not in (StepType.AGENT, StepType.TOOL):
+            continue
+        resolved = await resolve_for_run(engine, sub.agent_id, tools=False) if sub.agent_id else None
+        agent = resolved.agent if resolved else None
+        if sub.type == StepType.AGENT and agent:
+            kind = agent.get("type")
+            if kind == "orchestrator":
+                why = await _why_child_in_order(engine, agent, depth)
+                if why:
+                    return why
+                continue
+            if kind == "delegate":
+                return "its agent delegates, and a delegate can ask"
+            if agent.get("memory") and _visitor_mod.current() is None:
+                return "its agent keeps memory, and a workflow's remember asks first"
+        if settings is None:
+            settings = load_settings()
+        policy = _tool_policy.resolve_policy(agent, settings)
+        if _visitor_mod.current() is None and "confirm" in policy.values():
+            return "its tool policy asks before some calls"
+        if sub.type == StepType.AGENT and agent:
+            resolved = await resolve_for_run(engine, sub.agent_id, tools=True)
+            names = [getattr(t, "name", None) or (t.get("name") if isinstance(t, dict) else None)
+                     for t in (resolved.all_tools or [])]
+            if sub.allowed_tools is not None:
+                names = [n for n in names if n in sub.allowed_tools]
+            if any(n and n.split("__")[-1].startswith("browser_") for n in names):
+                return "its agent drives the browser, which has one tab"
+        elif sub.type == StepType.TOOL and (sub.forced_tool or "").split("__")[-1].startswith("browser_"):
+            return "it drives the browser, which has one tab"
+    return None
+
+
+def _chains_of(parallel: StepConfig, steps: dict[str, StepConfig]) -> list[list[str]]:
+    """A nested Parallel's branches, as its executor resolves them."""
+    from .branch_keys import branch_chains
+    return branch_chains(
+        {"next_step_id": parallel.next_step_id, "parallel_branches": parallel.parallel_branches or []},
+        {sid: {"next_step_id": s.next_step_id} for sid, s in steps.items()})
+
+
+async def _why_child_in_order(engine: "OrchestrationEngine", agent: dict, depth: int) -> str | None:
+    """Why a workflow step keeps its branch in order: its child could ask."""
+    from core.scale.context import resolve_orchestration
+    from core.models_orchestration import Orchestration
+    from .engine import MAX_NESTED_DEPTH
+
+    if depth + 1 > MAX_NESTED_DEPTH:
+        return None  # the step fails at the depth limit, as it always has
+    data = await resolve_orchestration(agent.get("orchestration_id") or "")
+    if not data:
+        return None  # the step fails on the missing workflow
+    try:
+        child = Orchestration.model_validate(data)
+    except Exception:
+        return None
+    by_id = {s.id: s for s in child.steps}
+    why = await _why_in_order(engine, list(by_id), by_id, depth + 1)
+    if why:
+        return f"its workflow '{child.name}' can ask: {why}"
+    return None
+
+
 class ParallelStepExecutor:
     """Run multiple branches.
 
@@ -822,17 +1805,39 @@ class ParallelStepExecutor:
     A branch chain stops when a step has no ``next_step_id``, or its ``next_step_id``
     equals the parallel node's own convergence point (``step.next_step_id``).
 
-    NOTE: Branches run sequentially (not with asyncio.gather) because agents
-    share resources that are not concurrency-safe — notably MCP server
-    connections and single-instance tools like the Playwright browser.
-    True parallel execution would require per-branch tool isolation.
+    Branches run at the same time, each in its own task, at most
+    `PARALLEL_MAX_BRANCHES` (4) at once. A branch that could stop to ask a person
+    (in a Loop's body or a nested Parallel's branches too), drives the browser,
+    reads a key another branch writes, or shares a loop key with another branch
+    runs afterwards, in order (`_why_in_order`, `branch_keys`). Each branch's
+    task has its own view of where it is — the transition its steps' prompts
+    read and the loop depth (F301). Agent and tool
+    branches used to take turns whatever they did — four five-second agents took
+    twenty seconds (F255) — because MCP sessions were thought unsafe to share.
+    They are safe; bash was the one server that could not serve two calls at
+    once, and it can now (F246). `SYNAPSE_PARALLEL_BRANCHES=0` restores
+    sequential.
+
+    Branches share the run's state, as they always have: each step's output
+    lands in its own key when the step completes, and two branches that write
+    one key are refused before any runs (F256). A branch that fails fails the
+    node once the running ones finish; one not yet started does not start
+    (F88). A branch that stops to ask anyway is held until the others finish:
+    the node then pauses on the first question, and a second one asks again
+    when the node is re-entered.
+
+    The executor is an async generator and must stay single-task (the engine
+    holds a cancel scope across its yields — see core/orchestration/runner.py).
+    So concurrent branches do not yield; they push events onto a queue that
+    this generator drains. Each branch task has its own per-step timeout
+    scopes, which is fine: a scope is bound to the task that entered it.
     """
 
     async def execute(
         self, step: StepConfig, run: OrchestrationRun, engine: "OrchestrationEngine"
     ) -> AsyncGenerator[dict, None]:
         branches = step.parallel_branches
-        print(f"DEBUG PARALLEL: ▶ step='{step.id}' branches={len(branches)} convergence='{step.next_step_id}'", flush=True)
+        _log.debug(f"PARALLEL: ▶ step='{step.id}' branches={len(branches)} convergence='{step.next_step_id}'")
         if not branches:
             yield {"type": "step_warning", "orch_step_id": step.id, "message": "No branches defined"}
             return
@@ -860,116 +1865,376 @@ class ParallelStepExecutor:
 
         resolved_branches = [resolve_branch_chain(b) for b in branches]
 
-        yield {"type": "parallel_start", "orch_step_id": step.id, "branch_count": len(resolved_branches)}
+        # Two branches writing one key keep one value, the later writer's, and
+        # the Merge labels it with the other: fails here, before any branch runs
+        # (F256). Judged on a fresh start only — a run already inside the node
+        # when this check arrived carries on as it began.
+        if not run.shared_state.get(_progress_key(step)):
+            from .branch_keys import shared_branch_keys
+            shared = shared_branch_keys(
+                step.model_dump(mode="json"),
+                {s.id: s.model_dump(mode="json") for s in engine.orch.steps})
+            if shared:
+                yield {"type": "step_error", "orch_step_id": step.id, "error": shared[0]}
+                raise RuntimeError(" ".join(shared))
+
+        parallel_start = {"type": "parallel_start", "orch_step_id": step.id, "branch_count": len(resolved_branches)}
 
         # ── Mid-node crash recovery: skip branches/sub-steps that completed ──
         # Their outputs are already in shared_state from the checkpoint; only
         # the interrupted (or never-started) work reruns.
         from core.orchestration.state import SharedState
-        progress_key = f"_parallel_progress_{step.id}"
+        progress_key = _progress_key(step)
         saved = run.shared_state.get(progress_key) or {}
         completed_branches: set[int] = set(saved.get("completed_branches") or [])
         completed_steps: set[str] = set(saved.get("completed_steps") or [])
+        # A step in a branch stopped to ask (F109). Answered, it is done — its
+        # answer is in its key — and its branch carries on after it, then the
+        # branches after that one. Not answered, it runs again.
+        paused = saved.get("paused")
+        if isinstance(paused, dict) and paused.get("answered") and paused.get("step_id"):
+            completed_steps.add(paused["step_id"])
         if completed_branches or completed_steps:
-            print(f"DEBUG PARALLEL: ⏯ resuming — branches done={sorted(completed_branches)} "
-                  f"sub-steps done={sorted(completed_steps)}", flush=True)
+            _log.debug(f"PARALLEL: ⏯ resuming — branches done={sorted(completed_branches)} "
+                  f"sub-steps done={sorted(completed_steps)}")
 
-        def _checkpoint_progress():
+        async def _checkpoint_progress():
             run.shared_state[progress_key] = {
                 "completed_branches": sorted(completed_branches),
                 "completed_steps": sorted(completed_steps),
             }
             try:
-                SharedState(run).checkpoint()
+                # Serialised per run by SharedState.checkpoint's lock, so two
+                # branches finishing together cannot land out of order.
+                await SharedState(run).checkpoint()
             except Exception as ckpt_err:
-                print(f"WARNING: parallel-progress checkpoint failed: {ckpt_err}", flush=True)
+                _log.warning(f"parallel-progress checkpoint failed: {ckpt_err}")
 
-        # Run branches sequentially to avoid MCP/browser resource contention
-        for branch_index, branch_step_ids in enumerate(resolved_branches):
-            if branch_index in completed_branches:
-                print(f"DEBUG PARALLEL: ├─ branch {branch_index} already complete — skipping", flush=True)
-                continue
+        def _pause_progress(branch_index: int, sid: str) -> None:
+            """Keep the node's place at a pause. The engine checkpoints it."""
+            run.shared_state[progress_key] = {
+                "completed_branches": sorted(completed_branches),
+                "completed_steps": sorted(completed_steps),
+                "paused": {"branch": branch_index, "step_id": sid, "answered": False},
+            }
 
+        from core import config as _config
+        pending = [(i, chain) for i, chain in enumerate(resolved_branches) if i not in completed_branches]
+        for i, _ in [(i, c) for i, c in enumerate(resolved_branches) if i in completed_branches]:
+            _log.debug(f"PARALLEL: ├─ branch {i} already complete — skipping")
+        in_order: dict[int, str] = {}
+        if _config.PARALLEL_BRANCHES_CONCURRENT and len(pending) > 1:
+            from .branch_keys import loop_key_conflicts, sibling_reads
+            _node = step.model_dump(mode="json")
+            _by_id = {s.id: s.model_dump(mode="json") for s in engine.orch.steps}
+            reads = sibling_reads(_node, _by_id)
+            loop_keys = loop_key_conflicts(_node, _by_id)
+            for i, chain in pending:
+                if i in reads:
+                    in_order[i] = f"it reads {', '.join(repr(k) for k in reads[i])}, which another branch writes"
+                elif i in loop_keys:
+                    in_order[i] = (f"it and another branch's loop both use "
+                                   f"{', '.join(repr(k) for k in loop_keys[i])}")
+                else:
+                    why = await _why_in_order(engine, chain, engine.step_map)
+                    if why:
+                        in_order[i] = why
+            concurrent = [(i, c) for i, c in pending if i not in in_order]
+            sequential = [(i, c) for i, c in pending if i in in_order]
+            for i, why in in_order.items():
+                _log.debug(f"PARALLEL: ├─ branch {i} runs in order: {why}")
+        else:
+            concurrent, sequential = [], pending
+        if in_order:
+            parallel_start["in_order"] = [{"branch": i, "reason": why} for i, why in sorted(in_order.items())]
+        yield parallel_start
+
+        branch_kwargs = dict(
+            step=step, run=run, engine=engine, branch_count=len(resolved_branches),
+            completed_steps=completed_steps, completed_branches=completed_branches,
+            checkpoint_progress=_checkpoint_progress, pause_progress=_pause_progress,
+        )
+
+        # ── Concurrent branches: one task each, events through a queue ──
+        # A branch that raises fails the node — and so the run — once its
+        # siblings have finished (F88, D112). It used to be that branch's own
+        # problem: reported, and the run moved on with the merge working from
+        # what arrived, while the same step in a sequential branch failed the
+        # run. The siblings are let finish rather than cancelled, so what they
+        # did is kept for a Replay, which reruns only the branch that failed.
+        failures: list[str] = []
+        #: An End reached inside a branch. Held until every branch has run —
+        #: F125: branch 0 ending the run used to leave branch 1 unrun, and on
+        #: the report's own orchestration that was the Entity Extractor, whose
+        #: output stayed `[]`.
+        end_event: dict | None = None
+        #: The first question a branch running beside others stopped to ask,
+        #: held until they have finished, and where it was asked.
+        held: dict = {}
+        if concurrent:
+            _log.debug(f"PARALLEL: ├─ running {len(concurrent)} branch(es) at once, "
+                       f"at most {_config.PARALLEL_MAX_BRANCHES} together")
+            queue: asyncio.Queue = asyncio.Queue()
+            slots = asyncio.Semaphore(_config.PARALLEL_MAX_BRANCHES)
+            asked: dict[int, str] = {}
+            concurrent_kwargs = {**branch_kwargs,
+                                 # Where each question was asked; the node's pause
+                                 # record is written for the one it pauses on, once
+                                 # every branch has finished — a sibling's progress
+                                 # checkpoint rewrites the record, and would erase it.
+                                 "pause_progress": lambda i, sid: asked.__setitem__(i, sid)}
+
+            async def _pump(branch_index: int, chain: list[str], waits: bool):
+                try:
+                    async with slots:
+                        # The branches that start together all finish (F88). One
+                        # that waited for a slot does not start once the node has
+                        # failed or stopped to ask: it runs on a Replay, or when
+                        # the node is re-entered.
+                        if waits and (failures or held):
+                            return
+                        IN_CONCURRENT_BRANCH.set(True)
+                        engine.enter_branch()
+                        async for ev in self._iter_branch(branch_index, chain, **concurrent_kwargs):
+                            if ev.get("type") == "human_input_required":
+                                ev = {"type": _BRANCH_ASKED, "branch": branch_index, "event": ev}
+                            await queue.put(ev)
+                except Exception as e:  # noqa: BLE001 — recorded, raised once the others finish
+                    message = f"Branch {branch_index} failed: {reason_of(e)}"
+                    failures.append(message)
+                    await queue.put({"type": "step_error", "orch_step_id": step.id, "error": message})
+                finally:
+                    await queue.put(_BRANCH_DONE)
+
+            # Every loop writes the iteration markers and puts back what it
+            # found; two at once put back each other's (F301). The node puts
+            # back what it found once they have finished.
+            from .branch_keys import LOOP_MARKERS
+            markers = {k: run.shared_state[k] for k in LOOP_MARKERS if k in run.shared_state}
+            tasks = [asyncio.create_task(_pump(i, c, n >= _config.PARALLEL_MAX_BRANCHES))
+                     for n, (i, c) in enumerate(concurrent)]
+            remaining = len(tasks)
+            try:
+                while remaining:
+                    ev = await queue.get()
+                    if ev is _BRANCH_DONE:
+                        remaining -= 1
+                        continue
+                    if ev.get("type") == CONTAINER_END:
+                        end_event = ev["event"]
+                        continue
+                    if ev.get("type") == _BRANCH_ASKED:
+                        # Its branch has stopped. The first question is the one
+                        # the run will ask; a second branch that stops asks again
+                        # when the node is re-entered, its step not yet done.
+                        if not held:
+                            branch_index = ev["branch"]
+                            held.update(event=ev["event"], where=(branch_index, asked.get(branch_index)))
+                        continue
+                    yield ev
+            finally:
+                # The engine's timeout or a cancel closes this generator; the
+                # branch tasks must not outlive it.
+                cancelled = [t for t in tasks if not t.done()]
+                for t in cancelled:
+                    t.cancel()
+                if cancelled:
+                    # Each enters the step the run's limit cut before this node
+                    # enters itself, so the node's sentence is the run's reason
+                    # (F420). Bounded: a branch that will not stop does not
+                    # hold the run's ending.
+                    with anyio.move_on_after(5, shield=True):
+                        await asyncio.wait(cancelled)
+            for key in LOOP_MARKERS:
+                if key in markers:
+                    run.shared_state[key] = markers[key]
+                else:
+                    run.shared_state.pop(key, None)
+
+        if failures:
+            # Before any sequential branch starts: an agent or a tool has no
+            # business running for a node that has already failed.
+            raise RuntimeError(failures[0] if len(failures) == 1
+                               else f"{len(failures)} branches failed; first: {failures[0]}")
+
+        if held:
+            branch_index, sid = held["where"]
+            if sid is not None:
+                _pause_progress(branch_index, sid)
+            yield held["event"]
+            return
+
+        # ── Sequential branches: agents and tools, one at a time as before ──
+        for branch_index, chain in sequential:
             # Checkpoint between branches — give MCP background tasks time
             await anyio.sleep(0)
-
-            print(f"DEBUG PARALLEL: ├─ branch {branch_index}/{len(resolved_branches)} steps={branch_step_ids}", flush=True)
-            yield {"type": "branch_start", "orch_step_id": step.id,
-                   "branch_index": branch_index, "branch_count": len(resolved_branches)}
-
-            for sid in branch_step_ids:
-                if sid in completed_steps:
-                    print(f"DEBUG PARALLEL:   ↷ sub-step '{sid}' already complete — skipping", flush=True)
-                    continue
-                sub_step = engine.step_map.get(sid)
-                if not sub_step:
-                    yield {"type": "step_warning", "orch_step_id": sid,
-                           "message": f"Step {sid} not found in branch {branch_index}"}
-                    continue
-                executor = engine.executors.get(sub_step.type)
-                if not executor:
-                    yield {"type": "step_error", "orch_step_id": sid,
-                           "error": f"No executor for {sub_step.type}"}
-                    continue
-
-                step_start = time.time()
-                sub_timeout = sub_step.timeout_seconds or ORCH_STEP_TIMEOUT
-                print(f"DEBUG PARALLEL:   ▶ sub-step '{sub_step.name}' ({sub_step.id}) timeout={sub_timeout}s", flush=True)
-                yield {"type": "step_start", "orch_step_id": sub_step.id,
-                       "step_name": sub_step.name, "step_type": sub_step.type.value}
-
-                # Human events must be yielded OUTSIDE the fail_after scope —
-                # yielding inside suspends this generator with the scope
-                # active and breaks the engine's own scope exit (issue #356
-                # family). Same pattern as the loop executor.
-                pending_human_event = None
-                try:
-                    with anyio.fail_after(sub_timeout):
-                        async for event in executor.execute(sub_step, run, engine):
-                            if event.get("type") == "human_input_required":
-                                pending_human_event = event
-                                break
-                            yield event
-                except TimeoutError:
-                    duration = round(time.time() - step_start, 2)
-                    print(f"DEBUG PARALLEL: ⏱ Step '{sub_step.name}' timed out after {sub_timeout}s in branch {branch_index}", flush=True)
-                    run.step_history.append({
-                        "step_id": sub_step.id, "step_name": sub_step.name,
-                        "step_type": sub_step.type.value, "status": "failed",
-                        "error": f"Timed out after {sub_timeout}s",
-                    })
-                    yield {"type": "step_error", "orch_step_id": sub_step.id,
-                           "error": f"Step '{sub_step.name}' timed out after {sub_timeout}s"}
-                    continue
-
-                if pending_human_event is not None:
-                    # The engine resumes PAST the parallel node after human
-                    # input — drop branch progress so a later legitimate
-                    # re-entry starts fresh.
-                    run.shared_state.pop(progress_key, None)
-                    yield pending_human_event
+            async for ev in self._iter_branch(branch_index, chain, **branch_kwargs):
+                if ev.get("type") == "human_input_required":
+                    # The branch kept the node's place (`pause_progress`), so
+                    # answering re-enters here and carries on (F109).
+                    yield ev
                     return
-
-                duration = round(time.time() - step_start, 2)
-                print(f"DEBUG PARALLEL:   ✓ sub-step '{sub_step.name}' done in {duration}s", flush=True)
-                run.step_history.append({
-                    "step_id": sub_step.id, "step_name": sub_step.name,
-                    "step_type": sub_step.type.value, "status": "completed",
-                    "duration_seconds": duration, "output_key": sub_step.output_key,
-                })
-                yield {"type": "step_complete", "orch_step_id": sub_step.id,
-                       "step_name": sub_step.name, "duration_seconds": duration}
-                # Sub-step done (its output is in shared_state) — checkpoint so
-                # a crash resumes at the next sub-step, not the whole branch.
-                completed_steps.add(sid)
-                _checkpoint_progress()
-
-            completed_branches.add(branch_index)
-            _checkpoint_progress()
+                if ev.get("type") == CONTAINER_END:
+                    end_event = ev["event"]
+                    continue
+                yield ev
 
         run.shared_state.pop(progress_key, None)
-        print(f"DEBUG PARALLEL: ✅ all {len(resolved_branches)} branches complete", flush=True)
+        _log.debug(f"PARALLEL: ✅ all {len(resolved_branches)} branches complete")
         yield {"type": "parallel_complete", "orch_step_id": step.id, "branch_count": len(resolved_branches)}
+
+        # Last, and outside every scope this node held: the engine breaks its
+        # own loop on this event, so nothing here may still be in flight.
+        if end_event is not None:
+            yield end_event
+
+    async def _iter_branch(
+        self, branch_index: int, branch_step_ids: list[str], *, step, run, engine,
+        branch_count: int, completed_steps: set, completed_branches: set, checkpoint_progress,
+        pause_progress,
+    ) -> AsyncGenerator[dict, None]:
+        """One branch, start to finish. Yields its events; a
+        `human_input_required` is yielded last and ends the branch."""
+        _log.debug(f"PARALLEL: ├─ branch {branch_index}/{branch_count} steps={branch_step_ids}")
+        yield {"type": "branch_start", "orch_step_id": step.id,
+               "branch_index": branch_index, "branch_count": branch_count}
+
+        branch_end_event = None
+        for sid in branch_step_ids:
+            if sid in completed_steps:
+                _log.debug(f"PARALLEL: ↷ sub-step '{sid}' already complete — skipping")
+                continue
+            sub_step = engine.step_map.get(sid)
+            if not sub_step:
+                # A step that is not there fails the run, as it does at the top
+                # level; it used to be warned about and the branch went on
+                # without it (F113). Named on the node, which is on the canvas.
+                message = f"Step '{sid}' in branch {branch_index} not found"
+                yield {"type": "step_error", "orch_step_id": step.id, "error": message}
+                raise RuntimeError(message)
+            executor = engine.executors.get(sub_step.type)
+            if not executor:
+                # A step this engine cannot run fails the run, as it does at the
+                # top level (F90); it used to be skipped and the branch went on.
+                message = f"No executor for {sub_step.type}"
+                yield {"type": "step_error", "orch_step_id": sid, "error": message}
+                raise RuntimeError(message)
+
+            # The run's cap and the host's gate (CAP1, F419), as before a step
+            # at the top of the run. The run's own reason is their sentence: the
+            # branch's failure reaches the engine as this node's error, worded
+            # as a branch's.
+            stopped = await stop_reason(run.run_id, sub_step.type.value, getattr(engine, "run_cap", None))
+            if stopped:
+                set_run_error(run, stopped)
+                yield {"type": "step_error", "orch_step_id": step.id, "error": stopped}
+                raise RuntimeError(stopped)
+
+            step_start = time.time()
+            # A step that runs a workflow waits on that workflow's own budget
+            # (F291); a Loop or a Parallel has none of its own (F411); this
+            # node's own limit holds the rest.
+            sub_timeout, sub_why = await body_step_limit(sub_step, engine)
+            sub_after = timed_out(sub_timeout, sub_why) if sub_timeout is not None else ""
+            _log.debug(f"PARALLEL: ▶ sub-step '{sub_step.name}' ({sub_step.id}) timeout={sub_timeout}s")
+            yield {"type": "step_start", "orch_step_id": sub_step.id,
+                   "step_name": sub_step.name, "step_type": sub_step.type.value}
+
+            # Human events must be yielded OUTSIDE the fail_after scope —
+            # yielding inside suspends this generator with the scope
+            # active and breaks the engine's own scope exit (issue #356
+            # family). Same pattern as the loop executor.
+            #
+            # `orchestration_end` is the same trap and was not covered (F128).
+            # The engine breaks its own `async for` on that event, which left
+            # this generator suspended at the yield below *inside* its
+            # fail_after — so the engine's scope exit raised, the run failed
+            # with "An internal error occurred", and the GC later closed this
+            # generator from another task. Captured and broken out of here, for
+            # the same reason and in the same shape.
+            pending_human_event = None
+            pending_end_event = None
+            failed = False
+            sub_gen = executor.execute(sub_step, run, engine)
+            try:
+                # A branch's calls are its own step's, beside the others (F461).
+                with anyio.fail_after(sub_timeout), step_scope(run.run_id, sub_step.id), deadline_scope(sub_timeout):
+                    async for event in sub_gen:
+                        if event.get("type") == "human_input_required":
+                            # When this step started, for its entry: an approval's
+                            # entry counts the work before the pause (F439).
+                            pending_human_event = event if event.get("nested_run_id") else {**event, "step_started": step_start}
+                            break
+                        if event.get("type") == "orchestration_end":
+                            pending_end_event = event
+                            break
+                        if event.get("type") == "step_error":
+                            failed = True
+                        yield event
+            except TimeoutError:
+                with anyio.CancelScope(shield=True):
+                    try:
+                        await sub_gen.aclose()
+                    except Exception as close_err:  # noqa: BLE001
+                        _log.warning(f"closing timed-out step '{sub_step.name}' failed: {close_err}")
+                duration = round(time.time() - step_start, 2)
+                _log.debug(f"PARALLEL: ⏱ Step '{sub_step.name}' timed out {sub_after} in branch {branch_index}")
+                end_step(run.step_history, {
+                    **take_tasks(run.shared_state, sub_step.id),
+                    "step_id": sub_step.id, "step_name": sub_step.name,
+                    "step_type": sub_step.type.value, "status": "failed",
+                    "error": f"Timed out {sub_after}",
+                    "started_at": _iso(step_start), "ended_at": _iso(time.time()), **exact_window(step_start),
+                    "duration_seconds": duration,
+                })
+                yield {"type": "step_error", "orch_step_id": sub_step.id,
+                       "error": f"Step '{sub_step.name}' timed out {sub_after}"}
+                # Fails the branch and so the node, as a raise does (F88) and as
+                # a timeout does at the top level (F253); it used to be skipped
+                # and the branch went on without it. A RuntimeError, so the
+                # engine does not read it as the node's own timeout.
+                raise RuntimeError(f"Step '{sub_step.name}' timed out {sub_after}")
+            except anyio.get_cancelled_exc_class():
+                cut_by_the_run(engine, run, sub_step, step_start)
+                raise
+
+            if pending_human_event is not None:
+                pause_progress(branch_index, sid)
+                yield pending_human_event
+                return
+
+            if pending_end_event is not None:
+                # The End executor set the run completed before it yielded.
+                # Put that back: the run ends when this node has finished, not
+                # part-way through it, and every step between here and there
+                # must run normally. The node's own generator ends the run.
+                run.status = "running"
+                branch_end_event = pending_end_event
+
+            duration = round(time.time() - step_start, 2)
+            _log.debug(f"PARALLEL: ✓ sub-step '{sub_step.name}' done in {duration}s")
+            # A step that reported an error is recorded as failed, as a loop body
+            # records it (F88); it was recorded `completed`.
+            end_step(run.step_history, {
+                **take_tasks(run.shared_state, sub_step.id),
+                "step_id": sub_step.id, "step_name": sub_step.name,
+                "step_type": sub_step.type.value, "status": "failed" if failed else "completed",
+                "started_at": _iso(step_start), "ended_at": _iso(time.time()), **exact_window(step_start),
+                "duration_seconds": duration, "output_key": sub_step.output_key,
+            })
+            yield {"type": "step_complete", "orch_step_id": sub_step.id,
+                   "step_name": sub_step.name, "duration_seconds": duration}
+            # Sub-step done (its output is in shared_state) — checkpoint so
+            # a crash resumes at the next sub-step, not the whole branch.
+            completed_steps.add(sid)
+            await checkpoint_progress()
+            if branch_end_event is not None:
+                break  # an End is the last step of its chain
+
+        completed_branches.add(branch_index)
+        await checkpoint_progress()
+        if branch_end_event is not None:
+            yield {"type": CONTAINER_END, "orch_step_id": step.id, "event": branch_end_event}
 
 
 class MergeStepExecutor:
@@ -1019,204 +2284,787 @@ class MergeStepExecutor:
 
 
 class LoopStepExecutor:
-    """Run body steps N times sequentially, accumulating results."""
+    """Run a body of steps repeatedly, accumulating each iteration's results.
 
-    async def execute(
-        self, step: StepConfig, run: OrchestrationRun, engine: "OrchestrationEngine"
-    ) -> AsyncGenerator[dict, None]:
-        loop_count = max(1, step.loop_count)
-        body_ids = step.loop_step_ids
-        print(f"DEBUG LOOP: ▶ step='{step.id}' body_ids={body_ids} loop_count={loop_count}", flush=True)
+    Three modes, resolved in this order so an existing fixed-count loop keeps
+    behaving exactly as it did:
 
-        if not body_ids:
-            yield {"type": "step_warning", "orch_step_id": step.id, "message": "No loop body steps defined"}
-            return
+      for-each  ``loop_over`` — an expression yielding a list. Each item is
+                written to ``loop_item_key`` before the body runs.
+      while     ``loop_while_condition`` — re-evaluated before every iteration.
+      count     ``loop_count`` — the original behaviour.
 
-        # ── Mid-node crash recovery: skip iterations that already completed ──
-        # Each finished iteration checkpoints its count below; the accumulated
-        # _loop_* results ride along in shared_state, so a resumed run picks up
-        # exactly where the crash cut it off.
-        from core.orchestration.state import SharedState
-        progress_key = f"_loop_progress_{step.id}"
-        completed_iterations = 0
-        saved = run.shared_state.get(progress_key)
-        if isinstance(saved, dict):
-            completed_iterations = min(int(saved.get("completed_iterations") or 0), loop_count)
-            if completed_iterations:
-                print(f"DEBUG LOOP: ⏯ resuming from iteration {completed_iterations + 1}/{loop_count}", flush=True)
+    Every mode writes the iteration's 0-based position to ``loop_index_key``
+    before the body runs, so a body — a question to a person above all — can
+    say which iteration it is (F212). Only for-each has an item.
 
-        for iteration in range(completed_iterations + 1, loop_count + 1):
-            yield {
-                "type": "loop_iteration", "orch_step_id": step.id,
-                "iteration": iteration, "total": loop_count,
-            }
+    ``loop_break_condition`` stops any of the three after the iteration in
+    which it becomes true, and ``loop_max_iterations`` caps all of them.
 
-            for sid in body_ids:
-                sub_step = engine.step_map.get(sid)
-                if not sub_step:
-                    yield {"type": "step_warning", "orch_step_id": step.id,
-                           "message": f"Loop body step {sid} not found"}
-                    continue
-
-                executor = engine.executors.get(sub_step.type)
-                if not executor:
-                    yield {"type": "step_error", "orch_step_id": sid,
-                           "error": f"No executor for {sub_step.type}"}
-                    continue
-
-                step_start = time.time()
-                sub_timeout = sub_step.timeout_seconds or ORCH_STEP_TIMEOUT
-                yield {"type": "step_start", "orch_step_id": sub_step.id,
-                       "step_name": sub_step.name, "step_type": sub_step.type.value}
-
-                # Human input within a loop body pauses the whole run. The
-                # event must be yielded OUTSIDE the fail_after scope: yielding
-                # inside it suspends this generator with the scope active, and
-                # the engine exiting its own step-timeout scope then blows up
-                # with "exit cancel scope that isn't the current" (issue #356
-                # family). Same pattern as the engine's own human-pause path.
-                pending_human_event = None
-                try:
-                    with anyio.fail_after(sub_timeout):
-                        async for event in executor.execute(sub_step, run, engine):
-                            if event.get("type") == "human_input_required":
-                                pending_human_event = event
-                                break
-                            yield event
-                except TimeoutError:
-                    duration = round(time.time() - step_start, 2)
-                    print(f"DEBUG LOOP: ⏱ Step '{sub_step.name}' timed out after {sub_timeout}s (iteration {iteration})", flush=True)
-                    run.step_history.append({
-                        "step_id": sub_step.id, "step_name": sub_step.name,
-                        "step_type": sub_step.type.value, "status": "failed",
-                        "error": f"Timed out after {sub_timeout}s",
-                    })
-                    yield {"type": "step_error", "orch_step_id": sub_step.id,
-                           "error": f"Step '{sub_step.name}' timed out after {sub_timeout}s"}
-                    continue
-
-                if pending_human_event is not None:
-                    # The engine resumes PAST the loop after human input, so
-                    # drop the iteration progress: a later legitimate re-entry
-                    # must start fresh, not skip iterations.
-                    run.shared_state.pop(progress_key, None)
-                    yield pending_human_event
-                    return
-
-                duration = round(time.time() - step_start, 2)
-                run.step_history.append({
-                    "step_id": sub_step.id, "step_name": sub_step.name,
-                    "step_type": sub_step.type.value, "status": "completed",
-                    "duration_seconds": duration, "output_key": sub_step.output_key,
-                })
-                yield {"type": "step_complete", "orch_step_id": sub_step.id,
-                       "step_name": sub_step.name, "duration_seconds": duration}
-
-            # After each iteration, accumulate results from body steps
-            for sid in body_ids:
-                sub_step = engine.step_map.get(sid)
-                if not sub_step or not sub_step.output_key:
-                    continue
-                if sub_step.output_key not in run.shared_state:
-                    continue
-
-                acc_key = f"_loop_{sub_step.output_key}"
-                agent_name = engine.agent_names.get(sub_step.agent_id, sub_step.name) if sub_step.agent_id else sub_step.name
-                if acc_key not in run.shared_state:
-                    run.shared_state[acc_key] = []
-                run.shared_state[acc_key].append({
-                    "iteration": iteration,
-                    "agent": agent_name,
-                    "result": run.shared_state[sub_step.output_key],
-                })
-
-            # Iteration finished — checkpoint so a crash resumes at the next one.
-            run.shared_state[progress_key] = {"completed_iterations": iteration}
-            try:
-                SharedState(run).checkpoint()
-            except Exception as ckpt_err:
-                print(f"WARNING: loop-progress checkpoint failed: {ckpt_err}", flush=True)
-
-        run.shared_state.pop(progress_key, None)
-
-        # After all iterations, promote accumulated results to output keys
-        for sid in body_ids:
-            sub_step = engine.step_map.get(sid)
-            if not sub_step or not sub_step.output_key:
-                continue
-            acc_key = f"_loop_{sub_step.output_key}"
-            if acc_key in run.shared_state:
-                run.shared_state[sub_step.output_key] = run.shared_state.pop(acc_key)
-
-        # Store loop's own output if configured
-        if step.output_key:
-            # Collect all body outputs as summary
-            summary = {}
-            for sid in body_ids:
-                sub_step = engine.step_map.get(sid)
-                if sub_step and sub_step.output_key and sub_step.output_key in run.shared_state:
-                    summary[sub_step.name] = run.shared_state[sub_step.output_key]
-            run.shared_state[step.output_key] = summary
-
-        yield {"type": "loop_complete", "orch_step_id": step.id,
-               "iterations_completed": loop_count}
-
-
-class HumanStepExecutor:
-    """Pause execution and request human input.
-
-    If the step has a human_channel_id configured, the prompt is also sent
-    to that messaging channel. Whichever responds first — the messaging app
-    or the browser UI — wins. The later response is silently discarded.
+    Only body steps that actually *completed* contribute to the accumulators.
+    A step that reported an error contributes nothing rather than having
+    whatever its output key happened to already hold recorded as this
+    iteration's result. One that raised or timed out fails the loop, and the
+    run (F253).
     """
 
     async def execute(
         self, step: StepConfig, run: OrchestrationRun, engine: "OrchestrationEngine"
     ) -> AsyncGenerator[dict, None]:
-        prompt = step.human_prompt or "Please provide input to continue."
-        prompt = re.sub(
-            r"\{state\.(\w+)\}",
-            lambda m: str(run.shared_state.get(m.group(1), f"{{state.{m.group(1)}}}")),
-            prompt,
-        )
+        body_ids = step.loop_step_ids
+        if not body_ids:
+            yield {"type": "step_warning", "orch_step_id": step.id, "message": "No loop body steps defined"}
+            return
+
+        from core.orchestration.state import SharedState
+        from core.orchestration.context import TransitionContext
+        from .engine import MAX_NESTED_DEPTH
+
+        depth = getattr(engine, "_loop_depth", 0)
+        if depth >= MAX_NESTED_DEPTH:
+            # Fails the run (F90): it used to be reported and skipped, and the
+            # run carried on as if the loop's body had run.
+            message = (f"Loop nesting exceeded {MAX_NESTED_DEPTH} levels at "
+                       f"'{step.name}'. A loop whose body reaches itself never ends.")
+            yield {"type": "step_error", "orch_step_id": step.id, "error": message}
+            raise RuntimeError(message)
+
+        progress_key = _progress_key(step)
+        cap = max(1, step.loop_max_iterations)
+
+        # Saved before the first iteration and restored on every exit, so a
+        # nested loop unwinds without clobbering its parent's markers.
+        prev_transition = getattr(engine, "current_transition", None)
+        _ABSENT = object()
+        prev_iter = run.shared_state.get("_loop_current_iteration", _ABSENT)
+        prev_total = run.shared_state.get("_loop_total", _ABSENT)
+
+        def _restore():
+            engine._loop_depth = depth
+            engine.current_transition = prev_transition
+            for key, was in (("_loop_current_iteration", prev_iter), ("_loop_total", prev_total)):
+                if was is _ABSENT:
+                    run.shared_state.pop(key, None)
+                else:
+                    run.shared_state[key] = was
+
+        engine._loop_depth = depth + 1
+        try:
+            # ── Mid-node crash recovery: skip iterations that already completed ──
+            # Each finished iteration checkpoints its count below; the accumulated
+            # _loop_* results ride along in shared_state, so a resumed run picks up
+            # exactly where the crash cut it off.
+            saved = run.shared_state.get(progress_key)
+            saved = saved if isinstance(saved, dict) else {}
+            completed_iterations = max(0, int(saved.get("completed_iterations") or 0))
+            # A step in the body stopped to ask, part-way through an iteration
+            # (F109). The loop re-enters that iteration where it stopped:
+            # answered, it carries on after the step that asked; not answered —
+            # a tool call's approval, a replay after a cancel — it runs that step
+            # again.
+            pending_resume = saved.get("paused")
+            if not (isinstance(pending_resume, dict)
+                    and pending_resume.get("iteration") == completed_iterations + 1):
+                pending_resume = None
+
+            # ── Mode resolution ──
+            items: list | None = None
+            #: More work than the cap allows, said before anything runs (F254).
+            over_cap: str | None = None
+            if step.loop_over:
+                mode = "foreach"
+                # The resolved collection is snapshotted into the progress record
+                # so a resumed run iterates the same items even if a body step
+                # has since rewritten the source key.
+                items = saved.get("items")
+                if items is None:
+                    resolved, err = _route_expr(step.loop_over, run.shared_state, "The Loop's list (loop_over)")
+                    if err:
+                        yield {"type": "step_warning", "orch_step_id": step.id,
+                               "message": f"loop_over '{step.loop_over}' failed to evaluate: {err}"}
+                        resolved = []
+                    if isinstance(resolved, (list, tuple)):
+                        items = list(resolved)
+                        # An empty source is a legitimate answer, so the run
+                        # carries on — but zero iterations used to be silent,
+                        # and a run whose collection came back empty read
+                        # exactly like one that did its work (F51). Said once,
+                        # here, so a resumed run with an empty snapshot does
+                        # not repeat it.
+                        if not items:
+                            yield {"type": "step_warning", "orch_step_id": step.id,
+                                   "message": f"loop_over '{step.loop_over}' is an "
+                                              f"empty list — zero iterations"}
+                    else:
+                        yield {"type": "step_warning", "orch_step_id": step.id,
+                               "message": f"loop_over '{step.loop_over}' is "
+                                          f"{type(resolved).__name__}, not a list — zero iterations"}
+                        items = []
+                    # Judged on the collection as evaluated, never on a resumed
+                    # snapshot: a run paused inside the loop carries on with
+                    # the items it was already iterating.
+                    if len(items) > cap:
+                        over_cap = (f"{len(items)} items exceed the {cap}-iteration cap of "
+                                    f"'{step.name}' — raise this loop's Max iterations")
+                total = min(len(items), cap)
+            elif step.loop_while_condition:
+                mode = "while"
+                total = None
+            else:
+                mode = "count"
+                total = min(max(1, step.loop_count), cap)
+                if step.loop_count > cap and not completed_iterations and pending_resume is None:
+                    over_cap = (f"A count of {step.loop_count} exceeds the {cap}-iteration cap of "
+                                f"'{step.name}' — raise this loop's Max iterations")
+
+            if over_cap:
+                # Fails the run before the first iteration (F254). A for-each
+                # over more items than the cap used to run the first `cap`,
+                # drop the rest and report "collection_exhausted": the ceiling
+                # warning was checked after `total`, so it could never fire.
+                yield {"type": "step_error", "orch_step_id": step.id, "error": over_cap}
+                raise RuntimeError(over_cap)
+
+            _log.debug(f"LOOP: ▶ step='{step.id}' mode={mode} body_ids={body_ids} total={total}")
+            if completed_iterations:
+                _log.debug(f"LOOP: ⏯ resuming from iteration {completed_iterations + 1}")
+
+            iteration = completed_iterations
+            iterations_run = completed_iterations
+            # A for-each that had nothing to iterate is told apart from one that
+            # ran out of items, so the event says which of the two happened.
+            exhausted = ("count" if mode == "count"
+                         else "empty_collection" if mode == "foreach" and not items
+                         else "collection_exhausted")
+            stopped_reason = exhausted
+            #: An End reached in the body. Held until this iteration has
+            #: finished, so nothing inside it is abandoned half-done (F128) —
+            #: then the loop stops and the engine ends the run.
+            loop_end_event: dict | None = None
+
+            while True:
+                # An iteration being re-entered was admitted before its pause:
+                # its while condition is not asked again half-way through it.
+                resume_at, pending_resume = pending_resume, None
+                if resume_at is None:
+                    if total is not None and iteration >= total:
+                        stopped_reason = exhausted
+                        break
+                    if iteration >= cap:
+                        stopped_reason = "max_iterations"
+                        yield {"type": "step_warning", "orch_step_id": step.id,
+                               "message": f"Loop hit its {cap}-iteration ceiling"}
+                        break
+                    if mode == "while":
+                        keep_going, err = _route_expr(
+                            step.loop_while_condition, run.shared_state, "The Loop's while condition",
+                            default=False)
+                        if err:
+                            yield {"type": "step_warning", "orch_step_id": step.id,
+                                   "message": f"loop_while_condition failed to evaluate "
+                                              f"(stopping): {err}"}
+                            stopped_reason = "condition_error"
+                            break
+                        if not keep_going:
+                            stopped_reason = "condition_false"
+                            break
+
+                iteration += 1
+
+                if mode == "foreach":
+                    run.shared_state[step.loop_item_key] = items[iteration - 1]
+                run.shared_state[step.loop_index_key] = iteration - 1
+                # The keys context.build_prompt reads to tell a body agent where
+                # it is. Popped again by _restore() so they never reach final state.
+                run.shared_state["_loop_current_iteration"] = iteration
+                run.shared_state["_loop_total"] = total
+
+                yield {
+                    "type": "loop_iteration", "orch_step_id": step.id,
+                    "iteration": iteration, "total": total,
+                    **({"resumed": True} if resume_at else {}),
+                }
+
+                completed_this_iteration: set[str] = (
+                    set(resume_at.get("completed") or []) if resume_at else set())
+                start = _resume_index(resume_at, body_ids) if resume_at else 0
+
+                for idx, sid in enumerate(body_ids):
+                    if idx < start:
+                        continue  # ran before the pause; its output is in state
+                    if resume_at and idx == start and resume_at.get("answered"):
+                        # The step that asked, answered: the answer is in its
+                        # output key, and its history entry was closed by the
+                        # resume. It counts as this iteration's result.
+                        completed_this_iteration.add(sid)
+                        continue
+                    sub_step = engine.step_map.get(sid)
+                    if not sub_step:
+                        # Fails the run, as a missing step does at the top level;
+                        # skipped, the loop could complete having run none of its
+                        # body (F113).
+                        message = f"Loop body step '{sid}' not found"
+                        yield {"type": "step_error", "orch_step_id": step.id, "error": message}
+                        raise RuntimeError(message)
+
+                    executor = engine.executors.get(sub_step.type)
+                    if not executor:
+                        # Fails the run, as at the top level (F90).
+                        message = f"No executor for {sub_step.type}"
+                        yield {"type": "step_error", "orch_step_id": sid, "error": message}
+                        raise RuntimeError(message)
+
+                    # The engine only builds a TransitionContext for the steps it
+                    # drives itself, so without this a body step would read the
+                    # LOOP node's context and believe it was invoked linearly, once.
+                    engine.current_transition = TransitionContext(
+                        origin_type="loop",
+                        execution_number=sum(
+                            1 for h in run.step_history if h["step_id"] == sid) + 1,
+                        from_step_id=step.id,
+                        from_step_name=step.name,
+                        loop_iteration=iteration,
+                        loop_total=total,
+                        loop_for_each=bool(step.loop_over),
+                        loop_item=run.shared_state.get(step.loop_item_key) if step.loop_over else None,
+                    )
+
+                    # The run's cap and the host's gate (CAP1, F419), as before a
+                    # step at the top of the run; the run's own reason is their
+                    # sentence.
+                    stopped = await stop_reason(run.run_id, sub_step.type.value, getattr(engine, "run_cap", None))
+                    if stopped:
+                        set_run_error(run, stopped)
+                        yield {"type": "step_error", "orch_step_id": step.id, "error": stopped}
+                        raise RuntimeError(stopped)
+
+                    step_start = time.time()
+                    # A step that runs a workflow waits on that workflow's own budget
+                    # (F291); a Loop or a Parallel has none of its own (F411); the
+                    # loop's own limit holds the rest.
+                    sub_timeout, sub_why = await body_step_limit(sub_step, engine)
+                    sub_after = timed_out(sub_timeout, sub_why) if sub_timeout is not None else ""
+                    yield {"type": "step_start", "orch_step_id": sub_step.id,
+                           "step_name": sub_step.name, "step_type": sub_step.type.value}
+
+                    # Human input within a loop body pauses the whole run, and
+                    # answering it re-enters this iteration (F109). The
+                    # event must be yielded OUTSIDE the fail_after scope: yielding
+                    # inside it suspends this generator with the scope active, and
+                    # the engine exiting its own step-timeout scope then blows up
+                    # with "exit cancel scope that isn't the current" (issue #356
+                    # family). Same pattern as the engine's own human-pause path.
+                    #
+                    # `orchestration_end` is the same trap, and was not covered
+                    # (F128): the engine breaks its own loop on it, leaving this
+                    # generator suspended inside the fail_after below, so the
+                    # engine's scope exit raised and the run failed with "An
+                    # internal error occurred".
+                    pending_human_event = None
+                    pending_end_event = None
+                    failed = False
+                    # Held so it can be closed explicitly below. A body step that
+                    # times out leaves its executor suspended mid-await, and an
+                    # abandoned async generator is only finalised whenever the GC
+                    # gets to it — which for a transform means its subprocess
+                    # transport is reaped on some later, unrelated event loop.
+                    sub_gen = executor.execute(sub_step, run, engine)
+                    try:
+                        with anyio.fail_after(sub_timeout), step_scope(run.run_id, sub_step.id), deadline_scope(sub_timeout):
+                            async for event in sub_gen:
+                                if event.get("type") == "human_input_required":
+                                    # When this step started, for its entry: an approval's
+                                    # entry counts the work before the pause (F439).
+                                    pending_human_event = event if event.get("nested_run_id") else {**event, "step_started": step_start}
+                                    break
+                                if event.get("type") == "orchestration_end":
+                                    pending_end_event = event
+                                    break
+                                if event.get("type") == "step_error":
+                                    failed = True
+                                yield event
+                    except TimeoutError:
+                        with anyio.CancelScope(shield=True):
+                            try:
+                                await sub_gen.aclose()
+                            except Exception as close_err:
+                                _log.warning(f"closing timed-out step "
+                                      f"'{sub_step.name}' failed: {close_err}")
+                        _log.debug(f"LOOP: ⏱ Step '{sub_step.name}' timed out {sub_after} (iteration {iteration})")
+                        end_step(run.step_history, {
+                            **take_tasks(run.shared_state, sub_step.id),
+                            "step_id": sub_step.id, "step_name": sub_step.name,
+                            "step_type": sub_step.type.value, "status": "failed",
+                            "error": f"Timed out {sub_after}",
+                            "started_at": _iso(step_start), "ended_at": _iso(time.time()), **exact_window(step_start),
+                            "duration_seconds": round(time.time() - step_start, 2),
+                        })
+                        yield {"type": "step_error", "orch_step_id": sub_step.id,
+                               "error": f"Step '{sub_step.name}' timed out {sub_after}"}
+                        # Fails the loop and the run, as a timeout does at the
+                        # top level (F253). It used to be skipped: the next body
+                        # step ran on whatever state it found, and the loop went
+                        # on to the next iteration. Raised as a RuntimeError, not
+                        # a TimeoutError, which the engine would read as the loop
+                        # node itself running out of time. The iterations before
+                        # this one are checkpointed, so a Replay re-enters here.
+                        raise RuntimeError(f"Step '{sub_step.name}' timed out {sub_after} "
+                                           f"(iteration {iteration})")
+                    except anyio.get_cancelled_exc_class():
+                        cut_by_the_run(engine, run, sub_step, step_start)
+                        raise
+
+                    if pending_human_event is not None:
+                        # Keep the loop's place, so answering carries it on from
+                        # here — the rest of this iteration, then the next — and
+                        # not past the loop with the rest dropped (F109). The
+                        # markers go back first: the engine checkpoints the
+                        # pause, and they belong to this generator, not the run.
+                        paused_at = {
+                            "completed_iterations": iteration - 1,
+                            "paused": {
+                                "iteration": iteration, "index": idx, "step_id": sid,
+                                "completed": [b for b in body_ids if b in completed_this_iteration],
+                                "answered": False,
+                            },
+                        }
+                        if mode == "foreach":
+                            paused_at["items"] = items
+                        run.shared_state[progress_key] = paused_at
+                        _restore()
+                        yield pending_human_event
+                        return
+
+                    if pending_end_event is not None:
+                        # The End executor set the run completed before it
+                        # yielded. Put that back so the rest of this iteration
+                        # runs normally; this generator ends the run when it is
+                        # done. Later iterations do not run — an End is the
+                        # author saying stop repeating, and unlike a Parallel's
+                        # siblings they are repetitions, not work already
+                        # declared alongside it.
+                        run.status = "running"
+                        loop_end_event = pending_end_event
+
+                    duration = round(time.time() - step_start, 2)
+                    end_step(run.step_history, {
+                        **take_tasks(run.shared_state, sub_step.id),
+                        "step_id": sub_step.id, "step_name": sub_step.name,
+                        "step_type": sub_step.type.value,
+                        "status": "failed" if failed else "completed",
+                        "started_at": _iso(step_start), "ended_at": _iso(time.time()), **exact_window(step_start),
+                        "duration_seconds": duration, "output_key": sub_step.output_key,
+                    })
+                    if not failed:
+                        completed_this_iteration.add(sid)
+                    yield {"type": "step_complete", "orch_step_id": sub_step.id,
+                           "step_name": sub_step.name, "duration_seconds": duration}
+
+                # After each iteration, accumulate results — but only from body
+                # steps that actually completed. A step that errored leaves its
+                # previous value sitting in shared_state, and recording that as
+                # this iteration's result invents a success that never happened.
+                for sid in body_ids:
+                    sub_step = engine.step_map.get(sid)
+                    if not sub_step or not sub_step.output_key:
+                        continue
+                    if sid not in completed_this_iteration:
+                        continue
+                    if sub_step.output_key not in run.shared_state:
+                        continue
+
+                    acc_key = f"_loop_{sub_step.output_key}"
+                    agent_name = engine.agent_names.get(sub_step.agent_id, sub_step.name) if sub_step.agent_id else sub_step.name
+                    if acc_key not in run.shared_state:
+                        run.shared_state[acc_key] = []
+                    run.shared_state[acc_key].append({
+                        "iteration": iteration,
+                        "agent": agent_name,
+                        "result": run.shared_state[sub_step.output_key],
+                    })
+
+                iterations_run = iteration
+
+                # Iteration finished — checkpoint so a crash resumes at the next one.
+                progress = {"completed_iterations": iteration}
+                if mode == "foreach":
+                    progress["items"] = items
+                run.shared_state[progress_key] = progress
+                try:
+                    await SharedState(run).checkpoint()
+                except Exception as ckpt_err:
+                    _log.warning(f"loop-progress checkpoint failed: {ckpt_err}")
+
+                if step.loop_break_condition:
+                    should_break, err = _route_expr(
+                        step.loop_break_condition, run.shared_state, "The Loop's break condition",
+                        default=False)
+                    if err:
+                        yield {"type": "step_warning", "orch_step_id": step.id,
+                               "message": f"loop_break_condition failed to evaluate "
+                                          f"(ignored): {err}"}
+                    elif should_break:
+                        stopped_reason = "break"
+                        break
+
+                if loop_end_event is not None:
+                    stopped_reason = "end"
+                    break
+
+            run.shared_state.pop(progress_key, None)
+
+            # After all iterations, promote accumulated results to output keys
+            promoted: dict[str, str] = {}  # step name -> output key it produced
+            for sid in body_ids:
+                sub_step = engine.step_map.get(sid)
+                if not sub_step or not sub_step.output_key:
+                    continue
+                acc_key = f"_loop_{sub_step.output_key}"
+                if acc_key in run.shared_state:
+                    run.shared_state[sub_step.output_key] = run.shared_state.pop(acc_key)
+                    promoted[sub_step.name] = sub_step.output_key
+
+            # Store loop's own output if configured — only body steps that
+            # actually produced something across the run. A step that failed
+            # every iteration has whatever its key held beforehand still sitting
+            # in state, and that value is not this loop's output.
+            if step.output_key:
+                run.shared_state[step.output_key] = {
+                    name: run.shared_state[key] for name, key in promoted.items()
+                }
+
+            yield {"type": "loop_complete", "orch_step_id": step.id,
+                   "iterations_completed": iterations_run,
+                   "stopped_reason": stopped_reason}
+
+            # Last, and outside every scope this node held: the engine breaks
+            # its own loop on this event.
+            if loop_end_event is not None:
+                yield loop_end_event
+        finally:
+            _restore()
+
+
+def render_state_refs(text: str, state: dict) -> str:
+    """`{{ state.key }}` and `{{ state.key.nested.path }}` in text, from shared state: the one form (`STATE_REF`,
+    F1252), which a step's templates are written in as the step is read.
+
+    A reference that resolves to nothing is left as written, so a typo shows
+    rather than vanishing. A human step's prompt and a Print's content read
+    through this one function; the prompt used to read only top-level keys.
+    A step into a value held as JSON text reads the JSON (F801), as a set
+    argument's reference does: a builder tool's output is JSON text in state.
+    """
+    from core.expressions import _json_object
+    from core.step_refs import MissingOutput, for_person, is_ref, resolved
+
+    def _resolve(match: re.Match) -> str:
+        val = state
+        try:
+            for part in match.group(1).split("."):
+                if is_ref(val):
+                    val = resolved(val)  # a saved output, read as what it was (D339 P4)
+                if isinstance(val, str):
+                    val = _json_object(val)
+                val = val.get(part) if isinstance(val, dict) else None
+                if val is None:
+                    break
+        except MissingOutput as exc:
+            return f"({exc})"
+        if is_ref(val):
+            return for_person(val)  # an excerpt and the file, never the whole of it
+        return str(val) if val is not None else match.group(0)
+
+    return STATE_REF.sub(_resolve, text)
+
+
+class MissingStateRef(ValueError):
+    """A set argument names a state value that is not there (E1). Raised rather than sent on as written: a tool
+    must never receive a literal `{{state.x}}`."""
+
+
+#: `{{ state.a.b }}`, standing alone or inside text: the one form (`templating.STATE_REF`, F1252).
+_ARG_REF = STATE_REF
+
+
+def _state_value(state: dict, path: str) -> Any:
+    """The value at `path` in state. A step into a value held as JSON text reads the JSON: a builder tool's output
+    is JSON text in state, and a set argument names a field of it."""
+    from core.templating import _walk, loads_within_depth
+
+    cur: Any = state
+    for part in path.split("."):
+        if isinstance(cur, str):
+            try:
+                cur = loads_within_depth(cur)
+            except (ValueError, RecursionError):  # nested too deep to read names nothing either
+                raise MissingStateRef(f"state.{path}") from None
+        found, cur = _walk(cur, [part])
+        if not found:
+            raise MissingStateRef(f"state.{path}")
+    return cur
+
+
+def tool_argument_refs(value: Any) -> list[str]:
+    """Every state path a Tool step's set arguments read (`a.b` for `{{state.a.b}}`), in order, once each."""
+    found: list[str] = []
+    if isinstance(value, dict):
+        parts = [tool_argument_refs(v) for v in value.values()]
+    elif isinstance(value, list):
+        parts = [tool_argument_refs(v) for v in value]
+    elif isinstance(value, str):
+        parts = [[m.group(1) for m in _ARG_REF.finditer(value)]]
+    else:
+        parts = []
+    for refs in parts:
+        found += [r for r in refs if r not in found]
+    return found
+
+
+#: Code runners whose `code` argument is a program (F1212): a state value reaches it as data, never as code.
+CODE_TOOLS = frozenset({"execute_python", "tool_code"})
+
+
+class UnsafeCodeRef(ValueError):
+    """A code runner's program has a state reference that cannot be filled as data (F1212): never pasted as text."""
+
+
+def render_code(code: str, state: dict) -> str:
+    """A code runner's program with its state references filled as data, never pasted in as text (F1212).
+
+    CAP3's stage 0 (10-29): a planned `csv_content = '{{state.read_csv}}'` had a file's text pasted between its quotes
+    and died with a SyntaxError — and whatever is pasted into a program is part of it, so a file's or a person's words
+    could run. No value is ever written into the program: the values ride in a JSON prelude as `_values`, and each
+    reference reads one. Python's own tokenizer says where each stands:
+    - in code: `_values[i]`;
+    - in a string literal (plain, raw, bytes, triple-quoted): the literal becomes an expression of `repr()`-written
+      pieces and `str(_values[i])` (`.encode()` for bytes), so no escaping is relied on;
+    - in an f-string's text or format spec: a replacement field `{_values[i]}` (before 3.12, where an f-string is one
+      token, through its tree, F1437);
+    - in a comment: its name, `state.<path>`.
+    Code that does not compile with its references in place gets every one as `_values[i]` (the runner says what is
+    wrong with it); a program that would not compile once filled is refused (`UnsafeCodeRef`), never sent as text.
+    """
+    import ast
+    import io
+    import tokenize
+
+    found: list[str] = []
+
+    def marker(m: re.Match) -> str:
+        path = m.group(1)
+        if path not in found:
+            found.append(path)
+        return f"__synapse_ref_{found.index(path)}__"
+
+    marked = _ARG_REF.sub(marker, code)
+    if not found:
+        return code
+    values = [_state_value(state, p) for p in found]
+    mark = re.compile(r"__synapse_ref_(\d+)__")
+    data = lambda m: f"_values[{m.group(1)}]"  # noqa: E731
+
+    def prelude(body: str) -> str:
+        blob = json.dumps(values, default=str)
+        named = ", ".join(f"state.{p}" for p in found)
+        return f"import json as _json\n_values = _json.loads({blob!r})  # {named}\n{body}"
+
+    try:
+        compile(marked, "<code>", "exec")
+        tokens = list(tokenize.generate_tokens(io.StringIO(marked).readline))
+    except (SyntaxError, ValueError, tokenize.TokenError):
+        return prelude(mark.sub(data, marked))
+
+    starts = [0]
+    for line in marked.splitlines(keepends=True):
+        starts.append(starts[-1] + len(line))
+
+    def at(pos: tuple[int, int]) -> int:
+        return starts[pos[0] - 1] + pos[1]
+
+    def as_expression(literal: str) -> str:
+        value = ast.literal_eval(literal)
+        if isinstance(value, bytes):
+            parts = re.split(rb"__synapse_ref_(\d+)__", value)
+            out = [repr(p) if i % 2 == 0 else f"str(_values[{int(p)}]).encode('utf-8', 'surrogatepass')"
+                   for i, p in enumerate(parts) if i % 2 or p]
+        else:
+            parts = mark.split(value)
+            out = [repr(p) if i % 2 == 0 else f"str(_values[{p}])" for i, p in enumerate(parts) if i % 2 or p]
+        return "(" + " + ".join(out) + ")"
+
+    def _value(i: str) -> ast.expr:
+        return ast.Subscript(ast.Name("_values", ast.Load()), ast.Constant(int(i)), ast.Load())
+
+    class _Fields(ast.NodeTransformer):
+        """Each marker in an f-string's tree, as 3.12's f-string tokens fill it: a field in its text or format spec,
+        `_values[i]` as a name, a string in a field's expression as `as_expression` writes it."""
+
+        def visit_JoinedStr(self, node):
+            values = []
+            for v in node.values:
+                if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                    values += [ast.FormattedValue(_value(p), -1, None) if i % 2 else ast.Constant(p)
+                               for i, p in enumerate(mark.split(v.value)) if i % 2 or p]
+                else:
+                    values.append(self.visit(v))
+            node.values = values
+            return node
+
+        def visit_Constant(self, node):
+            v = node.value
+            if (isinstance(v, str) and mark.search(v)) or (isinstance(v, bytes) and b"__synapse_ref_" in v):
+                return ast.parse(as_expression(repr(v)), mode="eval").body
+            return node
+
+        def visit_Name(self, node):
+            m = mark.fullmatch(node.id)
+            return _value(m.group(1)) if m else node
+
+    def in_fields(literal: str) -> str:
+        """An f-string that is one STRING token (before 3.12, PEP 701), filled through its tree (F1437)."""
+        try:
+            tree = _Fields().visit(ast.parse(literal, mode="eval"))
+            return ast.unparse(ast.fix_missing_locations(tree))
+        except (SyntaxError, ValueError, RecursionError):
+            raise UnsafeCodeRef("a reference in this f-string cannot be filled as data: write it outside the "
+                                f"string, e.g. 'x = {{{{state.{found[0]}}}}}', and use x") from None
+
+    edits: list[tuple[int, int, str]] = []
+    ends = {tokenize.STRING} | {getattr(tokenize, n) for n in ("FSTRING_END", "TSTRING_END") if hasattr(tokenize, n)}
+    begins = {tokenize.STRING} | {getattr(tokenize, n) for n in ("FSTRING_START", "TSTRING_START")
+                                  if hasattr(tokenize, n)}
+    quiet = {tokenize.NL, tokenize.COMMENT}
+    for k, tok in enumerate(tokens):
+        if not mark.search(tok.string):
+            continue
+        a, b = at(tok.start), at(tok.end)
+        if tok.type == tokenize.NAME:
+            edits.append((a, b, mark.sub(data, tok.string)))
+        elif tok.type == tokenize.STRING and "f" in re.match(r"[A-Za-z]*", tok.string).group().lower():
+            edits.append((a, b, in_fields(marked[a:b])))  # still a string literal: what is beside it joins as before
+        elif tok.type == tokenize.STRING:
+            # Beside another string, Python joins the two as written (`'a' 'b'`): the expression is joined with `+`.
+            before = next((t for t in reversed(tokens[:k]) if t.type not in quiet), None)
+            after = next((t for t in tokens[k + 1:] if t.type not in quiet), None)
+            joined = as_expression(marked[a:b])
+            if before is not None and before.type in ends:
+                joined = " + " + joined
+            if after is not None and after.type in begins:
+                joined = joined + " + "
+            edits.append((a, b, joined))
+        elif tok.type == tokenize.COMMENT:
+            edits.append((a, b, mark.sub(lambda m: f"state.{found[int(m.group(1))]}", tok.string)))
+    # An f-string's text and format specs: every marker in its whole span that no token above took is a replacement
+    # field, `{_values[i]}`. Read from the source span (a template's own tokens misplace escaped braces).
+    depth, opened = 0, 0
+    for tok in tokens:
+        kind = tokenize.tok_name.get(tok.type, "")
+        if kind in ("FSTRING_START", "TSTRING_START"):
+            if depth == 0:
+                opened = at(tok.start)
+            depth += 1
+        elif kind in ("FSTRING_END", "TSTRING_END"):
+            depth -= 1
+            if depth == 0:
+                for m in mark.finditer(marked, opened, at(tok.end)):
+                    if not any(a <= m.start() < b for a, b, _ in edits):
+                        edits.append((m.start(), m.end(), "{" + data(m) + "}"))
+    body = marked
+    for a, b, text in sorted(edits, reverse=True):
+        body = body[:a] + text + body[b:]
+    left = mark.search(body)
+    if left:
+        raise UnsafeCodeRef(f"state.{found[int(left.group(1))]} stands where it cannot be filled as data")
+    filled = prelude(body)
+    try:
+        compile(filled, "<code>", "exec")
+    except SyntaxError as e:
+        raise UnsafeCodeRef(f"a reference cannot be filled as data here ({e.msg}): write it outside the string, "
+                            f"e.g. 'x = {{{{state.{found[0]}}}}}', and use x") from None
+    return filled
+
+
+def render_tool_arguments(value: Any, state: dict, *, code_tool: bool = False) -> Any:
+    """A Tool step's set arguments, rendered from state (E1).
+
+    A string that is one reference and nothing else becomes that value, keeping its type (a list stays a list); a
+    reference inside text is written as text, an object or a list as JSON (`templating`'s rule, not Python's repr).
+    Dicts and lists are rendered all the way down. A reference to nothing raises `MissingStateRef` naming it.
+    A code runner's `code` (`code_tool`) takes its references as data (`render_code`, F1212).
+    """
+    if code_tool and isinstance(value, dict) and isinstance(value.get("code"), str):
+        return {k: (render_code(v, state) if k == "code" else render_tool_arguments(v, state))
+                for k, v in value.items()}
+    if isinstance(value, dict):
+        return {k: render_tool_arguments(v, state) for k, v in value.items()}
+    if isinstance(value, list):
+        return [render_tool_arguments(v, state) for v in value]
+    if not isinstance(value, str):
+        return value
+    whole = _ARG_REF.fullmatch(value.strip())
+    if whole:
+        return _state_value(state, whole.group(1))
+    from core.templating import _text
+
+    return _ARG_REF.sub(lambda m: _text(_state_value(state, m.group(1))), value)
+
+
+def _typed_object(value: Any) -> dict | None:
+    """`value` as an object that names itself (`{"object": "change", …}`), or JSON text of one; else None."""
+    if isinstance(value, str):
+        from core.expressions import _json_object
+
+        value = _json_object(value)
+    if isinstance(value, dict) and isinstance(value.get("object"), str) and value["object"]:
+        return value
+    return None
+
+
+def asked_context(input_keys: Any, shared_state: dict, step_history: Any) -> tuple[str | None, str | None, dict | None]:
+    """What a Human step's question shows beside it: `(agent_context, context_key, typed)` — the first of its input keys
+    the state holds, else the newest step output it does (U65), and that value as an object that names itself (F795),
+    when it is one. The live event carries these, and a question read back later (`pauses.asked_again`) the same, from
+    the same state (F1333)."""
+    agent_context = None
+    context_key = None
+    for key in (input_keys or []):
+        if key in shared_state and shared_state[key]:
+            agent_context = str(shared_state[key])
+            context_key = key
+            break
+    # Fallback: find the last output from step history
+    if not agent_context:
+        for h in reversed(step_history or []):
+            okey = h.get("output_key") if isinstance(h, dict) else None
+            if okey and okey in shared_state:
+                agent_context = str(shared_state[okey])
+                context_key = okey
+                break
+    typed = _typed_object(shared_state.get(context_key)) if context_key else None
+    return agent_context, context_key, typed
+
+
+class HumanStepExecutor:
+    """Pause execution and request human input.
+
+    If the step has a human_channel_id configured, the engine posts the prompt
+    to that messaging channel when the run pauses, and a reply there answers
+    it (`core/orchestration/human_prompts.py`). Whichever answer arrives first
+    resumes the run; a second is refused because the run is no longer waiting.
+    """
+
+    async def execute(
+        self, step: StepConfig, run: OrchestrationRun, engine: "OrchestrationEngine"
+    ) -> AsyncGenerator[dict, None]:
+        prompt = render_state_refs(
+            step.human_prompt or "Please provide input to continue.", run.shared_state)
 
         run.human_prompt = prompt
         run.human_fields = step.human_fields
 
-        # Gather recent agent output from shared state for display context
-        agent_context = None
-        for key in (step.input_keys or []):
-            if key in run.shared_state and run.shared_state[key]:
-                agent_context = str(run.shared_state[key])
-                break
-        # Fallback: find the last output from step history
-        if not agent_context:
-            for h in reversed(run.step_history):
-                okey = h.get("output_key")
-                if okey and okey in run.shared_state:
-                    agent_context = str(run.shared_state[okey])
-                    break
-
-        # If a messaging channel is configured, arm a Future so the messaging
-        # adapter can resolve it when the user replies there.
+        agent_context, context_key, typed = asked_context(step.input_keys, run.shared_state, run.step_history)
         channel_id = step.human_channel_id
-        if channel_id:
-            messaging_manager = getattr(
-                getattr(engine.server_module, "app", None),
-                "state", None,
-            )
-            if messaging_manager:
-                messaging_manager = getattr(messaging_manager, "messaging_manager", None)
-            if messaging_manager:
-                asyncio.create_task(
-                    messaging_manager.wait_for_human_input(
-                        run_id=run.run_id,
-                        step_id=step.id,
-                        channel_id=channel_id,
-                        prompt=prompt,
-                        timeout=step.human_timeout_seconds,
-                    )
-                )
 
         yield {
             "type": "human_input_required",
@@ -1225,8 +3073,41 @@ class HumanStepExecutor:
             "fields": step.human_fields,
             "run_id": run.run_id,
             "agent_context": agent_context,
+            "context_key": context_key,
             "channel_id": channel_id,  # frontend can show which channel was notified
+            # The object a panel draws the question from, when the context is one that names itself (F795): Synapse
+            # AI's checked Change. The prompt's words stay the question for everything else that reads it.
+            **({"context": typed} if typed is not None else {}),
         }
+
+
+#: What a transform that reached for the network is told (F968): 1.x gave it the internet.
+TRANSFORM_NO_NETWORK = "Transforms have no network since 2.0: fetch with a tool step and pass the result in."
+#: A Transform that finds no Docker to run in (F1353): what to do, never the daemon's socket or pipe.
+TRANSFORM_NO_DOCKER = ("Code steps run in Docker, and Docker isn't running here. Start Docker, or set "
+                       "SYNAPSE_TRANSFORM_RUNTIME=host to run them on this computer.")
+
+#: How a failed connection or lookup reads in a transform's stderr, on Linux, macOS and Windows.
+_NO_NETWORK_ERRORS = re.compile(
+    r"Temporary failure in name resolution|Name or service not known|nodename nor servname|"
+    r"No address associated with hostname|getaddrinfo failed|Network is unreachable|"
+    r"\[Errno -[235]\]|\[Errno 101\]|ConnectionError|NewConnectionError|URLError",
+)
+
+
+async def _vault_files_for(paths: list[str]) -> dict[str, str]:
+    """The text of each Vault file a transform reads with `read_vault` (F1227), read before it runs through the vault
+    tools' own read (the Vault's path rule, the blob store a host overlays, their size limit), so the same code reads
+    the same file in Docker, on the host and on a fleet's Lambda. A file it cannot read fails the step, named."""
+    from core.vault_tools import _get_text
+
+    files: dict[str, str] = {}
+    for path in paths:
+        text, error = await asyncio.to_thread(_get_text, path)
+        if error:
+            raise RuntimeError(f"read_vault({path!r}): {error}")
+        files[path] = text or ""
+    return files
 
 
 class TransformStepExecutor:
@@ -1243,33 +3124,29 @@ class TransformStepExecutor:
         yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": f"[Transform Code]\n{code}"}
 
         try:
-            from core.config import load_settings
-            runtime = (load_settings().get("transform_runtime") or "docker").strip().lower()
-            if runtime == "host":
-                result = await self._run_host(code, run.shared_state, timeout=step.timeout_seconds)
-            else:
-                result = await self._run_sandboxed(code, run.shared_state, timeout=step.timeout_seconds)
+            from core.step_refs import resolved_state
 
+            # A saved output is the value it was to code (D339 P4): the sandbox is given what each one holds.
+            result = await self._run(code, resolved_state(run.shared_state), timeout=step.timeout_seconds)
+
+            result = _kept(result, run, step, engine)
             if step.output_key and result is not None:
                 run.shared_state[step.output_key] = result
 
             yield {
                 "type": "transform_result",
                 "orch_step_id": step.id,
-                "result": str(result) if result is not None else None,
+                "result": _preview(result, whole=True) if result is not None else None,
             }
         except Exception as e:
-            yield {"type": "step_error", "orch_step_id": step.id, "error": f"Transform error: {e}"}
-
-    def _build_script(self, code: str, state: dict) -> str:
-        """Build the JSON-in/JSON-out script wrapper used by both runtimes."""
-        state_json = json.dumps(state, default=str)
-        escaped = state_json.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
-        return (
-            f'import json\nstate = json.loads("""{escaped}""")\nresult = None\n\n'
-            + code
-            + '\n\nif result is not None:\n    print(json.dumps({"result": result}, default=str))\nelse:\n    print(json.dumps({"result": None}))\n'
-        )
+            # Raised so the engine fails the run, as it does for every other
+            # step that cannot finish. It used to yield `step_error` and return,
+            # and the next step ran on state this one never wrote. The step's
+            # own line carries the real error, as a Tool step's failure does —
+            # the engine's stream message is sanitised.
+            message = f"Transform error: {e}"
+            yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
+            raise RuntimeError(message) from e
 
     def _parse_script_output(self, stdout_text: str):
         """Parse the JSON output of the wrapped script. Falls back to plain text."""
@@ -1279,122 +3156,69 @@ class TransformStepExecutor:
         except json.JSONDecodeError:
             return stdout_text.strip() if stdout_text.strip() else None
 
-    async def _run_host(self, code: str, state: dict, timeout: int = 30):
-        """Run Python code directly on the host via subprocess (NO sandbox).
+    async def _run(self, code: str, state: dict, timeout: int = 30):
+        """Run the transform through a code runner and return `result`.
 
-        Used when transform_runtime == "host". Gives the script full access to
-        the host's Python env, GPU, filesystem, and network. Required for
-        torch/transformers workloads that can't run in the 512MB Docker sandbox.
+        The runner is whatever the deployment registered — the Docker sandbox in
+        the shipped product — unless the server's operator started it with
+        `SYNAPSE_TRANSFORM_RUNTIME=host`: the escape hatch that runs the script
+        as a subprocess of this process (`core.execution.HostRunner`). Only the
+        operator's environment chooses it, never a stored setting (F968): any
+        client of `POST /api/settings` could pick it, and it runs code as the
+        server.
 
-        Same JSON-in/JSON-out contract as the docker path. The script inherits
-        the backend process env (so CUDA_VISIBLE_DEVICES, HF_HOME, etc. flow
-        through naturally) and runs under the same Python interpreter as the
-        backend (sys.executable).
-
-        Timeout: caps at 30 minutes to bound runaway loads/inference. The docker
-        path's 60s cap is too low for model loading, so we deliberately lift it
-        here. Step-level timeout_seconds still applies.
+        A transform has no network on the engine's own sandbox (F968): its code
+        comes from a person, a builder or an imported file, and tools are the
+        way out. A runner a deployment registers decides its own network from
+        the same request, as before (cloud's grants an org's allowed domains);
+        the host runtime cannot block it, which is why it is the operator's
+        explicit choice.
         """
-        import sys
-        import shutil
-        import tempfile
-        from pathlib import Path
+        import os
 
-        script_content = self._build_script(code, state)
-        effective_timeout = min(max(int(timeout or 30), 1), 1800)
+        from core.execution import (DockerRunner, DockerUnavailable, ExecRequest, HostRunner, Network,
+                                    docker_not_running, get_runner, wrap_transform)
+        from core.execution.scripts import transform_failure, transform_line_offset, vault_paths_named
 
-        tmp_dir = tempfile.mkdtemp(prefix="transform_host_")
-        script_path = str(Path(tmp_dir) / "transform.py")
+        runtime = "host" if os.environ.get("SYNAPSE_TRANSFORM_RUNTIME", "").strip().lower() == "host" else "sandbox"
+        runner = HostRunner() if runtime == "host" else get_runner()
+        network = Network.NONE if isinstance(runner, DockerRunner) else Network.INTERNET
+
+        # The sandbox is capped at a minute because it is the shared path; the
+        # host runtime lifts that itself, because model loading is minutes and
+        # a caller only reaches it deliberately.
+        capped = int(timeout or 30) if runtime == "host" else min(int(timeout or 30), 60)
+
+        from core.vault import _vault_root
+
+        files = await _vault_files_for(vault_paths_named(code)[0])
         try:
-            with open(script_path, "w", encoding="utf-8") as f:
-                f.write(script_content)
+            result = await runner.run(ExecRequest(
+                code=wrap_transform(code, state, files),
+                network=network,
+                timeout_s=capped,
+                vault_path=_vault_root(),
+                max_stdout=1_000_000,
+            ))
+        except DockerUnavailable as exc:
+            raise RuntimeError(TRANSFORM_NO_DOCKER) from exc  # no docker here at all (F1353)
 
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable, script_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=os.environ.copy(),
-            )
-            try:
-                stdout_b, stderr_b = await asyncio.wait_for(
-                    proc.communicate(), timeout=effective_timeout + 5
-                )
-            except asyncio.TimeoutError:
-                try:
-                    proc.kill()
-                    await proc.wait()
-                except Exception:
-                    pass
-                raise RuntimeError(f"Transform (host) timed out after {effective_timeout}s")
+        if result.timed_out:
+            raise RuntimeError(f"Transform timed out after {capped}s")
+        if result.exit_code != 0 and isinstance(runner, DockerRunner) and docker_not_running(result.stderr):
+            raise RuntimeError(TRANSFORM_NO_DOCKER)  # its daemon isn't running: what to do, not its socket (F1353)
+        if result.exit_code != 0:
+            # Your line, its source and what it raised — not the wrapper's line,
+            # the runner's temp path and the whole traceback (F407).
+            label = "Transform (host)" if runtime == "host" else "Transform"
+            said = transform_failure(
+                result.stderr, code, transform_line_offset(state, files), result.exit_code, label=label)
+            if network is Network.NONE and _NO_NETWORK_ERRORS.search(result.stderr or ""):
+                # It reached for the network it no longer has: said, not left as a bare resolve error (F968).
+                said = f"{said} {TRANSFORM_NO_NETWORK}"
+            raise RuntimeError(said)
 
-            stdout_text = stdout_b.decode("utf-8", errors="replace")
-            stderr_text = stderr_b.decode("utf-8", errors="replace")
-
-            if proc.returncode != 0:
-                raise RuntimeError(f"Transform (host) failed (exit {proc.returncode}): {stderr_text[:500]}")
-
-            return self._parse_script_output(stdout_text)
-        finally:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-
-    async def _run_sandboxed(self, code: str, state: dict, timeout: int = 30):
-        """Run Python code in the Docker sandbox (sandbox-python:latest)."""
-        import shutil
-        import tempfile
-        from pathlib import Path
-
-        if not shutil.which("docker"):
-            raise RuntimeError("Docker is not available. Cannot execute transform code in sandbox.")
-
-        script_content = self._build_script(code, state)
-
-        DATA_DIR_PATH = Path(__file__).resolve().parent.parent.parent / "data"
-        vault_root = DATA_DIR_PATH / "vault"
-        docker_image = "sandbox-python:latest"
-
-        tmp_dir = tempfile.mkdtemp(prefix="transform_")
-        script_path = f"{tmp_dir}/transform.py"
-        try:
-            with open(script_path, "w", encoding="utf-8") as f:
-                f.write(script_content)
-
-            docker_cmd = [
-                "docker", "run", "--rm",
-                "--memory", "512m",
-                "--cpus", "1.0",
-                "--pids-limit", "64",
-                "--read-only",
-                "--tmpfs", "/tmp:rw,size=256m",
-                "--tmpfs", "/root:rw,size=256m",
-                "-v", f"{script_path}:/sandbox/transform.py:ro",
-            ]
-            if vault_root.exists():
-                docker_cmd += ["-v", f"{vault_root}:/data:ro"]
-            docker_cmd += [docker_image, "python", "/sandbox/transform.py"]
-
-            proc = await asyncio.create_subprocess_exec(
-                *docker_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            try:
-                stdout_b, stderr_b = await asyncio.wait_for(
-                    proc.communicate(), timeout=min(timeout, 60) + 5
-                )
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                raise RuntimeError(f"Transform timed out after {timeout}s")
-
-            stdout_text = stdout_b.decode("utf-8", errors="replace")
-            stderr_text = stderr_b.decode("utf-8", errors="replace")
-
-            if proc.returncode != 0:
-                raise RuntimeError(f"Transform failed (exit {proc.returncode}): {stderr_text[:500]}")
-
-            return self._parse_script_output(stdout_text)
-        finally:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+        return self._parse_script_output(result.stdout)
 
 
 class LLMStepExecutor:
@@ -1410,17 +3234,23 @@ class LLMStepExecutor:
         from core.llm_providers import generate_response as llm_generate, detect_mode_from_model
         from core.config import load_settings
 
-        from .context import build_origin_aware_context, snapshot_inputs
+        from .context import build_step_prompt, snapshot_inputs
         transition = getattr(engine, "current_transition", None)
         if transition is None:
             from .context import TransitionContext
             transition = TransitionContext(origin_type="entry", execution_number=1)
-        prompt, system_prompt_extra, system_prompt_prefix = build_origin_aware_context(step, run, engine, transition)
+        with _reading_for(step.model, run):
+            prompt, system_prompt_extra, system_prompt_prefix, mentions = await build_step_prompt(
+                step, run, engine, transition
+            )
         inputs_snapshot = snapshot_inputs(step, run, engine)
 
         yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": prompt,
                "system_prompt_extra": system_prompt_extra,
-               "system_prompt_prefix": system_prompt_prefix}
+               "system_prompt_prefix": system_prompt_prefix,
+               "mentions": [m.summary() for m in mentions]}
+        for warning in _mention_warnings(mentions):
+            yield {"type": "step_warning", "orch_step_id": step.id, "message": warning}
         yield {
             "type": "thinking",
             "orch_step_id": step.id,
@@ -1442,12 +3272,16 @@ class LLMStepExecutor:
             sys_prompt = system_prompt_prefix + "\n\n" + sys_prompt
 
         try:
-            response = await llm_generate(
+            from core.model_wait import ModelWait
+
+            _used: list = []
+            _wait = ModelWait(on_model_or_fallback(lambda _model: llm_generate(
                 prompt_msg=prompt,
                 sys_prompt=sys_prompt,
-                mode=mode,
-                current_model=model,
+                mode=mode if _model == model else detect_mode_from_model(_model),
+                current_model=_model,
                 current_settings=settings,
+                reasoning_effort=settings.get("reasoning_effort"),  # F77
                 session_id=run.session_id,
                 agent_id=step.agent_id or "llm_step",
                 source="orchestration",
@@ -1457,7 +3291,13 @@ class LLMStepExecutor:
                 cache_response_ttl=step.cache_response_ttl_seconds,
                 cache_response_step_id=step.id,
                 cache_response_threshold=step.cache_response_threshold,
-            )
+            ), model, role_fallback(step, run, model), _used),
+                label=f"LLM step '{step.name}'", extra={"orch_step_id": step.id, "step_name": step.name})
+            async for _wait_event in _wait.events():
+                yield _wait_event
+            response = _wait.result
+            if len(_used) > 1:
+                yield {"type": "step_warning", "orch_step_id": step.id, "message": _used[1]}
         except Exception as e:
             from core.llm_providers import LLMError
             if isinstance(e, LLMError):
@@ -1509,7 +3349,7 @@ class ExtractJsonStepExecutor:
         yield {"type": "_log_prompt", "orch_step_id": step.id,
                "prompt": f"[Extract JSON] input text ({len(text)} chars)"}
 
-        extracted = self._extract_all_json(text)
+        extracted = extract_all_json(text)
 
         if not extracted:
             result = None
@@ -1530,101 +3370,137 @@ class ExtractJsonStepExecutor:
             "response": json.dumps(result, default=str) if result is not None else "null",
         }
 
-    def _extract_all_json(self, text: str) -> list:
-        """Try multiple strategies to extract JSON from text."""
-        # Strategy 1: Try parsing the entire text as JSON
+
+def extract_all_json(text: str) -> list:
+    """Try multiple strategies to extract JSON from text.
+
+    Module level rather than a method on `ExtractJsonStepExecutor` because
+    the engine needs the same three strategies to type a step's raw output
+    against `state_schema` (F14), and there should be one implementation of
+    "find the JSON in this text" rather than two that drift.
+    """
+    # Strategy 1: Try parsing the entire text as JSON
+    try:
+        parsed = json.loads(text.strip())
+        return [parsed]
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    results = []
+
+    # Strategy 2: Extract from markdown fenced code blocks (```json ... ``` or ``` ... ```)
+    fence_pattern = re.compile(r'```(?:json)?\s*\n(.*?)\n\s*```', re.DOTALL)
+    for match in fence_pattern.finditer(text):
+        content = match.group(1).strip()
         try:
-            parsed = json.loads(text.strip())
-            return [parsed]
+            parsed = json.loads(content)
+            results.append(parsed)
         except (json.JSONDecodeError, ValueError):
             pass
 
-        results = []
-
-        # Strategy 2: Extract from markdown fenced code blocks (```json ... ``` or ``` ... ```)
-        fence_pattern = re.compile(r'```(?:json)?\s*\n(.*?)\n\s*```', re.DOTALL)
-        for match in fence_pattern.finditer(text):
-            content = match.group(1).strip()
-            try:
-                parsed = json.loads(content)
-                results.append(parsed)
-            except (json.JSONDecodeError, ValueError):
-                pass
-
-        if results:
-            return results
-
-        # Strategy 3: Brace/bracket counting to find top-level JSON objects/arrays
-        results = self._extract_by_brace_matching(text)
+    if results:
         return results
 
-    def _extract_by_brace_matching(self, text: str) -> list:
-        """Find top-level {...} and [...] blocks by counting braces."""
-        results = []
-        i = 0
-        n = len(text)
-        while i < n:
-            if text[i] in ('{', '['):
-                open_char = text[i]
-                close_char = '}' if open_char == '{' else ']'
-                depth = 0
-                start = i
-                in_string = False
-                escape_next = False
-                while i < n:
-                    ch = text[i]
-                    if escape_next:
-                        escape_next = False
-                        i += 1
-                        continue
-                    if ch == '\\':
-                        escape_next = True
-                        i += 1
-                        continue
-                    if ch == '"':
-                        in_string = not in_string
-                    elif not in_string:
-                        if ch == open_char:
-                            depth += 1
-                        elif ch == close_char:
-                            depth -= 1
-                            if depth == 0:
-                                candidate = text[start:i + 1]
-                                try:
-                                    parsed = json.loads(candidate)
-                                    results.append(parsed)
-                                except (json.JSONDecodeError, ValueError):
-                                    pass
-                                i += 1
-                                break
+    # Strategy 3: Brace/bracket counting to find top-level JSON objects/arrays
+    results = extract_by_brace_matching(text)
+    return results
+
+def extract_by_brace_matching(text: str) -> list:
+    """Find top-level {...} and [...] blocks by counting braces."""
+    results = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] in ('{', '['):
+            open_char = text[i]
+            close_char = '}' if open_char == '{' else ']'
+            depth = 0
+            start = i
+            in_string = False
+            escape_next = False
+            while i < n:
+                ch = text[i]
+                if escape_next:
+                    escape_next = False
                     i += 1
-                else:
-                    # Unmatched brace, move on
-                    i = start + 1
-            else:
+                    continue
+                if ch == '\\':
+                    escape_next = True
+                    i += 1
+                    continue
+                if ch == '"':
+                    in_string = not in_string
+                elif not in_string:
+                    if ch == open_char:
+                        depth += 1
+                    elif ch == close_char:
+                        depth -= 1
+                        if depth == 0:
+                            candidate = text[start:i + 1]
+                            try:
+                                parsed = json.loads(candidate)
+                                results.append(parsed)
+                            except (json.JSONDecodeError, ValueError):
+                                pass
+                            i += 1
+                            break
                 i += 1
-        return results
+            else:
+                # Unmatched brace, move on
+                i = start + 1
+        else:
+            i += 1
+    return results
 
 
 def _eval_state_expr(expr: str, state: dict, default=None):
     """Evaluate `expr` against shared state in the restricted dialect.
 
     Returns ``(value, error_message)``; on failure the value is `default` and
-    the caller decides whether that is a warning or a hard stop.
+    the caller decides whether that is a warning or a hard stop. IF/Else,
+    Switch and Loop all speak this one dialect so an author learns
+    `state.foo.bar` once.
 
     The dialect, and the boundary that makes it one, live in `core.expressions`.
-    This was a bare `eval()` with an empty `__builtins__` until 1.9.2, which
-    stopped nothing: the builder writes `if_condition` directly, so the path ran
-    from a chat message through prompt injection to arbitrary code in this
-    process (GHSA pending / S3).
+    This was a bare `eval()` with an empty `__builtins__` until 2026-09-12, which
+    stopped nothing: the builder model writes `if_condition` directly, so the
+    path ran from a chat message through prompt injection to arbitrary code in
+    this process (S3).
 
-    A refused expression says so, and then behaves exactly like one that raised
-    — both call sites below already had an answer for that, and an existing
-    workflow should not stop running on the day this ships.
+    A refused expression says so here, for a caller that only reads (the
+    switch's "no case matched" sentence). A step that routes on one reads it
+    through `_route_expr`, which fails the step instead (F850).
     """
     result = _expressions.evaluate_expression(expr, state, default)
     if result.refused:
         return result.value, f"unsafe expression — {result.error}"
+    return result.value, result.error
+
+
+def _route_expr(expr: str, state: dict, what: str, default=None):
+    """`_eval_state_expr` for a step that decides on the answer: an expression
+    that is refused, or that errors, fails the step, naming `what` and why
+    (F850, F1433).
+
+    A refused expression used to route like one that raised — an If/Else took
+    its false branch, a Switch its default — and the run read Completed (QA1b,
+    on prod). Refused is the author's mistake, not this run's data, so the step
+    stops rather than guess (Naveen, 2026-10-23). So does any other error
+    (F1433: cap-05's `{{ … }}` gate turned an approval into "no", Naveen
+    2026-11-06). A value this run has not written yet is data, read through,
+    compared or combined (`ExprResult.unwritten`): its error is returned for the
+    caller's documented answer, as before. An empty expression is the caller's
+    to word, as before.
+    """
+    result = _expressions.evaluate_expression(expr, state, default)
+    if result.refused:
+        raise RuntimeError(
+            f"{what} uses something this engine will not run: {result.error}. "
+            f"The step stops here rather than guess; change it, then Replay.")
+    if result.error and not result.unwritten and expr and expr.strip():
+        raise RuntimeError(
+            f"{what} could not be evaluated: {result.error}. "
+            f"The step stops here rather than guess; change it, then Replay.")
     return result.value, result.error
 
 
@@ -1645,16 +3521,16 @@ class IfElseStepExecutor:
         yield {"type": "_log_prompt", "orch_step_id": step.id,
                "prompt": f"[IF/Else Condition] {condition}"}
 
-        raw, err = _eval_state_expr(condition, run.shared_state, default=False)
+        raw, err = _route_expr(condition, run.shared_state, "The If/Else condition", default=False)
         result = bool(raw)
-        if err:
-            print(f"DEBUG IF_ELSE: ⚠ Condition eval failed: {err}", flush=True)
+        if err:  # a value the run has not written yet: data (F1433), the documented False
+            _log.debug(f"IF_ELSE: ⚠ Condition eval failed: {err}")
             yield {"type": "step_warning", "orch_step_id": step.id,
                    "message": f"Condition eval error (treating as False): {err}"}
 
         decision = "true" if result else "false"
         run.shared_state[f"_if_decision_{step.id}"] = decision
-        print(f"DEBUG IF_ELSE: condition='{condition}' → {decision}", flush=True)
+        _log.debug(f"IF_ELSE: condition='{condition}' → {decision}")
 
         if step.output_key:
             run.shared_state[step.output_key] = result
@@ -1685,9 +3561,9 @@ class SwitchStepExecutor:
         yield {"type": "_log_prompt", "orch_step_id": step.id,
                "prompt": f"[Switch Expression] {expression}"}
 
-        value, err = _eval_state_expr(expression, run.shared_state, default=None)
+        value, err = _route_expr(expression, run.shared_state, "The Switch expression", default=None)
         if err:
-            print(f"DEBUG SWITCH: ⚠ Expression eval failed: {err}", flush=True)
+            _log.debug(f"SWITCH: ⚠ Expression eval failed: {err}")
             yield {"type": "step_warning", "orch_step_id": step.id,
                    "message": f"Expression eval error: {err}"}
 
@@ -1695,7 +3571,7 @@ class SwitchStepExecutor:
         value_str = str(value) if value is not None else "None"
         matched_case = value_str if value_str in (step.switch_cases or {}) else None
         run.shared_state[f"_switch_decision_{step.id}"] = matched_case
-        print(f"DEBUG SWITCH: expression='{expression}' → '{value_str}', matched_case={matched_case}", flush=True)
+        _log.debug(f"SWITCH: expression='{expression}' → '{value_str}', matched_case={matched_case}")
 
         if step.output_key:
             run.shared_state[step.output_key] = value
@@ -1713,7 +3589,7 @@ class SwitchStepExecutor:
 
 class PrintStepExecutor:
     """Store user-defined text/markdown into shared state.
-    Supports {state.key} and {state.key.nested} interpolation.
+    Supports {{ state.key }} and {{ state.key.nested }} interpolation.
     No LLM call — pure template rendering."""
 
     async def execute(
@@ -1727,20 +3603,7 @@ class PrintStepExecutor:
                 run.shared_state[step.output_key] = ""
             return
 
-        # Interpolate {state.key} and {state.key.nested.path}
-        def _resolve_ref(match: re.Match) -> str:
-            path = match.group(1)  # e.g. "result.flag"
-            parts = path.split('.')
-            val = run.shared_state
-            for part in parts:
-                if isinstance(val, dict):
-                    val = val.get(part)
-                else:
-                    val = None
-                    break
-            return str(val) if val is not None else match.group(0)  # keep original if not found
-
-        rendered = re.sub(r'\{state\.([\w.]+)\}', _resolve_ref, content)
+        rendered = render_state_refs(content, run.shared_state)
 
         yield {"type": "_log_prompt", "orch_step_id": step.id,
                "prompt": f"[Print] {rendered[:500]}"}
@@ -1756,6 +3619,104 @@ class PrintStepExecutor:
         }
 
 
+class RetrieveStepExecutor:
+    """Search knowledge bases (Knowledge, R1): `core.knowledge.workflow_steps.retrieve`.
+
+    The query is the step's template filled in from shared state, both
+    reference families in one pass (`_fill_task_template`, F19). The output —
+    the passages as `context`, the hits, their citations, the trace's id and the
+    snapshots searched — goes to `output_key`; its costs are the run's.
+    """
+
+    async def execute(
+        self, step: StepConfig, run: OrchestrationRun, engine: "OrchestrationEngine"
+    ) -> AsyncGenerator[dict, None]:
+        from core.knowledge import workflow_steps
+        from core.knowledge.trace import Origin
+
+        from .context import _fill_task_template
+
+        try:
+            workflow_steps.check_enabled("Retrieve", step.name)
+            config = workflow_steps.retrieve_config(step.retrieve, step_name=step.name)
+            query = _fill_task_template(config.query, run.shared_state,
+                                        getattr(engine, "global_variables", None) or {}, as_values=True)
+            yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": f"[Retrieve] {query[:500]}"}
+            found = await workflow_steps.retrieve(
+                config, query, step_id=step.id, step_name=step.name,
+                origin=Origin(surface="step", run_id=run.run_id,
+                              session_id=run.session_id or f"orch_{run.run_id}", step_id=step.id))
+        except workflow_steps.StepFailed as e:
+            # Raised so the engine fails the step and the run; its words are the
+            # step's `reason` in the run log and on the step card (F195).
+            raise RuntimeError(str(e)) from None
+        for warning in found.warnings:
+            yield {"type": "step_warning", "orch_step_id": step.id, "message": warning}
+        if step.output_key:
+            run.shared_state[step.output_key] = found.output.model_dump(mode="json")
+        yield found.event
+
+
+class IngestStepExecutor:
+    """Add the records in `state[records_from]` to a knowledge base (Knowledge, R1):
+    `core.knowledge.workflow_steps.ingest`. Answers with each document as it
+    stands — new and changed ones `queued` — and never waits for indexing."""
+
+    async def execute(
+        self, step: StepConfig, run: OrchestrationRun, engine: "OrchestrationEngine"
+    ) -> AsyncGenerator[dict, None]:
+        from core.knowledge import workflow_steps
+
+        try:
+            workflow_steps.check_enabled("Ingest", step.name)
+            config = workflow_steps.ingest_config(step.ingest, step_name=step.name)
+            done = await workflow_steps.ingest(config, run.shared_state, step_id=step.id, step_name=step.name)
+        except workflow_steps.StepFailed as e:
+            raise RuntimeError(str(e)) from None
+        if step.output_key:
+            run.shared_state[step.output_key] = done.output.model_dump(mode="json")
+        yield done.event
+
+
+class WorkflowStepExecutor:
+    """Run another workflow by its id, as a nested run of this step (E3, F770; SAI2-P1).
+
+    The engine's own nested executor (`run_nested_workflow`), which an Agent step whose agent is a workflow reaches
+    too: in-process inside its parent's run, the root's cap, the depth limit, the child's result as this step's
+    output, and a question inside the child resumed through this step (`OrchestrationEngine._resume_nested` reads
+    the run's `nested_*` ids, not the step's kind). The child is handed this step's task: its rendered template, or
+    the run's input when it has none (F252).
+    """
+
+    async def execute(
+        self, step: StepConfig, run: OrchestrationRun, engine: "OrchestrationEngine"
+    ) -> AsyncGenerator[dict, None]:
+        from .context import TransitionContext, build_task_text, snapshot_inputs
+
+        if not step.workflow_id:
+            # A step that cannot run is not a step that ran (F90).
+            message = f"Workflow step '{step.name}' names no workflow to run"
+            yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
+            raise RuntimeError(message)
+
+        transition = getattr(engine, "current_transition", None) or TransitionContext(
+            origin_type="entry", execution_number=1)
+        task, mentions = await build_task_text(step, run, engine)
+        yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": task,
+               "system_prompt_extra": "", "system_prompt_prefix": "",
+               "mentions": [m.summary() for m in mentions]}
+        for warning in _mention_warnings(mentions):
+            yield {"type": "step_warning", "orch_step_id": step.id, "message": warning}
+        async for event in run_nested_workflow(
+            step, run, engine, transition, step.workflow_id, task, snapshot_inputs(step, run, engine),
+            source=f"step '{step.name}'",
+            gone=(f"The workflow step '{step.name}' runs ({step.workflow_id}) was deleted, so it cannot run. "
+                  "Point the step at another workflow."),
+            label=step.name or step.workflow_id,
+        ):
+            yield event
+
+
 class EndStepExecutor:
     """Terminate the orchestration."""
 
@@ -1764,6 +3725,210 @@ class EndStepExecutor:
     ) -> AsyncGenerator[dict, None]:
         run.status = "completed"
         yield {"type": "orchestration_end", "orch_step_id": step.id}
+
+
+#: How often a Browser step's replay hands the run page what the browser did, and the key its answer comes under.
+_DRAIN_EVERY = 0.5
+_ANSWER = "_replay_answer"
+
+
+class BrowserStepExecutor:
+    """A recording replayed by code in the run's browser (BRW1, F1146; DESIGN §v5.4): its inputs filled from the
+    run's state, what it reads to `output_key`, no model on the way. A workflow run is never watched, so a recorded
+    send goes only where the step allows it, and anything else is the person's turn (Naveen 2026-10-29). A step the
+    page no longer matches: the step's Browser agent finds the way (`on_miss: "agent"`), or the person does; either
+    way their path is kept as an edit of the recording to approve, never applied.
+
+    It parks as an agent step does on the person's turn (F1099): `pending_browser_turn`, answered by handing the
+    browser back; `progress["browser"]` says where it was, and the resume carries the replay on from there."""
+
+    async def execute(
+        self, step: StepConfig, run: OrchestrationRun, engine: "OrchestrationEngine"
+    ) -> AsyncGenerator[dict, None]:
+        from core.browser import client as browser_client
+        from core.browser import picks
+        from core.browser import recordings as recs
+
+        from .context import _fill_task_template
+
+        try:
+            doc = await recs.get(step.recording_id or "")
+        except recs.NotFound:
+            raise RuntimeError(f"Browser step '{step.name}': its recording is gone; pick another.") from None
+        progress = dict(run.step_progress.get(step.id) or {})
+        where = dict(progress.get("browser") or {})
+        allowed = set(step.may_send_steps or [])
+        steps = [{**s, "may_send": s.get("id") in allowed} for s in doc["steps"]]
+        variables = getattr(engine, "global_variables", None) or {}
+        inputs = {name: _fill_task_template(str(tpl or ""), run.shared_state, variables, as_values=True)
+                  for name, tpl in (step.recording_inputs or {}).items()}
+        missing = [n for n in recs.input_names(doc) if not str(inputs.get(n) or "").strip()]
+        if missing and not where:
+            raise RuntimeError(f"Browser step '{step.name}': '{doc['name']}' needs its inputs: {', '.join(missing)}.")
+        key = browser_client.owner_for(None, run.run_id)
+        chosen = await picks.settings_for({"mode": "co_drive", "action_budget": 200},
+                                          run=list(run.shared_state.get("_browser_sessions") or []),
+                                          step=list(step.browser_sessions or []))
+        tokens = (browser_client.owner.set(key), browser_client.settings.set(chosen))
+        tools = browser_client.tools
+        try:
+            phase = where.get("phase")
+            if phase == "agent":  # the fixing agent paused for the person: it carries on first
+                async for event in self._fix(step, run, engine, doc, progress):
+                    yield event
+                    if event.get("type") == "human_input_required":
+                        return
+                async with contextlib.aclosing(self._live(step, key, tools.latest_replay(key))) as live:
+                    async for event in live:
+                        if _ANSWER in event:
+                            answer = event[_ANSWER] or {"refused": "The browser closed."}
+                        else:
+                            yield event
+                phase = "agent_done"
+            elif phase:
+                carried_on = tools.replay_for_step(key, doc, steps, inputs, carry_on=True)
+                async with contextlib.aclosing(self._live(step, key, carried_on)) as live:
+                    async for event in live:
+                        if _ANSWER in event:
+                            answer = event[_ANSWER]
+                        else:
+                            yield event
+            else:
+                yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": f"[Browser] {doc['name']}"}
+                replaying = tools.replay_for_step(key, doc, steps, inputs)
+                async with contextlib.aclosing(self._live(step, key, replaying)) as live:
+                    async for event in live:
+                        if _ANSWER in event:
+                            answer = event[_ANSWER]
+                        else:
+                            yield event
+            while True:
+                fix = answer.get("fix")
+                if fix and fix.get("steps"):
+                    by = "agent" if phase in ("agent", "agent_done") else (browser_client.for_user.get() or "person")
+                    try:
+                        await recs.add_edit(doc["id"], step_id=fix["step_id"], steps=fix["steps"], by=by,
+                                            run_id=run.run_id, shots=fix.get("shots") or None)
+                        yield {"type": "step_warning", "orch_step_id": step.id, "message": (
+                            f"'{doc['name']}' changed at step {fix['n']}: the way found is waiting for approval "
+                            "in Recordings.")}
+                    except recs.NotFound:
+                        pass
+                if answer.get("refused"):
+                    raise RuntimeError(f"Browser step '{step.name}': {answer['refused']}")
+                if answer.get("handover"):
+                    async for event in self._park(step, run, progress, answer["handover"], "turn"):
+                        yield event
+                    return
+                if answer.get("miss"):
+                    miss = answer["miss"]
+                    if step.on_miss == "agent" and step.agent_id and phase not in ("agent", "agent_done"):
+                        progress["browser"] = {"phase": "agent"}
+                        run.step_progress[step.id] = progress
+                        progress["browser_miss"] = miss
+                        async for event in self._fix(step, run, engine, doc, progress):
+                            yield event
+                            if event.get("type") == "human_input_required":
+                                return
+                        async with contextlib.aclosing(self._live(step, key, tools.latest_replay(key))) as live:
+                            async for event in live:
+                                if _ANSWER in event:
+                                    answer = event[_ANSWER] or {"refused": "The browser closed."}
+                                else:
+                                    yield event
+                        phase = "agent_done"
+                        continue
+                    turn = await tools.hand_to_person(key, (
+                        f"'{doc['name']}' can't find step {miss.get('n')}, \"{miss.get('line')}\": "
+                        f"{miss.get('why')}. Do that step yourself, then hand the browser back."))
+                    async for event in self._park(step, run, progress, turn, "miss"):
+                        yield event
+                    return
+                break
+        finally:
+            browser_client.owner.reset(tokens[0])
+            browser_client.settings.reset(tokens[1])
+        progress.pop("browser", None)
+        progress.pop("browser_miss", None)
+        run.step_progress[step.id] = progress
+        outputs = answer.get("outputs") or {}
+        if step.output_key:
+            run.shared_state[step.output_key] = outputs
+        yield {"type": "final", "orch_step_id": step.id, "step_name": step.name,
+               "response": json.dumps(outputs, ensure_ascii=False) if outputs else f"Ran '{doc['name']}'."}
+
+    async def _live(self, step, key: str, call):
+        """`call` (the replay, or the wait on it) as a task of its own, and the browser's events for `key` as they
+        come (F1356: the run page's pane, live): every `_DRAIN_EVERY` seconds while it runs, and once at its end, in
+        the order the component queued them, each with the step's id. Its answer comes last, as `{_ANSWER: …}`. A
+        step cancelled mid-replay cancels it: no replay left running, nothing said after the step's end. Each caller
+        holds it in `contextlib.aclosing`, so a step that is closed ends it in its own task (never the event loop's
+        finaliser, later): a cancel aimed at the step while it waits for the replay's end is the step's."""
+        from core.browser import client as browser_client
+
+        task = asyncio.create_task(call, name=f"browser-replay:{step.id}")
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=_DRAIN_EVERY)
+                for event in browser_client.tools.take_events(key):
+                    yield {**event, "orch_step_id": step.id, "step_name": step.name}
+                if done:
+                    break
+            yield {_ANSWER: task.result()}
+        finally:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    # The replay's own end passes; a cancel aimed at the step while it waited for it is the step's.
+                    here = asyncio.current_task()
+                    if here is not None and here.cancelling():
+                        raise
+                except Exception:  # noqa: BLE001 — the replay's own failure, as it ends; the step's is what propagates
+                    pass
+
+    async def _park(self, step, run, progress: dict, handover: dict, phase: str):
+        """The person's turn, as an agent step parks on one (F1099): answered by handing the browser back."""
+        from core.browser import client as browser_client
+        from core.orchestration.state import SharedState
+        key = browser_client.owner_for(None, run.run_id)
+        await browser_client.tools.park_turn(key, handover)
+        progress["browser"] = {"phase": phase}
+        progress["pending_browser_turn"] = {"session_id": handover.get("session_id"),
+                                            "banner_kind": handover.get("kind"), "reason": handover.get("reason")}
+        run.step_progress[step.id] = progress
+        try:
+            await SharedState(run).checkpoint(columns=("step_progress",))
+        except Exception as ckpt_err:
+            _log.warning(f"browser-step checkpoint failed: {ckpt_err}")
+        reason = handover.get("reason", "")
+        yield {"type": "human_input_required", "kind": "browser_turn", "prompt": reason,
+               "session_id": handover.get("session_id"), "banner_kind": handover.get("kind"),
+               "fields": [{"name": "browser_turn", "type": "browser_turn", "label": reason,
+                           "session_id": handover.get("session_id"), "banner_kind": handover.get("kind")}],
+               "orch_step_id": step.id, "step_name": step.name, "run_id": run.run_id}
+
+    async def _fix(self, step, run, engine, doc: dict, progress: dict):
+        """The step's Browser agent finds the missed step's way, in the same browser, with only this recording to
+        carry on (F1144): an Agent step in all but name, its transcript and turns kept under this step."""
+        from core.browser import recordings as recs
+        miss = progress.get("browser_miss") or {}
+        task = (f"Synapse was replaying the recording `{recs.slug(doc)}` ({doc['name']}) in your browser, and it "
+                f"stopped at step {miss.get('n')}, \"{miss.get('line')}\": {miss.get('why')}. The page is open "
+                "where it stopped. Find the way for that step with your browser tools, doing only what that step "
+                "did, on the same site. Then call browser_run_recording with recording "
+                f"\"{recs.slug(doc)}\" and carry_on: true, and finish with one line on what you did. If you can't "
+                "find it, call browser_hand_over.")
+        fixer = step.model_copy(update={"type": StepType.AGENT, "prompt_template": task, "output_key": None,
+                                        "browser_recordings": [doc["id"]], "input_keys": []})
+        async for event in AgentStepExecutor().execute(fixer, run, engine):
+            if event.get("type") == "human_input_required":
+                fresh = dict(run.step_progress.get(step.id) or {})
+                fresh["browser"] = {"phase": "agent"}
+                fresh.setdefault("browser_miss", miss)
+                run.step_progress[step.id] = fresh
+            yield event
 
 
 # Registry of all step executors
@@ -1782,4 +3947,8 @@ STEP_EXECUTORS = {
     StepType.SWITCH: SwitchStepExecutor(),
     StepType.PRINT: PrintStepExecutor(),
     StepType.END: EndStepExecutor(),
+    StepType.RETRIEVE: RetrieveStepExecutor(),
+    StepType.INGEST: IngestStepExecutor(),
+    StepType.WORKFLOW: WorkflowStepExecutor(),
+    StepType.BROWSER: BrowserStepExecutor(),
 }

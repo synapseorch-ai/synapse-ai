@@ -29,7 +29,7 @@ async def require_api_key(
 
     Raises 401 if the key is missing, invalid, or revoked.
     """
-    record = validate_api_key(credentials.credentials)
+    record = await validate_api_key(credentials.credentials)
     if not record:
         raise HTTPException(
             status_code=401,

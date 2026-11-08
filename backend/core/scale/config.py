@@ -5,6 +5,16 @@ Returns ScaleConfig(scale_mode=False) when Redis URL is not set (standalone mode
 from dataclasses import dataclass, field
 import os
 
+#: The one queue. Every producer enqueues here and every worker drains here.
+#:
+#: This used to be `synapse:orchestrations:{WORKER_QUEUE_SHARD}`, which made a
+#: shared fleet impossible: binding a queue to a tenant means one worker pool
+#: per tenant, so signing up a customer provisions infrastructure and 1,000
+#: mostly-idle tenants cost 1,000 idle pools. Any worker can now run any
+#: tenant's job, concurrently, because the job carries its tenant rather than
+#: the queue implying it.
+QUEUE_NAME = "synapse:orchestrations"
+
 
 @dataclass
 class ScaleConfig:
@@ -19,9 +29,6 @@ class ScaleConfig:
 
     # Queue settings
     worker_concurrency: int = 10
-    num_queue_shards: int = 1        # Number of ARQ queue shards for Redis Cluster
-    default_tenant_id: str = "default"
-    enable_tenant_isolation: bool = False
 
     # Retention
     runs_retention_days: int = 90
@@ -32,7 +39,7 @@ class ScaleConfig:
     rate_limit_per_tenant_rps: int = 1000
 
     # Observability
-    otlp_endpoint: str = ""          # e.g. http://jaeger:4317
+    otlp_endpoint: str = ""          # e.g. http://otel-collector:4317
     metrics_token: str = ""          # bearer token for /metrics endpoint
 
     # Kubernetes
@@ -59,19 +66,28 @@ def get_scale_config() -> ScaleConfig:
     except Exception:
         settings = {}
 
+    # `os.getenv(key, fallback)` returns an EMPTY value rather than the fallback,
+    # and compose passes `S3_BUCKET=${S3_BUCKET:-}` and friends — so an unset
+    # variable shadowed a value saved on the Scale screen (F57/F60). `or` is the
+    # whole fix: empty means "not configured here".
+    def env(key: str, saved: str = "", default: str = "") -> str:
+        return (os.getenv(key) or "").strip() or saved or default
+
     redis_url = (
         os.getenv("REDIS_URL")
         or settings.get("redis_url", "")
     )
-    postgres_url = (
+    from core.store.engine import is_sqlite, normalise_db_url
+
+    # The scale layer's Postgres is the engine's own unless told otherwise —
+    # the API and the workers must share one database. A worker handed a blank
+    # SCALE_POSTGRES_URL used to build an engine from "" and crash (F60).
+    engine_url = normalise_db_url((os.getenv("SYNAPSE_DB_URL") or "").strip())
+    postgres_url = normalise_db_url(
         os.getenv("SCALE_POSTGRES_URL")
         or settings.get("scale_postgres_url", "")
+        or ("" if not engine_url or is_sqlite(engine_url) else engine_url)
     )
-
-    # Normalise the Postgres URL to asyncpg dialect
-    if postgres_url and "postgresql+asyncpg" not in postgres_url:
-        postgres_url = postgres_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-        postgres_url = postgres_url.replace("postgres://", "postgresql+asyncpg://", 1)
 
     # Redis Cluster is auto-detected from URL scheme
     redis_cluster_mode = redis_url.startswith("redis+cluster://")
@@ -84,21 +100,20 @@ def get_scale_config() -> ScaleConfig:
         scale_mode=scale_mode,
         pgbouncer_mode=bool(int(os.getenv("PGBOUNCER_MODE", "0"))),
         redis_cluster_mode=redis_cluster_mode,
-        worker_concurrency=int(os.getenv("WORKER_CONCURRENCY", str(settings.get("worker_concurrency", 10)))),
-        num_queue_shards=int(os.getenv("NUM_QUEUE_SHARDS", "1")),
-        default_tenant_id=os.getenv("DEFAULT_TENANT_ID", "default"),
-        enable_tenant_isolation=bool(int(os.getenv("ENABLE_TENANT_ISOLATION", "0"))),
+        # Environment only, like ARQ's own `max_jobs` (`WorkerSettings`) — a saved
+        # value would be advertised on the workers table and never run (F58).
+        worker_concurrency=int(os.getenv("WORKER_CONCURRENCY", "10")),
         runs_retention_days=int(os.getenv("RUNS_RETENTION_DAYS", "90")),
         pubsub_event_ttl=int(os.getenv("PUBSUB_EVENT_TTL", "3600")),
         max_global_queue_depth=int(os.getenv("MAX_GLOBAL_QUEUE_DEPTH", "1000000")),
         rate_limit_per_tenant_rps=int(os.getenv("RATE_LIMIT_PER_TENANT_RPS", "1000")),
-        otlp_endpoint=os.getenv("OTLP_ENDPOINT", settings.get("otlp_endpoint", "")),
-        metrics_token=os.getenv("METRICS_TOKEN", settings.get("metrics_token", "")),
+        otlp_endpoint=env("OTLP_ENDPOINT", settings.get("otlp_endpoint", "")),
+        metrics_token=os.getenv("METRICS_TOKEN", ""),  # read by /api/v2/metrics from the env
         k8s_mode=bool(int(os.getenv("K8S_MODE", "0"))),
-        s3_bucket=os.getenv("S3_BUCKET", settings.get("s3_bucket", "")),
-        s3_region=os.getenv("S3_REGION", settings.get("s3_region", "us-east-1")),
-        s3_prefix=os.getenv("S3_PREFIX", settings.get("s3_prefix", "synapse")),
-        s3_access_key_id=os.getenv("S3_ACCESS_KEY_ID", settings.get("s3_access_key_id", "")),
-        s3_secret_access_key=os.getenv("S3_SECRET_ACCESS_KEY", settings.get("s3_secret_access_key", "")),
-        s3_endpoint_url=os.getenv("S3_ENDPOINT_URL", settings.get("s3_endpoint_url", "")),
+        s3_bucket=env("S3_BUCKET", settings.get("s3_bucket", "")),
+        s3_region=env("S3_REGION", settings.get("s3_region", "us-east-1")),
+        s3_prefix=env("S3_PREFIX", settings.get("s3_prefix", "synapse")),
+        s3_access_key_id=env("S3_ACCESS_KEY_ID", settings.get("s3_access_key_id", "")),
+        s3_secret_access_key=env("S3_SECRET_ACCESS_KEY", settings.get("s3_secret_access_key", "")),
+        s3_endpoint_url=env("S3_ENDPOINT_URL", settings.get("s3_endpoint_url", "")),
     )

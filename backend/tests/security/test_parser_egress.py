@@ -17,12 +17,6 @@ every tenant's problem on that worker, not just the caller's.
 The stand-in for "the public internet" is a loopback server named in
 `EGRESS_ALLOW_HOSTS`. `localhost` resolves to the same server but is not on the
 list, so a hop there is a hop into a blocked range — the redirect case.
-
-Backported to 1.9.2 with two differences from the development line: no
-`openWorldHint` (1.9.x declares no tool annotations), and no check that a
-spreadsheet parses — in 1.9.x it never has, because `to_markdown` needs
-`tabulate`, which nothing installs (F172, fixed on the development line and
-deliberately not in a security release). Every refusal is checked for both tools.
 """
 from __future__ import annotations
 
@@ -140,12 +134,21 @@ def _public_is_127(monkeypatch):
     egress_guard._resolve_cache.clear()
 
 
+async def _tool_text(module, tool: str, url: str) -> str:
+    """What a client reads, through a real MCP session. A refusal is an error
+    result since F174, and its text is the refusal."""
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    async with create_connected_server_and_client_session(module.app) as client:
+        return (await client.call_tool(tool, {"file_url": url})).content[0].text
+
+
 async def _pdf_text(url: str) -> str:
-    return (await pdf_parser.call_tool("parse_pdf", {"file_url": url}))[0].text
+    return await _tool_text(pdf_parser, "parse_pdf", url)
 
 
 async def _xlsx_text(url: str) -> str:
-    return (await xlsx_parser.call_tool("parse_xlsx", {"file_url": url}))[0].text
+    return await _tool_text(xlsx_parser, "parse_xlsx", url)
 
 
 PARSERS = [pytest.param(_pdf_text, "doc.pdf", id="pdf"), pytest.param(_xlsx_text, "sheet.xlsx", id="xlsx")]
@@ -162,9 +165,22 @@ async def test_a_pdf_from_an_allowed_host_still_parses(server):
     assert MARKER in text
 
 
-async def test_a_redirect_between_allowed_hosts_is_followed(server):
-    target = f"http://127.0.0.1:{server}/doc.pdf"
-    text = await _pdf_text(f"http://127.0.0.1:{server}/redirect?to={target}")
+async def test_a_spreadsheet_from_an_allowed_host_parses_to_markdown(server):
+    """F172: this never worked — `to_markdown` needs `tabulate`, which nothing installs."""
+    text = await _xlsx_text(f"http://127.0.0.1:{server}/sheet.xlsx")
+    assert "Error" not in text, text
+    assert "--- Sheet: First ---" in text
+    assert "| name | value |" in text
+    assert "| --- | --- |" in text
+    assert "| beta | 2 |" in text
+    assert MARKER in text
+    assert "--- Sheet: Blank ---" in text and "[Empty Sheet]" in text
+
+
+@pytest.mark.parametrize("read, name", PARSERS)
+async def test_a_redirect_between_allowed_hosts_is_followed(server, read, name):
+    target = f"http://127.0.0.1:{server}/{name}"
+    text = await read(f"http://127.0.0.1:{server}/redirect?to={target}")
     assert MARKER in text
 
 
@@ -230,3 +246,15 @@ async def test_a_server_that_never_answers_times_out(server, monkeypatch, read, 
     text = await read(f"http://127.0.0.1:{server}/hang")
     assert "did not finish" in text, text
     assert time.monotonic() - started < 5
+
+
+# ---------------------------------------------------------------------------
+# Declared as reaching the open world
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("module", [pdf_parser, xlsx_parser])
+async def test_both_tools_declare_open_world(module):
+    """Keeps them out of the tool cache (F67): the same URL can serve new bytes."""
+    tools = await module.list_tools()
+    assert tools and all(t.annotations.openWorldHint is True for t in tools)

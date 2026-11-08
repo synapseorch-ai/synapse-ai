@@ -2,12 +2,16 @@ import os
 import sys
 from pathlib import Path
 
-# Load the project-root .env before anything else so that SYNAPSE_BACKEND_PORT
-# and other vars are available even when running `python main.py` directly.
-_ROOT_ENV = Path(__file__).resolve().parent.parent / ".env"
+# Load this install's .env before anything else so that SYNAPSE_BACKEND_PORT
+# and other vars are available even when running `python main.py` directly:
+# the project root's in a source checkout, $SYNAPSE_HOME's in a packaged
+# install. `core` resolves because running this file puts backend/ first on
+# sys.path.
+from core.paths import env_file
+
 try:
     from dotenv import load_dotenv
-    load_dotenv(dotenv_path=_ROOT_ENV, override=False)  # override=False: real env vars win
+    load_dotenv(dotenv_path=env_file(), override=False)  # override=False: real env vars win
 except ImportError:
     pass  # dotenv not installed — env vars must be set manually
 

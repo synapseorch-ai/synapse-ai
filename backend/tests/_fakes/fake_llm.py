@@ -32,7 +32,27 @@ import asyncio
 import os
 import random
 import threading
+from dataclasses import dataclass
 from typing import Any
+
+
+@dataclass
+class Streamed:
+    """A scripted reply that streams (U72): `chunks` go out one by one when the
+    engine streams the answer, and the call then returns `returns` (default:
+    the chunks joined). A different `returns` stands for a provider that moved
+    text aside, e.g. narration beside a native tool call. `restart_after` sends
+    the call "again" after that many chunks, as a provider retry does.
+    """
+    chunks: list[str]
+    returns: str | None = None
+    restart_after: int | None = None
+    #: Seconds between chunks; 0 lets the waiter merge them into one wake.
+    delay: float = 0.0
+
+    @property
+    def text(self) -> str:
+        return "".join(self.chunks) if self.returns is None else self.returns
 
 
 class FakeLLM:
@@ -97,9 +117,17 @@ class FakeLLM:
         self.calls.append(dict(kwargs) if kwargs else {"_args": args})
         await self._maybe_delay()
         with self._lock:
-            if self._script:
-                return self._script.pop(0)
-        return self.default
+            reply = self._script.pop(0) if self._script else self.default
+        if isinstance(reply, Streamed):
+            from core import model_wait
+            if model_wait.streaming_wanted():
+                for i, chunk in enumerate(reply.chunks):
+                    if reply.restart_after is not None and i == reply.restart_after:
+                        model_wait.restart_stream()
+                    model_wait.emit_delta(chunk)
+                    await asyncio.sleep(reply.delay)
+            return reply.text
+        return reply
 
 
 def tool_call(name: str, **args: Any) -> str:

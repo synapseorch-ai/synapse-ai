@@ -14,10 +14,6 @@ import pytest
 from _fakes import seed as S
 
 
-@pytest.fixture(autouse=True)
-def _isolate_runs_dir(tmp_path, monkeypatch):
-    import core.orchestration.state as state_mod
-    monkeypatch.setattr(state_mod, "RUNS_DIR", tmp_path / "runs")
 
 
 def _server():
@@ -59,9 +55,9 @@ def _parallel_orch():
     )
 
 
-def _final_checkpoint(run_id="run_lp"):
+async def _final_checkpoint(run_id="run_lp"):
     import core.orchestration.state as state_mod
-    return json.loads((state_mod.RUNS_DIR / f"{run_id}.json").read_text(encoding="utf-8"))
+    return (await state_mod.SharedState.restore(run_id)).run.model_dump(mode="json")
 
 
 class TestLoopCheckpoint:
@@ -87,7 +83,7 @@ class TestLoopCheckpoint:
         monkeypatch.setattr(state_mod.SharedState, "checkpoint", spy)
         await _run(_loop_orch(3))
         assert checkpoints[:3] == [1, 2, 3]  # one checkpoint per iteration
-        assert "_loop_progress_loop1" not in _final_checkpoint()["shared_state"]
+        assert "_loop_progress_loop1" not in (await _final_checkpoint())["shared_state"]
 
     async def test_fully_completed_progress_short_circuits(self):
         events = await _run(_loop_orch(2), initial_state={
@@ -135,15 +131,16 @@ class TestParallelCheckpoint:
         started = [e["orch_step_id"] for e in events
                    if e.get("type") == "step_start" and e["orch_step_id"] != "par"]
         assert started == ["b0", "b1"]
-        state = _final_checkpoint("run_par_clean")["shared_state"]
+        state = (await _final_checkpoint("run_par_clean"))["shared_state"]
         assert "_parallel_progress_par" not in state
         assert state["r0"] == "zero" and state["r1"] == "one"
 
 
 class TestLoopHumanPause:
-    async def test_human_pause_drops_loop_progress(self):
-        """The engine resumes PAST a loop after human input, so pausing must
-        not leave iteration progress that would corrupt a later re-entry."""
+    async def test_human_pause_keeps_the_loops_place(self):
+        """Answering re-enters the loop where it stopped (F109). This used to
+        assert the opposite: the engine resumed *past* the loop, dropping the
+        remaining iterations, so the progress was thrown away at the pause."""
         orch = S.make_orchestration(
             id="orch_loop_human",
             entry_step_id="loop1",
@@ -156,5 +153,9 @@ class TestLoopHumanPause:
         )
         events = await _run(orch, run_id="run_loop_human")
         assert any(e.get("type") == "human_input_required" for e in events)
-        state = _final_checkpoint("run_loop_human")["shared_state"]
-        assert "_loop_progress_loop1" not in state
+        state = (await _final_checkpoint("run_loop_human"))["shared_state"]
+        assert state["_loop_progress_loop1"] == {
+            "completed_iterations": 0,
+            "paused": {"iteration": 1, "index": 0, "step_id": "ask", "completed": [],
+                       "answered": False},
+        }

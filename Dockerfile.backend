@@ -22,7 +22,7 @@ RUN npm install -g \
     @modelcontextprotocol/server-filesystem \
     @modelcontextprotocol/server-memory \
     @modelcontextprotocol/server-sequential-thinking \
-    @playwright/mcp
+    @playwright/mcp@0.0.83
 
 RUN pip install playwright && playwright install chromium --with-deps
 
@@ -32,16 +32,33 @@ WORKDIR /app
 # requirements.txt is copied too, as the fallback and for provenance.
 COPY backend/requirements.txt backend/requirements.lock ./
 RUN pip install --no-cache-dir -r requirements.lock
+# OpenTelemetry, so an operator can export to their own collector; it stays off
+# until SYNAPSE_TELEMETRY=otlp or OTLP_ENDPOINT is set (core/telemetry/config.py).
+COPY backend/requirements-telemetry.txt backend/requirements-telemetry.lock ./
+RUN pip install --no-cache-dir -r requirements-telemetry.lock
 
 COPY backend/core ./core
 COPY backend/services ./services
 COPY backend/tools ./tools
 COPY backend/main.py .
+# The version the MCP endpoint reports, beside core/ (F1462, #378: it was the mcp SDK's).
+COPY pyproject.toml ./
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-ENV SYNAPSE_DATA_DIR=/data
 ENV PYTHONPATH=/app
+
+# See the note in ./Dockerfile. Documents go to a database given as deployment
+# configuration; tenant content goes to /data/blobs (or to S3, via the S3_*
+# vars); rebuildable state stays off the volume because each replica owns its
+# own. /data is the path 1.x mounted, and its JSON is imported from there once.
+ENV SYNAPSE_BLOB_DIR=/data/blobs
+ENV SYNAPSE_DB_URL=sqlite+aiosqlite:////data/synapse.db
+ENV SYNAPSE_STATE_DIR=/var/lib/synapse/state
+ENV SYNAPSE_SECRETS_DIR=/data
+ENV SYNAPSE_DATA_DIR=/data
+VOLUME /data
+
 # Auto-generate + persist the internal token so InternalTokenMiddleware enforces
 # by default. In compose, SYNAPSE_SECRETS_DIR is pointed at the shared volume so
 # the frontend can read the same value; standalone `docker run` persists to /data.

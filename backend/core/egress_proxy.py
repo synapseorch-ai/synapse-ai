@@ -22,6 +22,9 @@ resolved to); anything that is not a proxy request is a `400`.
 It listens on loopback and needs no credentials: what it reaches is the public
 internet, which anything on the machine reaches already.
 
+A host's own proxy comes first: where the environment names one (cloud's I1
+Smokescreen, F580), the browser is given that instead, and it is the layer.
+
 Deliberately stdlib-only, like the guard: the scraper's subprocess starts its own.
 """
 from __future__ import annotations

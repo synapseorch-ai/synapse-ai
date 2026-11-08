@@ -36,13 +36,12 @@ jobs:
           hatch build
 
       - name: Install the WHEEL in a clean venv and run the CLI
-        # --no-deps keeps this a fast packaging/entry-point check; the full
-        # dependency resolution across this Python matrix is covered by the
-        # backend-tests job in ci.yml (which installs backend/requirements.txt).
+        # With its dependencies, as publish.yml checks the wheel it uploads: 2.0's
+        # CLI imports them (rich among them), so a --no-deps install can't start it (F1468).
         run: |
           python -m venv /tmp/whl
           /tmp/whl/bin/pip install --upgrade pip
-          /tmp/whl/bin/pip install --no-deps dist/*.whl
+          /tmp/whl/bin/pip install dist/*.whl
           /tmp/whl/bin/synapse --help
           /tmp/whl/bin/python -c "import synapse.cli; assert callable(synapse.cli.main)"
 
@@ -50,7 +49,7 @@ jobs:
         run: |
           python -m venv /tmp/sdist
           /tmp/sdist/bin/pip install --upgrade pip
-          /tmp/sdist/bin/pip install --no-deps dist/*.tar.gz
+          /tmp/sdist/bin/pip install dist/*.tar.gz
           /tmp/sdist/bin/synapse --help
 
       - name: Assert the lockfiles are packaged
@@ -87,15 +86,19 @@ jobs:
       - name: Install the locked dependency set
         run: |
           python -m pip install --upgrade pip
-          pip install -r backend/requirements.lock
+          pip install -r backend/requirements.lock -r backend/requirements-messaging.lock
           pip install -r backend/requirements-test.txt
 
-      - name: Boot every MCP tool server
+      - name: Boot every MCP tool server, and import every backend module
+        # test_backend_imports is here for the Python it runs on: 3.14 evaluates
+        # annotations lazily, so a module that cannot import on 3.11–3.13 passes
+        # every test a 3.14 venv runs (F308).
         run: |
           python -m pytest \
             backend/tests/install/test_mcp_tool_servers.py \
             backend/tests/install/test_mcp_sdk_contract.py \
             backend/tests/install/test_requirements_pinned.py \
+            backend/tests/install/test_backend_imports.py \
             -v -ra
 
   # ── npm ─────────────────────────────────────────────────────────────────────
@@ -110,28 +113,33 @@ jobs:
       - name: Syntax-check the launcher
         run: node --check bin/synapse.js
 
-      - name: Pack the npm package (stub the frontend bundle)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Pack the npm package
         run: |
-          mkdir -p frontend-build && touch frontend-build/.keep
+          npm run build
           npm pack
 
-      - name: Assert tarball hygiene + required files
+      - name: The package is the launcher and the installer, nothing else
         run: |
           tgz=$(ls synapse-orch-ai-*.tgz)
           echo "Packed: $tgz"
-          if tar tzf "$tgz" | grep -E '__pycache__|\.pyc$'; then
-            echo "::error::npm tarball ships Python bytecode"; exit 1
-          fi
-          for f in package/bin/synapse.js package/backend/main.py \
-                   package/backend/core/server.py package/scripts/postinstall.js; do
+          tar tzf "$tgz" | sort
+          for f in package/bin/synapse.js package/installer/synapse-install.pyz package/package.json; do
             tar tzf "$tgz" | grep -qx "$f" || { echo "::error::missing $f in npm tarball"; exit 1; }
           done
+          if tar tzf "$tgz" | grep -E '^package/(backend|frontend-build|scripts)/'; then
+            echo "::error::the npm package ships its own backend or frontend again"; exit 1
+          fi
 
-      - name: Global install links the `synapse` binary
+      - name: Global install links `synapse`, which answers --version without installing
         run: |
           npm install -g ./synapse-orch-ai-*.tgz
           command -v synapse
-          # A full run bootstraps a venv + pip install (heavy) — that E2E lives in nightly.
+          test "$(synapse --version)" = "synapse $(node -p "require('./package.json').version")"
+          test ! -e "$HOME/.synapse/install.json"
 
   # ── docker-compose ──────────────────────────────────────────────────────────
   compose-config:
@@ -144,7 +152,6 @@ jobs:
         run: |
           docker compose config --quiet
           docker compose --profile scale config --quiet
-          docker compose --profile enterprise config --quiet
 
   # ── setup scripts ───────────────────────────────────────────────────────────
   setup-scripts:
@@ -160,8 +167,36 @@ jobs:
           bash -n start.sh
           python -m py_compile setup.py
       - name: Parse the PowerShell installer
+        # ParseFile reports errors through its third argument; it used to be
+        # thrown away, so a setup.ps1 that did not parse passed.
         shell: pwsh
         run: |
+          $errors = $null
           [void][System.Management.Automation.Language.Parser]::ParseFile(
-            "$PWD/setup.ps1", [ref]$null, [ref]$null)
+            "$PWD/setup.ps1", [ref]$null, [ref]$errors)
+          if ($errors) { $errors | ForEach-Object { Write-Host "::error::$($_.Message)" }; exit 1 }
           Write-Host "setup.ps1 parses OK"
+
+  # ── the installer (synapse/installer), on every OS it runs on ───────────────
+  # Standard library only, so no dependencies are installed: that is part of
+  # what is being checked. --noconftest keeps the backend's fixtures (and their
+  # imports) out of it. backend/ is on the path, as the conftest puts it, for the
+  # cases that hold the installer's own copies to core's (core.default_agent,
+  # core.providers.cli_status), which import only the standard library too (F1468).
+  installer:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Installer tests
+        env:
+          PYTHONPATH: backend
+        run: |
+          python -m pip install pytest
+          python -m pytest --noconftest -ra backend/tests/install/test_installer_parts.py backend/tests/install/test_installer_flow.py

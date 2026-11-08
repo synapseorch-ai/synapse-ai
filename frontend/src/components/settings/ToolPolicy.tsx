@@ -1,0 +1,252 @@
+/**
+ * The tool-policy control, shared by the agent editor and Settings → General.
+ *
+ * The engine decides a tool call by what the tool *does* rather than by its
+ * name (`core/tool_policy.py`): a declared-destructive tool can be held for a
+ * person or refused outright without taking it away from the agent. Until this
+ * screen existed the whole feature was reachable only by hand-editing an agent
+ * document — and the API dropped the field on the next save, so even that did
+ * not survive.
+ *
+ * `resolvePolicy` and `gatingCategories` mirror the engine functions of the
+ * same name. They are here so the editor can say what a choice will do before
+ * it is saved; the engine remains the only thing that enforces any of it.
+ */
+
+import { Select } from '@/components/ui';
+
+export type ToolPolicy = Record<string, string>;
+
+/** Riskiest first — the first category a tool matches decides. */
+export const POLICY_CATEGORIES = [
+    {
+        id: 'destructive',
+        label: 'Tools that change data permanently',
+        // Mid-sentence, where the plural heading does not fit. Kept close to
+        // `core/tool_policy.py`'s own REASONS so a person reading the refusal
+        // and a person reading this screen hear the same thing.
+        clause: 'a tool that can change data permanently',
+        hint: 'The tool declares that it modifies data in a way that cannot be undone.',
+    },
+    {
+        id: 'open_world',
+        label: 'Tools that reach outside this workspace',
+        clause: 'a tool that reaches outside this workspace',
+        hint: 'The tool declares that it talks to systems this workspace does not control.',
+    },
+    {
+        id: 'undeclared',
+        label: "Tools that don't say what they do",
+        clause: "a tool that doesn't say what it does",
+        hint: 'Most tools. An outside MCP server’s promise that its tool is safe is a claim rather than a boundary, so a read-only tool from one lands here too, as does a tool that changes something without reaching outside this workspace.',
+    },
+] as const;
+
+export const POLICY_CHOICES = [
+    { value: 'allow', label: 'Allow' },
+    { value: 'confirm', label: 'Ask first' },
+    { value: 'deny', label: 'Block' },
+] as const;
+
+/** What each decision means, in one line, under the control. */
+export const POLICY_MEANING: Record<string, string> = {
+    allow: 'The call runs.',
+    confirm: 'The run stops and a person decides. In chat that is a card in the conversation; in a workflow the run waits for input.',
+    deny: 'The call never runs, and the model is told why.',
+};
+
+/** Built-in defaults, then the workspace’s, then the agent’s — the order in
+ *  `core/tool_policy.py::resolve_policy`. Unknown keys and values are ignored
+ *  rather than obeyed, here as there. */
+export function resolvePolicy(agent: ToolPolicy | null | undefined, defaults: ToolPolicy | null | undefined): ToolPolicy {
+    const valid = new Set(POLICY_CHOICES.map(c => c.value as string));
+    const out: ToolPolicy = {};
+    for (const c of POLICY_CATEGORIES) out[c.id] = 'allow';
+    for (const source of [defaults, agent]) {
+        if (!source || typeof source !== 'object') continue;
+        for (const c of POLICY_CATEGORIES) {
+            if (valid.has(source[c.id])) out[c.id] = source[c.id];
+        }
+    }
+    return out;
+}
+
+/** The categories that would stop and ask a person — the set a chat widget
+ *  refuses to publish, because a visitor is not a member and cannot answer. */
+export function gatingCategories(agent: ToolPolicy | null | undefined, defaults: ToolPolicy | null | undefined): string[] {
+    const resolved = resolvePolicy(agent, defaults);
+    return POLICY_CATEGORIES.filter(c => resolved[c.id] === 'confirm').map(c => c.id);
+}
+
+/** A rule for one tool (BWA1): `tool:<name>` beside the categories, which wins over the tool's category in the
+ *  engine (`core/tool_policy.py::decide`). */
+export const TOOL_KEY = 'tool:';
+
+export function toolRules(value: ToolPolicy | null | undefined): [string, string][] {
+    return Object.entries(value ?? {})
+        .filter(([k]) => k.startsWith(TOOL_KEY) && k.length > TOOL_KEY.length)
+        .map(([k, v]) => [k.slice(TOOL_KEY.length), v] as [string, string])
+        .sort(([a], [b]) => a.localeCompare(b));
+}
+
+interface ToolPolicyFieldsProps {
+    value: ToolPolicy;
+    onChange: (next: ToolPolicy) => void;
+    /** The agent's own tools, for rules about one tool. Omitted at the workspace level. */
+    tools?: string[];
+    /** The workspace defaults an unset category falls back to. Omit at the
+     *  workspace level, where there is nothing above to inherit and unset
+     *  simply means Allow. */
+    inheritFrom?: ToolPolicy | null;
+    disabled?: boolean;
+}
+
+export function ToolPolicyFields({ value, onChange, inheritFrom, tools, disabled = false }: ToolPolicyFieldsProps) {
+    const canInherit = inheritFrom !== undefined && inheritFrom !== null;
+    const resolvedDefaults = resolvePolicy(null, inheritFrom);
+
+    const set = (category: string, decision: string | null) => {
+        const next = { ...value };
+        // At the workspace level, "Allow" *is* the absence of a rule — the
+        // engine resolves an unnamed category to allow. Storing it explicitly
+        // would pin the workspace to today's default and quietly survive a
+        // later change to it, which is the argument the settings writer already
+        // makes for every other key. At the agent level it is kept, because
+        // there it overrides a floor that may be stricter.
+        if (decision === null || (!canInherit && decision === 'allow')) delete next[category];
+        else next[category] = decision;
+        onChange(next);
+    };
+
+    return (
+        <div className="space-y-3">
+            {POLICY_CATEGORIES.map(cat => {
+                const chosen = value?.[cat.id];
+                const effective = chosen ?? (canInherit ? resolvedDefaults[cat.id] : 'allow');
+                // What is highlighted. An unset category at the workspace level
+                // is not "nothing chosen" — it is Allow, and a radio group with
+                // no selection cannot say what the setting currently is.
+                const selected = chosen ?? (canInherit ? undefined : 'allow');
+                return (
+                    <div key={cat.id} className="space-y-1">
+                        <span className="block text-xs font-medium text-text-muted">{cat.label}</span>
+                        <div className="flex gap-1">
+                            {canInherit && (
+                                <button
+                                    type="button"
+                                    disabled={disabled}
+                                    onClick={() => set(cat.id, null)}
+                                    aria-pressed={selected === undefined}
+                                    className={`flex-1 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${
+                                        selected === undefined
+                                            ? 'border-accent bg-accent/10 text-accent-ink'
+                                            : 'border-border bg-bg text-text-muted hover:border-border-strong hover:text-text'
+                                    }`}
+                                >
+                                    Default
+                                </button>
+                            )}
+                            {POLICY_CHOICES.map(choice => {
+                                const active = selected === choice.value;
+                                return (
+                                    <button
+                                        key={choice.value}
+                                        type="button"
+                                        disabled={disabled}
+                                        onClick={() => set(cat.id, choice.value)}
+                                        aria-pressed={active}
+                                        className={`flex-1 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${
+                                            active
+                                                ? 'border-accent bg-accent/10 text-accent-ink'
+                                                : 'border-border bg-bg text-text-muted hover:border-border-strong hover:text-text'
+                                        }`}
+                                    >
+                                        {choice.label}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                        <p className="text-2xs text-text-faint mt-1">{cat.hint}</p>
+                        <p className="text-2xs text-text-muted">
+                            {chosen === undefined && canInherit && (
+                                <span className="text-text-faint">
+                                    Following the workspace setting ({POLICY_CHOICES.find(c => c.value === effective)?.label}) —{' '}
+                                </span>
+                            )}
+                            {POLICY_MEANING[effective]}
+                        </p>
+                    </div>
+                );
+            })}
+            {tools && <OneToolRules value={value} onChange={onChange} tools={tools} disabled={disabled} />}
+        </div>
+    );
+}
+
+/** Rules about one tool: the tool's own decision, whatever its category says (BWA1). */
+function OneToolRules({ value, onChange, tools, disabled }: {
+    value: ToolPolicy;
+    onChange: (next: ToolPolicy) => void;
+    tools: string[];
+    disabled: boolean;
+}) {
+    const rules = toolRules(value);
+    const ruled = new Set(rules.map(([name]) => name));
+    const left = tools.filter(t => !ruled.has(t));
+    const set = (name: string, decision: string | null) => {
+        const next = { ...value };
+        if (decision === null) delete next[TOOL_KEY + name];
+        else next[TOOL_KEY + name] = decision;
+        onChange(next);
+    };
+    return (
+        <div className="space-y-2 border-t border-border pt-3">
+            <span className="block text-xs font-medium text-text-muted">For one tool</span>
+            <p className="text-2xs text-text-faint">A rule here wins over the tool’s category above: ask before one tool books or sends, while the rest run freely.</p>
+            {rules.map(([name, decision]) => (
+                <div key={name} className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate font-mono text-xs text-text">{name}</span>
+                    <div className="flex gap-1">
+                        {POLICY_CHOICES.map(choice => (
+                            <button
+                                key={choice.value}
+                                type="button"
+                                disabled={disabled}
+                                onClick={() => set(name, choice.value)}
+                                aria-pressed={decision === choice.value}
+                                aria-label={`${choice.label}: ${name}`}
+                                className={`rounded-md border px-2 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
+                                    decision === choice.value
+                                        ? 'border-accent bg-accent/10 text-accent-ink'
+                                        : 'border-border bg-bg text-text-muted hover:border-border-strong hover:text-text'
+                                }`}
+                            >
+                                {choice.label}
+                            </button>
+                        ))}
+                    </div>
+                    <button
+                        type="button"
+                        disabled={disabled}
+                        onClick={() => set(name, null)}
+                        aria-label={`Remove the rule for ${name}`}
+                        className="rounded-md px-1.5 py-1 text-xs text-text-faint hover:text-text disabled:opacity-50"
+                    >
+                        Remove
+                    </button>
+                </div>
+            ))}
+            {left.length > 0 && (
+                <Select
+                    value={undefined}
+                    onChange={v => set(v, 'confirm')}
+                    options={left.map(t => ({ value: t, label: t }))}
+                    placeholder="Add a rule for one tool…"
+                    size="sm"
+                    disabled={disabled}
+                    aria-label="Add a rule for one tool"
+                />
+            )}
+        </div>
+    );
+}

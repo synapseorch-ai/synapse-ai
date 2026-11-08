@@ -1,16 +1,22 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
-import { Play, ChevronDown, ChevronUp, Terminal, Package, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
-import { EditorView } from '@codemirror/view';
-import { basicSetup } from 'codemirror';
-import { python } from '@codemirror/lang-python';
-import { oneDarkTheme } from '@codemirror/theme-one-dark';
-import { EditorState } from '@codemirror/state';
-import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
-import { tags } from '@lezer/highlight';
+/**
+ * A Python tool: its code, its input schema, and a test run.
+ *
+ * The three editors are the kit's `CodeEditor`. This file used to build its own
+ * CodeMirror with the change listener bound once at mount, so it called
+ * `onChange({...draft, code})` with the draft *as it was then*: a name or a
+ * description typed after the editor opened was wiped by the next keystroke in
+ * the code (2026-09-14). `CodeEditor` reads `onChange` fresh on every change.
+ */
 
+import Link from 'next/link';
+import { useEffect, useMemo, useState } from 'react';
+import { Play, ChevronDown, ChevronUp, Terminal, Package, AlertCircle, CheckCircle2 } from 'lucide-react';
+
+import { CodeEditor, Combobox, Spinner, Tag, buttonStyles } from '@/components/ui';
+import { cn } from '@/lib/cn';
 /* ─── Types ──────────────────────────────────────────────────────────────── */
 
 export interface PythonDraftTool {
@@ -21,59 +27,19 @@ export interface PythonDraftTool {
     code: string;
     inputSchema: any;
     schemaParams?: any[];
+    /**
+     * Workspace variables this tool may read, handed to the code as `_globals`.
+     * The only way a Python tool receives one: arguments the model writes are
+     * never filled in with variables, because a prompt-injected page could name
+     * any key (F28, batch 1A). A name declared but not set arrives absent.
+     */
+    globals?: string[];
 }
 
 interface PythonToolEditorProps {
     draft: PythonDraftTool;
     onChange: (updated: PythonDraftTool) => void;
 }
-
-/* ─── Rich Python syntax highlighting ────────────────────────────────────── */
-
-const pythonHighlightStyle = HighlightStyle.define([
-    // Keywords: if, else, for, while, return, import, from, as, with, pass, break, continue, yield, lambda, del, global, nonlocal, raise, try, except, finally, assert
-    { tag: tags.keyword, color: '#c792ea', fontWeight: 'bold' },
-    // def / class keywords
-    { tag: tags.definitionKeyword, color: '#c792ea', fontWeight: 'bold' },
-    // self, True, False, None
-    { tag: tags.self, color: '#f78c6c', fontStyle: 'italic' },
-    { tag: tags.bool, color: '#ff9cac' },
-    { tag: tags.null, color: '#ff9cac' },
-    // Function / method names at definition (def foo:)
-    { tag: tags.definition(tags.function(tags.variableName)), color: '#82aaff', fontWeight: 'bold' },
-    // Function calls  (foo())
-    { tag: tags.function(tags.variableName), color: '#82aaff' },
-    // Class names
-    { tag: tags.definition(tags.className), color: '#ffcb6b', fontWeight: 'bold' },
-    { tag: tags.className, color: '#ffcb6b' },
-    // Decorator (@decorator)
-    { tag: tags.meta, color: '#ffa759', fontStyle: 'italic' },
-    // Variables / property access
-    { tag: tags.variableName, color: '#eeffff' },
-    { tag: tags.propertyName, color: '#89ddff' },
-    // Strings
-    { tag: tags.string, color: '#c3e88d' },
-    { tag: tags.special(tags.string), color: '#c3e88d' },  // f-strings, r-strings
-    // Numbers
-    { tag: tags.number, color: '#f78c6c' },
-    // Operators  + - * / = == != < > etc.
-    { tag: tags.operator, color: '#89ddff' },
-    // Punctuation / brackets
-    { tag: tags.punctuation, color: '#89ddff' },
-    { tag: tags.bracket, color: '#ffcb6b' },
-    // Comments
-    { tag: tags.comment, color: '#546e7a', fontStyle: 'italic' },
-    // Built-in attributes / special names
-    { tag: tags.special(tags.variableName), color: '#80cbc4' },
-    // Type annotations
-    { tag: tags.typeName, color: '#ffcb6b' },
-    // Import paths
-    { tag: tags.moduleKeyword, color: '#c792ea', fontWeight: 'bold' },
-    // Escape sequences in strings
-    { tag: tags.escape, color: '#f78c6c' },
-]);
-
-const richPythonTheme = syntaxHighlighting(pythonHighlightStyle);
 
 /* ─── Sandbox packages info ───────────────────────────────────────────────── */
 
@@ -85,6 +51,7 @@ const PACKAGES = [
 ];
 
 const DEFAULT_CODE = `# _args contains all tool arguments as a Python dict
+# _globals holds the workspace variables this tool declares (below the schema)
 # Use print() — stdout becomes the tool result
 # JSON output is recommended: the agent can parse it
 import json
@@ -131,8 +98,6 @@ function lintPython(code: string): LintWarning[] {
 /* ─── Component ──────────────────────────────────────────────────────────── */
 
 export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
-    const editorContainerRef = useRef<HTMLDivElement>(null);
-    const editorViewRef = useRef<EditorView | null>(null);
     const [showPackages, setShowPackages] = useState(false);
     const [testArgs, setTestArgs] = useState('{}');
     const [testResult, setTestResult] = useState<{
@@ -140,80 +105,38 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
     } | null>(null);
     const [testLoading, setTestLoading] = useState(false);
     const [testError, setTestError] = useState<string | null>(null);
-    const [lintWarnings, setLintWarnings] = useState<LintWarning[]>([]);
-
-    /* ── Init CodeMirror ──────────────────────────────────────────────────── */
-
-    const onDocChange = useCallback((code: string) => {
-        const warnings = lintPython(code);
-        setLintWarnings(warnings);
-        onChange({ ...draft, code });
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [draft, onChange]);
-
+    // Names only. The route returns values too; this editor never holds them.
+    const [variableNames, setVariableNames] = useState<string[]>([]);
     useEffect(() => {
-        if (!editorContainerRef.current) return;
-        if (editorViewRef.current) return; // already mounted
-
-        const startState = EditorState.create({
-            doc: draft.code || DEFAULT_CODE,
-            extensions: [
-                basicSetup,
-                python(),
-                oneDarkTheme,
-                richPythonTheme,
-                EditorView.updateListener.of((update: import('@codemirror/view').ViewUpdate) => {
-                    if (update.docChanged) {
-                        onDocChange(update.state.doc.toString());
-                    }
-                }),
-                EditorView.theme({
-                    '&': {
-                        backgroundColor: '#09090b',
-                        height: '100%',
-                        borderRadius: '0',
-                    },
-                    '.cm-scroller': { overflow: 'auto', fontFamily: 'monospace', fontSize: '13px' },
-                    '.cm-content': { padding: '12px 0' },
-                    '.cm-line': { padding: '0 16px' },
-                    '&.cm-focused .cm-cursor': { borderLeftColor: '#a855f7' },
-                    '.cm-selectionBackground': { backgroundColor: '#3f3f46' },
-                    '&.cm-focused .cm-selectionBackground': { backgroundColor: '#4f46e5' },
-                }),
-            ],
-        });
-
-        editorViewRef.current = new EditorView({
-            state: startState,
-            parent: editorContainerRef.current,
-        });
-
-        // Initial lint
-        setLintWarnings(lintPython(draft.code || DEFAULT_CODE));
-
-        return () => {
-            editorViewRef.current?.destroy();
-            editorViewRef.current = null;
-        };
-        // Only run on mount
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+        let cancelled = false;
+        fetch('/api/settings/variables')
+            .then(r => (r.ok ? r.json() : { values: {} }))
+            .then(d => { if (!cancelled) setVariableNames(Object.keys(d?.values ?? {}).sort()); })
+            .catch(() => undefined);
+        return () => { cancelled = true; };
     }, []);
+    const declared = draft.globals ?? [];
+    const declare = (name: string) =>
+        onChange({ ...draft, globals: [...declared.filter(n => n !== name), name] });
+    const undeclare = (name: string) =>
+        onChange({ ...draft, globals: declared.filter(n => n !== name) });
+    // Exactly the draft: a fallback here would put the starter code back the moment
+    // someone cleared the editor. Switching to Python seeds it instead.
+    const code = draft.code ?? '';
+    const lintWarnings = useMemo(() => lintPython(code), [code]);
 
     /* ── Schema JSON state ───────────────────────────────────────────────── */
 
     const [schemaStr, setSchemaStr] = useState(() =>
         JSON.stringify(draft.inputSchema || { type: 'object', properties: { input: { type: 'string' } } }, null, 2)
     );
-    const [schemaError, setSchemaError] = useState<string | null>(null);
-
+    // The editor says when the JSON does not parse; the draft keeps the last schema that did.
     const handleSchemaChange = (val: string) => {
         setSchemaStr(val);
         try {
-            const parsed = JSON.parse(val);
-            setSchemaError(null);
-            onChange({ ...draft, inputSchema: parsed });
+            onChange({ ...draft, inputSchema: JSON.parse(val) });
         } catch {
-            setSchemaError('Invalid JSON');
+            /* mid-edit */
         }
     };
 
@@ -236,7 +159,7 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
             const res = await fetch('/api/tools/python/test', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ code: draft.code, args, timeout: 30 }),
+                body: JSON.stringify({ code: draft.code, args, timeout: 30, globals: declared }),
             });
             if (!res.ok) {
                 const err = await res.json();
@@ -258,30 +181,31 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
         <div className="flex flex-col gap-5">
 
             {/* ── Info Banner ─────────────────────────────────────────────── */}
-            <div className="bg-zinc-950 border border-violet-900/40 rounded-sm p-3 space-y-2">
+            <div className="bg-surface-2 border border-border rounded-lg p-3 space-y-2">
                 <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-xs font-bold text-violet-400 uppercase tracking-wider">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-text">
                         <Package className="h-3.5 w-3.5" />
                         Python Sandbox
                     </div>
                     <button
                         onClick={() => setShowPackages(v => !v)}
-                        className="text-[10px] text-zinc-500 hover:text-zinc-300 flex items-center gap-1"
+                        className="text-xs text-text-faint hover:text-text flex items-center gap-1"
                     >
                         {showPackages ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
                         {showPackages ? 'Hide' : 'Show'} packages
                     </button>
                 </div>
-                <p className="text-[11px] text-zinc-500 leading-relaxed">
-                    Code runs in a <span className="text-violet-400 font-mono">Docker sandbox</span> (512MB RAM, 1 CPU, internet enabled).
-                    Vault files are mounted at <span className="font-mono text-violet-300">/data/</span>.
-                    Arguments are injected as <span className="font-mono text-violet-300">_args</span> (dict).
-                    <span className="font-mono text-zinc-400"> print()</span> stdout becomes the tool result.
+                <p className="text-[11px] text-text-faint leading-relaxed">
+                    Your code runs in a sealed box on this machine (Docker), with internet access, 512 MB of memory
+                    and one CPU. Whatever it prints is what the agent gets back.
+                    <span className="block pt-1">For developers: arguments arrive in <span className="font-mono text-accent">_args</span>,
+                    declared variables in <span className="font-mono text-accent">_globals</span>, and Vault files are
+                    at <span className="font-mono text-accent">/data/</span>.</span>
                 </p>
                 {showPackages && (
-                    <div className="flex flex-wrap gap-1.5 pt-1 border-t border-zinc-800">
+                    <div className="flex flex-wrap gap-1.5 pt-1 border-t border-border">
                         {PACKAGES.map(pkg => (
-                            <span key={pkg} className="text-[10px] font-mono bg-zinc-900 border border-zinc-700 text-zinc-400 px-1.5 py-0.5 rounded">
+                            <span key={pkg} className="text-[11px] font-mono bg-surface border border-border text-text-muted px-1.5 py-0.5 rounded-md">
                                 {pkg}
                             </span>
                         ))}
@@ -292,23 +216,27 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
             {/* ── Code Editor ─────────────────────────────────────────────── */}
             <div className="space-y-1">
                 <div className="flex items-center justify-between">
-                    <label className="text-[10px] uppercase font-bold text-zinc-500">Python Code</label>
+                    <label className="text-xs font-medium text-text-muted">Python Code</label>
                     {lintWarnings.length > 0 && (
-                        <div className="flex items-center gap-1 text-[10px] text-amber-400">
+                        <div className="flex items-center gap-1 text-xs text-text">
                             <AlertCircle className="h-3 w-3" />
                             {lintWarnings.length} warning{lintWarnings.length > 1 ? 's' : ''}
                         </div>
                     )}
                 </div>
-                <div
-                    ref={editorContainerRef}
-                    className="min-h-[280px] h-[280px] overflow-hidden border border-zinc-800 focus-within:border-violet-600 transition-colors rounded-sm"
+                <CodeEditor
+                    language="python"
+                    height={280}
+                    value={code}
+                    onChange={(next) => onChange({ ...draft, code: next })}
+                    placeholder={DEFAULT_CODE}
+                    aria-label="Python code"
                 />
                 {/* Lint warnings */}
                 {lintWarnings.length > 0 && (
                     <div className="space-y-1 pt-1">
                         {lintWarnings.map((w, i) => (
-                            <div key={i} className={`flex items-start gap-2 text-[10px] font-mono ${w.severity === 'error' ? 'text-red-400' : 'text-amber-400'}`}>
+                            <div key={i} className={`flex items-start gap-2 text-[10px] font-mono ${w.severity === 'error' ? 'text-danger' : 'text-text'}`}>
                                 <AlertCircle className="h-3 w-3 mt-0.5 shrink-0" />
                                 <span>Line {w.line}: {w.message}</span>
                             </div>
@@ -319,55 +247,93 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
 
             {/* ── Input Schema (JSON) ──────────────────────────────────────── */}
             <div className="space-y-1">
-                <label className="text-[10px] uppercase font-bold text-zinc-500">Input Schema (JSON)</label>
-                <textarea
+                <label className="text-xs font-medium text-text-muted">What it needs (JSON schema)</label>
+                <CodeEditor
+                    language="json"
+                    lint="json"
+                    format
+                    height={200}
                     value={schemaStr}
-                    onChange={e => handleSchemaChange(e.target.value)}
-                    className="w-full bg-zinc-950 border border-zinc-800 p-3 text-[10px] font-mono text-zinc-300 focus:border-violet-600 focus:outline-none resize-none min-h-[140px]"
+                    onChange={handleSchemaChange}
                     placeholder='{"type": "object", "properties": {"query": {"type": "string", "description": "The input query"}}}'
+                    aria-label="Input schema (JSON)"
                 />
-                {schemaError && (
-                    <p className="text-[10px] text-red-400 flex items-center gap-1">
-                        <AlertCircle className="h-3 w-3 shrink-0" /> {schemaError}
+            </div>
+
+            {/* ── Declared globals ─────────────────────────────────────────── */}
+            <div className="space-y-2">
+                <p id="py-globals-label" className="text-xs font-medium text-text-muted">
+                    Variables this tool can read
+                </p>
+                <p className="text-[11px] text-text-faint leading-relaxed">
+                    Each arrives in <span className="font-mono text-accent">_globals</span>, as{' '}
+                    <span className="font-mono">_globals[&quot;NAME&quot;]</span>. Nothing else does: arguments
+                    the agent writes are never filled in with variables. One declared but not set is simply absent.
+                </p>
+                {declared.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5" aria-labelledby="py-globals-label">
+                        {declared.map(name => (
+                            <Tag key={name} onRemove={() => undeclare(name)}>
+                                {variableNames.length && !variableNames.includes(name) ? `${name} (not set)` : name}
+                            </Tag>
+                        ))}
+                    </div>
+                )}
+                {variableNames.some(n => !declared.includes(n)) ? (
+                    <Combobox
+                        value={undefined}
+                        onChange={declare}
+                        options={variableNames.filter(n => !declared.includes(n)).map(n => ({ value: n, label: n }))}
+                        placeholder="Add a variable…"
+                        searchPlaceholder="Search variables…"
+                        aria-label="Add a variable this tool can read"
+                        size="sm"
+                        className="max-w-xs"
+                    />
+                ) : (
+                    <p className="text-[11px] text-text-faint">
+                        {variableNames.length ? 'Every workspace variable is declared. ' : 'No workspace variables yet. '}
+                        <Link href="/settings/variables" className="text-accent hover:underline">Settings › Variables</Link>
                     </p>
                 )}
             </div>
 
             {/* ── Test Runner ──────────────────────────────────────────────── */}
-            <div className="space-y-2 border-t border-zinc-800 pt-4">
+            <div className="space-y-2 border-t border-border pt-4">
                 <div className="flex items-center justify-between">
-                    <label className="text-[10px] uppercase font-bold text-zinc-500 flex items-center gap-2">
+                    <label className="text-xs font-medium text-text-muted flex items-center gap-2">
                         <Terminal className="h-3.5 w-3.5" />
-                        Test Run
+                        Test run
                     </label>
-                    <span className="text-[10px] text-zinc-600">Runs in Docker sandbox</span>
+                    <span className="text-[10px] text-text-faint">Runs in Docker sandbox</span>
                 </div>
 
                 <div className="flex gap-2 items-start">
                     <div className="flex-1 space-y-1">
-                        <label className="text-[9px] text-zinc-600 uppercase tracking-wider">Test Arguments (JSON)</label>
-                        <textarea
+                        <label className="text-xs text-text-faint">Test Arguments (JSON)</label>
+                        <CodeEditor
+                            language="json"
+                            height={88}
                             value={testArgs}
-                            onChange={e => setTestArgs(e.target.value)}
-                            rows={2}
-                            className="w-full bg-zinc-950 border border-zinc-800 p-2 text-xs font-mono text-zinc-300 focus:border-violet-600 focus:outline-none resize-none"
+                            onChange={setTestArgs}
                             placeholder='{"query": "hello world"}'
+                            aria-label="Test arguments (JSON)"
                         />
                     </div>
                     <button
                         onClick={handleTestRun}
                         disabled={testLoading || !draft.code.trim()}
-                        className="flex items-center gap-2 px-4 py-2 bg-violet-700 hover:bg-violet-600 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-xs font-bold transition-colors mt-4 shrink-0"
+                        className={cn(buttonStyles({ variant: "secondary" }), "mt-4 shrink-0")}
                     >
                         {testLoading
-                            ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Running...</>
+                            ? <><Spinner size={14} /> Running...</>
                             : <><Play className="h-3.5 w-3.5" /> Run</>
                         }
                     </button>
                 </div>
 
                 {testError && (
-                    <div className="flex items-center gap-2 p-2 bg-red-950/40 border border-red-800 text-red-400 text-[11px]">
+                    <div className="flex items-center gap-2 p-2 bg-danger-subtle border border-danger/25 text-danger text-xs rounded-md">
                         <AlertCircle className="h-4 w-4 shrink-0" />
                         {testError}
                     </div>
@@ -378,18 +344,18 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
                         {/* Exit code badge */}
                         <div className="flex items-center gap-2">
                             {testResult.exit_code === 0
-                                ? <CheckCircle2 className="h-4 w-4 text-green-500" />
-                                : <AlertCircle className="h-4 w-4 text-red-500" />
+                                ? <CheckCircle2 className="h-4 w-4 text-success" />
+                                : <AlertCircle className="h-4 w-4 text-danger" />
                             }
-                            <span className={`text-[11px] font-bold ${testResult.exit_code === 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            <span className={`text-xs font-semibold ${testResult.exit_code === 0 ? 'text-success' : 'text-danger'}`}>
                                 Exit code: {testResult.exit_code}
                             </span>
                         </div>
 
                         {testResult.stdout && (
                             <div className="space-y-1">
-                                <p className="text-[9px] uppercase tracking-wider text-zinc-500">stdout</p>
-                                <pre className="p-3 bg-zinc-950 border border-zinc-800 text-[11px] font-mono text-green-300 overflow-auto max-h-48 whitespace-pre-wrap">
+                                <p className="text-xs font-medium text-text-faint">stdout</p>
+                                <pre className="p-3 bg-surface-2 border border-border text-[11px] font-code text-text overflow-auto max-h-48 whitespace-pre-wrap rounded-md">
                                     {testResult.stdout}
                                 </pre>
                             </div>
@@ -397,8 +363,8 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
 
                         {testResult.stderr && (
                             <div className="space-y-1">
-                                <p className="text-[9px] uppercase tracking-wider text-zinc-500">stderr</p>
-                                <pre className="p-3 bg-zinc-950 border border-red-900/40 text-[11px] font-mono text-red-300 overflow-auto max-h-32 whitespace-pre-wrap">
+                                <p className="text-xs font-medium text-text-faint">stderr</p>
+                                <pre className="p-3 bg-danger-subtle border border-danger/25 text-[11px] font-code text-danger overflow-auto max-h-32 whitespace-pre-wrap rounded-md">
                                     {testResult.stderr}
                                 </pre>
                             </div>

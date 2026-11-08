@@ -28,12 +28,18 @@ WORKDIR /app/backend
 # requirements.txt is copied too, as the fallback and for provenance.
 COPY backend/requirements.txt backend/requirements.lock ./
 RUN pip install --no-cache-dir -r requirements.lock
+# OpenTelemetry, so an operator can export to their own collector; it stays off
+# until SYNAPSE_TELEMETRY=otlp or OTLP_ENDPOINT is set (core/telemetry/config.py).
+COPY backend/requirements-telemetry.txt backend/requirements-telemetry.lock ./
+RUN pip install --no-cache-dir -r requirements-telemetry.lock
 RUN pip install playwright && playwright install chromium --with-deps
 
 COPY backend/core ./core
 COPY backend/services ./services
 COPY backend/tools ./tools
 COPY backend/main.py .
+# The version the MCP endpoint reports, beside core/ (F1462, #378: it was the mcp SDK's).
+COPY pyproject.toml ./
 
 WORKDIR /app/frontend
 COPY --from=frontend-builder /app/.next/standalone ./
@@ -44,14 +50,32 @@ COPY docker/supervisord.conf /etc/supervisor/conf.d/synapse.conf
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-ENV SYNAPSE_DATA_DIR=/data
 ENV PYTHONPATH=/app/backend
 ENV NODE_ENV=production
 ENV SYNAPSE_BACKEND_PORT=8765
 ENV SYNAPSE_FRONTEND_PORT=3000
+
+# One volume, /data — the path every 1.x install mounted (`-v synapse-data:/data`),
+# so the same `docker run` keeps its data across the upgrade. What is on it is
+# this install's own: the database, the content under blobs/, and the secrets.
+# Rebuildable caches and scratch stay off it.
+#
+# The database is deployment configuration. SQLite on the volume is the default
+# so `docker run` works with nothing else running; point SYNAPSE_DB_URL at
+# Postgres for anything with more than one process.
+ENV SYNAPSE_BLOB_DIR=/data/blobs
+ENV SYNAPSE_DB_URL=sqlite+aiosqlite:////data/synapse.db
+# Rebuildable and per-replica, so it deliberately does NOT go on the volume.
+ENV SYNAPSE_STATE_DIR=/var/lib/synapse/state
+# Where a 1.x volume keeps its JSON: read once, on the first boot, to import it
+# (backend/core/store/importer.py), then moved into /data/migrated/.
+ENV SYNAPSE_DATA_DIR=/data
+VOLUME /data
+
 # Auto-generate a shared internal token on first boot so the backend's
 # InternalTokenMiddleware enforces by default. Both supervisord programs inherit
-# it from the entrypoint's exported environment. Persisted under /data.
+# it from the entrypoint's exported environment. Persisted on the volume — where
+# a 1.x install already has one, which keeps its existing sessions working.
 ENV SYNAPSE_AUTOGEN_TOKEN=1
 ENV SYNAPSE_SECRETS_DIR=/data
 ENV SYNAPSE_TOKEN_MODE=generate

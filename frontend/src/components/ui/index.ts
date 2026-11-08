@@ -1,0 +1,113 @@
+/**
+ * The design system.
+ *
+ * One barrel so every screen imports from `@/components/ui` regardless of how
+ * the files are arranged underneath — the split from one `ui.tsx` into several
+ * modules, and later the split of `primitives.tsx` into the seven files below,
+ * both happened without a call site changing.
+ *
+ * The dividing line: the presentational files are markup and Tailwind with no
+ * interaction model worth outsourcing, and carry no `"use client"` so they
+ * render on the server when a server component asks. Everything under the
+ * second group wraps a Radix primitive, because focus traps, portalling,
+ * type-ahead, `aria-activedescendant` and scroll locking are the parts that are
+ * quietly hard to write and very obvious when they are wrong.
+ */
+
+export {
+  Button,
+  IconButton,
+  LinkButton,
+  buttonStyles,
+  type ButtonSize,
+  type ButtonVariant,
+} from "./button";
+export { AppMark, tileHue } from "./app-mark";
+export { Badge, Tag, type BadgeTone } from "./badge";
+export { BrandLoader, Mark, Spinner, Wordmark } from "./brand";
+export { Card, CardBody, CardFooter } from "./card";
+export { CopyButton } from "./copy-button";
+export { EmptyState, ErrorNote, SuccessNote } from "./feedback";
+export { controlStyles, type ControlSize } from "./control-styles";
+export { Field, FieldRow, Input, SearchInput, Textarea } from "./input";
+export { TextLink, type TextLinkVariant } from "./link";
+export { Markdown, TaskBox } from "./markdown";
+export {
+  CellStack,
+  TBody,
+  TD,
+  TH,
+  THead,
+  TR,
+  Table,
+  TableActions,
+  type ColumnWidth,
+  type Density,
+} from "./table";
+export {
+  Heading,
+  Label,
+  Mono,
+  Muted,
+  PageHeader,
+  sectionClass,
+  Stat,
+  Text,
+  titleClass,
+  type Tone,
+} from "./text";
+export { FRAME_WIDTHS, PAGE_GUTTER, PageFrame, PageFrameHeader, type PageWidth } from "./page-frame";
+export { StatStrip, type StatCell, type StatDot } from "./stat-strip";
+export { BarList, Meter, type BarRow } from "./bars";
+export { Screen, type ScreenWidth } from "./screen";
+export { PageHeaderSlot, PageHeaderSlotProvider } from "./page-header-slot";
+
+export { Checkbox, type CheckedState } from "./checkbox";
+export {
+  CommandPalette,
+  useCommandShortcut,
+  useCommandShortcutLabel,
+  type CommandGroup,
+  type CommandItem,
+} from "./command-palette";
+export { CommandRegistryProvider, useRegisterCommands, useRegisteredCommands } from "./command-registry";
+export { CanvasModeHide, CanvasModeProvider, useCanvasMode, useIsCanvasMode } from "./canvas-mode";
+export { Section } from "./collapsible";
+export { DataTable, type Column } from "./data-table";
+export { ConfirmDialog, Modal } from "./dialog";
+export { Drawer } from "./drawer";
+export { HubTabs, type HubTab } from "./hub-tabs";
+export { Menu, MenuItem, MenuLabel, MenuLink, MenuSegment, MenuSeparator, RowMenu } from "./menu";
+export { Select, type SelectOption } from "./select";
+export { Segmented } from "./segmented";
+export { Switch } from "./switch";
+export { Combobox, type ComboboxOption } from "./combobox";
+export { StatusBadge, normaliseStatus, type RunStatus } from "./status";
+export { InToastStack, Toast, ToastStack, toastLook, useToast, type ToastTone } from "./toast";
+export { Hint, TooltipProvider } from "./tooltip";
+export { useOwnScroll } from "./own-scroll";
+export { showWhileScrolling } from "./quiet-scroll";
+export { usePersisted } from "./use-persisted";
+
+// The editor family. `CodeEditor` loads CodeMirror on demand — nothing here
+// imports it statically, so the barrel stays as light as it was.
+export { CodeEditor, type CodeEditorProps, type CodeLanguage } from "./code-editor";
+export { MarkdownEditor, type MarkdownEditorProps, type MarkdownTab } from "./markdown-editor";
+export { insertLink, toggleLinePrefix, toggleWrap, type LinePrefix, type MarkdownEdit } from "./markdown-format";
+export { TemplateInput } from "./template-input";
+export { TemplateScope, TemplateSourcesProvider, useTemplateSources } from "./template-context";
+export { type MentionItem, type MentionSource } from "./template-suggest";
+export {
+  applyTemplate,
+  formatJson,
+  matchMention,
+  matchTemplate,
+  normaliseVariables,
+  schemaArgs,
+  templateJsonProblem,
+  type TemplateCandidate,
+  type TemplateMatch,
+  type TemplateProfile,
+  type TemplateSources,
+  type TemplateVariable,
+} from "./template-complete";

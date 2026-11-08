@@ -1,406 +1,203 @@
 'use client';
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useCallback, useEffect, useMemo } from 'react';
+import { useMemo, useRef, useSyncExternalStore } from 'react';
 import {
     ReactFlow,
     Background,
-    Controls,
     MiniMap,
-    addEdge,
-    useNodesState,
-    useEdgesState,
-    type Connection,
-    type Edge,
-    type Node,
-    type NodeTypes,
+    Panel,
+    useReactFlow,
     BackgroundVariant,
-    MarkerType,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { StepNode } from './StepNode';
-import { STEP_TYPE_META } from '@/types/orchestration';
-import type { Orchestration, StepConfig, StepNodeData } from '@/types/orchestration';
+import { Maximize, Minus, Plus, Wand2 } from 'lucide-react';
+import { canvasFlags } from './canvasFlags';
+import { PALETTE_CLEARANCE_PX, StepPalette, usePaletteCollapsed } from './StepPalette';
+import { ROLE_FILL, roleOf } from './roles';
+import { nodeTypes, useWorkflowGraph } from './useWorkflowGraph';
+import type { Orchestration } from '@/types/orchestration';
+import { KNOWLEDGE_STEP_TYPES } from '@/types/orchestration';
 
 interface WorkflowCanvasProps {
     orchestration: Orchestration;
     agents: any[];
-    selectedStepId: string | null;
-    onSelectStep: (stepId: string | null) => void;
-    onUpdateOrchestration: (orch: Orchestration) => void;
+    selectedStepId?: string | null;
+    /** Omit to make steps inert to clicks — a preview with nothing to open. */
+    onSelectStep?: (stepId: string | null) => void;
+    /** Required unless `readOnly`: every edit on the canvas arrives here. */
+    onUpdateOrchestration?: (orch: Orchestration) => void;
     runStepStatuses?: Record<string, 'pending' | 'running' | 'paused' | 'completed' | 'failed'>;
+    /** Why each failed step failed, in its own words (F195); shown on its card. */
+    runStepErrors?: Record<string, string>;
+    /** The palette rail is part of the canvas; a shell that renders its own can turn it off. */
+    showPalette?: boolean;
+    /** Look, don't touch: no drag, connect, delete, drop, palette, Tidy up or issue badges. See `canvasFlags`. */
+    readOnly?: boolean;
+    /**
+     * Whether Knowledge is on: its Retrieve and Ingest steps are in the palette
+     * only then. Unset reads as off, so a shell that has not wired it offers
+     * neither step rather than steps that would fail their runs.
+     */
+    knowledgeEnabled?: boolean;
 }
 
-const nodeTypes: NodeTypes = {
-    stepNode: StepNode as any,
-};
+const noop = () => {};
 
-
-function stepsToNodes(
-    steps: StepConfig[],
-    entryStepId: string,
-    agents: any[],
-    selectedStepId: string | null,
-    runStatuses?: Record<string, string>,
-): Node<StepNodeData>[] {
-    return steps.map((step) => {
-        const agent = agents.find((a: any) => a.id === step.agent_id);
-        return {
-            id: step.id,
-            type: 'stepNode',
-            position: { x: step.position_x ?? 0, y: step.position_y ?? 0 },
-            data: {
-                step,
-                isEntry: step.id === entryStepId,
-                isSelected: step.id === selectedStepId,
-                agentName: agent?.name,
-                runStatus: runStatuses?.[step.id] as any,
-            },
-            selected: step.id === selectedStepId,
-        };
-    });
+/** `(pointer: coarse)`, live — a tablet with a mouse plugged in changes its answer. The server render says no. */
+const COARSE = '(pointer: coarse)';
+function subscribeCoarse(onChange: () => void) {
+    const media = window.matchMedia(COARSE);
+    media.addEventListener('change', onChange);
+    return () => media.removeEventListener('change', onChange);
 }
-
-// Consistent color palette for evaluator routes (no red — avoids "error" association)
-const ROUTE_COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4'];
-
-function stepsToEdges(steps: StepConfig[]): Edge[] {
-    const edges: Edge[] = [];
-    const stepMap = new Map(steps.map(s => [s.id, s]));
-
-    for (const step of steps) {
-        // --- EVALUATOR: one edge per route_map entry ---
-        if (step.type === 'evaluator' && step.route_map) {
-            const labels = Object.keys(step.route_map);
-            for (const label of labels) {
-                const targetId = step.route_map[label];
-                if (!targetId) continue; // null = end orchestration, no edge to draw
-                const idx = labels.indexOf(label);
-                const color = ROUTE_COLORS[idx % ROUTE_COLORS.length];
-                edges.push({
-                    id: `${step.id}->route_${label}->${targetId}`,
-                    source: step.id,
-                    sourceHandle: `route_${label}`,
-                    target: targetId,
-                    type: 'smoothstep',
-                    label,
-                    labelStyle: { fill: color, fontSize: 10 },
-                    markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color },
-                    style: { stroke: color, strokeWidth: 2 },
-                });
-            }
-            // Evaluator may also have a next_step_id as fallback — skip if routes exist
-            if (labels.length > 0) continue;
-        }
-
-        // --- IF/ELSE: true edge (green) and false edge (red) ---
-        if (step.type === 'if_else') {
-            if (step.if_true_step_id) {
-                edges.push({
-                    id: `${step.id}->if_true->${step.if_true_step_id}`,
-                    source: step.id,
-                    sourceHandle: 'if_true',
-                    target: step.if_true_step_id,
-                    type: 'smoothstep',
-                    label: 'true',
-                    labelStyle: { fill: '#22c55e', fontSize: 10 },
-                    markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: '#22c55e' },
-                    style: { stroke: '#22c55e', strokeWidth: 2 },
-                });
-            }
-            if (step.if_false_step_id) {
-                edges.push({
-                    id: `${step.id}->if_false->${step.if_false_step_id}`,
-                    source: step.id,
-                    sourceHandle: 'if_false',
-                    target: step.if_false_step_id,
-                    type: 'smoothstep',
-                    label: 'false',
-                    labelStyle: { fill: '#ef4444', fontSize: 10 },
-                    markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: '#ef4444' },
-                    style: { stroke: '#ef4444', strokeWidth: 2 },
-                });
-            }
-            continue;
-        }
-
-        // --- SWITCH: one edge per case + default ---
-        if (step.type === 'switch' && step.switch_cases) {
-            const caseKeys = Object.keys(step.switch_cases);
-            for (const caseVal of caseKeys) {
-                const targetId = step.switch_cases[caseVal];
-                if (!targetId) continue;
-                const idx = caseKeys.indexOf(caseVal);
-                const color = ROUTE_COLORS[idx % ROUTE_COLORS.length];
-                edges.push({
-                    id: `${step.id}->case_${caseVal}->${targetId}`,
-                    source: step.id,
-                    sourceHandle: `case_${caseVal}`,
-                    target: targetId,
-                    type: 'smoothstep',
-                    label: caseVal,
-                    labelStyle: { fill: color, fontSize: 10 },
-                    markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color },
-                    style: { stroke: color, strokeWidth: 2 },
-                });
-            }
-            if (step.switch_default_step_id) {
-                edges.push({
-                    id: `${step.id}->default->${step.switch_default_step_id}`,
-                    source: step.id,
-                    sourceHandle: 'default',
-                    target: step.switch_default_step_id,
-                    type: 'smoothstep',
-                    label: 'default',
-                    labelStyle: { fill: '#9ca3af', fontSize: 10 },
-                    markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: '#9ca3af' },
-                    style: { stroke: '#9ca3af', strokeWidth: 2 },
-                });
-            }
-            continue;
-        }
-
-        // --- LOOP: body handle → first body step, done handle → next_step_id ---
-        if (step.type === 'loop') {
-            const bodyIds = step.loop_step_ids || [];
-            if (bodyIds.length > 0) {
-                // Body handle → first body step
-                edges.push({
-                    id: `${step.id}->body->${bodyIds[0]}`,
-                    source: step.id,
-                    sourceHandle: 'body',
-                    target: bodyIds[0],
-                    type: 'smoothstep',
-                    style: { stroke: '#f59e0b', strokeWidth: 2, strokeDasharray: '5,5' },
-                    markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: '#f59e0b' },
-                });
-                // Intra-body sequential edges
-                for (let i = 0; i < bodyIds.length - 1; i++) {
-                    edges.push({
-                        id: `loop_body_${step.id}_${bodyIds[i]}->${bodyIds[i + 1]}`,
-                        source: bodyIds[i],
-                        target: bodyIds[i + 1],
-                        type: 'smoothstep',
-                        style: { stroke: '#f59e0b', strokeWidth: 1.5, strokeDasharray: '4,4' },
-                        markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: '#f59e0b' },
-                    });
-                }
-            }
-            // Done path
-            if (step.next_step_id) {
-                edges.push({
-                    id: `${step.id}->done->${step.next_step_id}`,
-                    source: step.id,
-                    sourceHandle: 'done',
-                    target: step.next_step_id,
-                    type: 'smoothstep',
-                    label: 'done',
-                    labelStyle: { fill: '#22c55e', fontSize: 10 },
-                    markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: '#22c55e' },
-                    style: { stroke: '#22c55e', strokeWidth: 2 },
-                });
-            }
-            continue;
-        }
-
-        // --- PARALLEL: edges to first step of each branch + intra-branch edges ---
-        if (step.type === 'parallel' && step.parallel_branches) {
-            for (const branch of step.parallel_branches) {
-                if (branch.length === 0) continue;
-                // Edge from parallel node to first step of branch
-                edges.push({
-                    id: `${step.id}->par->${branch[0]}`,
-                    source: step.id,
-                    target: branch[0],
-                    type: 'smoothstep',
-                    style: { stroke: '#8b5cf6', strokeWidth: 2, strokeDasharray: '5,5' },
-                    markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: '#8b5cf6' },
-                });
-                // Intra-branch sequential edges
-                for (let i = 0; i < branch.length - 1; i++) {
-                    edges.push({
-                        id: `par_${step.id}_${branch[i]}->${branch[i + 1]}`,
-                        source: branch[i],
-                        target: branch[i + 1],
-                        type: 'smoothstep',
-                        style: { stroke: '#8b5cf6', strokeWidth: 1.5, strokeDasharray: '4,4' },
-                        markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: '#8b5cf6' },
-                    });
-                }
-            }
-            // Parallel's next_step_id (e.g. to a merge node) as a regular edge
-            if (step.next_step_id) {
-                edges.push({
-                    id: `${step.id}->${step.next_step_id}`,
-                    source: step.id,
-                    target: step.next_step_id,
-                    type: 'smoothstep',
-                    markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: '#6b7280' },
-                    style: { stroke: '#6b7280', strokeWidth: 2 },
-                });
-            }
-            continue;
-        }
-
-        // --- DEFAULT: linear next_step_id edge ---
-        if (step.next_step_id) {
-            edges.push({
-                id: `${step.id}->${step.next_step_id}`,
-                source: step.id,
-                target: step.next_step_id,
-                type: 'smoothstep',
-                markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: '#6b7280' },
-                style: { stroke: '#6b7280', strokeWidth: 2 },
-            });
-        }
-    }
-
-    return edges;
-}
+const readCoarse = () => window.matchMedia(COARSE).matches;
+const serverCoarse = () => false;
+/** Fit-view's air on each side, as a fraction of the canvas. */
+const FIT_PADDING = 0.15;
 
 export function WorkflowCanvas({
     orchestration,
     agents,
-    selectedStepId,
+    selectedStepId = null,
     onSelectStep,
-    onUpdateOrchestration,
+    onUpdateOrchestration = noop,
     runStepStatuses,
+    runStepErrors,
+    showPalette = true,
+    readOnly = false,
+    knowledgeEnabled = false,
 }: WorkflowCanvasProps) {
-    const initialNodes = useMemo(
-        () => stepsToNodes(orchestration.steps, orchestration.entry_step_id, agents, selectedStepId, runStepStatuses),
-        [orchestration.steps, orchestration.entry_step_id, agents, selectedStepId, runStepStatuses]
-    );
-    const initialEdges = useMemo(
-        () => stepsToEdges(orchestration.steps),
-        [orchestration.steps]
-    );
-
-    const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-    const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
-
-    // Sync nodes when orchestration or run statuses change
-    useEffect(() => {
-        setNodes(stepsToNodes(orchestration.steps, orchestration.entry_step_id, agents, selectedStepId, runStepStatuses));
-        setEdges(stepsToEdges(orchestration.steps));
-    }, [orchestration, agents, selectedStepId, runStepStatuses, setNodes, setEdges]);
-
-    const onConnect = useCallback(
-        (connection: Connection) => {
-            setEdges((eds) => addEdge({
-                ...connection,
-                type: 'smoothstep',
-                markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: '#6b7280' },
-                style: { stroke: '#6b7280', strokeWidth: 2 },
-            }, eds));
-
-            const sourceStep = orchestration.steps.find((s) => s.id === connection.source);
-            if (!sourceStep || !connection.target) return;
-
-            const updatedSteps = orchestration.steps.map((s) => {
-                // --- SOURCE step: update routing fields ---
-                if (s.id === connection.source) {
-                    if (s.type === 'evaluator' && connection.sourceHandle?.startsWith('route_')) {
-                        const label = connection.sourceHandle.replace('route_', '');
-                        const newRouteMap = { ...(s.route_map || {}), [label]: connection.target! };
-                        return { ...s, route_map: newRouteMap };
-                    }
-                    if (s.type === 'loop') {
-                        if (connection.sourceHandle === 'body') {
-                            const bodyIds = [...(s.loop_step_ids || [])];
-                            if (!bodyIds.includes(connection.target!)) {
-                                bodyIds.push(connection.target!);
-                            }
-                            return { ...s, loop_step_ids: bodyIds };
-                        }
-                        if (connection.sourceHandle === 'done') {
-                            return { ...s, next_step_id: connection.target! };
-                        }
-                    }
-                    // IF/ELSE handles
-                    if (s.type === 'if_else') {
-                        if (connection.sourceHandle === 'if_true') {
-                            return { ...s, if_true_step_id: connection.target! };
-                        }
-                        if (connection.sourceHandle === 'if_false') {
-                            return { ...s, if_false_step_id: connection.target! };
-                        }
-                    }
-                    // SWITCH handles
-                    if (s.type === 'switch') {
-                        if (connection.sourceHandle?.startsWith('case_')) {
-                            const caseVal = connection.sourceHandle.replace('case_', '');
-                            const newCases = { ...(s.switch_cases || {}), [caseVal]: connection.target! };
-                            return { ...s, switch_cases: newCases };
-                        }
-                        if (connection.sourceHandle === 'default') {
-                            return { ...s, switch_default_step_id: connection.target! };
-                        }
-                    }
-                    return { ...s, next_step_id: connection.target! };
-                }
-
-                // --- TARGET step: auto-append source's output_key to input_keys ---
-                if (s.id === connection.target && sourceStep.output_key) {
-                    const existingKeys = s.input_keys || [];
-                    if (!existingKeys.includes(sourceStep.output_key)) {
-                        return { ...s, input_keys: [...existingKeys, sourceStep.output_key] };
-                    }
-                }
-
-                return s;
-            });
-            onUpdateOrchestration({ ...orchestration, steps: updatedSteps });
-        },
-        [orchestration, onUpdateOrchestration, setEdges]
+    const { fitView, zoomIn, zoomOut } = useReactFlow();
+    const coarsePointer = useSyncExternalStore(subscribeCoarse, readCoarse, serverCoarse);
+    const flags = canvasFlags({ readOnly, showPalette, coarsePointer });
+    const [paletteCollapsed] = usePaletteCollapsed();
+    // The open palette floats over the canvas's left edge; every fit leaves it
+    // that much room, or the first step opens underneath it (F31).
+    const fitPadding = useMemo(
+        () =>
+            flags.palette && paletteCollapsed !== '1'
+                ? { top: FIT_PADDING, right: FIT_PADDING, bottom: FIT_PADDING, left: `${PALETTE_CLEARANCE_PX}px` as const }
+                : FIT_PADDING,
+        [flags.palette, paletteCollapsed]
     );
 
-    const onNodeDragStop = useCallback(
-        (_: any, node: Node) => {
-            const updatedSteps = orchestration.steps.map((s) =>
-                s.id === node.id ? { ...s, position_x: node.position.x, position_y: node.position.y } : s
-            );
-            onUpdateOrchestration({ ...orchestration, steps: updatedSteps });
-        },
-        [orchestration, onUpdateOrchestration]
-    );
+    const wrapperRef = useRef<HTMLDivElement>(null);
+    const graph = useWorkflowGraph({
+        orchestration,
+        agents,
+        selectedStepId,
+        onSelectStep,
+        onUpdateOrchestration,
+        runStepStatuses,
+        runStepErrors,
+        flags,
+        fit: (duration) => fitView({ padding: fitPadding, duration }),
+        wrapperRef,
+    });
 
-    const onNodeClick = useCallback(
-        (_: any, node: Node) => {
-            onSelectStep(node.id);
-        },
-        [onSelectStep]
-    );
-
-    const onPaneClick = useCallback(() => {
-        onSelectStep(null);
-    }, [onSelectStep]);
+    const canvasButtonCls =
+        'flex items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-2 text-xs text-text-muted shadow-md transition-colors hover:text-text';
 
     return (
-        <div className="w-full h-full">
+        <div ref={wrapperRef} className="h-full w-full" onKeyDown={onSelectStep ? graph.onCanvasKeyDown : undefined}>
             <ReactFlow
-                nodes={nodes}
-                edges={edges}
-                onNodesChange={onNodesChange}
-                onEdgesChange={onEdgesChange}
-                onConnect={onConnect}
-                onNodeDragStop={onNodeDragStop}
-                onNodeClick={onNodeClick}
-                onPaneClick={onPaneClick}
+                nodes={graph.nodes}
+                edges={graph.edges}
+                onNodesChange={graph.onNodesChange}
+                onEdgesChange={graph.onEdgesChange}
+                onConnect={flags.edits ? graph.onConnect : undefined}
+                onNodeDragStop={flags.edits ? graph.onNodeDragStop : undefined}
+                onNodeClick={onSelectStep ? graph.onNodeClick : undefined}
+                onPaneClick={onSelectStep ? graph.onPaneClick : undefined}
+                onDelete={flags.edits ? graph.onDelete : undefined}
+                onDragOver={flags.edits ? graph.onDragOver : undefined}
+                onDrop={flags.edits ? graph.onDrop : undefined}
+                nodesDraggable={flags.nodesDraggable}
+                nodesConnectable={flags.nodesConnectable}
+                elementsSelectable={flags.elementsSelectable}
+                nodesFocusable={flags.nodesFocusable}
+                edgesFocusable={flags.edgesFocusable}
                 nodeTypes={nodeTypes}
+                zoomOnScroll={flags.zoomOnScroll}
+                preventScrolling={flags.preventScrolling}
+                panOnDrag={flags.panOnDrag}
+                // Not dragging is not enough for a finger to scroll the page: xyflow
+                // 12.11's stylesheet gives the pane `touch-action: none`, so the
+                // browser still will not scroll from it. When the drag is given
+                // back to the page, the pane's touch is too. `!` because that
+                // stylesheet is unlayered, and an unlayered rule beats any rule in
+                // Tailwind's utilities layer whatever its specificity; `\_` because
+                // an unescaped underscore in an arbitrary variant is a space.
+                className={flags.panOnDrag ? undefined : String.raw`[&_.react-flow\_\_pane]:!touch-auto`}
                 fitView
+                fitViewOptions={{ padding: fitPadding }}
+                minZoom={flags.minZoom}
+                maxZoom={2}
+                snapToGrid={flags.snapToGrid}
+                snapGrid={[12, 12]}
+                deleteKeyCode={graph.deleteKeyCode}
                 proOptions={{ hideAttribution: true }}
-                className="bg-zinc-950"
                 defaultEdgeOptions={{ type: 'smoothstep' }}
             >
-                <Background variant={BackgroundVariant.Dots} gap={20} size={1} className="!bg-zinc-950" />
-                <Controls className="!bg-zinc-800 !border-zinc-700 !shadow-lg [&>button]:!bg-zinc-700 [&>button]:!border-zinc-600 [&>button]:!text-zinc-200 [&>button:hover]:!bg-zinc-600" />
-                <MiniMap
-                    className="!bg-zinc-800 !border-zinc-700"
-                    nodeColor={(node: any) => {
-                        const type = node.data?.step?.type;
-                        return STEP_TYPE_META[type as keyof typeof STEP_TYPE_META]?.color || '#6b7280';
-                    }}
-                    maskColor="rgba(0,0,0,0.6)"
-                />
+                <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
+                {flags.minimap && (
+                    <MiniMap
+                        pannable
+                        zoomable
+                        // By who does the work (D211), as the steps themselves are.
+                        nodeColor={(node: any) => ROLE_FILL[roleOf(node.data?.step?.type)]}
+                        maskColor="var(--minimap-mask)"
+                    />
+                )}
+                {flags.palette && (
+                    // The height bound lives on the Panel: it is absolutely
+                    // positioned inside `.react-flow`, so percentage heights
+                    // resolve against the canvas — on the palette div they
+                    // resolved against an auto-height wrapper and the list
+                    // could never scroll.
+                    // 1rem = the Panel's own m-2 twice over, so the rail ends
+                    // the same 8px from the bottom edge as it starts from the top.
+                    <Panel position="top-left" className="!m-2 flex max-h-[calc(100%-1rem)]">
+                        <StepPalette onAdd={graph.addStep} hiddenTypes={knowledgeEnabled ? undefined : KNOWLEDGE_STEP_TYPES} />
+                    </Panel>
+                )}
+                {/* One cluster for every canvas control — the default <Controls>
+                    sat alone in the bottom-left corner, a second home for
+                    buttons that belong with Tidy up. */}
+                <Panel position="top-right" className="!m-2 flex gap-1.5">
+                    {flags.tidyUp && (
+                        <button type="button" onClick={graph.tidyUp} title="Auto-arrange the graph left to right" className={canvasButtonCls}>
+                            <Wand2 size={13} aria-hidden /> Tidy up
+                        </button>
+                    )}
+                    <button
+                        type="button"
+                        onClick={() => zoomIn({ duration: 150 })}
+                        title="Zoom in"
+                        aria-label="Zoom in"
+                        className={canvasButtonCls}
+                    >
+                        <Plus size={13} aria-hidden />
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => zoomOut({ duration: 150 })}
+                        title="Zoom out"
+                        aria-label="Zoom out"
+                        className={canvasButtonCls}
+                    >
+                        <Minus size={13} aria-hidden />
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => fitView({ padding: fitPadding, duration: 300 })}
+                        title="Fit the whole graph in view"
+                        aria-label="Fit view"
+                        className={canvasButtonCls}
+                    >
+                        <Maximize size={13} aria-hidden />
+                    </button>
+                </Panel>
             </ReactFlow>
         </div>
     );

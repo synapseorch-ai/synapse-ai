@@ -1,16 +1,83 @@
 """
 Plain-text debug logging for orchestration runs.
 Appends human-readable entries to a per-run .log file.
+
+Writes go through the journal's single writer thread (`core.orchestration
+.journal._executor`): one thread, so lines land in order; off the loop, so an
+open/write/close per line — this used to do all three, ~30 call sites per
+run — is not charged to the run that happens to be executing. `aclose` waits
+for the writer before publishing the finished log; `close` does the same for
+callers that cannot await.
 """
+import asyncio
 import json
 import time
+from concurrent.futures import Future
 from pathlib import Path
 
-LOGS_DIR = Path(__file__).parent.parent.parent / "logs" / "orchestration_logs"
+from core.log import get_logger
+from core.run_ids import run_file
+
+_log = get_logger(__name__)
+
+#: Blob key prefix for finished logs. Tenant-scoped by the blob store itself —
+#: this used to be a flat `logs/orchestration/` prefix on a shared bucket, so
+#: two tenants with the same run_id overwrote each other and list_logs()
+#: returned everyone's runs, user_input included.
+_BLOB_PREFIX = "logs/orchestration"
 
 
-def _ensure_logs_dir():
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+def _logs_dir() -> Path:
+    """Where a run's log is appended while it is still running."""
+    from core.storage.scratch import scratch_dir
+    return scratch_dir("orchestration_logs")
+
+
+def _blob_key(run_id: str) -> str:
+    return f"{_BLOB_PREFIX}/{run_id}.log"
+
+
+def _meta_key(run_id: str) -> str:
+    """Sidecar for the fields list_logs() shows without reading whole logs.
+
+    S3 object metadata did this before; BlobStore has no metadata API, and a
+    sidecar blob behaves identically on both backends and comes back in the
+    same list() call.
+    """
+    return f"{_BLOB_PREFIX}/{run_id}.meta.json"
+
+
+def _parse_head(head: str) -> dict:
+    def _extract(label: str) -> str:
+        for line in head.split("\n"):
+            if label in line:
+                return line.split(":", 1)[1].strip()
+        return ""
+
+    return {
+        "orchestration_name": _extract("Orchestration   :"),
+        "orchestration_id": _extract("Orchestration ID:"),
+        "session_id": _extract("Session ID      :"),
+        "started_at": _extract("Started at      :"),
+        "user_input": _extract("User Input      :")[:200],
+    }
+
+
+def meta_for(text: str) -> dict:
+    """The `.meta.json` sidecar for a log body.
+
+    `file_size_kb` is in here rather than computed by `list_logs()` because a
+    blob store cannot cheaply stat an object — the listing hardcoded `0` and
+    every finished run has shown `0KB` since logs moved to blobs in D29. The
+    size is known at the moment the body is written, so it is written then.
+
+    Shared with `core/store/log_importer.py` so a migrated log lists exactly
+    like a freshly written one.
+    """
+    return {
+        **_parse_head(text[:1000]),
+        "file_size_kb": round(len(text.encode("utf-8")) / 1024, 1),
+    }
 
 
 def _ts() -> str:
@@ -29,11 +96,12 @@ class OrchestrationLogger:
     """Appends debug lines to  data/orchestration_logs/<run_id>.log"""
 
     def __init__(self, run_id: str, orchestration_id: str, orchestration_name: str, user_input: str, session_id: str | None = None):
-        _ensure_logs_dir()
         self.run_id = run_id
         self.session_id = session_id
-        self.path = LOGS_DIR / f"{run_id}.log"
+        self.path = run_file(_logs_dir(), run_id, ".log")
         self._start_time = time.time()
+        self._fh = None                 # writer-thread owned
+        self._pending: Future | None = None
 
         self._write(f"""
 {'='*80}
@@ -51,8 +119,31 @@ class OrchestrationLogger:
     # ── Core write ─────────────────────────────────────────────────
 
     def _write(self, text: str):
-        with open(self.path, "a", encoding="utf-8") as f:
-            f.write(text)
+        from core.orchestration.journal import _executor
+        from core.secret_scrub import for_storage
+
+        # In the caller's task, where its secrets are held; the writer thread has none (F854). Kept as a chat turn
+        # is, card numbers masked too (F1185).
+        text = for_storage(text)
+
+        def guarded():
+            try:
+                if self._fh is None:
+                    self._fh = open(self.path, "a", encoding="utf-8")
+                self._fh.write(text)
+                self._fh.flush()
+            except Exception as e:  # noqa: BLE001 — never raise on the writer thread
+                _log.warning(f"run log write failed for '{self.run_id}': {e}")
+
+        self._pending = _executor().submit(guarded)
+
+    def _close_fh(self) -> None:
+        if self._fh is not None:
+            try:
+                self._fh.close()
+            except OSError:
+                pass
+            self._fh = None
 
     # ── Run lifecycle ──────────────────────────────────────────────
 
@@ -67,31 +158,39 @@ class OrchestrationLogger:
 {'='*80}
 """)
 
+    async def aclose(self) -> None:
+        """Wait for the writer, close the file, publish. For the engine."""
+        from core.orchestration.journal import _executor
+        if self._pending is not None:
+            await asyncio.get_running_loop().run_in_executor(_executor(), self._close_fh)
+            self._pending = None
+        self._publish()
+
     def close(self) -> None:
-        """Upload the completed log to S3 (scale mode). No-op in standalone mode."""
+        """`aclose` for a caller that cannot await: blocks until the writer has
+        landed every line, then publishes."""
+        from core.orchestration.journal import _executor
+        if self._pending is not None:
+            _executor().submit(self._close_fh).result()
+            self._pending = None
+        self._publish()
+
+    def _publish(self) -> None:
+        """Publish the finished log to the blob store.
+
+        One put() at the end rather than a write per line: put() replaces the
+        whole object, so appending through it would be quadratic — and on S3,
+        quadratic over the network.
+        """
         try:
-            from core.s3_storage import get_s3
-            s3 = get_s3()
-            if s3 and self.path.exists():
-                head = self.path.read_text(encoding="utf-8", errors="replace")[:1000]
+            if not self.path.exists():
+                return
+            from core.storage import get_blob_store
 
-                def _extract(label: str) -> str:
-                    for line in head.split("\n"):
-                        if label in line:
-                            return line.split(":", 1)[1].strip()
-                    return ""
-
-                s3.upload_text(
-                    f"logs/orchestration/{self.path.name}",
-                    self.path.read_text(encoding="utf-8"),
-                    metadata={
-                        "orchestration_name": _extract("Orchestration   :"),
-                        "orchestration_id": _extract("Orchestration ID:"),
-                        "session_id": _extract("Session ID      :"),
-                        "started_at": _extract("Started at      :"),
-                        "user_input": _extract("User Input      :")[:200],
-                    },
-                )
+            text = self.path.read_text(encoding="utf-8")
+            store = get_blob_store()
+            store.put(_blob_key(self.run_id), text)
+            store.put(_meta_key(self.run_id), json.dumps(meta_for(text)))
         except Exception:
             pass
 
@@ -131,6 +230,11 @@ class OrchestrationLogger:
   📝 INPUT PROMPT:
 {self._indent(prompt)}
 """)
+            # Each `@[path]` the prompt named, and what became of it — the
+            # prompt above shows the file, not why (or why not).
+            from core.vault import mention_line
+            for mention in event.get("mentions") or ():
+                self._write(f"  📎 {mention_line(mention)}\n")
             if system_prompt_extra:
                 self._write(f"""  🗺  SYSTEM CONTEXT (workflow graph + step position):
 {self._indent(system_prompt_extra)}
@@ -232,13 +336,49 @@ class OrchestrationLogger:
 {self._indent(response)}
 """)
 
-        elif etype == "routing_decision":
-            decision = event.get("decision", "")
-            target = event.get("target_step_id", "")
-            reasoning = event.get("reasoning", "")
+        elif etype == "evaluator_decision":
+            # The evaluator step's own event: the route the model picked, and
+            # why. The router's `routing_decision` below says where that
+            # actually led. This used to share that name and carry neither of
+            # its fields.
             tool_name = event.get("tool_name", "")
-            label = decision or (tool_name.replace("route_", "", 1) if tool_name.startswith("route_") else tool_name)
-            self._write(f"""
+            label = tool_name.replace("route_", "", 1) if tool_name.startswith("route_") else tool_name
+            reasoning = event.get("arguments", {}).get("reasoning", "")
+            self._write(f"  🔀 EVALUATOR: {label or '(no route)'}"
+                        f"{f' — {reasoning}' if reasoning else ''}\n")
+
+        elif etype == "routing_decision":
+            # One event, three routing step types; `step_type` says which one
+            # routed. Dispatch on it *before* reading `decision`, because a
+            # `None` decision means two different things: an IF whose step
+            # never set its state key, and a SWITCH that matched no case.
+            #
+            # Its absence means an archived run from before the rename, when
+            # only the evaluator used this name — so no `step_type` is an
+            # evaluator.
+            step_type = event.get("step_type") or "evaluator"
+            target = event.get("target_step_id")
+
+            if step_type == "if_else":
+                # `or` and not `??` — an unset decision reads as false, which
+                # is the branch the engine actually takes.
+                self._write(
+                    f"  ↪ BRANCH: {event.get('decision') or 'false'}"
+                    f" → {target or 'end'}\n")
+
+            elif step_type == "switch":
+                # `is not None`, because a matched case can be a falsy string.
+                matched = event.get("decision")
+                self._write(
+                    f"  ↪ BRANCH: case {matched if matched is not None else 'default'}"
+                    f" → {target or 'end'}\n")
+
+            else:
+                decision = event.get("decision", "")
+                reasoning = event.get("reasoning", "")
+                tool_name = event.get("tool_name", "")
+                label = decision or (tool_name.replace("route_", "", 1) if tool_name.startswith("route_") else tool_name)
+                self._write(f"""
   🔀 ROUTING DECISION: {label}
      Target Step  : {target or '(end orchestration)'}
      Reasoning    : {reasoning}
@@ -257,10 +397,15 @@ class OrchestrationLogger:
             self._write(f"  └─ BRANCH END\n")
 
         elif etype == "loop_iteration":
-            self._write(f"  🔄 LOOP ITERATION {event.get('iteration', 0)}/{event.get('total', 0)}\n")
+            # A while-loop has no total to count towards.
+            total = event.get("total")
+            of_total = f"/{total}" if total is not None else ""
+            self._write(f"  🔄 LOOP ITERATION {event.get('iteration', 0)}{of_total}\n")
 
         elif etype == "loop_complete":
-            self._write(f"  🔄 LOOP COMPLETE ({event.get('iterations_completed', 0)} iterations)\n")
+            reason = event.get("stopped_reason")
+            why = f", stopped: {reason}" if reason else ""
+            self._write(f"  🔄 LOOP COMPLETE ({event.get('iterations_completed', 0)} iterations{why})\n")
 
         elif etype == "merge_complete":
             self._write(f"  🔗 MERGE COMPLETE: {event.get('input_count', 0)} inputs, strategy='{event.get('strategy', 'list')}'\n")
@@ -282,11 +427,56 @@ class OrchestrationLogger:
         elif etype == "step_error":
             self._write(f"    ❌ STEP ERROR: {event.get('error', '')}\n")
 
+        elif etype == "step_warning":
+            # Every warning the engine emits was missing from the transcript —
+            # a condition that failed to evaluate, a `loop_over` that resolved
+            # to nothing, a loop that hit its ceiling. The stream carried them
+            # and the archive did not, so the one record that outlives the run
+            # showed a branch being taken and never said the expression behind
+            # it had not run.
+            self._write(f"  ⚠️ WARNING: {event.get('message', '')}\n")
+
+        elif etype == "if_decision":
+            # The step executor's own event: the condition and what it came to.
+            # `_resolve_next` used to answer to this name as well, with a
+            # payload sharing no field; it emits `routing_decision` now. The
+            # router branch below stays for good — a run journalled before the
+            # rename replays its raw events, so the old shape still arrives.
+            if "condition" in event:
+                self._write(
+                    f"  🔀 IF: {event.get('condition', '')} → {event.get('result', '')}\n")
+            else:
+                self._write(
+                    f"  ↪ BRANCH: {event.get('decision') or 'false'}"
+                    f" → {event.get('target_step_id') or 'end'}\n")
+
+        elif etype == "switch_decision":
+            # As above: the step's own event, plus a legacy router branch for
+            # runs journalled before `_resolve_next` moved to `routing_decision`.
+            if "expression" in event:
+                matched = event.get("matched_case")
+                self._write(
+                    f"  🔀 SWITCH: {event.get('expression', '')} → {event.get('value', '')}"
+                    f" (case: {matched if matched is not None else 'default'})\n")
+            else:
+                matched = event.get("matched_case")
+                self._write(
+                    f"  ↪ BRANCH: case {matched if matched is not None else 'default'}"
+                    f" → {event.get('target_step_id') or 'end'}\n")
+
         elif etype == "orchestration_error":
             self._write(f"\n  ❌ ORCHESTRATION ERROR: {event.get('error', '')}\n")
 
         elif etype == "loop_limit_reached":
             self._write(f"  ⚠️ LOOP LIMIT: step {event.get('orch_step_id', '')} hit {event.get('iterations', 0)}/{event.get('max_iterations', 0)}\n")
+
+        elif etype in ("knowledge_search", "knowledge_read", "knowledge_citations",
+                       "knowledge_retrieve", "knowledge_ingest"):
+            # An agent's Knowledge calls and its answer's citations (B1b), and a
+            # workflow's Retrieve and Ingest steps (R1): labels, paths, counts and
+            # ids — never the passages themselves.
+            from core.knowledge.tools import run_log_text
+            self._write(run_log_text(event))
 
         elif etype == "thinking":
             pass  # skip noise
@@ -322,76 +512,56 @@ class OrchestrationLogger:
 
     @staticmethod
     def get_log(run_id: str) -> str | None:
-        path = LOGS_DIR / f"{run_id}.log"
+        path = run_file(_logs_dir(), run_id, ".log")
         if path.exists():
             return path.read_text(encoding="utf-8")
         try:
-            from core.s3_storage import get_s3
-            s3 = get_s3()
-            if s3:
-                return s3.download_text(f"logs/orchestration/{run_id}.log")
+            from core.storage import get_blob_store
+            return get_blob_store().get(_blob_key(run_id))
         except Exception:
             pass
         return None
 
     @staticmethod
     def list_logs(limit: int = 100, offset: int = 0) -> list[dict]:
-        _ensure_logs_dir()
+        """Runs still in flight (scratch) plus finished ones (blobs).
 
-        def _parse_head(head: str, run_id: str, size_kb: float) -> dict:
-            def _extract(label: str) -> str:
-                for line in head.split("\n"):
-                    if label in line:
-                        return line.split(":", 1)[1].strip()
-                return ""
-            return {
-                "run_id": run_id,
-                "orchestration_name": _extract("Orchestration   :"),
-                "orchestration_id": _extract("Orchestration ID:"),
-                "session_id": _extract("Session ID      :"),
-                "started_at": _extract("Started at      :"),
-                "user_input": _extract("User Input      :")[:200],
-                "file_size_kb": size_kb,
-            }
-
-        local_ids: set[str] = set()
+        Everything here is scoped to the current tenant: the scratch directory
+        carries the tenant in its path and the blob store applies the prefix
+        inside list(). Neither used to be true.
+        """
         logs: list[dict] = []
-        files = sorted(LOGS_DIR.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
-        for f in files:
-            run_id = f.stem
-            local_ids.add(run_id)
+        seen: set[str] = set()
+
+        logs_dir = _logs_dir()
+        for f in sorted(logs_dir.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True):
+            seen.add(f.stem)
             try:
-                head = f.read_text(encoding="utf-8", errors="replace")[:1000]
-                logs.append(_parse_head(head, run_id, round(f.stat().st_size / 1024, 1)))
-            except Exception:
-                logs.append({"run_id": run_id, "file_size_kb": 0})
+                entry = _parse_head(f.read_text(encoding="utf-8", errors="replace")[:1000])
+                entry["file_size_kb"] = round(f.stat().st_size / 1024, 1)
+            except OSError:
+                entry = {"file_size_kb": 0}
+            logs.append({"run_id": f.stem, **entry})
 
         try:
-            from core.s3_storage import get_s3
-            s3 = get_s3()
-            if s3:
-                from concurrent.futures import ThreadPoolExecutor
-                s3_keys = s3.list_keys("logs/orchestration/")
-                missing_keys = [k for k in s3_keys if k.endswith(".log") and Path(k).stem not in local_ids]
-
-                def _fetch_meta(rel_key: str) -> dict:
-                    run_id = Path(rel_key).stem
-                    try:
-                        meta = s3.get_metadata(rel_key) or {}
-                        return {
-                            "run_id": run_id,
-                            "orchestration_name": meta.get("orchestration_name", ""),
-                            "orchestration_id": meta.get("orchestration_id", ""),
-                            "session_id": meta.get("session_id", ""),
-                            "started_at": meta.get("started_at", ""),
-                            "user_input": meta.get("user_input", "")[:200],
-                            "file_size_kb": 0,
-                        }
-                    except Exception:
-                        return {"run_id": run_id}
-
-                with ThreadPoolExecutor(max_workers=10) as pool:
-                    logs.extend(pool.map(_fetch_meta, missing_keys))
+            from core.storage import get_blob_store
+            store = get_blob_store()
+            for key in store.list(f"{_BLOB_PREFIX}/"):
+                if not key.endswith(".log"):
+                    continue
+                run_id = Path(key).stem
+                if run_id in seen:
+                    continue
+                seen.add(run_id)
+                # The sidecar, so listing does not download every log body.
+                entry = {}
+                try:
+                    raw = store.get(_meta_key(run_id))
+                    if raw:
+                        entry = json.loads(raw)
+                except (ValueError, OSError):
+                    pass
+                logs.append({"run_id": run_id, "file_size_kb": 0, **entry})
         except Exception:
             pass
 
@@ -400,16 +570,17 @@ class OrchestrationLogger:
 
     @staticmethod
     def delete_log(run_id: str) -> bool:
-        path = LOGS_DIR / f"{run_id}.log"
+        path = run_file(_logs_dir(), run_id, ".log")
         deleted = False
         if path.exists():
             path.unlink()
             deleted = True
         try:
-            from core.s3_storage import get_s3
-            s3 = get_s3()
-            if s3:
-                s3.delete(f"logs/orchestration/{run_id}.log")
+            from core.storage import get_blob_store
+            store = get_blob_store()
+            if store.exists(_blob_key(run_id)):
+                store.delete(_blob_key(run_id))
+                store.delete(_meta_key(run_id))
                 deleted = True
         except Exception:
             pass

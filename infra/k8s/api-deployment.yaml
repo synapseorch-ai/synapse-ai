@@ -31,8 +31,14 @@ spec:
                 secretKeyRef:
                   name: synapse-secrets
                   key: postgres-url
-            - name: SYNAPSE_DATA_DIR
-              value: "/data"
+            # The engine's own database. Same secret as SCALE_POSTGRES_URL, so
+            # the API and every worker read one store, which is what lets any
+            # process serve any job.
+            - name: SYNAPSE_DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: synapse-secrets
+                  key: postgres-url
           resources:
             requests:
               cpu: "250m"
@@ -46,13 +52,12 @@ spec:
               port: 8765
             initialDelaySeconds: 15
             periodSeconds: 10
-          volumeMounts:
-            - name: data
-              mountPath: /data
-      volumes:
-        - name: data
-          persistentVolumeClaim:
-            claimName: synapse-data-pvc
+      # No volumes. There was a single ReadWriteMany PVC mounted at /data on the
+      # API and on every worker — one shared filesystem holding config, the
+      # vault and run state, which is the assumption that made a pod unable to
+      # serve a job another pod started. Documents are in Postgres and tenant
+      # content is in S3 (the S3_* variables); anything left on local disk is
+      # rebuildable and belongs to its own replica.
 ---
 apiVersion: v1
 kind: Service

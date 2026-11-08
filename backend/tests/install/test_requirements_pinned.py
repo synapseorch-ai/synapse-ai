@@ -35,6 +35,7 @@ _REQUIREMENTS_FILES = [
     "requirements-coding.txt",
     "requirements-messaging.txt",
     "requirements-worker.txt",
+    "requirements-knowledge.txt",
 ]
 
 # Bounds that mean "a new major release cannot arrive unannounced".

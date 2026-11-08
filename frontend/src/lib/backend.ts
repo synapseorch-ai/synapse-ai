@@ -3,7 +3,17 @@
  * Provides the internal token header for frontend→backend requests.
  */
 
-const BACKEND_URL = process.env.BACKEND_URL || 'http://127.0.0.1:8765';
+/**
+ * Where the backend is, read from this process's environment when the server
+ * starts — never at build (F309). `next.config.ts` used to list it in `env`,
+ * which inlines a value into the bundle: a packaged UI called the port it was
+ * built for, whatever `synapse start` passed, and every /api call was a 500
+ * when the backend ran anywhere else. The same order `next.config.ts` and
+ * `scripts/load-env.js` use: `BACKEND_URL`, else `SYNAPSE_BACKEND_PORT`, else
+ * 8765.
+ */
+const BACKEND_URL = process.env.BACKEND_URL
+    || `http://127.0.0.1:${process.env.SYNAPSE_BACKEND_PORT || '8765'}`;
 
 /**
  * The internal token is generated per-install at runtime, so it must be read

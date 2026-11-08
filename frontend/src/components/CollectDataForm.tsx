@@ -76,13 +76,14 @@ export function CollectDataForm({ data, onSubmit, onCancel }: CollectDataFormPro
 
 
   return (
-    <div className="mt-4 p-4 bg-zinc-950 border border-zinc-800">
+    <div className="rounded-lg border border-border bg-surface-2 p-4">
       <form onSubmit={handleSubmit} className="space-y-4">
         {!hasFields && (
           <textarea
+            aria-label="Your response"
             value={defaultText}
             onChange={(e) => setDefaultText(e.target.value)}
-            className="w-full bg-zinc-900 border border-zinc-700 text-white px-4 py-2 text-sm focus:outline-none focus:border-white transition-colors resize-none"
+            className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-sm text-text placeholder:text-text-faint transition-colors resize-none"
             placeholder="Type your response..."
             rows={3}
           />
@@ -92,7 +93,7 @@ export function CollectDataForm({ data, onSubmit, onCancel }: CollectDataFormPro
           
           return (
             <div key={idx}>
-              <label className="block text-sm font-medium text-zinc-300 mb-2">
+              <label htmlFor={`collect-${key}`} className="mb-2 block text-sm font-medium text-text">
                 {field.label}
               </label>
 
@@ -104,14 +105,14 @@ export function CollectDataForm({ data, onSubmit, onCancel }: CollectDataFormPro
                       type="button"
                       onClick={() => toggleOption(key, option, field.multiple || false)}
                       className={cn(
-                        "w-full text-left px-4 py-2 border text-sm transition-colors",
+                        "w-full rounded-md border px-3 py-2 text-left text-sm transition-colors",
                         field.multiple
                           ? (selectedOptions[key] || []).includes(option)
-                            ? "bg-white text-black border-white"
-                            : "bg-zinc-900 text-zinc-300 border-zinc-700 hover:border-zinc-500"
+                            ? "border-accent bg-accent-subtle text-accent-ink"
+                            : "border-border-strong bg-surface text-text hover:border-text-faint"
                           : values[key] === option
-                          ? "bg-white text-black border-white"
-                          : "bg-zinc-900 text-zinc-300 border-zinc-700 hover:border-zinc-500"
+                          ? "border-accent bg-accent-subtle text-accent-ink"
+                          : "border-border-strong bg-surface text-text hover:border-text-faint"
                       )}
                     >
                       {option}
@@ -120,6 +121,7 @@ export function CollectDataForm({ data, onSubmit, onCancel }: CollectDataFormPro
                 </div>
               ) : (
                 <input
+                  id={`collect-${key}`}
                   type={
                     field.type === 'text' || field.type === 'email' || field.type === 'phone'
                       ? field.type
@@ -131,7 +133,7 @@ export function CollectDataForm({ data, onSubmit, onCancel }: CollectDataFormPro
                   }
                   value={values[key] || ''}
                   onChange={(e) => setValue(key, e.target.value)}
-                  className="w-full bg-zinc-900 border border-zinc-700 text-white px-4 py-2 text-sm focus:outline-none focus:border-white transition-colors"
+                  className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-sm text-text placeholder:text-text-faint transition-colors"
                   placeholder={`Enter ${field.type}...`}
                 />
               )}
@@ -142,7 +144,7 @@ export function CollectDataForm({ data, onSubmit, onCancel }: CollectDataFormPro
         <div className="flex gap-2">
           <button
             type="submit"
-            className="flex-1 bg-white text-black px-4 py-2 text-sm font-bold uppercase hover:bg-zinc-200 transition-colors"
+            className="flex-1 rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-fg transition-colors hover:bg-accent-hover"
             disabled={false}
           >
             Submit
@@ -151,7 +153,7 @@ export function CollectDataForm({ data, onSubmit, onCancel }: CollectDataFormPro
             <button
               type="button"
               onClick={onCancel}
-              className="px-4 py-2 text-sm border border-zinc-700 text-zinc-400 hover:text-white hover:border-white transition-colors"
+              className="rounded-md border border-border-strong px-4 py-2 text-sm text-text-muted transition-colors hover:bg-row-hover hover:text-text"
             >
               Cancel
             </button>

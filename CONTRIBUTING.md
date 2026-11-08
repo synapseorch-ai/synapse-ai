@@ -19,7 +19,13 @@ cd backend
 python3.11 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 python3.11 main.py
+```
 
+With uv, `uv sync` at the repo root installs exactly the installer's versions (uv.lock). For one of the backend locks,
+pass `--no-config`, as in `uv pip install --no-config -r backend/requirements.lock`: pyproject.toml's `[tool.uv]` is
+uv.lock's, and without the flag uv applies it to the backend lock too.
+
+```bash
 # Frontend (separate terminal)
 cd frontend
 npm install
@@ -64,18 +70,28 @@ backend/
     tools.py                       Tool aggregation (MCP + built-in + custom); system prompt builder
     llm_providers.py               Multi-provider LLM callers (OpenAI, Anthropic, Gemini,
                                    xAI, DeepSeek, Ollama) with retry + backoff
-    session.py                     Conversation history + ephemeral session state (JSON-backed)
+    session.py                     Conversation history + ephemeral session state (store-backed)
     memory.py                      ChromaDB vector store for semantic cross-session memory
     scheduler.py                   Async task scheduler — cron + interval, persists next_run_at
     mcp_client.py                  MCP session manager (stdio + remote Streamable HTTP/SSE,
                                    OAuth 2.0 PKCE + Bearer token, auto-refresh)
-    vault.py                       Auto-saves large tool outputs to disk; resolves @[path] mentions
+    vault.py                       Auto-saves large tool outputs to the blob store; resolves @[path]
     models.py                      Pydantic models: ChatRequest, ChatResponse, Agent, DBConfig
-    config.py                      Settings loader — resolves SYNAPSE_DATA_DIR, credentials
-    json_store.py                  Thread-safe JSON file persistence with optional TTL cache
-    agent_logger.py                Per-run debug logs for agent calls → logs/agent_logs/
-    schedule_logger.py             Per-run logs for scheduled executions → logs/schedule_logs/
-    usage_tracker.py               Token + cost tracking; priced via data/model_pricing.json
+    config.py                      Timeouts, shipped settings defaults, settings-provider hook
+    tenancy.py                     The tenant a call is executing for (a ContextVar)
+    store/                         The database — one SQLAlchemy layer over SQLite and Postgres
+      models.py                    Tables; every tenant-scoped one carries tenant_id
+      engine.py                    Engine/session factory; SYNAPSE_DB_URL or a local SQLite file
+      migrate.py                   Idempotent additive schema changes (no Alembic in OSS)
+      importer.py                  One-time import of a pre-database install's JSON
+      resources.py                 Orchestrations, agents, custom tools, MCP servers
+      settings.py / schedules.py / sessions.py / usage.py / collections.py
+    storage/                       Tenant content as blobs — vault, run logs, cached responses
+    runtime_dirs.py                The few things that genuinely need a real directory
+    agent_logger.py                Per-run debug logs for agent calls
+    schedule_logger.py             Per-run logs for scheduled executions
+    model_pricing.py               Shipped rate card; seeds the model_pricing table
+    usage_tracker.py               Token + cost tracking over the usage_logs table
     profiling.py                   TimingMiddleware + optional pyinstrument / tracemalloc
     routes/                        REST API endpoints —
                                    chat, agents, tools, orchestrations, sessions, schedules,
@@ -88,15 +104,15 @@ backend/
       state.py                     Shared state + checkpointing across steps
       context.py                   Execution context builder; trace + memory injection
       summarizer.py                Smart truncation + LLM-assisted context compression
-      logger.py                    Per-run structured audit log → logs/orchestration_logs/
+      logger.py                    Per-run structured audit log, written as a tenant blob
     messaging/                     Multi-channel messaging subsystem
       manager.py                   Channel lifecycle — start/stop adapters, route inbound messages
-      store.py                     Channel config persistence (messaging_channels.json)
+      store.py                     Channel config persistence (a store collection)
       adapters/                    Platform adapters: Slack, Discord, Teams, Telegram, WhatsApp
   tools/                           Built-in tool implementations (run as stdio MCP servers)
     sandbox.py                     Docker-sandboxed Python code execution + shared file vault
     sql_agent.py                   SQL query executor (PostgreSQL, MySQL, SQLite)
-    web_scraper.py                 Crawl4ai-powered web scraper with stealth mode
+    web_scraper.py                 Playwright web scraper with stealth mode
     code_search.py                 Semantic code search via vector embeddings
     pdf_parser.py                  PDF text and table extraction
     xlsx_parser.py                 Excel file parsing
@@ -107,32 +123,30 @@ backend/
     code_indexer.py                CocoIndex repo indexing + vector DB operations
     google.py                      Google API integrations (Drive, Calendar, Gmail)
     synthetic_data.py              Synthetic dataset generation
-  data/                            User data — gitignored
-    user_agents.json               Agent configurations
-    orchestrations.json            Orchestration definitions
-    mcp_servers.json               Remote MCP server configs
-    custom_tools.json              Custom tool definitions
-    settings.json                  App settings (model, keys, preferences)
-    schedules.json                 Schedule definitions
-    messaging_channels.json        Messaging channel configurations
-    db_configs.json                Database connection configurations
-    repos.json                     Indexed repository records
-    usage_logs.json / model_pricing.json   Token usage log + per-model pricing table
-    chat_sessions/                 Per-session conversation history (JSON)
-    chroma_db/                     ChromaDB persistent vector store
-    vault/                         Agent file storage
-  logs/                            Execution logs — gitignored
-    agent_logs/                    Per-agent-run debug traces
-    orchestration_logs/            Per-orchestration-run structured audit logs
-    orchestration_runs/            Checkpointed run state (JSON, used for resume)
-    schedule_logs/                 Per-schedule-run execution logs
+  var/                             A running install's data — gitignored, never committed
+    synapse.db                     The database, when it is the default SQLite one
+    blobs/<tenant>/                Vault files, run and agent logs, cached responses
+    state/<tenant>/                ChromaDB's index — rebuildable, per replica
 ```
 
 **Frontend ↔ Backend:** The Next.js dev server proxies `/api/*` and `/auth/*` to `http://127.0.0.1:8765` via `next.config.ts` rewrites. Server-side API routes use the `BACKEND_URL` environment variable (default `http://127.0.0.1:8765`).
 
 **MCP Transport:** Local servers use stdio. Remote servers use Streamable HTTP (SSE) with OAuth 2.0 PKCE or Bearer token auth. Synapse manages token refresh and session lifecycle automatically.
 
-**Data directory:** All user data is stored in `SYNAPSE_DATA_DIR` (default `backend/data/` in dev, `~/.synapse/data/` in packaged installs). Never hardcode paths relative to `__file__` — always read from `core.config.DATA_DIR`.
+**Where state goes.** There is no data directory, and no module may invent one. Everything an install persists belongs to exactly one of three layers, and which one it is decides where the code goes:
+
+| Kind of thing | Layer | Example |
+|---|---|---|
+| A document with an identity | `core/store/` — a database row | an orchestration, an agent, a schedule, a setting, an OAuth token |
+| Tenant content, too file-shaped to be a row | `core/storage/` — a blob key | a vaulted tool output, a run log, a cached response |
+| A genuine directory on disk | `core/runtime_dirs.py` | ChromaDB's index, a browser profile |
+
+Two rules follow, and both were learned the hard way:
+
+- **Never derive a path from `__file__`.** Several modules did, which meant the configured location never reached them and a refactor moved the real directory out from underneath them silently. `backend/tests/unit/test_vault_paths.py` exists because of exactly that.
+- **Never cache a path at import time.** Paths carry the tenant, and one process serves many. A module-level constant pins every tenant to whoever imported first.
+
+Scratch — genuinely throwaway working files — is `core/storage/scratch.py`. If you find yourself wanting a fourth category, that is a design conversation, not a new directory.
 
 ## Adding a Built-in MCP Tool
 
@@ -157,8 +171,8 @@ backend/
 
 ## PR Checklist
 
-- [ ] No secrets or API keys committed (check `backend/data/` files)
-- [ ] Data paths use `DATA_DIR` from `core.config`, not hardcoded paths
+- [ ] No secrets or API keys committed (`backend/var/` is a running install's data and is never committed)
+- [ ] New state goes through `core/store/`, `core/storage/` or `core/runtime_dirs.py` — no path from `__file__`, no path cached at import
 - [ ] `next.config.ts` still has `output: 'standalone'`
 - [ ] New env vars documented in `.env.example`
 - [ ] Frontend server-side routes use `process.env.BACKEND_URL`
@@ -173,8 +187,7 @@ bash scripts/build_frontend.sh
 pip install hatch && hatch build
 twine upload dist/*
 
-# 3. Build and publish npm package
-node scripts/bundle-frontend.js
+# 3. Build and publish npm package (the launcher and the installer; npm run build makes the installer)
 npm publish --access public
 
 # Or: push a version tag and let GitHub Actions handle it

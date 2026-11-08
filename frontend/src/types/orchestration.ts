@@ -1,6 +1,34 @@
 import type { Node, Edge } from '@xyflow/react';
 
-export type StepType = 'agent' | 'llm' | 'tool' | 'evaluator' | 'parallel' | 'merge' | 'loop' | 'human' | 'transform' | 'extract_json' | 'if_else' | 'switch' | 'print' | 'end';
+export type StepType = 'agent' | 'llm' | 'tool' | 'evaluator' | 'parallel' | 'merge' | 'loop' | 'human' | 'transform' | 'extract_json' | 'if_else' | 'switch' | 'print' | 'end' | 'retrieve' | 'ingest' | 'workflow' | 'browser';
+
+/** Knowledge's two steps (R1). Offered only while Knowledge is on: a shell that does not say so hides them. */
+export const KNOWLEDGE_STEP_TYPES: readonly StepType[] = ['retrieve', 'ingest'];
+
+/**
+ * A Retrieve step's settings, as stored under `step.retrieve` — the engine's
+ * `RetrieveStepConfig`. Saved half-filled while being edited; the run checks it.
+ */
+export interface RetrieveSettings {
+    kb_ids?: string[];
+    /** A template: `{{ state.key.path }}`. */
+    query?: string;
+    filters?: Record<string, unknown> | null;
+    top_k?: number | null;
+    rerank?: boolean | null;
+    /** `active`, or a `ksnap_…` id pinning one knowledge base's index version. */
+    snapshot?: string;
+}
+
+/** An Ingest step's settings, as stored under `step.ingest` — the engine's `IngestStepConfig`. */
+export interface IngestSettings {
+    kb_id?: string;
+    /** The state key holding a list of objects. */
+    records_from?: string;
+    id_field?: string | null;
+    text_field?: string | null;
+    metadata_fields?: string[];
+}
 
 export interface StepConfig {
     id: string;
@@ -10,6 +38,20 @@ export interface StepConfig {
     // AGENT / EVALUATOR
     agent_id?: string;
     prompt_template?: string;
+    /** A Browser agent's step: the sessions it starts signed in with, one per site; nearest wins (F1140, DESIGN v5.3). */
+    browser_sessions?: string[];
+    /** A Browser agent step's recordings, beside its agent's own picks (F1146). */
+    browser_recordings?: string[] | null;
+
+    // BROWSER (F1146; BRW1's engine) — a recording replayed by code in the run's browser. `agent_id` is the Browser
+    // agent that finds the way when a page has changed (`on_miss: 'agent'`); `browser_sessions` and `output_key` as above.
+    recording_id?: string | null;
+    /** Each of the recording's inputs, filled from the run: input name → a template such as "{{ state.order }}". */
+    recording_inputs?: Record<string, string>;
+    /** The recording's click/press steps whose send may go on its own; none by default. */
+    may_send_steps?: string[];
+    /** A changed page: pause for the person (the default), or let a Browser agent find the way. */
+    on_miss?: 'agent' | 'pause';
 
     // EVALUATOR — outgoing routes as tools for the agent to call
     route_map?: Record<string, string | null>;
@@ -29,14 +71,34 @@ export interface StepConfig {
     // LOOP
     loop_count?: number;
     loop_step_ids?: string[];
+    /** Expression yielding a list, e.g. `state.items`. Set = for-each mode. */
+    loop_over?: string;
+    loop_item_key?: string;
+    loop_index_key?: string;
+    /** Re-checked before each iteration. Set (without loop_over) = while mode. */
+    loop_while_condition?: string;
+    /** Checked after each iteration; true stops the loop. */
+    loop_break_condition?: string;
+    loop_max_iterations?: number;
+
+    /** AGENT — the tools the step finishes with (E2); its output is that call's result. Unset: its reply. */
+    finish_tools?: string[];
+    /** AGENT — the step's output when it still answers in words after its reminder (F958), marked `fallback`. Only
+     *  with finish_tools; unset, such a step fails as before. */
+    finish_fallback?: Record<string, unknown>;
 
     // TOOL — forced single tool call
     forced_tool?: string;
+    /** TOOL — the arguments set on the step (E1); unset, a model writes them. Values may read `{{state.key}}`. */
+    tool_arguments?: Record<string, unknown> | null;
+
+    // WORKFLOW — runs another workflow by its id as a nested run (E3); its prompt_template is the child's input
+    workflow_id?: string;
 
     // TRANSFORM
     transform_code?: string;
 
-    // PRINT — user-defined text/markdown with {state.key} interpolation
+    // PRINT — user-defined text/markdown with {{ state.key }} interpolation
     print_content?: string;
 
     // IF_ELSE — Python condition, routes to true/false path
@@ -51,7 +113,10 @@ export interface StepConfig {
 
     // HUMAN
     human_prompt?: string;
-    human_fields?: { name: string; type: string; label: string }[];
+    human_fields?: { name: string; type: string; label: string; options?: string[] }[];
+    // Optional messaging-channel notification for the pause (first response wins).
+    human_channel_id?: string;
+    human_timeout_seconds?: number;
 
     // I/O mapping
     input_keys?: string[];
@@ -60,23 +125,29 @@ export interface StepConfig {
     // Per-step guardrails
     max_turns?: number;
     timeout_seconds?: number;
-    allowed_tools?: string[];
+    allowed_tools?: string[] | null;
 
     // Response cache (skipped for AGENT steps)
     cache_responses_enabled?: boolean;
     cache_semantic_enabled?: boolean;
     cache_response_ttl_seconds?: number;
     cache_response_threshold?: number;
-    // Tool memoization (default on for tools in the deterministic registry)
-    cache_tools_enabled?: boolean;
-    cache_tool_ttl_seconds?: number;
 
     // On re-invocation, include every prior turn (inputs/tools/output) in the prompt.
     include_full_history?: boolean;
 
+    // Agent steps only: "Sees attachments" — the images a person attached in chat reach this step (F313).
+    pass_images?: boolean;
+
     // Graph routing
     next_step_id?: string;
     max_iterations?: number;
+    /** Where a route to this step goes once it has used max_iterations. Unset, the run fails (F248). */
+    on_exhausted_step_id?: string | null;
+
+    // RETRIEVE / INGEST — Knowledge's steps (R1)
+    retrieve?: RetrieveSettings | null;
+    ingest?: IngestSettings | null;
 
     // Visual canvas position
     position_x?: number;
@@ -98,9 +169,30 @@ export interface Orchestration {
     entry_step_id: string;
     state_schema: Record<string, StateSchemaEntry>;
     max_total_turns: number;
-    max_total_cost_usd?: number | null;
     timeout_minutes: number;
+    /** What one run may spend (CAP1): credits (cloud only) and model dollars. Unset or null is no cap.
+     *  The engine asks before every step; a run at its cap stops and says so. */
+    max_run_credits?: number | null;
+    max_run_usd?: number | null;
+    /** Offered to MCP clients (Claude, Cursor…) as a tool of its own, with its inputs (F466). Off by default:
+     *  off, a client still runs it by id or name, it is only not one more tool in its list. */
+    offer_to_mcp?: boolean;
+    /** Stop a run when a step's text will not become the type its state key
+     *  declares. Off by default — a type nobody was ever held to is not a
+     *  thing to start failing runs over. A value that is simply of another
+     *  type warns and carries on; only a failed text conversion stops. */
+    strict_state_types?: boolean;
     trigger: 'manual' | 'scheduled';
+    /** The rubric every run is scored against. Empty means "not evaluated",
+     *  which is the opt-in: binding one is what consents to the judge's cost. */
+    rubric_id?: string;
+    /** Judge its first finished run, then 1 run in this many (D340 F); unset judges every run. */
+    judge_every?: number;
+    /** The state key whose value is what a run makes: its answer as an agent,
+     *  v1's `response`, what a parent gets back when it runs nested, what the
+     *  judge scores. Empty means the last step that produced content — a
+     *  person's answer, an evaluator's route label and End never count (F249). */
+    result_key?: string;
     created_at?: string;
     updated_at?: string;
 }
@@ -126,7 +218,7 @@ export interface OrchestrationRun {
     current_step_id?: string;
     waiting_for_human: boolean;
     human_prompt?: string;
-    human_fields?: { name: string; type: string; label: string }[];
+    human_fields?: { name: string; type: string; label: string; options?: string[] }[];
     total_tokens_used: number;
     total_cost_usd: number;
     cache_read_tokens_total?: number;
@@ -138,33 +230,67 @@ export interface OrchestrationRun {
     ended_at?: string;
 }
 
+// A configuration problem surfaced by `components/orchestration/validate.ts`.
+// Errors block a run; warnings are advisory and never block anything.
+export interface StepIssue {
+    severity: 'error' | 'warning';
+    message: string;
+}
+
 // xyflow node data
 export interface StepNodeData {
     step: StepConfig;
     isEntry: boolean;
     isSelected: boolean;
     agentName?: string;
-    runStatus?: 'pending' | 'running' | 'completed' | 'failed';
+    /** A Workflow step's workflow, by name, where the host listed its workflows (E3). */
+    workflowName?: string;
+    /** What an Agent step holds: an agent, a Team (as a team, or one at a time) or a workflow (TEAM1e). */
+    agentKind?: 'agent' | 'team' | 'one_at_a_time' | 'workflow';
+    runStatus?: 'pending' | 'running' | 'paused' | 'completed' | 'failed';
+    /** Why the step failed in the run on screen, in its own words (F195). */
+    runError?: string;
+    /** The open canvas: the step says in words how the run stands (Working, Needs you), not only in its frame. */
+    runDetail?: boolean;
+    /** How the step went in the last run (Last run, M3a-2): `components/run`'s `StepTime`. */
+    lastRun?: { state: string; seconds: number | null; times?: number; costUsd?: number | null; credits?: number };
+    /** The last run, now over, never reached this step: it is dimmed. */
+    unreached?: boolean;
+    /** The run on the canvas holds something of this step's to show (F902): its result button opens it. */
+    hasResult?: boolean;
+    openResult?: (stepId: string) => void;
+    issues?: StepIssue[];
     [key: string]: unknown;
 }
 
 export type StepNode = Node<StepNodeData>;
 export type StepEdge = Edge;
 
-// Step type metadata for UI
-export const STEP_TYPE_META: Record<StepType, { label: string; color: string; icon: string }> = {
-    agent:     { label: 'Agent',     color: '#3b82f6', icon: 'Bot' },
-    llm:       { label: 'LLM',       color: '#14b8a6', icon: 'Zap' },
-    tool:      { label: 'Tool',      color: '#a855f7', icon: 'Wrench' },
-    evaluator: { label: 'Evaluator', color: '#10b981', icon: 'Scale' },
-    parallel:  { label: 'Parallel',  color: '#8b5cf6', icon: 'GitBranch' },
-    merge:     { label: 'Merge',     color: '#ec4899', icon: 'GitMerge' },
-    loop:      { label: 'Loop',      color: '#f59e0b', icon: 'RefreshCw' },
-    human:     { label: 'Human',     color: '#ef4444', icon: 'User' },
-    transform:    { label: 'Transform',    color: '#6366f1', icon: 'Code' },
-    extract_json: { label: 'Extract JSON', color: '#f97316', icon: 'Braces' },
-    if_else:      { label: 'If / Else',    color: '#eab308', icon: 'GitFork' },
-    switch:       { label: 'Switch',       color: '#06b6d4', icon: 'ArrowLeftRight' },
-    print:        { label: 'Print',        color: '#84cc16', icon: 'FileText' },
-    end:          { label: 'End',          color: '#6b7280', icon: 'Square' },
+// Step type metadata for UI. `category` groups the step list; `blurb` is the
+// one-liner shown while choosing a step. `color` was each type's own hue; the
+// canvas colours steps by who does the work now (D211, `orchestration/roles.ts`)
+// and draws none of these, but they stay exported for anything that reads them.
+export type StepCategory = 'Core' | 'Logic' | 'Data' | 'I/O';
+
+export const STEP_TYPE_META: Record<StepType, {
+    label: string; color: string; icon: string; category: StepCategory; blurb: string;
+}> = {
+    agent:     { label: 'Agent',     color: '#3b82f6', icon: 'Bot',          category: 'Core',  blurb: 'Run a configured agent with tools' },
+    llm:       { label: 'LLM',       color: '#14b8a6', icon: 'Zap',          category: 'Core',  blurb: 'Single LLM call, no tools' },
+    tool:      { label: 'Tool',      color: '#a855f7', icon: 'Wrench',       category: 'Core',  blurb: 'Force exactly one tool call' },
+    evaluator: { label: 'Evaluator', color: '#10b981', icon: 'Scale',        category: 'Logic', blurb: 'LLM picks the next route' },
+    parallel:  { label: 'Parallel',  color: '#8b5cf6', icon: 'GitBranch',    category: 'Logic', blurb: 'Run branches concurrently' },
+    merge:     { label: 'Merge',     color: '#ec4899', icon: 'GitMerge',     category: 'Logic', blurb: 'Combine parallel outputs' },
+    loop:      { label: 'Loop',      color: '#f59e0b', icon: 'RefreshCw',    category: 'Logic', blurb: 'Repeat body steps N times' },
+    human:     { label: 'Human',     color: '#ef4444', icon: 'User',         category: 'I/O',   blurb: 'Pause for a person to decide' },
+    transform:    { label: 'Transform',    color: '#6366f1', icon: 'Code',   category: 'Data',  blurb: 'Run Python over shared state' },
+    extract_json: { label: 'Extract JSON', color: '#f97316', icon: 'Braces', category: 'Data',  blurb: 'Parse JSON out of text' },
+    if_else:      { label: 'If / Else',    color: '#eab308', icon: 'GitFork',       category: 'Logic', blurb: 'Branch on a condition' },
+    switch:       { label: 'Switch',       color: '#06b6d4', icon: 'ArrowLeftRight', category: 'Logic', blurb: 'Match a value to a case' },
+    print:        { label: 'Print',        color: '#84cc16', icon: 'FileText',      category: 'I/O',   blurb: 'Write text/markdown to state' },
+    end:          { label: 'End',          color: '#6b7280', icon: 'Square',        category: 'I/O',   blurb: 'Terminate the flow here' },
+    retrieve:     { label: 'Retrieve',     color: '#0ea5e9', icon: 'BookOpenText',  category: 'Data',  blurb: 'Search knowledge bases' },
+    ingest:       { label: 'Ingest',       color: '#d946ef', icon: 'FileInput',     category: 'Data',  blurb: 'Add records to a knowledge base' },
+    workflow:     { label: 'Workflow',     color: '#0d9488', icon: 'Workflow',      category: 'Core',  blurb: 'Run another workflow, then carry on' },
+    browser:      { label: 'Browser',      color: '#0284c7', icon: 'Globe',         category: 'Core',  blurb: 'Repeat a recorded task in a browser' },
 };

@@ -12,10 +12,10 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import httpx
 
-from core.config import load_settings, DATA_DIR
-from core.llm_providers import _make_aws_client
-from core.session import session_state, _CHAT_SESSIONS_DIR
-from services.synthetic_data import generate_synthetic_data, SyntheticDataRequest, current_job, DATASETS_DIR
+from core.config import load_settings
+from core.llm_providers import _make_aws_client, _ollama_base_url, cli_takes_effort, is_gemini_chat_model, is_openai_chat_model
+from core.session import session_state, clear_all_chat_sessions
+from services.synthetic_data import generate_synthetic_data, SyntheticDataRequest, current_job, DATASETS_PREFIX
 
 router = APIRouter()
 
@@ -38,6 +38,95 @@ def _bedrock_management_get(path: str, region: str, api_key: str, params: dict |
         return _json.loads(resp.read())
 
 
+def _bedrock_foundation_summaries(settings: dict, region: str, api_key: str) -> list[dict]:
+    """Every foundation model the account can see, as Bedrock describes them."""
+    if api_key:
+        # API key auth: direct HTTPS — boto3 does not apply bearer tokens to the
+        # Bedrock management (control-plane) API.
+        return _bedrock_management_get("/foundation-models", region, api_key).get("modelSummaries", []) or []
+    client = _make_aws_client("bedrock", region, settings)
+    return client.list_foundation_models().get("modelSummaries", []) or []
+
+
+def _bedrock_profile_summaries(settings: dict, region: str, api_key: str) -> list[dict]:
+    """Every inference profile the account can see, all pages."""
+    summaries: list[dict] = []
+    next_token = None
+    client = None if api_key else _make_aws_client("bedrock", region, settings)
+    while True:
+        if api_key:
+            params = {"nextToken": next_token} if next_token else None
+            resp = _bedrock_management_get("/inference-profiles", region, api_key, params)
+        else:
+            resp = client.list_inference_profiles(**({"nextToken": next_token} if next_token else {}))
+        summaries.extend(s for s in resp.get("inferenceProfileSummaries") or [] if isinstance(s, dict))
+        next_token = resp.get("nextToken")
+        if not next_token:
+            return summaries
+
+
+def _parse_profile_summaries(summaries) -> list[dict]:
+    profiles = []
+    for s in summaries or []:
+        if not isinstance(s, dict):
+            continue
+        profiles.append(
+            {
+                "id": s.get("inferenceProfileId") or s.get("id") or "",
+                "arn": s.get("inferenceProfileArn") or s.get("arn") or "",
+                "name": s.get("inferenceProfileName") or s.get("name") or "",
+                "status": s.get("status") or "",
+                "type": s.get("type") or "",
+            }
+        )
+    return profiles
+
+
+def _bedrock_models(settings: dict, region: str, api_key: str) -> tuple[list[str], list[str]]:
+    """Bedrock's pickable (chat, embedding) models: foundation models and inference profiles.
+
+    A profile is a model you pick (F66): `bedrock.<id>` for a system-defined one
+    (`us.anthropic.…`), `bedrock.<arn>` for an application profile, whose short
+    id Bedrock does not accept as a model id. It lands on the embedding side
+    when the model it routes to is an embedding model. A foundation model
+    Bedrock says has no on-demand throughput is left out — invoking it bare
+    fails on every call, and its profile is listed instead.
+
+    Profiles are best effort: an identity that may list models but not
+    profiles still gets its models.
+    """
+    foundation = _bedrock_foundation_summaries(settings, region, api_key)
+    try:
+        profiles = _bedrock_profile_summaries(settings, region, api_key)
+    except Exception as e:
+        print(f"Bedrock inference profiles not listed: {type(e).__name__}: {e}")
+        profiles = []
+
+    embedding_arns = {m.get("modelArn") for m in foundation if "EMBEDDING" in (m.get("outputModalities") or [])}
+    chat: list[str] = []
+    embed: list[str] = []
+
+    for m in foundation:
+        model_id = m.get("modelId")
+        if not model_id:
+            continue
+        inference_types = m.get("inferenceTypesSupported")
+        if inference_types is not None and "ON_DEMAND" not in inference_types:
+            continue
+        (embed if "EMBEDDING" in (m.get("outputModalities") or []) else chat).append(f"bedrock.{model_id}")
+
+    for p in profiles:
+        if (p.get("status") or "ACTIVE") != "ACTIVE":
+            continue
+        ref = p.get("inferenceProfileArn") if p.get("type") == "APPLICATION" else p.get("inferenceProfileId")
+        if not ref:
+            continue
+        routed = {m.get("modelArn") for m in p.get("models") or [] if isinstance(m, dict)}
+        (embed if routed and routed <= embedding_arns else chat).append(f"bedrock.{ref}")
+
+    return list(dict.fromkeys(chat)), list(dict.fromkeys(embed))
+
+
 # --- Synthetic Data ---
 
 @router.post("/api/synthetic/generate")
@@ -45,7 +134,8 @@ async def start_synthetic_generation(req: SyntheticDataRequest):
     if current_job["status"] == "generating":
         raise HTTPException(status_code=400, detail="A generation job is already running.")
 
-    asyncio.create_task(generate_synthetic_data(req))
+    from core.background import spawn_background
+    spawn_background(generate_synthetic_data(req), name="synthetic-data")
     return {"status": "started", "message": "Generation started in background."}
 
 
@@ -56,120 +146,70 @@ async def get_synthetic_status():
 
 @router.get("/api/synthetic/datasets")
 async def list_datasets():
-    if not os.path.exists(DATASETS_DIR):
-        return []
-    files = [f for f in os.listdir(DATASETS_DIR) if f.endswith(".jsonl")]
+    from core.storage import get_blob_store
+
+    store = get_blob_store()
     results = []
-    for f in files:
-        path = os.path.join(DATASETS_DIR, f)
-        stats = os.stat(path)
+    for key in store.list(DATASETS_PREFIX):
+        if not key.endswith(".jsonl"):
+            continue
+        content = store.get(key) or ""
+        path = store.path_for(key)
+        created = (
+            datetime.fromtimestamp(path.stat().st_ctime).isoformat()
+            if path is not None and path.exists() else None
+        )
         results.append({
-            "filename": f,
-            "size": stats.st_size,
-            "created": datetime.fromtimestamp(stats.st_ctime).isoformat()
+            "filename": os.path.basename(key),
+            "size": len(content.encode("utf-8")),
+            "created": created,
         })
-    return sorted(results, key=lambda x: x["created"], reverse=True)
+    return sorted(results, key=lambda x: x["created"] or "", reverse=True)
 
 
 # --- Models ---
 
-_COPILOT_FALLBACK_MODELS = [
-    "cli.copilot",
-    "cli.copilot.claude-sonnet-4-5",
-    "cli.copilot.claude-opus-4-5",
-    "cli.copilot.claude-haiku-4-5",
-    "cli.copilot.gpt-4o",
-    "cli.copilot.gpt-4.1",
-    "cli.copilot.o3",
-    "cli.copilot.o4-mini",
-]
+@router.get("/api/models/rerank")
+async def get_rerank_models(refresh: bool = False):
+    """The rerank models this workspace's keys can use, per provider (BF9, D293): Knowledge's rerank pickers and
+    the reranker cards read it, as the chat pickers read `/api/models`. Knowledge's, so a 404 while it is off;
+    `refresh` asks every provider again (a key was just saved)."""
+    from dataclasses import asdict
 
-async def _get_github_token() -> "str | None":
-    """Discover a GitHub token from env vars, gh CLI, or copilot config files (cross-platform)."""
-    import shutil, os as _os, json as _json, platform
-    token = (_os.getenv("COPILOT_GITHUB_TOKEN")
-             or _os.getenv("GH_TOKEN")
-             or _os.getenv("GITHUB_TOKEN"))
-    if token:
-        return token
-    if shutil.which("gh"):
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "gh", "auth", "token",
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-            )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
-            if proc.returncode == 0 and (t := stdout.decode().strip()):
-                return t
-        except Exception:
-            pass
-    # Config file paths differ by OS
-    system = platform.system()
-    if system == "Windows":
-        config_dirs = [Path(_os.getenv("APPDATA") or (Path.home() / "AppData" / "Roaming")) / "github-copilot"]
-    elif system == "Darwin":
-        config_dirs = [
-            Path.home() / "Library" / "Application Support" / "github-copilot",
-            Path.home() / ".config" / "github-copilot",
-        ]
-    else:  # Linux and others
-        config_dirs = [
-            Path(_os.getenv("XDG_CONFIG_HOME") or (Path.home() / ".config")) / "github-copilot",
-        ]
-    for config_dir in config_dirs:
-        hosts_path = config_dir / "hosts.json"
-        if hosts_path.exists():
-            try:
-                data = _json.loads(hosts_path.read_text(encoding="utf-8"))
-                t = (data.get("github.com", {}).get("oauth_token")
-                     or data.get("github.com", {}).get("token"))
-                if t:
-                    return t
-            except Exception:
-                pass
-    # Older plaintext fallback (~/.copilot/config.json)
-    config_path = Path.home() / ".copilot" / "config.json"
-    if config_path.exists():
-        try:
-            data = _json.loads(config_path.read_text(encoding="utf-8"))
-            if t := (data.get("oauth_token") or data.get("token")):
-                return t
-        except Exception:
-            pass
-    return None
+    from core.knowledge.config import knowledge_enabled
+    from core.knowledge.rerank_models import list_rerank_models
+
+    if not knowledge_enabled():
+        raise HTTPException(status_code=404, detail="Not Found")
+    listings = await list_rerank_models(load_settings(), refresh=refresh)
+    return {"providers": [asdict(listing) for listing in listings]}
 
 
-async def _fetch_copilot_models() -> "list[str]":
-    """Fetch live model list from GitHub Models catalog API; falls back to hardcoded list."""
-    token = await _get_github_token()
-    if not token:
-        return _COPILOT_FALLBACK_MODELS
-    try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.get(
-                "https://api.github.com/catalog/models",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Accept": "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
-            )
-        if resp.status_code != 200:
-            return _COPILOT_FALLBACK_MODELS
-        data = resp.json()
-        names = [m["name"] for m in data if isinstance(m, dict) and m.get("name")]
-        return (["cli.copilot"] + [f"cli.copilot.{n}" for n in names]) if names else _COPILOT_FALLBACK_MODELS
-    except Exception:
-        return _COPILOT_FALLBACK_MODELS
+@router.delete("/api/models/unavailable/{model:path}")
+async def try_model_again(model: str):
+    """The Models screen's "Try again" on a model its provider said is gone (F1213): the mark goes, and every picker
+    offers it again. A call that fails the same way marks it again. Self-hosted has one person, its owner; a host
+    with roles serves its own (cloud: owner and admin)."""
+    from core import model_availability
+
+    return {"cleared": await model_availability.clear(model), "model": model}
 
 
 @router.get("/api/models")
-async def get_models():
-    """Fetches available models dynamically from each provider's API."""
+async def get_models(refresh: bool = False):
+    """Fetches available models dynamically from each provider's API.
+
+    `refresh` asks the model CLIs again rather than serving what they said
+    within the last ten minutes (CLIM1).
+    """
     settings = load_settings()
 
     # --- Fallback model lists (used when API calls fail) ---
-    GEMINI_FALLBACK = ["gemini-2.5-pro-preview-05-06", "gemini-2.5-flash-preview-04-17", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro", "gemini-1.5-flash"]
+    # Current stable ids (F187): the old list named only retired 1.5 / 2.0 /
+    # preview models, so a failed fetch offered models no call could reach.
+    # gemini-2.5-flash-lite left (F1213): Google answers it "no longer available to new users". A retired model is
+    # never one (`model_availability.RETIRED`, F1299): it is left out of every provider's list below, these included.
+    GEMINI_FALLBACK = ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-pro-latest", "gemini-flash-latest"]
     ANTHROPIC_FALLBACK = ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"]
     OPENAI_FALLBACK = ["gpt-4o", "gpt-4-turbo", "gpt-4o-mini"]
     BEDROCK_FALLBACK = ["bedrock.anthropic.claude-3-5-sonnet-20240620-v1:0", "bedrock.anthropic.claude-3-sonnet-20240229-v1:0"]
@@ -191,6 +231,10 @@ async def get_models():
     openai_compatible_embed_models_str = (settings.get("openai_compatible_embed_models") or "").strip()
     local_compatible_embed_models_str = (settings.get("local_compatible_embed_models") or "").strip()
     huggingface_models_str = (settings.get("huggingface_models") or "").strip()
+    model_gateway_base_url = (settings.get("model_gateway_base_url") or "").strip()
+    model_gateway_key = (settings.get("model_gateway_key") or "").strip()
+    model_gateway_models_str = (settings.get("model_gateway_models") or "").strip()
+    model_gateway_embed_models_str = (settings.get("model_gateway_embed_models") or "").strip()
     bedrock_available = bool((settings.get("bedrock_api_key") or "").strip() or
                              (settings.get("aws_access_key_id") or "").strip())
 
@@ -198,7 +242,7 @@ async def get_models():
     async def fetch_ollama() -> tuple[bool, list[str], list[str]]:
         try:
             async with httpx.AsyncClient() as client:
-                r = await client.get(f"{os.getenv('OLLAMA_BASE_URL', 'http://127.0.0.1:11434')}/api/tags", timeout=3.0)
+                r = await client.get(f"{_ollama_base_url(settings)}/api/tags", timeout=3.0)
                 if r.status_code == 200:
                     models = [f"ollama.{m['name']}" for m in r.json().get("models", [])]
                     # Simple heuristic: models with 'embed' in name are likely for embeddings
@@ -207,6 +251,21 @@ async def get_models():
         except Exception:
             pass
         return False, [], []
+
+    #: Why a first-party provider's list could not be read: a refused key is said
+    #: on its card, as a hosted one's is, never hidden behind the fallback list —
+    #: which read as "Key saved" and offered models that could only fail (ONB2,
+    #: F729). Gemini refuses a bad key with a 400 that names it.
+    from core.providers.registry import PROVIDERS as _PROVIDERS
+    refused: dict[str, str] = {}
+
+    def _refused(provider_id: str, r) -> bool:
+        bad = r.status_code in (401, 403) or (
+            r.status_code == 400 and ("API_KEY_INVALID" in r.text or "API key not valid" in r.text))
+        if bad:
+            label = next(p.label for p in _PROVIDERS if p.id == provider_id)
+            refused[provider_id] = f"{label} refused this key ({r.status_code})"
+        return bad
 
     async def fetch_openai() -> tuple[bool, list[str], list[str]]:
         if not openai_key:
@@ -221,9 +280,7 @@ async def get_models():
                 if r.status_code == 200:
                     data = r.json().get("data", [])
                     chat_models = sorted(set(
-                        m["id"] for m in data
-                        if m.get("id", "").startswith(("gpt-4", "gpt-3.5"))
-                        and "instruct" not in m.get("id", "")
+                        m["id"] for m in data if is_openai_chat_model(m.get("id", ""))
                     ), reverse=True)
                     embed_models = sorted(set(
                         m["id"] for m in data if "embedding" in m.get("id", "")
@@ -231,6 +288,8 @@ async def get_models():
                     return True, chat_models if chat_models else OPENAI_FALLBACK, embed_models if embed_models else ["text-embedding-3-small", "text-embedding-3-large"]
                 else:
                     print(f"Error fetching OpenAI models: HTTP {r.status_code}: {r.text[:200]}")
+                    if _refused("openai", r):
+                        return False, [], []
         except Exception as e:
             print(f"Error fetching OpenAI models: {type(e).__name__}: {e}")
         return True, OPENAI_FALLBACK, ["text-embedding-3-small", "text-embedding-3-large"]
@@ -254,6 +313,8 @@ async def get_models():
                     return True, models if models else ANTHROPIC_FALLBACK, []
                 else:
                     print(f"Error fetching Anthropic models: HTTP {r.status_code}: {r.text[:200]}")
+                    if _refused("anthropic", r):
+                        return False, [], []
         except Exception as e:
             print(f"Error fetching Anthropic models: {type(e).__name__}: {e}")
         return True, ANTHROPIC_FALLBACK, []
@@ -263,8 +324,11 @@ async def get_models():
             return False, GEMINI_FALLBACK, ["text-embedding-004", "gemini-embedding-001"]
         try:
             async with httpx.AsyncClient() as client:
+                # The key as a header, never in the URL: a URL is what an
+                # exception message and an access log print (F210).
                 r = await client.get(
-                    f"https://generativelanguage.googleapis.com/v1beta/models?key={gemini_key}",
+                    "https://generativelanguage.googleapis.com/v1beta/models",
+                    headers={"x-goog-api-key": gemini_key},
                     timeout=5.0,
                 )
                 if r.status_code == 200:
@@ -274,13 +338,17 @@ async def get_models():
                     for m in data:
                         name = m.get("name", "").replace("models/", "")
                         methods = m.get("supportedGenerationMethods", [])
-                        if "generateContent" in methods:
+                        # Listing generateContent is not being a chat model:
+                        # speech, image and music models list it too (F187).
+                        if "generateContent" in methods and is_gemini_chat_model(name):
                             chat_models.append(name)
                         if "embedContent" in methods:
                             embed_models.append(name)
                     return True, sorted(set(chat_models)) if chat_models else GEMINI_FALLBACK, sorted(set(embed_models)) if embed_models else ["text-embedding-004"]
                 else:
                     print(f"Error fetching Gemini models: HTTP {r.status_code}: {r.text[:200]}")
+                    if _refused("gemini", r):
+                        return False, [], []
         except Exception as e:
             print(f"Error fetching Gemini models: {type(e).__name__}: {e}")
         return True, GEMINI_FALLBACK, ["text-embedding-004"]
@@ -303,6 +371,8 @@ async def get_models():
                     return True, models if models else GROK_FALLBACK, []
                 else:
                     print(f"Error fetching Grok models: HTTP {r.status_code}: {r.text[:200]}")
+                    if _refused("grok", r):
+                        return False, [], []
         except Exception as e:
             print(f"Error fetching Grok models: {type(e).__name__}: {e}")
         return True, GROK_FALLBACK, []
@@ -325,37 +395,22 @@ async def get_models():
                     return True, models if models else DEEPSEEK_FALLBACK, []
                 else:
                     print(f"Error fetching DeepSeek models: HTTP {r.status_code}: {r.text[:200]}")
+                    if _refused("deepseek", r):
+                        return False, [], []
         except Exception as e:
             print(f"Error fetching DeepSeek models: {type(e).__name__}: {e}")
         return True, DEEPSEEK_FALLBACK, []
 
     async def fetch_bedrock() -> tuple[bool, list[str], list[str]]:
         if not bedrock_available:
-            return False, BEDROCK_FALLBACK, ["amazon.titan-embed-text-v1", "amazon.titan-embed-text-v2:0"]
+            # Prefixed like every Bedrock id: bare, they were sent to Ollama (F322).
+            return False, BEDROCK_FALLBACK, ["bedrock.amazon.titan-embed-text-v1", "bedrock.amazon.titan-embed-text-v2:0"]
         try:
             region = (settings.get("aws_region") or "us-east-1").strip() or "us-east-1"
             api_key = (settings.get("bedrock_api_key") or "").strip()
 
             def _list():
-                summaries = []
-                if api_key:
-                    # API key auth: use direct HTTPS — boto3 does not apply bearer tokens
-                    # to the Bedrock management (control-plane) API.
-                    data = _bedrock_management_get("/foundation-models", region, api_key)
-                    summaries = data.get("modelSummaries", []) or []
-                else:
-                    c = _make_aws_client("bedrock", region, settings)
-                    resp = c.list_foundation_models()
-                    summaries = resp.get("modelSummaries", []) or []
-                chat = []
-                embed = []
-                for m in summaries:
-                    mid = f"bedrock.{m['modelId']}"
-                    if "EMBEDDING" in m.get("outputModalities", []):
-                        embed.append(mid)
-                    else:
-                        chat.append(mid)
-                return chat, embed
+                return _bedrock_models(settings, region, api_key)
 
             chat, embed = await asyncio.to_thread(_list)
             return True, chat if chat else BEDROCK_FALLBACK, embed if embed else ["bedrock.amazon.titan-embed-text-v1"]
@@ -374,90 +429,36 @@ async def get_models():
             out.append(name if name.startswith(prefix) else f"{prefix}{name}")
         return out
 
-    async def fetch_claude_cli() -> tuple[bool, list[str], list[str]]:
-        import shutil
-        if not shutil.which("claude"):
-            return False, [], []
-        models = _cli_custom_models("anthropic_cli_models", "cli.claude.") + [
-            "cli.claude.claude-sonnet-4-6",
-            "cli.claude.claude-sonnet-4-6-thinking",
-            "cli.claude.claude-opus-4-6",
-            "cli.claude.claude-opus-4-6-thinking",
-            "cli.claude.claude-haiku-4-5-20251001",
-            "cli.claude.claude-sonnet-4-5-20250929",
-            "cli.claude.claude-opus-4-5-20251101",
-            "cli.claude.claude-opus-4-5-20251101-thinking",
-            "cli.claude"
-        ]
-        return True, models, []
+    # The model CLIs: whether each is installed and signed in and the models it
+    # names, asked of the CLI itself (CLIM1, D299). Typed names come first, then
+    # its own, then the bare `cli.<x>` that runs its default.
+    from core.providers import cli_status as _cli_status
+    cli_states: dict = {}
 
-    async def fetch_gemini_cli() -> tuple[bool, list[str], list[str]]:
-        import shutil
-        if not shutil.which("gemini"):
+    async def _fetch_cli(provider: str, setting_key: str) -> tuple[bool, list[str], list[str]]:
+        st = await _cli_status.cli_status(provider, refresh)
+        cli_states[provider] = st
+        if not st.installed:
             return False, [], []
-        models = _cli_custom_models("gemini_cli_models", "cli.gemini.") + [
-            "cli.gemini.pro",
-            "cli.gemini.flash",
-            "cli.gemini"
-        ]
-        return True, models, []
-
-    def _codex_cached_models() -> list[str]:
-        """Surface the models this account is actually entitled to, read from
-        codex's local cache (~/.codex/models_cache.json, or $CODEX_HOME). Codex's
-        compiled-in default model — used by a bare `cli.codex` with no -m — can be
-        one the account can't use (e.g. ChatGPT accounts get gpt-5.4, not the
-        default gpt-5.x-codex), which 400s. Listing the real entitlements lets the
-        user pick a working model without knowing the names."""
-        import json
-        home = os.environ.get("CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex")
-        try:
-            with open(os.path.join(home, "models_cache.json"), "r", encoding="utf-8") as f:
-                data = json.load(f)
-            entries = []
-            for m in data.get("models", []):
-                slug = m.get("slug")
-                # visibility "list" = user-selectable; skip hidden/internal models
-                if not slug or m.get("visibility") != "list" or not m.get("supported_in_api", True):
-                    continue
-                entries.append((m.get("priority", 999), slug))
-            entries.sort(key=lambda x: x[0])
-            return [f"cli.codex.{slug}" for _, slug in entries]
-        except Exception:
-            return []
-
-    async def fetch_codex_cli() -> tuple[bool, list[str], list[str]]:
-        import shutil
-        if not shutil.which("codex"):
-            return False, [], []
-        # Order: user custom entries, then account-entitled models from the cache,
-        # then bare `cli.codex` (defers to codex's own default, which may mismatch
-        # the account and 400 — so it's last). Dedupe, preserving order.
+        prefix = st.base + "."
         seen, models = set(), []
-        for m in _cli_custom_models("codex_cli_models", "cli.codex.") + _codex_cached_models() + ["cli.codex"]:
+        for m in _cli_custom_models(setting_key, prefix) + [prefix + n for n in st.models] + [st.base]:
             if m not in seen:
                 seen.add(m)
                 models.append(m)
         return True, models, []
 
+    async def fetch_claude_cli() -> tuple[bool, list[str], list[str]]:
+        return await _fetch_cli("anthropic_cli", "anthropic_cli_models")
+
+    async def fetch_gemini_cli() -> tuple[bool, list[str], list[str]]:
+        return await _fetch_cli("gemini_cli", "gemini_cli_models")
+
+    async def fetch_codex_cli() -> tuple[bool, list[str], list[str]]:
+        return await _fetch_cli("codex_cli", "codex_cli_models")
+
     async def fetch_github_copilot_cli() -> tuple[bool, list[str], list[str]]:
-        import shutil
-        if not shutil.which("copilot"):
-            return False, [], []
-        # Verify it's the GitHub Copilot CLI binary
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "copilot", "--version",
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await asyncio.wait_for(proc.wait(), timeout=5.0)
-            if proc.returncode != 0:
-                return False, [], []
-        except Exception:
-            return False, [], []
-        models = _cli_custom_models("github_copilot_cli_models", "cli.copilot.") + await _fetch_copilot_models()
-        return True, models, []
+        return await _fetch_cli("github_copilot_cli", "github_copilot_cli_models")
 
     async def fetch_openai_compatible() -> tuple[bool, list[str], list[str]]:
         if not openai_compatible_base_url:
@@ -532,6 +533,63 @@ async def get_models():
         prefixed = [f"hf.{m}" if not m.startswith("hf.") else m for m in models]
         return True, prefixed, []
 
+    async def fetch_model_gateway() -> tuple[bool, list[str], list[str]]:
+        """Models served through the configured model gateway (synapse.*).
+
+        Same shape as `fetch_openai_compatible`: the manual lists are the
+        baseline, and a reachable `/v1/models` replaces the chat list.
+        """
+        if not model_gateway_base_url:
+            return False, [], []
+        models = [m.strip() for m in model_gateway_models_str.split(",") if m.strip()]
+        manual_embed = [m.strip() for m in model_gateway_embed_models_str.split(",") if m.strip()]
+        try:
+            url = model_gateway_base_url.rstrip("/")
+            if url.endswith("/v1"):
+                url = url[:-3]
+            async with httpx.AsyncClient() as client:
+                headers = {}
+                if model_gateway_key:
+                    headers["Authorization"] = f"Bearer {model_gateway_key}"
+                r = await client.get(f"{url}/v1/models", headers=headers, timeout=5.0)
+                if r.status_code == 200:
+                    data = r.json().get("data", [])
+                    api_models = sorted(set(m["id"] for m in data if m.get("id")))
+                    if api_models:
+                        models = api_models
+        except Exception as e:
+            print(f"Error fetching model-gateway models: {type(e).__name__}: {e}")
+        prefixed = [f"synapse.{m}" for m in models]
+        auto_embed = [m for m in models if "embed" in m.lower()]
+        all_embed = list(dict.fromkeys(manual_embed + auto_embed))
+        prefixed_embed = [f"synapse.{m}" for m in all_embed]
+        return True, prefixed, prefixed_embed
+
+    # The hosted OpenAI-style providers (PROV1, D245): one fetcher for them all,
+    # from the table, reading each list as cloud's discovery reads it.
+    from core.providers.discovery import list_chat_models, routed
+    from core.providers.registry import HOSTED
+
+    #: Why a hosted provider's list could not be read, for its card: a refused
+    #: key is said, not hidden behind the fallback list (cloud's card does so).
+    hosted_errors: dict[str, str] = {}
+
+    async def fetch_hosted(spec) -> tuple[bool, list[str], list[str]]:
+        key = (settings.get(spec.keys[0]) or "").strip()
+        fallback = routed(spec, spec.fallback)
+        if not key:
+            return False, fallback, []
+        try:
+            return True, routed(spec, await list_chat_models(spec, key)) or fallback, []
+        except httpx.HTTPStatusError as e:
+            print(f"Error fetching {spec.label} models: HTTP {e.response.status_code}")
+            if e.response.status_code in (401, 403):
+                hosted_errors[spec.id] = f"{spec.label} refused this key ({e.response.status_code})"
+                return False, [], []
+        except Exception as e:
+            print(f"Error fetching {spec.label} models: {type(e).__name__}: {e}")
+        return True, fallback, []
+
     # Run all fetches concurrently; return_exceptions=True ensures one provider failure
     # doesn't cancel the others.
     _PROVIDER_FALLBACKS = [
@@ -549,8 +607,10 @@ async def get_models():
         (False, [], []),                                                                 # codex_cli
         (False, [], []),                                                                 # github_copilot_cli
         (False, [], []),                                                                 # huggingface
+        (False, [], []),                                                                 # model_gateway
+        *((True, routed(spec, spec.fallback), []) for spec in HOSTED),
     ]
-    _PROVIDER_NAMES = ["ollama", "openai", "anthropic", "gemini", "grok", "deepseek", "bedrock", "openai_compatible", "local_compatible", "anthropic_cli", "gemini_cli", "codex_cli", "github_copilot_cli", "huggingface"]
+    _PROVIDER_NAMES = ["ollama", "openai", "anthropic", "gemini", "grok", "deepseek", "bedrock", "openai_compatible", "local_compatible", "anthropic_cli", "gemini_cli", "codex_cli", "github_copilot_cli", "huggingface", "model_gateway", *(spec.id for spec in HOSTED)]
 
     raw = await asyncio.gather(
         fetch_ollama(), fetch_openai(), fetch_anthropic(),
@@ -559,6 +619,8 @@ async def get_models():
         fetch_claude_cli(), fetch_gemini_cli(), fetch_codex_cli(),
         fetch_github_copilot_cli(),
         fetch_huggingface(),
+        fetch_model_gateway(),
+        *(fetch_hosted(spec) for spec in HOSTED),
         return_exceptions=True,
     )
 
@@ -584,6 +646,7 @@ async def get_models():
     c_codex_avail, c_codex_chat, _ = results[11]
     c_copilot_avail, c_copilot_chat, _ = results[12]
     hf_avail, hf_chat, _ = results[13]
+    mg_avail, mg_chat, mg_embed = results[14]
 
     # --- Build provider map ---
     providers = {
@@ -601,7 +664,34 @@ async def get_models():
         "codex_cli": {"available": c_codex_avail, "models": c_codex_chat, "embedding_models": []},
         "github_copilot_cli": {"available": c_copilot_avail, "models": c_copilot_chat, "embedding_models": []},
         "huggingface": {"available": hf_avail, "models": hf_chat, "embedding_models": []},
+        "model_gateway": {"available": mg_avail, "models": mg_chat, "embedding_models": mg_embed},
     }
+    for provider, why in refused.items():
+        providers[provider]["error"] = why
+    for provider, st in cli_states.items():
+        if provider in providers:
+            info = st.as_dict()
+            providers[provider]["cli"] = {k: info[k] for k in ("version", "signed_in", "sign_in_hint",
+                                                               "models_source", "models_note", "note")}
+    hosted_chat: list[str] = []
+    for spec, (avail, chat, embed) in zip(HOSTED, results[15:]):
+        providers[spec.id] = {"available": avail, "models": chat, "embedding_models": embed}
+        if spec.id in hosted_errors:
+            providers[spec.id]["error"] = hosted_errors[spec.id]
+        hosted_chat += chat
+
+    # A model its provider said is gone (F1213), or the product knows it retired (F1299), is listed nowhere, and its
+    # card says why.
+    from core import model_availability
+
+    gone = await model_availability.unavailable()
+    left_out: set[str] = set()
+    for name, info in providers.items():
+        info["models"], left = model_availability.gone_from(info.get("models") or [],
+                                                             {**model_availability.retired_for(name), **gone})
+        if left:
+            info["unavailable"] = left
+            left_out |= {x["model"] for x in left}
 
     # --- Flat list of all available models ---
     all_available = []
@@ -610,13 +700,37 @@ async def get_models():
             all_available.extend(info["models"])
 
     # --- Backward compat ---
-    cloud_models = gemini_chat + anthropic_chat + openai_chat + grok_chat + deepseek_chat + BEDROCK_FALLBACK + oaic_chat + locv1_chat + c_claude_chat + c_gemini_chat + c_codex_chat + c_copilot_chat + hf_chat
+    cloud_models = gemini_chat + anthropic_chat + openai_chat + grok_chat + deepseek_chat + BEDROCK_FALLBACK + oaic_chat + locv1_chat + c_claude_chat + c_gemini_chat + c_codex_chat + c_copilot_chat + hf_chat + mg_chat + hosted_chat
+    cloud_models = [m for m in cloud_models if m not in left_out]  # what each provider's list left out, above
+
+    # --- Which of them can be asked to think ---
+    # The capability table lives in `core.reasoning` and is served from here
+    # rather than restated in TypeScript: a second copy would be wrong the
+    # first time a model family ships and only one of them was updated.
+    from core.images import model_can_see_images
+    from core.reasoning import off_runs_as, supports_native
 
     return {
         "providers": providers,
         "all_available": all_available,
         "local": ollama_chat,
         "cloud": cloud_models,
+        # A Claude CLI model is on it too: it takes the agent's effort as
+        # `--effort` (F65), though it has no reasoning channel of its own.
+        "reasoning_capable": sorted({m for m in all_available if supports_native(m) or cli_takes_effort(m)}),
+        # The CLI has no "off" — the engine runs off as low — so the screen
+        # offers no Off for these rather than one that quietly means Low. Nor
+        # does a model whose least is Low: a Gemini 3 Pro refuses MINIMAL, and a
+        # Claude 5 thinks when asked for nothing (F269).
+        "reasoning_without_off": sorted({m for m in all_available
+                                         if cli_takes_effort(m) or off_runs_as(m) == "low"}),
+        # Where Off is the model's lowest thinking level rather than none — the
+        # screens say so beside the control (F269).
+        "reasoning_off_minimum": sorted({m for m in all_available if off_runs_as(m) == "minimum"}),
+        # Which of them can actually see an attachment. Served for the same
+        # reason as the line above: the alternative is a second copy of the
+        # list in TypeScript, wrong the first time only one of them is updated.
+        "vision_capable": sorted({m for m in all_available if model_can_see_images(m)}),
     }
 
 
@@ -624,28 +738,14 @@ async def get_models():
 
 @router.get("/api/bedrock/models")
 async def get_bedrock_models():
-    """Lists Bedrock foundation models."""
+    """Lists Bedrock models: foundation models and inference profiles (see `_bedrock_models`)."""
     settings = load_settings()
     region = (settings.get("aws_region") or "us-east-1").strip() or "us-east-1"
     api_key = (settings.get("bedrock_api_key") or "").strip()
 
     def _list_models_sync():
-        summaries = []
-        if api_key:
-            # API key (ABSK / bedrock-api-key format): use direct HTTPS bearer auth.
-            # The Bedrock management API does not support AWS_BEARER_TOKEN_BEDROCK via boto3.
-            data = _bedrock_management_get("/foundation-models", region, api_key)
-            summaries = data.get("modelSummaries", []) or []
-        else:
-            client = _make_aws_client("bedrock", region, settings)
-            resp = client.list_foundation_models()
-            summaries = resp.get("modelSummaries", []) or []
-        models: list[str] = []
-        for s in summaries:
-            model_id = s.get("modelId")
-            if model_id:
-                models.append(f"bedrock.{model_id}")
-        return sorted(set(models))
+        chat, embed = _bedrock_models(settings, region, api_key)
+        return sorted(set(chat + embed))
 
     try:
         models = await asyncio.to_thread(_list_models_sync)
@@ -665,50 +765,8 @@ async def get_bedrock_inference_profiles():
     region = (settings.get("aws_region") or "us-east-1").strip() or "us-east-1"
     api_key = (settings.get("bedrock_api_key") or "").strip()
 
-    def _parse_profile_summaries(summaries) -> list[dict]:
-        profiles = []
-        for s in summaries or []:
-            if not isinstance(s, dict):
-                continue
-            profiles.append(
-                {
-                    "id": s.get("inferenceProfileId") or s.get("id") or "",
-                    "arn": s.get("inferenceProfileArn") or s.get("arn") or "",
-                    "name": s.get("inferenceProfileName") or s.get("name") or "",
-                    "status": s.get("status") or "",
-                    "type": s.get("type") or "",
-                }
-            )
-        return profiles
-
     def _list_profiles_sync():
-        profiles = []
-        next_token = None
-
-        if api_key:
-            # API key (ABSK / bedrock-api-key format): use direct HTTPS bearer auth.
-            # The Bedrock management API does not support AWS_BEARER_TOKEN_BEDROCK via boto3.
-            while True:
-                params = {"nextToken": next_token} if next_token else None
-                resp = _bedrock_management_get("/inference-profiles", region, api_key, params)
-                print(f"Fetched {len(resp.get('inferenceProfileSummaries', []))} profiles from Bedrock")
-                profiles.extend(_parse_profile_summaries(resp.get("inferenceProfileSummaries")))
-                next_token = resp.get("nextToken")
-                if not next_token:
-                    break
-        else:
-            client = _make_aws_client("bedrock", region, settings)
-            while True:
-                kwargs: dict = {}
-                if next_token:
-                    kwargs["nextToken"] = next_token
-                resp = client.list_inference_profiles(**kwargs)
-                print(f"Fetched {len(resp.get('inferenceProfileSummaries', []))} profiles from Bedrock")
-                profiles.extend(_parse_profile_summaries(resp.get("inferenceProfileSummaries")))
-                next_token = resp.get("nextToken")
-                if not next_token:
-                    break
-
+        profiles = _parse_profile_summaries(_bedrock_profile_summaries(settings, region, api_key))
         return sorted(profiles, key=lambda p: (p.get("name") or p.get("arn") or p.get("id") or ""))
 
     try:
@@ -727,52 +785,33 @@ async def get_bedrock_inference_profiles():
 
 @router.delete("/api/history/recent")
 async def clear_recent_history():
-    """Clears all persisted JSON session files and in-memory session state."""
-    import shutil
-    import os
+    """Clears all persisted chat sessions and in-memory session state."""
     session_state.clear()
-    # Delete all JSON session files
-    cleared = 0
-    if os.path.isdir(_CHAT_SESSIONS_DIR):
-        for fname in os.listdir(_CHAT_SESSIONS_DIR):
-            if fname.endswith(".json"):
-                try:
-                    os.remove(os.path.join(_CHAT_SESSIONS_DIR, fname))
-                    cleared += 1
-                except Exception:
-                    pass
-    return {"status": "success", "message": f"Cleared {cleared} session file(s) and in-memory state."}
+    cleared = await clear_all_chat_sessions()
+    return {"status": "success", "message": f"Cleared {cleared} session(s) and in-memory state."}
 
 
 @router.delete("/api/history/all")
 async def clear_all_history():
-    """Clears ALL session files AND long-term ChromaDB memory (report RAG)."""
+    """Clears ALL session files AND the long-term ChromaDB `chat_history` collection."""
     import os
     import core.server as _server
 
     session_state.clear()
-    # Delete all JSON session files
-    cleared = 0
-    if os.path.isdir(_CHAT_SESSIONS_DIR):
-        for fname in os.listdir(_CHAT_SESSIONS_DIR):
-            if fname.endswith(".json"):
-                try:
-                    os.remove(os.path.join(_CHAT_SESSIONS_DIR, fname))
-                    cleared += 1
-                except Exception:
-                    pass
-    # Clear ChromaDB report-RAG collections
+    cleared = await clear_all_chat_sessions()
+    # Clear the ChromaDB chat_history collection
     if _server.memory_store:
         success = _server.memory_store.clear_memory()
         if not success:
             raise HTTPException(status_code=500, detail="Failed to clear long-term memory.")
-    return {"status": "success", "message": f"Cleared {cleared} session file(s) and long-term memory."}
+    return {"status": "success", "message": f"Cleared {cleared} session(s) and long-term memory."}
 
 
 # --- Bulk Memory Clear ---
 
 class MemoryClearRequest(BaseModel):
-    items: List[Literal["chat_history", "orchestration_history", "agent_logs", "usage", "repos", "db_configs"]]
+    items: List[Literal["chat_history", "orchestration_history", "agent_logs", "agent_memory", "usage",
+                        "repos", "db_configs"]]
 
 
 @router.post("/api/memory/clear")
@@ -786,15 +825,7 @@ async def clear_memory_items(req: MemoryClearRequest):
     # Chat sessions
     if "chat_history" in items:
         session_state.clear()
-        cleared = 0
-        if os.path.isdir(_CHAT_SESSIONS_DIR):
-            for fname in os.listdir(_CHAT_SESSIONS_DIR):
-                if fname.endswith(".json"):
-                    try:
-                        os.remove(os.path.join(_CHAT_SESSIONS_DIR, fname))
-                        cleared += 1
-                    except Exception:
-                        pass
+        cleared = await clear_all_chat_sessions()
         results["chat_history"] = f"Cleared {cleared} session(s)"
 
     # Orchestration run history
@@ -834,43 +865,38 @@ async def clear_memory_items(req: MemoryClearRequest):
                         pass
         results["agent_logs"] = f"Cleared {count} file(s)"
 
+    # What agents with memory remembered (F270): every agent's folder — index,
+    # archive, memories and session traces — and their search rows.
+    if "agent_memory" in items:
+        from core import agent_memory
+        count = await agent_memory.wipe_all()
+        results["agent_memory"] = f"Cleared {count} memory file(s)"
+
     # Usage logs
     if "usage" in items:
-        count = clear_usage_logs()
+        count = await clear_usage_logs()
         results["usage"] = f"Cleared {count} usage record(s)"
 
     # Repositories
     if "repos" in items:
-        repos_path = os.path.join(DATA_DIR, "repos.json")
-        repos = []
-        if os.path.exists(repos_path):
-            try:
-                with open(repos_path, encoding="utf-8") as f:
-                    repos = json.load(f)
-            except Exception:
-                pass
+        from core.store import collections
+
+        repos = await collections.load("repos")
         for repo in repos:
             try:
                 from services.code_indexer import drop_index
                 drop_index(repo["id"])
             except Exception as e:
                 print(f"Error dropping index for repo {repo.get('id')}: {e}")
-        with open(repos_path, "w", encoding="utf-8") as f:
-            json.dump([], f)
+        await collections.save("repos", [], key_field="path")
         results["repos"] = f"Cleared {len(repos)} repo(s)"
 
     # Database configurations
     if "db_configs" in items:
-        configs_path = os.path.join(DATA_DIR, "db_configs.json")
-        configs = []
-        if os.path.exists(configs_path):
-            try:
-                with open(configs_path, encoding="utf-8") as f:
-                    configs = json.load(f)
-            except Exception:
-                pass
-        with open(configs_path, "w", encoding="utf-8") as f:
-            json.dump([], f)
+        from core.store import collections
+
+        configs = await collections.load("db_configs")
+        await collections.save("db_configs", [])
         results["db_configs"] = f"Cleared {len(configs)} config(s)"
 
     return {"status": "success", "cleared": results}

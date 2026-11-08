@@ -14,8 +14,6 @@ _ORIG_GET_SCALE_CONFIG = _scfg.get_scale_config
 
 def _cfg(**over):
     cfg = _ORIG_GET_SCALE_CONFIG()
-    cfg.enable_tenant_isolation = False
-    cfg.default_tenant_id = "default"
     cfg.rate_limit_per_tenant_rps = 1000
     cfg.max_global_queue_depth = 1_000_000
     for k, v in over.items():

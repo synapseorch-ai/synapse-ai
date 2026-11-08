@@ -32,8 +32,12 @@ def _package_json_version() -> str:
 
 def test_version_sync_between_pyproject_and_package_json():
     """PyPI (pyproject.toml) and npm (package.json) versions must match — the
-    release tags a single version across both registries."""
-    assert _pyproject_version() == _package_json_version(), (
+    release tags a single version across both registries. A final release is
+    spelled the same in both; a pre-release in each one's own way (`2.0.0rc1`
+    for PyPI, `2.0.0-rc1` for npm), F827."""
+    from synapse.installer import versions
+
+    assert _package_json_version() == versions.npm(_pyproject_version()), (
         f"pyproject={_pyproject_version()} but package.json={_package_json_version()}"
     )
 

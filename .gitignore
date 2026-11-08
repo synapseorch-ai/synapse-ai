@@ -9,6 +9,11 @@
 backend/node_modules/
 backend/data/orchestration_runs/
 backend/logs/
+# …and what the D29 log import renames it to. Same reason as `backend/data*`:
+# these are one person's live run history, and committing them means the next
+# person to pull gets a repo full of someone else's logs.
+backend/logs.migrated*/
+
 backend/venv/
 backend/data/chroma_db/
 backend/data/*
@@ -41,6 +46,8 @@ dist/
 *.tgz
 synapse/_frontend/
 frontend-build/
+# The npm package's installer (scripts/build_installer.py --out installer)
+/installer/
 node_modules/
 
 # Environment files
@@ -50,3 +57,15 @@ node_modules/
 
 # Security — token files
 backend/data/token.json
+# The engine's store. backend/var/ is a running install's database, in the same
+# category as backend/data/ was: live user data, never committed. SYNAPSE_DB_URL
+# relocates it, but the default lands here.
+backend/var/
+*.db
+*.db-wal
+*.db-shm
+
+# The pre-database data folder, after `synapse migrate` renames it. Holds
+# live credentials — never committed, and gitignored under both names.
+backend/data.migrated/
+backend/data.migrated*/

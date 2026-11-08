@@ -11,7 +11,7 @@ def _sse_json(text: str) -> list[dict]:
 
 class TestV1OrchestrationRunSync:
     async def test_completed_run_returns_final(self, client, api_key, seed_orchestration, monkeypatch):
-        orch = seed_orchestration()
+        orch = await seed_orchestration()
         import core.orchestration.engine as engine_mod
         monkeypatch.setattr(engine_mod, "OrchestrationEngine", E.fake_engine([
             E.orch_start(orch_id=orch["id"]),
@@ -29,7 +29,7 @@ class TestV1OrchestrationRunSync:
         assert body["step_history"] == [{"step": "s1"}]
 
     async def test_paused_run_returns_human_input(self, client, api_key, seed_orchestration, monkeypatch):
-        orch = seed_orchestration()
+        orch = await seed_orchestration()
         import core.orchestration.engine as engine_mod
         monkeypatch.setattr(engine_mod, "OrchestrationEngine", E.fake_engine([
             E.orch_start(orch_id=orch["id"]),
@@ -54,7 +54,7 @@ class TestV1OrchestrationRunSync:
         assert resp.status_code == 404
 
     async def test_requires_auth(self, client, seed_orchestration):
-        orch = seed_orchestration()
+        orch = await seed_orchestration()
         resp = await client.post(f"/api/v1/orchestrations/{orch['id']}/run",
                                  json={"message": "go"})
         assert resp.status_code in (401, 403)
@@ -62,7 +62,7 @@ class TestV1OrchestrationRunSync:
 
 class TestV1OrchestrationRunStream:
     async def test_stream_emits_events_and_done(self, client, api_key, seed_orchestration, monkeypatch):
-        orch = seed_orchestration()
+        orch = await seed_orchestration()
         import core.orchestration.engine as engine_mod
         monkeypatch.setattr(engine_mod, "OrchestrationEngine", E.fake_engine([
             E.orch_start(orch_id=orch["id"]), E.step_start(), E.step_complete(),
@@ -77,7 +77,7 @@ class TestV1OrchestrationRunStream:
         assert types[-1] == "done"
 
     async def test_stream_stops_at_human_input(self, client, api_key, seed_orchestration, monkeypatch):
-        orch = seed_orchestration()
+        orch = await seed_orchestration()
         import core.orchestration.engine as engine_mod
         monkeypatch.setattr(engine_mod, "OrchestrationEngine", E.fake_engine([
             E.orch_start(orch_id=orch["id"]),

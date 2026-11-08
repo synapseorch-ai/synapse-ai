@@ -15,7 +15,7 @@ def _sse_json(text):
 
 class TestRealAppRun:
     async def test_internal_run_streams_real_engine(self, client, seed_orchestration):
-        orch = seed_orchestration()  # single print step
+        orch = await seed_orchestration()  # single print step
         resp = await client.post(f"/api/orchestrations/{orch['id']}/run", json={"message": "go"})
         assert resp.status_code == 200
         types_seen = [e.get("type") for e in _sse_json(resp.text)]
@@ -34,9 +34,9 @@ class TestRealChatStreamRun:
         The print step yields a `final` event from inside that scope, which is
         what suspends the engine mid-scope — no LLM needed to reproduce.
         """
-        orch = seed_orchestration()  # single print step
+        orch = await seed_orchestration()  # single print step
         agent = S.make_orchestrator_agent(orch["id"])
-        S.seed_agents([agent])
+        await S.seed_agents([agent])
 
         resp = await client.post("/chat/stream",
                                  json={"message": "go", "agent_id": agent["id"]})
@@ -59,21 +59,21 @@ class TestOrchestratorAgentFailure:
     Every chat surface has to recognise it or the failure is swallowed."""
 
     @staticmethod
-    def _seed_broken(seed_orchestration):
+    async def _seed_broken(seed_orchestration):
         # entry_step_id points at a step that does not exist -> the engine
         # yields orchestration_error on its first loop iteration.
-        orch = seed_orchestration(
+        orch = await seed_orchestration(
             entry_step_id="missing",
             steps=[{"id": "s", "name": "Never", "type": "print",
                     "print_content": "x", "output_key": "out",
                     "next_step_id": None}],
         )
         agent = S.make_orchestrator_agent(orch["id"])
-        S.seed_agents([agent])
+        await S.seed_agents([agent])
         return agent
 
     async def test_chat_stream_surfaces_the_failure(self, client, seed_orchestration):
-        agent = self._seed_broken(seed_orchestration)
+        agent = await self._seed_broken(seed_orchestration)
         resp = await client.post("/chat/stream",
                                  json={"message": "go", "agent_id": agent["id"]})
         assert resp.status_code == 200
@@ -81,25 +81,48 @@ class TestOrchestratorAgentFailure:
         assert errors and "missing" in errors[0]["error"]
 
     async def test_sync_chat_surfaces_the_failure(self, client, seed_orchestration):
-        agent = self._seed_broken(seed_orchestration)
+        agent = await self._seed_broken(seed_orchestration)
         resp = await client.post("/chat", json={"message": "go", "agent_id": agent["id"]})
         assert resp.status_code == 200
         assert "missing" in resp.json()["response"]
 
     async def test_v1_chat_surfaces_the_failure(self, client, api_key, seed_orchestration):
-        agent = self._seed_broken(seed_orchestration)
+        agent = await self._seed_broken(seed_orchestration)
         resp = await client.post("/api/v1/chat",
                                  json={"message": "go", "agent": agent["id"]},
                                  headers=api_key["headers"])
         assert resp.status_code == 500
 
     async def test_v1_chat_stream_surfaces_the_failure(self, client, api_key, seed_orchestration):
-        agent = self._seed_broken(seed_orchestration)
+        agent = await self._seed_broken(seed_orchestration)
         resp = await client.post("/api/v1/chat/stream",
                                  json={"message": "go", "agent": agent["id"]},
                                  headers=api_key["headers"])
         assert resp.status_code == 200
         assert "error" in [e.get("type") for e in _sse_json(resp.text)]
+
+    async def test_chat_stream_tells_the_member_why_a_step_failed(
+        self, client, monkeypatch, seed_orchestration
+    ):
+        """The chat page is a member's: its step failure carries the step's
+        own words beside the sanitised sentence (F195)."""
+        from core.orchestration import steps as steps_mod
+
+        async def boom(self, step, run, engine):
+            raise KeyError("missing_config_key")
+            yield  # pragma: no cover — makes this an async generator
+
+        monkeypatch.setattr(steps_mod.PrintStepExecutor, "execute", boom)
+        orch = await seed_orchestration()  # single print step
+        agent = S.make_orchestrator_agent(orch["id"])
+        await S.seed_agents([agent])
+
+        resp = await client.post("/chat/stream",
+                                 json={"message": "go", "agent_id": agent["id"]})
+        failed = [e for e in _sse_json(resp.text) if e.get("type") == "step_error"]
+        assert failed, [e.get("type") for e in _sse_json(resp.text)]
+        assert failed[0]["error"] == "An internal error occurred while executing this step."
+        assert failed[0]["reason"] == "KeyError: 'missing_config_key'"
 
 
 class TestChatLaunchedRunParity:
@@ -125,14 +148,14 @@ class TestChatLaunchedRunParity:
 
         monkeypatch.setattr(llm, "generate_response", _blocking_llm, raising=False)
 
-        orch = seed_orchestration(
+        orch = await seed_orchestration(
             entry_step_id="s",
             steps=[{"id": "s", "name": "Think", "type": "llm",
                     "prompt_template": "hi", "output_key": "out",
                     "next_step_id": None}],
         )
         agent = S.make_orchestrator_agent(orch["id"])
-        S.seed_agents([agent])
+        await S.seed_agents([agent])
 
         stream = run_react_loop(
             ChatRequest(message="go", agent_id=agent["id"]), server
@@ -161,7 +184,7 @@ class TestChatLaunchedRunParity:
 
 class TestRealV1Run:
     async def test_v1_sync_run_real_engine(self, client, api_key, seed_orchestration):
-        orch = seed_orchestration(
+        orch = await seed_orchestration(
             entry_step_id="p",
             steps=[{"id": "p", "name": "Say", "type": "print",
                     "print_content": "hello {state.user_input}",
@@ -174,7 +197,7 @@ class TestRealV1Run:
         assert body["status"] in ("completed", "running")
 
     async def test_v1_run_stream_real_engine(self, client, api_key, seed_orchestration):
-        orch = seed_orchestration()
+        orch = await seed_orchestration()
         resp = await client.post(f"/api/v1/orchestrations/{orch['id']}/run/stream",
                                  json={"message": "go"}, headers=api_key["headers"])
         assert resp.status_code == 200

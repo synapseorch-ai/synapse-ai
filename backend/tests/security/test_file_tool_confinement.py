@@ -12,10 +12,9 @@ Directories — the list `core/server.py` starts the Filesystem MCP server on
   * the vault tool (`tools/sandbox.py`) and `GET /api/file` checked with a bare
     `startswith`, so a sibling `vault-old` passed as inside `vault` (S8).
 
-Every root and every outside file here is in a temp directory. 1.9.x port:
-repositories are `DATA_DIR/repos.json`, the vault is `DATA_DIR/vault`, and
-`/api/file`'s own roots are the home directory and `DATA_DIR` — unchanged
-here; only its separator check is fixed (S8).
+Every root and every outside file here is in a temp directory; the store, the
+settings and the vault root are patched at the one place the old code and the
+new both read them.
 """
 from __future__ import annotations
 
@@ -23,21 +22,30 @@ import json
 import os
 
 import pytest
+import pytest_asyncio
 from fastapi import HTTPException
 
 SECRET = "SECRET-TOKEN-9f3a"
 
 
-@pytest.fixture
-def layout(tmp_path, monkeypatch):
-    data = tmp_path / "data"
+async def _save_allowed_dirs(dirs):
+    """Settings → Allowed Directories, written the way the settings route writes it."""
+    from core.config import default_settings
+    from core.store.settings import save_many
+
+    settings = default_settings()
+    settings["bash_allowed_dirs"] = [str(d) for d in dirs]
+    await save_many(settings)
+
+
+@pytest_asyncio.fixture
+async def layout(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
-    vault = data / "vault"
+    vault = tmp_path / "vault"
     allowed = tmp_path / "allowed"
     outside = tmp_path / "outside"
-    sibling = data / "vault-old"
-    data_sibling = tmp_path / "data-old"
-    for d in (repo, vault / "tool_outputs", allowed, outside, sibling, data_sibling):
+    sibling = tmp_path / "vault-old"
+    for d in (repo, vault / "tool_outputs", allowed, outside, sibling):
         d.mkdir(parents=True)
 
     (repo / "main.py").write_text("print('hello')\n")
@@ -45,25 +53,30 @@ def layout(tmp_path, monkeypatch):
     (allowed / "notes.txt").write_text("allowed notes\n")
     (outside / "secret.txt").write_text(f"token={SECRET}\n")
     (sibling / "old.txt").write_text(f"old={SECRET}\n")
-    (data_sibling / "old.txt").write_text(f"old={SECRET}\n")
     os.symlink(outside / "secret.txt", repo / "link_to_secret.txt")
-    (data / "repos.json").write_text(json.dumps([{"id": "repo_1", "name": "repo", "path": str(repo)}]))
 
     # Imported before anything is patched: a module that binds
-    # `from core.config import …` at import time would otherwise keep the
-    # fakes below for the rest of the session.
+    # `from core.config import load_settings` at import time would otherwise
+    # keep the fake below for the rest of the session.
     import core.routes.settings  # noqa: F401
     import core.server  # noqa: F401
     import tools.code_search  # noqa: F401
     import tools.file_reader  # noqa: F401
     import tools.sandbox  # noqa: F401
+    from core.store import collections
 
-    monkeypatch.setattr("core.config.DATA_DIR", data)
-    monkeypatch.setattr("core.routes.settings.DATA_DIR", data)
-    monkeypatch.setattr("tools.sandbox.VAULT_ROOT", vault)
-    monkeypatch.setattr("core.config.load_settings", lambda: {"bash_allowed_dirs": [str(allowed)]})
-    return {"repo": repo, "vault": vault, "allowed": allowed, "outside": outside,
-            "sibling": sibling, "data": data, "data_sibling": data_sibling}
+    real_load = collections.load
+
+    async def fake_load(name, *a, **k):
+        if name == "repos":
+            return [{"id": "repo_1", "name": "repo", "path": str(repo)}]
+        return await real_load(name, *a, **k)
+
+    monkeypatch.setattr(collections, "load", fake_load)
+    monkeypatch.setattr("core.vault._vault_root", lambda: vault)
+    monkeypatch.setattr("tools.sandbox._vault_root", lambda: vault)
+    await _save_allowed_dirs([allowed])
+    return {"repo": repo, "vault": vault, "allowed": allowed, "outside": outside, "sibling": sibling}
 
 
 def _payload(result) -> str:
@@ -187,7 +200,7 @@ class TestVaultSibling:
         from core.routes.settings import get_file
 
         with pytest.raises(HTTPException) as exc:
-            await get_file(path=str(layout["data_sibling"] / "old.txt"))
+            await get_file(path=str(layout["sibling"] / "old.txt"))
         assert exc.value.status_code == 403
 
     async def test_api_file_still_serves_the_vault(self, layout):
@@ -207,20 +220,69 @@ async def test_the_filesystem_server_is_started_on_the_same_roots(layout):
     import core.server as server
     from core import file_roots
 
-    spec = server._filesystem_server_spec()
+    spec = await server._filesystem_server_spec()
     assert spec["args"][:2] == ["-y", "@modelcontextprotocol/server-filesystem"]
     assert spec["args"][2:] == [str(layout["repo"]), str(layout["vault"]), str(layout["allowed"])]
-    assert spec["args"][2:] == file_roots.allowed_roots()
+    assert spec["args"][2:] == await file_roots.allowed_roots()
 
 
-async def test_an_allowed_directory_already_covered_is_not_passed_twice(layout, monkeypatch):
+async def test_an_allowed_directory_already_covered_is_not_passed_twice(layout):
     from core import file_roots
 
-    monkeypatch.setattr(
-        "core.config.load_settings",
-        lambda: {"bash_allowed_dirs": [str(layout["vault"]), str(layout["allowed"]), "/no/such/dir"]},
+    await _save_allowed_dirs([layout["vault"], layout["allowed"], "/no/such/dir"])
+    assert await file_roots.allowed_roots() == [str(layout["repo"]), str(layout["vault"]), str(layout["allowed"])]
+
+
+async def test_the_native_server_list_still_builds(layout, monkeypatch):
+    """The whole list, not only the Filesystem entry.
+
+    The first cut of this change removed an import the Browser Automation entry
+    below it still used; `_build_native_mcp_servers` raised NameError inside the
+    lifespan's Filesystem task, and the backend never finished starting. The
+    unit tests' app skips the lifespan, so nothing here noticed (F-row: the OSS
+    test pass, 2026-09-25).
+    """
+    import core.server as server
+
+    async def no_google():
+        return {}
+
+    monkeypatch.setattr(server, "load_settings", lambda: {"browser_automation_enabled": True})
+    monkeypatch.setattr(server, "_get_google_oauth_env", no_google)
+
+    servers = await server._build_native_mcp_servers()
+    by_name = {s["name"]: s for s in servers}
+    assert by_name["Filesystem"]["args"][2:] == [str(layout["repo"]), str(layout["vault"]), str(layout["allowed"])]
+    # "Browser Automation" left this list (BRW1): it is the browser component,
+    # whose files live in a private per-session folder removed when it closes,
+    # and no npx process writes anywhere for it.
+    assert "Browser Automation" not in by_name
+    assert not any("@playwright/mcp" in " ".join(s.get("args", [])) for s in servers)
+
+
+async def test_an_allowed_directory_saved_after_the_tools_started_reaches_them(layout, tmp_path):
+    """The file tools are stdio subprocesses that read the settings once, at
+    bootstrap, and serve that snapshot for their lifetime. A folder added under
+    Allowed Directories while they run never reached them, though the Filesystem
+    server, restarted on every settings save, had it (found by the OSS test pass,
+    2026-09-25). The roots are read from the store on every call, like the repos.
+    """
+    from core import file_roots, settings_runtime
+    from tools import file_reader
+
+    # The subprocess's state: its bootstrap snapshot, taken before the save below.
+    await settings_runtime.refresh()
+    late = tmp_path / "added-later"
+    late.mkdir()
+    (late / "notes.txt").write_text("added later\n")
+    await _save_allowed_dirs([layout["allowed"], late])
+
+    assert str(late) in await file_roots.allowed_roots()
+    result = await file_reader.call_tool(
+        "read_file_by_lines", {"file_path": str(late / "notes.txt"), "start_line": 1, "end_line": 5}
     )
-    assert file_roots.allowed_roots() == [str(layout["repo"]), str(layout["vault"]), str(layout["allowed"])]
+    assert "Access denied" not in result[0].text
+    assert "added later" in result[0].text
 
 
 # ── The scraper's screenshots are saved in their own folder (F1066) ─────────────────────────────────────────────
@@ -352,12 +414,10 @@ def test_the_scraper_reads_its_folder_from_its_arguments(monkeypatch, tmp_path):
     assert web_scraper.output_dir_from(["web_scraper.py", "--output-dir", str(tmp_path)]) == tmp_path
 
 
-def test_the_backend_starts_the_scraper_with_its_folder(monkeypatch, tmp_path):
+async def test_the_backend_starts_the_scraper_with_its_folder(layout):
     import core.server as server
 
-    monkeypatch.setattr(server, "DATA_DIR", tmp_path / "data")
-    folder = (tmp_path / "data" / "vault" / "tool_outputs" / "screenshots").resolve()
-    assert server._native_tool_args("web_scraper") == ["--output-dir", str(folder)]
+    assert server._native_tool_args("web_scraper") == ["--output-dir", str(layout["vault"] / "tool_outputs" / "screenshots")]
     assert server._native_tool_args("time") == []
     assert "args=[script_path, *_native_tool_args(agent_name)]" in __import__("inspect").getsource(server.lifespan)
 
@@ -368,6 +428,6 @@ def test_a_shared_worker_starts_it_with_none():
 
     from core.scale.worker_server_module import _get_native_mcp_servers
 
-    servers = _get_native_mcp_servers(Path("/tools"), Path("/backend"))
+    servers = _get_native_mcp_servers(Path("/tools"), Path("/backend"), scope="shared")
     if "web_scraper" in servers:
         assert "--output-dir" not in servers["web_scraper"].args

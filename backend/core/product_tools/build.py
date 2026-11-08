@@ -1,0 +1,395 @@
+"""The AI builder's own tools, as product tools (MCP2, D292).
+
+Wrapped, not moved: `core/builder_tools.py` (BWA1's) stays their code, and each entry here calls its dispatch, as
+the MCP server always did (D125). What the entry adds is what the builder never needed inside its own run: a
+role (a read is anyone's, an edit a builder's), the `build` scope, and an audit row for each edit.
+
+The assistant does not take these through the registry: they already are its builder tools (area `build`).
+
+Which builder tools are served, and which are not, is still a decision per tool:
+
+* **Deletes** are served (Naveen, D292), irreversible: the first call previews what goes, or refuses at once in the
+  app's words when something still uses it; the confirmation token stands in for the builder's `confirm=true`. The
+  builder's own delete then checks again, so a use added between preview and confirm still refuses.
+* **`finish_build`** cleans up after the builder run it is called from; a call from outside one does nothing.
+* **`list_variables`** is the builder's own: it names the variables for its plans (F1271), and stays in the app.
+* **`list_recent_runs` / `get_run_summary`**: the run entries answer the same with more.
+* **The builder's research and help tools** belong to its own run.
+"""
+from __future__ import annotations
+
+import contextlib
+import contextvars
+import json
+from typing import Any, Iterator
+
+from core.product_tools.errors import ToolRefusal
+from core.product_tools.registry import ProductTool
+from core.product_tools.roles import Role
+
+#: Builder tools that only read. `validate_orchestration` clears a build-in-progress mark when an orchestration
+#: passes, which changes nothing a person can see.
+READS: tuple[str, ...] = (
+    "list_agents",
+    "get_agent",
+    "list_orchestrations",
+    "get_orchestration",
+    "validate_orchestration",
+    "list_tool_servers",
+    "list_server_tools",
+    "list_all_tools",
+    "get_tools_detail",
+    "list_custom_tools",
+    "list_skills",
+    "get_skill",
+    "list_schedules",
+    "list_repos",
+    "list_db_configs",
+    "list_knowledge_bases",
+)
+
+#: Builder tools that add or edit, with the host's audit action for each.
+ACTS: dict[str, str] = {
+    "create_agent": "agent.created",
+    "create_agents": "agent.created",
+    "update_agent": "agent.updated",
+    "create_orchestration": "orchestration.created",
+    "create_orchestration_skeleton": "orchestration.created",
+    "add_steps": "orchestration.updated",
+    "add_single_step": "orchestration.updated",
+    "add_multiple_steps": "orchestration.updated",
+    "update_step": "orchestration.updated",
+    "remove_step": "orchestration.updated",
+    "update_orchestration": "orchestration.updated",
+    "set_orchestration_meta": "orchestration.updated",
+    "deploy_orchestration": "orchestration.deployed",
+    "create_http_tool": "tool.created",
+    "update_http_tool": "tool.updated",
+    "update_python_tool": "tool.updated",
+    "create_python_tool": "tool.created",
+    "test_python_tool": "tool.tested",
+    "import_openapi": "tool.created",
+    "create_skill": "skill.created",
+    "update_skill": "skill.updated",
+    "attach_skills": "agent.updated",
+    "create_schedule": "schedule.created",
+    "update_schedule": "schedule.updated",
+    # F1451: on and off as two tools, since MCP marks a tool and not an argument (`set_schedule_enabled` is the app's).
+    "turn_on_schedule": "schedule.updated",
+    "pause_schedule": "schedule.updated",
+}
+
+#: Acts that replace or remove what is already there: every step of an orchestration, one step, or a tool or skill
+#: of the same name; and turning a schedule on, which then starts runs by itself, unwatched (F1451, Naveen 11-07).
+#: Marked destructive, so a client asks its person first.
+OVERWRITES: frozenset[str] = frozenset({
+    "update_orchestration",
+    "remove_step",
+    "create_http_tool",
+    "update_http_tool",
+    "create_python_tool",
+    "update_python_tool",
+    "create_skill",
+    "turn_on_schedule",
+})
+
+#: Acts that change nothing when made again with the same arguments: a schedule turned on or paused that already is.
+IDEMPOTENT: frozenset[str] = frozenset({"turn_on_schedule", "pause_schedule"})
+
+#: Acts the person sees before they are done, with a token, though they can be undone (F1198, Naveen 10-29): a Python
+#: tool is code that will run with the internet, so its preview shows the code.
+CONFIRMED: frozenset[str] = frozenset({"create_python_tool", "update_python_tool"})
+
+#: Acts the app keeps to itself (F1325, Naveen 11-04), with the host's audit action for each: registered as acts but
+#: never served to an MCP client, so `ACTS` is exactly what MCP serves (F1315's guard reads it so). `test_code_change`
+#: tests a Synapse AI change's fix by that run's own id, which means nothing to a client. `set_schedule_enabled` is
+#: Synapse AI's Turn on / Turn off card (F1451): over MCP an on/off switch could not ask before "on" alone, so a
+#: client has `turn_on_schedule`, which asks, and `pause_schedule`, which does not.
+APP_ACTS: dict[str, str] = {"test_code_change": "tool.tested", "set_schedule_enabled": "schedule.updated"}
+APP_ONLY: frozenset[str] = frozenset(APP_ACTS)
+
+#: Acts that reach outside the workspace.
+OPEN_WORLD: frozenset[str] = frozenset({"import_openapi", "test_python_tool", "test_code_change"})
+
+#: Deletes: what each removes, its id argument, and the host's audit action.
+DELETES: dict[str, tuple[str, str, str]] = {
+    "delete_agent": ("agent", "agent_id", "agent.deleted"),
+    "delete_orchestration": ("orchestration", "orch_id", "orchestration.deleted"),
+    "delete_schedule": ("schedule", "schedule_id", "schedule.deleted"),
+    "delete_custom_tool": ("tool", "name", "tool.deleted"),
+}
+
+_TARGET_ARGS: tuple[tuple[str, str], ...] = (
+    ("orch_id", "orchestration"), ("agent_id", "agent"), ("schedule_id", "schedule"),
+)
+
+_MODULE: contextvars.ContextVar[Any] = contextvars.ContextVar("product_tools_server_module", default=None)
+
+
+#: Where a host caller wants the builder's UI events (`resource_saved`, a card) from the calls it makes: Synapse AI's
+#: apply step hands them to its run, so `run_writes` and the stream see them (F695's host half). None drops them, as
+#: over MCP, which has no stream to send them to.
+_EVENTS: contextvars.ContextVar[list | None] = contextvars.ContextVar("product_tools_build_events", default=None)
+
+
+@contextlib.contextmanager
+def collecting_events(sink: list) -> Iterator[list]:
+    """The builder's events from the calls made inside, appended to `sink`."""
+    token = _EVENTS.set(sink)
+    try:
+        yield sink
+    finally:
+        _EVENTS.reset(token)
+
+
+@contextlib.contextmanager
+def using_module(module: Any) -> Iterator[None]:
+    """The tool sessions a builder tool is handed (`server_module`), for the calls made inside: the MCP server's
+    per-tenant module in cloud, this process's own by default."""
+    token = _MODULE.set(module)
+    try:
+        yield
+    finally:
+        _MODULE.reset(token)
+
+
+def _target(action: str):
+    kind = action.split(".", 1)[0]
+
+    def target(args: dict[str, Any], result: Any) -> tuple[str, str] | None:
+        for key, name in _TARGET_ARGS:
+            if args.get(key):
+                return name, str(args[key])
+        try:
+            parsed = json.loads(result) if isinstance(result, str) else result
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            # A create answers with its record nested under its kind ({"agent": {"id": …}}, F697).
+            nested = parsed.get(kind)
+            records = [nested, parsed] if isinstance(nested, dict) else [parsed]
+            for record in records:
+                for key in ("id", "orch_id", "agent_id", "schedule_id"):
+                    if record.get(key):
+                        return kind, str(record[key])
+        if args.get("name"):
+            return kind, str(args["name"])
+        return None
+
+    return target
+
+
+async def audit_from_a_run(name: str, args: dict[str, Any], result: Any, caller: Any) -> None:
+    """A build write an ordinary run made for its person, audited once, as them (F1319): the action this area's own
+    MCP door names it with, the run as its surface, and the caller bound, so a host's audit reads their record. Only
+    a write that took: a refusal or an error is no act. The MCP door never comes here; the registry audits it."""
+    from core.product_tools import caller as current, hooks
+    from core.product_tools.registry import _summary
+
+    action = ACTS.get(name) or APP_ACTS.get(name) or (DELETES[name][2] if name in DELETES else None)
+    if action is None or (isinstance(result, dict) and result.get("error")):
+        return
+    target = _target(action)(args or {}, result)
+    token = current._CURRENT.set(caller)
+    try:
+        await hooks.emit(hooks.AuditEvent(
+            action=action, tool=name, area="build", via=caller.via, user_id=caller.user_id,
+            credential_id=caller.credential_id, role=caller.role.label,
+            target_type=target[0] if target else None, target_id=target[1] if target else None,
+            args=_summary(args or {}),
+        ))
+    finally:
+        current._CURRENT.reset(token)
+
+
+def _handler(name: str):
+    async def handle(caller: Any, args: dict[str, Any]) -> str:
+        from core.builder_tools import execute_builder_tool_with_events
+
+        module = _MODULE.get()
+        if module is None:
+            import core.server as module  # this process's own tool sessions
+        output, events = await execute_builder_tool_with_events(name, args, module)
+        sink = _EVENTS.get()
+        if sink is not None:
+            sink.extend(events)  # a host's run streams them (F695); over MCP there is no stream to go to
+        try:
+            parsed = json.loads(output)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict) and "error" in parsed:
+            # Its own words, once: the adapter wraps a refusal as {"error": ...} itself.
+            raise ToolRefusal(str(parsed["error"]))
+        return output
+
+    return handle
+
+
+async def _preview_delete(name: str, args: dict[str, Any]) -> dict:
+    """What a delete would remove, by name, or a refusal now in the app's words when something uses it."""
+    kind, id_arg, _ = DELETES[name]
+    target = str(args.get(id_arg) or "")
+    if not target:
+        raise ToolRefusal(f"Missing argument: {id_arg}")
+    label = target
+    if kind == "agent":
+        from core.orchestration.dependents import agent_refusal, what_uses_agent
+        from core.store.resources import get_agent
+
+        agent = await get_agent(target)
+        if agent is None or agent.get("system"):
+            raise ToolRefusal(f"Agent '{target}' not found")
+        label = agent.get("name") or target
+        users = await what_uses_agent(target)
+        if users:
+            raise ToolRefusal(agent_refusal(label, users))
+    elif kind == "orchestration":
+        from core.builder_tools import _visible_orchestration
+        from core.orchestration.dependents import refusal, what_runs
+
+        orch = await _visible_orchestration(target)
+        if orch is None:
+            raise ToolRefusal(f"Orchestration '{target}' not found")
+        label = orch.get("name") or target
+        runners = await what_runs(target)
+        if runners:
+            raise ToolRefusal(refusal(label, runners))
+    elif kind == "schedule":
+        from core.store import schedules as schedule_store
+
+        schedule = await schedule_store.get(target)
+        if schedule is None:
+            raise ToolRefusal(f"Schedule '{target}' not found")
+        label = schedule.get("name") or target
+    else:
+        from core.store.resources import load_tools
+
+        if not any(t.get("name") == target for t in await load_tools()):
+            raise ToolRefusal(f"Custom tool '{target}' not found")
+    return {"will_delete": {"type": kind, "id": target, "name": label},
+            "note": "This cannot be undone."}
+
+
+def _delete_handler(name: str):
+    inner = _handler(name)
+
+    async def handle(caller: Any, args: dict[str, Any]) -> str:
+        # The registry's confirmation token is the confirmation; the builder's own guard asks for it this way.
+        return await inner(caller, {**args, "confirm": True})
+
+    return handle
+
+
+#: What each delete says over MCP, in its own words: the builder's say "requires confirm=true", which here is the
+#: preview's token instead.
+_DELETE_WORDS: dict[str, str] = {
+    "delete_agent": "Delete an agent. Refused while anything uses it — a widget, a channel or phone number, a "
+                    "schedule, a workflow's step or another agent that hands work to it — naming each.",
+    "delete_orchestration": "Delete a workflow (an orchestration). Refused while a workflow agent or a schedule "
+                            "runs it, naming each. Its run history is kept.",
+    "delete_schedule": "Delete a schedule: it no longer runs.",
+    "delete_custom_tool": "Delete a custom tool by name. Agents that list it lose it.",
+}
+_TOKEN_CONFIRM = ("Cannot be undone: the first call previews what goes (or says what still uses it) and gives a "
+                  "confirm_token; call again with the same arguments and that token to delete.")
+
+
+def _without_confirm(schema: dict) -> dict:
+    """The builder's delete schema less its `confirm` flag: over MCP, the token confirms."""
+    props = {k: v for k, v in (schema.get("properties") or {}).items() if k != "confirm"}
+    out = {**schema, "properties": props}
+    if "required" in schema:
+        out["required"] = [r for r in schema["required"] if r != "confirm"]
+    return out
+
+
+def _offered(name: str):
+    def offered() -> bool:
+        from core.builder_tools import builder_tool_offered
+        return builder_tool_offered(name)
+
+    return offered
+
+
+def entries() -> list[ProductTool]:
+    from core.builder_tools import BUILDER_TOOL_SCHEMAS
+
+    by_name = {s["function"]["name"]: s["function"] for s in BUILDER_TOOL_SCHEMAS}
+    missing = [n for n in (*READS, *ACTS, *APP_ACTS, *DELETES) if n not in by_name]
+    if missing:
+        # A renamed builder tool must fail loudly here, not vanish from MCP.
+        raise RuntimeError(f"product tools name builder tools that do not exist: {missing}")
+
+    def schema(name: str) -> dict:
+        return by_name[name].get("parameters") or {"type": "object", "properties": {}}
+
+    tools = [
+        ProductTool(name=n, description=by_name[n].get("description", ""), input_schema=schema(n),
+                    handler=_handler(n), kind="read", area="build", offered=_offered(n))
+        for n in READS
+    ]
+    tools += [
+        ProductTool(name=n, description=by_name[n].get("description", ""), input_schema=schema(n),
+                    handler=_handler(n), kind="act", area="build", min_role=Role.BUILDER, scope="build",
+                    destructive=n in OVERWRITES, idempotent=n in IDEMPOTENT, open_world=n in OPEN_WORLD,
+                    audit_action=action,
+                    target=_target(action), offered=_offered(n), confirmed=n in CONFIRMED,
+                    preview=_PREVIEWS.get(n), app_only=n in APP_ONLY)
+        for n, action in {**ACTS, **APP_ACTS}.items()
+    ]
+    tools += [
+        ProductTool(name=n, description=f"{_DELETE_WORDS[n]} {_TOKEN_CONFIRM}",
+                    input_schema=_without_confirm(schema(n)), handler=_delete_handler(n), kind="act", area="build",
+                    min_role=Role.BUILDER, scope="build", irreversible=True, audit_action=action,
+                    target=_target(action), preview=_preview(n))
+        for n, (_, _, action) in DELETES.items()
+    ]
+    return tools
+
+
+async def _preview_python_tool(caller: Any, args: dict[str, Any]) -> dict:
+    """What `create_python_tool` would save, its code whole, or its refusal now in the editor's words (F1198)."""
+    from core.builder_tools import python_tool_draft
+
+    tool, before, refused = await python_tool_draft(args)
+    if refused:
+        raise ToolRefusal(str(refused["error"]))
+    return {
+        "will_create": {"type": "tool", "name": tool["name"], "tool_type": "python", "code": tool["code"],
+                        "input_schema": tool["inputSchema"]},
+        "replaces": before is not None,
+        "reads_variables": tool["globals"],
+        "note": "Its code runs in the sandbox with the internet and the Vault read-only, whenever an agent calls it. "
+                "It reads no workspace variable until a person adds one in its editor.",
+    }
+
+
+async def _preview_python_update(caller: Any, args: dict[str, Any]) -> dict:
+    """What `update_python_tool` would save (F1325): its new code whole and a diff from its code now, or its refusal now
+    in the tool's own words."""
+    from core.builder_tools import python_code_issues
+    from core.python_edits import diff
+    from core.store.resources import load_tools
+
+    name = str(args.get("name") or "").strip()
+    before = next((t for t in await load_tools() if t.get("name") == name), None)
+    if refused := await python_code_issues(before, args):
+        raise ToolRefusal(str(refused["error"]))
+    new = str(args.get("code") or "")
+    return {
+        "will_change": {"type": "tool", "name": name, "tool_type": "python", "code": new},
+        "diff": diff(str(before.get("code") or ""), new),
+        "reads_variables": list(before.get("globals") or []),
+        "note": "Its code runs in the sandbox with the internet and the Vault read-only, whenever an agent calls it. "
+                "The variables a person gave it stay; it reads no other.",
+    }
+
+
+_PREVIEWS = {"create_python_tool": _preview_python_tool, "update_python_tool": _preview_python_update}
+
+
+def _preview(name: str):
+    async def preview(caller: Any, args: dict[str, Any]) -> dict:
+        return await _preview_delete(name, args)
+
+    return preview

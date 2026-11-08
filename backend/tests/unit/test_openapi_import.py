@@ -48,11 +48,28 @@ class TestOpenAPI3:
         assert len(tools) == 2
         assert {t["name"] for t in tools} == {"getpetbyid", "createpet"}
 
-    def test_path_param_stays_in_url_and_required(self):
+    def test_path_param_becomes_a_double_brace_reference_and_stays_required(self):
+        """The spec says `/pets/{petId}` — that is OpenAPI's own path syntax, not
+        a spelling anybody chose. It is converted at import so an imported tool
+        is written in the one syntax the product documents everywhere else, the
+        same `{{ … }}` used in headers, request bodies and prompts.
+
+        The executor still *reads* single braces, for every URL written before
+        this and for anything hand-pasted from API docs. This is about what gets
+        written."""
         get = next(t for t in tools_by_method(OAS3, "GET"))
-        assert get["url"] == "https://api.example.com/v1/pets/{petId}"
+        assert get["url"] == "https://api.example.com/v1/pets/{{petId}}"
         assert "petId" in get["inputSchema"]["properties"]
         assert "petId" in get["inputSchema"]["required"]
+
+    def test_reimporting_an_already_converted_path_does_not_double_it_again(self):
+        """Re-importing an updated spec is the normal way to pick up a new
+        endpoint, so the conversion has to be idempotent."""
+        from core.openapi_import import _double_brace
+
+        assert _double_brace("/pets/{{petId}}") == "/pets/{{petId}}"
+        assert _double_brace("/a/{x}/b/{{y}}") == "/a/{{x}}/b/{{y}}"
+        assert _double_brace("/no/params") == "/no/params"
 
     def test_query_param_included_header_skipped(self):
         get = next(t for t in tools_by_method(OAS3, "GET"))
@@ -106,7 +123,7 @@ SW2 = {
 class TestSwagger2:
     def test_base_url_from_host_scheme_basepath(self):
         get = next(t for t in tools_by_method(SW2, "GET"))
-        assert get["url"] == "https://petstore.swagger.io/v2/pet/{petId}"
+        assert get["url"] == "https://petstore.swagger.io/v2/pet/{{petId}}"
         assert get["inputSchema"]["required"] == ["petId"]
 
     def test_body_definition_ref_resolved(self):

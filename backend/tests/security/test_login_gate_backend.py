@@ -51,8 +51,7 @@ def token(monkeypatch):
 @pytest.fixture
 def login_on(monkeypatch):
     monkeypatch.setattr(internal_auth, "_login_required", lambda: True)
-    monkeypatch.setattr(internal_auth, "_session_user",
-                        lambda token: "owner" if token == "good-session" else None)
+    monkeypatch.setattr(internal_auth, "session_ok", lambda token: token == "good-session")
 
 
 @pytest.fixture

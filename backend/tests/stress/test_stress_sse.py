@@ -21,9 +21,9 @@ pytestmark = pytest.mark.stress
 class TestConcurrentChatStreams:
     async def test_many_chat_streams_complete(self, client, fake_llm, seed_agent,
                                               stress_params, monkeypatch):
-        agent = seed_agent(tools=[], skip_default_tools=True)
-        import core.tools as tools
-        monkeypatch.setitem(tools._session_tools_cache, "_test", [])
+        agent = await seed_agent(tools=[], skip_default_tools=True)
+        import core.server as server
+        monkeypatch.setitem(server._session_tools, "_test", [])
         fake_llm.set_default("done under load")
 
         async def task(i: int):

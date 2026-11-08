@@ -13,7 +13,6 @@ import os
 
 import mcp.types as types
 from mcp.server import Server
-from mcp.server.stdio import stdio_server
 
 from core.file_roots import allowed_roots, refusal, within
 
@@ -29,7 +28,8 @@ def _ensure(path: str) -> str:
         return path
 
 
-def _read_lines(file_path: str, start_line: int, end_line: int, *, roots: list[str]) -> dict:
+def _read_lines(file_path: str, start_line: int, end_line: int, *, roots: list[str], start_char: int = 0,
+                max_chars: int | None = None) -> dict:
     local = _ensure(file_path)
     # Before the existence check, so a refused path says nothing about
     # whether it exists (S5).
@@ -46,25 +46,21 @@ def _read_lines(file_path: str, start_line: int, end_line: int, *, roots: list[s
     except Exception as e:
         return {"error": str(e)}
     try:
+        from core.vault import read_cap, slice_lines
+
         with open(local, encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-        total = len(lines)
-        s = max(1, start_line) - 1
-        e = min(end_line, total)
-        chunk = [ln.rstrip("\n") for ln in lines[s:e]]
-        return {
-            "path": file_path,
-            "start_line": s + 1,
-            "end_line": e,
-            "total_lines": total,
-            "content": "\n".join(chunk),
-        }
+            text = f.read()
+        # The vault's own slicing, capped (D339 P2): one line of a crawl held a whole page.
+        return {"path": file_path, **slice_lines(text, start_line, end_line, max_chars=read_cap(max_chars),
+                                                 start_char=max(0, start_char))}
     except Exception as ex:
         return {"error": str(ex)}
 
 
 def _grep(file_path: str, query: str, context_lines: int, *, roots: list[str]) -> dict:
     local = _ensure(file_path)
+    # Before the existence check, so a refused path says nothing about
+    # whether it exists (S5).
     if not within(local, roots):
         return {"error": refusal(file_path)}
     if not os.path.exists(local):
@@ -76,6 +72,8 @@ def _grep(file_path: str, query: str, context_lines: int, *, roots: list[str]) -
             lines = f.readlines()
     except Exception as ex:
         return {"error": str(ex)}
+
+    from core.vault import _around
 
     q = query.lower()
     results = []
@@ -91,10 +89,10 @@ def _grep(file_path: str, query: str, context_lines: int, *, roots: list[str]) -
         block = []
         for j in range(start, end):
             prefix = ">>>" if j == i else "   "
-            block.append(f"{prefix} [L{j + 1}] {lines[j].rstrip()}")
+            block.append(f"{prefix} [L{j + 1}] {_around(lines[j].rstrip(), q)}")
         results.append({
             "match_line": i + 1,
-            "match": line.rstrip(),
+            "match": _around(line.rstrip(), q),
             "context": "\n".join(block),
         })
         if len(results) >= 20:
@@ -113,9 +111,11 @@ async def list_tools() -> list[types.Tool]:
     return [
         types.Tool(
             name="read_file_by_lines",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "Read a specific line range from any file (1-indexed, inclusive). "
                 "Use this to read slices of large vault files instead of loading the whole file. "
+                "Each read is capped: when it is cut, `next` gives the start_line (and start_char) to read on from. "
                 "Supports local paths and vault files stored in S3 (scale mode)."
             ),
             inputSchema={
@@ -135,12 +135,22 @@ async def list_tools() -> list[types.Tool]:
                         "description": "Last line to read (1-indexed, inclusive). Default 100.",
                         "default": 100,
                     },
+                    "start_char": {
+                        "type": "integer",
+                        "description": "Where in start_line to begin, from a cut read's `next`. Default 0.",
+                        "default": 0,
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "At most this many characters (the cap applies anyway).",
+                    },
                 },
                 "required": ["file_path"],
             },
         ),
         types.Tool(
             name="grep_file",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "Search a file for lines matching a query string and return matches with surrounding context. "
                 "Use on large vault files when you know what value or key to look for. "
@@ -171,19 +181,28 @@ async def list_tools() -> list[types.Tool]:
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
+    # The tenant, the store and this tenant's settings are established by
+    # `bootstrap()`, which now runs alongside the handshake rather than ahead
+    # of it. A handler is the first thing that actually needs any of them.
+    from core.tool_server import ready
+
+    await ready()
+
     if name == "read_file_by_lines":
         result = _read_lines(
             file_path=arguments.get("file_path", ""),
             start_line=int(arguments.get("start_line", 1)),
             end_line=int(arguments.get("end_line", 100)),
-            roots=allowed_roots(),
+            roots=await allowed_roots(),
+            start_char=int(arguments.get("start_char", 0) or 0),
+            max_chars=arguments.get("max_chars"),
         )
     elif name == "grep_file":
         result = _grep(
             file_path=arguments.get("file_path", ""),
             query=arguments.get("query", ""),
             context_lines=int(arguments.get("context_lines", 5)),
-            roots=allowed_roots(),
+            roots=await allowed_roots(),
         )
     else:
         result = {"error": f"Unknown tool: {name}"}
@@ -192,8 +211,15 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
 
 async def main():
-    async with stdio_server() as (read_stream, write_stream):
-        await app.run(read_stream, write_stream, app.create_initialization_options())
+    # This process serves exactly one tenant, and it has to be told which —
+    # see core/tool_server.py.
+    # Serve first, bootstrap alongside. `bootstrap()` reads Postgres, and
+    # putting that ahead of `stdio_server()` meant the MCP handshake waited
+    # on a database — a cold serverless resume expired the 60s bound and
+    # took the whole chat turn with it. Handlers wait via `ready()`.
+    from core.tool_server import serve
+
+    await serve(app)
 
 
 if __name__ == "__main__":

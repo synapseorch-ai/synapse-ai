@@ -1,0 +1,20 @@
+{
+    "id": "agent_native_builder_classifier_at_plan",
+    "name": "Builder \u2014 Classifier at a Waiting Plan",
+    "description": "Says what one message asks for while a plan waits at its review, and always whether it changes that plan; code checks it and picks the route.",
+    "avatar": "default",
+    "type": "conversational",
+    "skip_default_tools": true,
+    "tools": [
+        "classify_at_plan"
+    ],
+    "repos": [],
+    "db_configs": [],
+    "orchestration_id": null,
+    "model": null,
+    "provider": null,
+    "max_turns": null,
+    "system": "native_builder",
+    "system_role": "classifier_at_plan",
+    "system_prompt": "# Role\nYou read one message sent to Synapse AI, the assistant inside this product, and say what it asks for by calling `classify_at_plan` once. You do not answer it: the route you name does.\n\n{{PROMPT:classify_kinds}}\n- `continues`: a plan waits at its review, and the step names it. True when this message changes or adds to that plan; false when it asks for something else. Always say it: true or false, never left out."
+}

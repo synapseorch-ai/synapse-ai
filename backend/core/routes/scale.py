@@ -1,12 +1,15 @@
 """
 Scale settings management routes (UI-facing, internal auth).
-Provides connection testing, sync, worker management, and DLQ access.
+Provides connection testing, worker management, and DLQ access.
 """
 import json
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
+
+from core.scale.config import QUEUE_NAME
+from core.tenancy import get_tenant
 
 router = APIRouter()
 
@@ -15,19 +18,25 @@ router = APIRouter()
 # Config
 # ---------------------------------------------------------------------------
 
+#: Settings the Scale screen shows that only the environment sets, and the
+#: variable that does. Saving one used to change nothing while the screen showed
+#: the saved value as the one in effect (F58).
+ENV_ONLY = {
+    "worker_concurrency": "WORKER_CONCURRENCY",
+    "pgbouncer_mode": "PGBOUNCER_MODE",
+    "max_global_queue_depth": "MAX_GLOBAL_QUEUE_DEPTH",
+    "rate_limit_per_tenant_rps": "RATE_LIMIT_PER_TENANT_RPS",
+    "metrics_token": "METRICS_TOKEN",
+}
+
+
 class ScaleConfigUpdate(BaseModel):
+    """What the screen may save. Fields in `ENV_ONLY` are still accepted — the
+    screen posts its whole form — and not saved."""
     redis_url: str = ""
     scale_postgres_url: str = ""
     scale_mode_enabled: bool = False
-    scale_auto_sync: bool = False
-    worker_concurrency: int = 10
     otlp_endpoint: str = ""
-    metrics_token: str = ""
-    max_global_queue_depth: int = 1_000_000
-    rate_limit_per_tenant_rps: int = 1000
-    pgbouncer_mode: bool = False
-    redis_cluster_mode: bool = False
-    num_queue_shards: int = 1
     # S3 storage
     s3_bucket: str = ""
     s3_region: str = "us-east-1"
@@ -40,55 +49,62 @@ class ScaleConfigUpdate(BaseModel):
 @router.get("/scale/config")
 async def get_scale_config_route():
     from core.config import load_settings
+    from core.scale.config import get_scale_config
     settings = load_settings()
+    cfg = get_scale_config()
     return {
         "redis_url": settings.get("redis_url", ""),
         "scale_postgres_url": settings.get("scale_postgres_url", ""),
         "scale_mode_enabled": settings.get("scale_mode_enabled", False),
-        "scale_auto_sync": settings.get("scale_auto_sync", False),
-        "worker_concurrency": settings.get("worker_concurrency", 10),
         "otlp_endpoint": settings.get("otlp_endpoint", ""),
-        "metrics_token": settings.get("metrics_token", ""),
-        "max_global_queue_depth": settings.get("max_global_queue_depth", 1_000_000),
-        "rate_limit_per_tenant_rps": settings.get("rate_limit_per_tenant_rps", 1000),
-        "pgbouncer_mode": settings.get("pgbouncer_mode", False),
-        "num_queue_shards": settings.get("num_queue_shards", 1),
+        # In effect, from the environment — see ENV_ONLY.
+        "worker_concurrency": cfg.worker_concurrency,
+        "pgbouncer_mode": cfg.pgbouncer_mode,
+        "max_global_queue_depth": cfg.max_global_queue_depth,
+        "rate_limit_per_tenant_rps": cfg.rate_limit_per_tenant_rps,
+        "metrics_token": "",
+        "metrics_token_set": bool(cfg.metrics_token),
+        "env_only": ENV_ONLY,
         "s3_bucket": settings.get("s3_bucket", ""),
         "s3_region": settings.get("s3_region", "us-east-1"),
         "s3_prefix": settings.get("s3_prefix", "synapse"),
         "s3_access_key_id": settings.get("s3_access_key_id", ""),
-        "s3_secret_access_key": settings.get("s3_secret_access_key", ""),
+        # Write-only, like the metrics token: reported as set or not, never
+        # echoed. The screen posts its whole form back, so the POST treats an
+        # empty secret as "unchanged" (F95).
+        "s3_secret_access_key": "",
+        "s3_secret_access_key_set": bool(settings.get("s3_secret_access_key")),
         "s3_endpoint_url": settings.get("s3_endpoint_url", ""),
     }
 
 
+def _s3_secret(key_id: str, sent: str) -> str:
+    """The secret to keep, given what a form sent. The secret is never read back
+    to the screen, so an empty one means "unchanged" — except with no key id,
+    where it is cleared: `SynapseS3` uses a secret only beside a key id, and a
+    secret left behind after switching to role credentials is a liability."""
+    from core.config import load_settings
+    if not key_id:
+        return ""
+    return sent or load_settings().get("s3_secret_access_key", "")
+
+
 @router.post("/scale/config")
 async def update_scale_config_route(body: ScaleConfigUpdate):
-    from core.config import load_settings, SETTINGS_FILE
-    from core.json_store import JsonStore
+    from core.routes.settings import save_settings
 
-    store = JsonStore(SETTINGS_FILE, default_factory=dict)
-    settings = store.load()
-    settings.update({
+    await save_settings({
         "redis_url": body.redis_url,
         "scale_postgres_url": body.scale_postgres_url,
         "scale_mode_enabled": body.scale_mode_enabled,
-        "scale_auto_sync": body.scale_auto_sync,
-        "worker_concurrency": body.worker_concurrency,
         "otlp_endpoint": body.otlp_endpoint,
-        "metrics_token": body.metrics_token,
-        "max_global_queue_depth": body.max_global_queue_depth,
-        "rate_limit_per_tenant_rps": body.rate_limit_per_tenant_rps,
-        "pgbouncer_mode": body.pgbouncer_mode,
-        "num_queue_shards": body.num_queue_shards,
         "s3_bucket": body.s3_bucket,
         "s3_region": body.s3_region,
         "s3_prefix": body.s3_prefix,
         "s3_access_key_id": body.s3_access_key_id,
-        "s3_secret_access_key": body.s3_secret_access_key,
+        "s3_secret_access_key": _s3_secret(body.s3_access_key_id, body.s3_secret_access_key),
         "s3_endpoint_url": body.s3_endpoint_url,
     })
-    store.save(settings)
     # Invalidate the S3 singleton so the new config is picked up immediately
     from core.s3_storage import invalidate_s3_singleton
     invalidate_s3_singleton()
@@ -118,7 +134,8 @@ async def test_s3_connection(body: S3TestRequest):
         region=body.s3_region,
         prefix=body.s3_prefix,
         access_key_id=body.s3_access_key_id,
-        secret_access_key=body.s3_secret_access_key,
+        # The screen no longer holds the stored secret, so it tests with that one.
+        secret_access_key=_s3_secret(body.s3_access_key_id, body.s3_secret_access_key),
         endpoint_url=body.s3_endpoint_url,
     )
     return client.test_connection()
@@ -148,11 +165,8 @@ async def test_postgres_connection(request: Request):
         raise HTTPException(400, detail="postgres_url is required")
     try:
         from core.scale.db import build_engine
-        # Normalise to asyncpg
-        if "postgresql+asyncpg" not in pg_url:
-            pg_url = pg_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-            pg_url = pg_url.replace("postgres://", "postgresql+asyncpg://", 1)
-        engine = build_engine(pg_url)
+        from core.store.engine import normalise_db_url
+        engine = build_engine(normalise_db_url(pg_url))
         async with engine.connect() as conn:
             from sqlalchemy import text
             await conn.execute(text("SELECT 1"))
@@ -160,41 +174,6 @@ async def test_postgres_connection(request: Request):
         return {"status": "ok", "message": "Postgres connection successful"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
-
-
-# ---------------------------------------------------------------------------
-# Sync
-# ---------------------------------------------------------------------------
-
-@router.post("/scale/sync")
-async def trigger_sync(request: Request):
-    """Sync all local JSON data to Postgres."""
-    pg_engine = getattr(request.app.state, "pg_engine", None)
-    session_factory = getattr(request.app.state, "pg_session_factory", None)
-    if not session_factory:
-        raise HTTPException(503, detail="Postgres not configured. Enable scale mode first.")
-
-    from core.scale.sync import full_sync
-    from core.scale.config import get_scale_config
-    cfg = get_scale_config()
-
-    async with session_factory() as session:
-        result = await full_sync(session, tenant_id=cfg.default_tenant_id)
-
-    return result
-
-
-@router.get("/scale/sync/status")
-async def sync_status(request: Request):
-    """Return row counts per table (last sync indicator)."""
-    session_factory = getattr(request.app.state, "pg_session_factory", None)
-    if not session_factory:
-        return {"available": False, "message": "Postgres not configured"}
-
-    from core.scale.sync import get_sync_status
-    async with session_factory() as session:
-        counts = await get_sync_status(session)
-    return {"available": True, "counts": counts}
 
 
 # ---------------------------------------------------------------------------
@@ -293,17 +272,9 @@ async def queue_stats(request: Request):
     cfg = get_scale_config()
 
     # ARQ stores pending jobs in a Redis sorted set (ZSET), not a list.
-    # Sum across all shards when num_queue_shards > 1.
     queued = 0
     try:
-        if cfg.num_queue_shards > 1:
-            import asyncio
-            shard_names = [f"synapse:orchestrations:{i}" for i in range(cfg.num_queue_shards)]
-            counts = await asyncio.gather(*[redis.zcard(q) for q in shard_names], return_exceptions=True)
-            queued = sum(c for c in counts if isinstance(c, int))
-        else:
-            queue_name = f"synapse:orchestrations:{cfg.default_tenant_id if cfg.enable_tenant_isolation else 'default'}"
-            queued = await redis.zcard(queue_name) or 0
+        queued = await redis.zcard(QUEUE_NAME) or 0
     except Exception:
         queued = 0
 
@@ -337,7 +308,8 @@ async def queue_stats(request: Request):
             async with session_factory() as session:
                 r = await session.execute(
                     select(func.count()).select_from(DeadLetterQueueDB).where(
-                        DeadLetterQueueDB.resolved == False  # noqa: E712
+                        DeadLetterQueueDB.tenant_id == get_tenant(),
+                        DeadLetterQueueDB.resolved == False,  # noqa: E712
                     )
                 )
                 dlq_count = r.scalar() or 0
@@ -369,6 +341,7 @@ async def list_dlq(request: Request):
     async with session_factory() as session:
         result = await session.execute(
             select(DeadLetterQueueDB)
+            .where(DeadLetterQueueDB.tenant_id == get_tenant())
             .where(DeadLetterQueueDB.resolved == False)  # noqa: E712
             .order_by(DeadLetterQueueDB.last_failed_at.desc())
             .limit(50)
@@ -391,127 +364,85 @@ async def list_dlq(request: Request):
 
 @router.post("/scale/dlq/{dlq_id}/retry")
 async def retry_dlq_job(dlq_id: str, request: Request):
-    """Re-enqueue a DLQ job and mark it as resolved."""
+    """Resume a dead job's run, and mark the dead letter resolved once it is queued.
+
+    A dead letter is a job that died outside the engine (see `_dead_job`), and
+    the run it left is `failed` at the step it had reached. Retrying resumes
+    it there with `resume_failed_job`. It used to re-enqueue the original job
+    with the run id, orchestration id and input, which started the run again
+    from its entry step over its own checkpoint.
+    """
     session_factory = getattr(request.app.state, "pg_session_factory", None)
     arq_redis = getattr(request.app.state, "arq_redis", None)
     if not session_factory or not arq_redis:
         raise HTTPException(503, detail="Scale mode not available")
 
-    from sqlalchemy import select, update
-    from core.scale.models_db import DeadLetterQueueDB
+    import time
     import uuid as _uuid
+    from sqlalchemy import select, update
+    from core.scale.models_db import DeadLetterQueueDB, OrchestrationRunDB
+
+    try:
+        entry_id = _uuid.UUID(dlq_id)
+    except ValueError:
+        raise HTTPException(404, detail="DLQ entry not found")
 
     async with session_factory() as session:
-        result = await session.execute(
+        row = (await session.execute(
             select(DeadLetterQueueDB).where(
-                DeadLetterQueueDB.id == _uuid.UUID(dlq_id)
+                DeadLetterQueueDB.id == entry_id,
+                DeadLetterQueueDB.tenant_id == get_tenant(),
             )
-        )
-        row = result.scalar_one_or_none()
+        )).scalar_one_or_none()
+        run = None
+        if row and row.run_id:
+            run = (await session.execute(
+                select(OrchestrationRunDB).where(
+                    OrchestrationRunDB.run_id == row.run_id,
+                    OrchestrationRunDB.tenant_id == get_tenant(),
+                )
+            )).scalar_one_or_none()
 
     if not row:
         raise HTTPException(404, detail="DLQ entry not found")
 
-    # Re-enqueue the original job to the correct worker queue
-    import os as _os
-    queue_name = f"synapse:orchestrations:{_os.getenv('WORKER_QUEUE_SHARD', 'default')}"
-    payload = row.job_payload or {}
-    await arq_redis.enqueue_job(row.job_function, **payload, _queue_name=queue_name)
+    if run is None or not run.current_step_id:
+        raise HTTPException(
+            409,
+            detail="This run never reached a step, so there is nothing to resume — start it again.",
+        )
+    if run.status not in ("failed", "cancelled"):
+        raise HTTPException(409, detail=f"The run is {run.status}; only a failed or cancelled run can be resumed.")
 
-    # Mark as resolved
+    from core.scale.replay import queue_replay
+    job = await queue_replay(getattr(request.app.state, "redis", None) or arq_redis, arq_redis, run.run_id)
+    if job is None:
+        raise HTTPException(409, detail="A retry of this run is already queued.")
+
     async with session_factory() as session:
         await session.execute(
             update(DeadLetterQueueDB)
-            .where(DeadLetterQueueDB.id == _uuid.UUID(dlq_id))
+            .where(DeadLetterQueueDB.id == entry_id)
             .values(resolved=True)
         )
         await session.commit()
 
-    return {"status": "re-enqueued", "dlq_id": dlq_id}
+    return {"status": "re-enqueued", "dlq_id": dlq_id, "run_id": run.run_id}
 
 
 # ---------------------------------------------------------------------------
 # Tenants
 # ---------------------------------------------------------------------------
+#
+# There is no tenant CRUD here any more. `GET`/`POST`/`DELETE /scale/tenants`
+# let an operator create tenants from the settings UI, which made tenancy a
+# feature of the shipped product rather than a capability of the engine.
+#
+# This build is single-tenant and offers no way to become otherwise. The engine
+# resolves everything through `core.tenancy.get_tenant()`, and `tenant_scope()`
+# refuses to open unless an embedder has registered a resource provider. See
+# core/tenancy.py for why that boundary sits where it does.
 
-class TenantCreate(BaseModel):
-    tenant_id: str
-    name: str = ""
-    max_concurrent_runs: int = 100
-    max_queued_runs: int = 1000
-    priority: int = 0
-
-
-@router.get("/scale/tenants")
-async def list_tenants(request: Request):
-    session_factory = getattr(request.app.state, "pg_session_factory", None)
-    if not session_factory:
-        return []
-
-    from sqlalchemy import select
-    from core.scale.models_db import TenantDB
-
-    async with session_factory() as session:
-        result = await session.execute(select(TenantDB))
-        rows = result.scalars().all()
-
-    return [
-        {
-            "tenant_id": r.tenant_id,
-            "name": r.name,
-            "max_concurrent_runs": r.max_concurrent_runs,
-            "max_queued_runs": r.max_queued_runs,
-            "priority": r.priority,
-        }
-        for r in rows
-    ]
-
-
-@router.post("/scale/tenants", status_code=201)
-async def create_tenant(body: TenantCreate, request: Request):
-    session_factory = getattr(request.app.state, "pg_session_factory", None)
-    if not session_factory:
-        raise HTTPException(503, detail="Postgres not configured")
-
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-    from core.scale.models_db import TenantDB
-
-    async with session_factory() as session:
-        stmt = pg_insert(TenantDB).values(
-            tenant_id=body.tenant_id,
-            name=body.name,
-            max_concurrent_runs=body.max_concurrent_runs,
-            max_queued_runs=body.max_queued_runs,
-            priority=body.priority,
-        ).on_conflict_do_update(
-            index_elements=["tenant_id"],
-            set_={
-                "name": body.name,
-                "max_concurrent_runs": body.max_concurrent_runs,
-                "max_queued_runs": body.max_queued_runs,
-                "priority": body.priority,
-            },
-        )
-        await session.execute(stmt)
-        await session.commit()
-
-    return {"status": "created", "tenant_id": body.tenant_id}
-
-
-@router.delete("/scale/tenants/{tenant_id}")
-async def delete_tenant(tenant_id: str, request: Request):
-    session_factory = getattr(request.app.state, "pg_session_factory", None)
-    if not session_factory:
-        raise HTTPException(503, detail="Postgres not configured")
-
-    from sqlalchemy import delete
-    from core.scale.models_db import TenantDB
-
-    async with session_factory() as session:
-        await session.execute(delete(TenantDB).where(TenantDB.tenant_id == tenant_id))
-        await session.commit()
-
-    return {"status": "deleted", "tenant_id": tenant_id}
 
 
 # ---------------------------------------------------------------------------
@@ -626,11 +557,14 @@ async def list_scale_runs(request: Request, limit: int = 20, session_id: str = N
 
     try:
         from sqlalchemy import select
+        from sqlalchemy.orm import defer
         from core.scale.models_db import OrchestrationRunDB
 
         async with session_factory() as session:
             q = (
                 select(OrchestrationRunDB)
+                # A list never reads the run's copy of its workflow (F443).
+                .options(defer(OrchestrationRunDB.definition))
                 .order_by(OrchestrationRunDB.created_at.desc())
                 .limit(min(limit, 100))
             )

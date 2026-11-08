@@ -19,7 +19,7 @@ def _valid_agent_body(**over):
 
 class TestAgentsCrud:
     async def test_list_reflects_seeded_agents(self, client, seed_agent):
-        a = seed_agent(name="Seeded One")
+        a = await seed_agent(name="Seeded One")
         resp = await client.get("/api/agents")
         assert resp.status_code == 200
         ids = [x["id"] for x in resp.json()]
@@ -43,7 +43,7 @@ class TestAgentsCrud:
         assert resp.status_code == 422
 
     async def test_set_and_get_active_agent(self, client, seed_agent):
-        a = seed_agent(id="agent_active_1", name="Active One")
+        a = await seed_agent(id="agent_active_1", name="Active One")
         resp = await client.post("/api/agents/active", json={"agent_id": a["id"]})
         assert resp.status_code == 200
         resp = await client.get("/api/agents/active")
@@ -58,3 +58,80 @@ class TestAgentTypes:
         # Response is a list or dict of known agent types.
         payload = resp.json()
         assert payload  # non-empty
+
+    async def test_the_browser_type_can_be_chosen(self, client):
+        """F1071 (BRW1): the in-app browser shipped; its teaser (F1068) is a real type now."""
+        types = {t["value"]: t for t in (await client.get("/api/agent-types")).json()["types"]}
+        assert types["browser"]["label"] == "Browser"
+        # Naveen's rule (10-28, V2-CONTRACT "Final buttons and sends"): payments are the person's, and a send runs
+        # only on their own words.
+        assert "payments are always yours" in types["browser"]["description"]
+        assert "only when you've asked it to" in types["browser"]["description"]
+        assert not any(t.get("disabled") for t in types.values())
+
+
+class TestOnlyRealTypesAreSaved:
+    """F1069 (BRW1): the API took any string as an agent's type, and an unknown one ran as conversational."""
+
+    async def test_an_unknown_type_is_refused(self, client):
+        resp = await client.post("/api/agents", json=_valid_agent_body(id="t1", type="made_up"))
+        assert resp.status_code == 422
+        assert "'made_up' is not an agent type" in resp.json()["detail"]
+
+    async def test_a_browser_agent_is_saved(self, client):
+        resp = await client.post("/api/agents", json=_valid_agent_body(id="b1", type="browser",
+                                                                       tools=["browser_snapshot"]))
+        assert resp.status_code == 200 and resp.json()["type"] == "browser"
+
+    async def test_an_agent_keeps_an_older_type_it_already_has(self, client):
+        from core.store.resources import save_agent
+        await save_agent(_valid_agent_body(id="old1", type="analysis"))
+        kept = await client.post("/api/agents", json=_valid_agent_body(id="old1", type="analysis", name="Renamed"))
+        assert kept.status_code == 200
+        changed = await client.post("/api/agents", json=_valid_agent_body(id="old1", type="something_else"))
+        assert changed.status_code == 422
+
+
+class TestToolPolicySurvivesASave:
+    """The regression this screen exists for.
+
+    `Agent` had no `tool_policy` field, so `create_agent`'s `agent.dict()`
+    dropped it: the one documented way to reach the feature — editing the agent
+    document by hand — was erased by the next save through the UI. Nothing
+    failed; the policy simply stopped being there.
+    """
+
+    async def test_a_policy_round_trips(self, client):
+        body = _valid_agent_body(id="agent_policy_1",
+                                 tool_policy={"destructive": "confirm", "undeclared": "deny"})
+        resp = await client.post("/api/agents", json=body)
+        assert resp.status_code == 200
+        assert resp.json()["tool_policy"] == {"destructive": "confirm", "undeclared": "deny"}
+
+        listed = next(a for a in (await client.get("/api/agents")).json()
+                      if a["id"] == "agent_policy_1")
+        assert listed["tool_policy"] == {"destructive": "confirm", "undeclared": "deny"}
+
+    async def test_junk_is_cleaned_on_the_way_in(self, client):
+        """Stored clean rather than as sent: one of the readers of this document
+        decides whether a chat widget may publish the agent."""
+        resp = await client.post("/api/agents", json=_valid_agent_body(
+            id="agent_policy_2", tool_policy={"open_world": "confirm", "wat": "deny",
+                                              "destructive": "sometimes"}))
+        assert resp.status_code == 200
+        assert resp.json()["tool_policy"] == {"open_world": "confirm"}
+
+    async def test_an_agent_that_says_nothing_stores_an_empty_policy(self, client):
+        resp = await client.post("/api/agents", json=_valid_agent_body(id="agent_policy_3"))
+        assert resp.json()["tool_policy"] == {}
+
+    async def test_the_engine_reads_what_the_route_stored(self, client):
+        """The route and `resolve_policy` have to agree about the shape, or the
+        screen writes something the loop never acts on."""
+        from core.tool_policy import resolve_policy
+
+        await client.post("/api/agents", json=_valid_agent_body(
+            id="agent_policy_4", tool_policy={"destructive": "deny"}))
+        stored = next(a for a in (await client.get("/api/agents")).json()
+                      if a["id"] == "agent_policy_4")
+        assert resolve_policy(stored, None)["destructive"] == "deny"

@@ -15,10 +15,6 @@ from _fakes import seed as S
 from _fakes.fake_llm import tool_call
 
 
-@pytest.fixture(autouse=True)
-def _isolate_runs_dir(tmp_path, monkeypatch):
-    import core.orchestration.state as state_mod
-    monkeypatch.setattr(state_mod, "RUNS_DIR", tmp_path / "runs")
 
 
 def _server():
@@ -143,8 +139,9 @@ class TestExecutorInterception:
         # The run failed, but the transcript survived in the checkpoint.
         assert any(e.get("type") == "step_error" for e in events)
         assert not any(e.get("type") == "_step_progress" for e in events)  # swallowed
-        ckpt = json.loads((state_mod.RUNS_DIR / "run_prog.json").read_text(encoding="utf-8"))
-        saved = ckpt["shared_state"]["_step_progress_s1"]
+        ckpt = (await state_mod.SharedState.restore("run_prog")).run.model_dump(mode="json")
+        saved = ckpt["step_progress"]["s1"]
+        assert "_step_progress_s1" not in ckpt["shared_state"]   # its own column now
         assert saved["context_text"] == "CTX"
         assert saved["turn"] == 1
         assert saved["attempt"] == 1
@@ -157,7 +154,7 @@ class TestExecutorInterception:
         from core.orchestration.engine import OrchestrationEngine
 
         orch = _agent_orch()
-        seed_orchestration(**orch)  # resume_failed loads the definition from disk
+        await seed_orchestration(**orch)  # resume_failed loads the definition from disk
 
         async def crashing(**kwargs):
             yield {"type": "_step_progress", "turn": 2, "context_text": "CTX2",
@@ -179,8 +176,8 @@ class TestExecutorInterception:
         assert seen_kwargs["resume_state"]["context_text"] == "CTX2"
         assert seen_kwargs["progress_events"] is True
         assert any(e.get("type") == "orchestration_complete" for e in events)
-        ckpt = json.loads((state_mod.RUNS_DIR / "run_resume.json").read_text(encoding="utf-8"))
-        assert "_step_progress_s1" not in ckpt["shared_state"]  # cleaned up
+        ckpt = (await state_mod.SharedState.restore("run_resume")).run.model_dump(mode="json")
+        assert "s1" not in ckpt["step_progress"]  # cleaned up
         assert ckpt["shared_state"]["result"] == "done after resume"
 
     async def test_attempt_cap_discards_poisoned_transcript(self, monkeypatch):
@@ -203,7 +200,11 @@ class TestExecutorInterception:
         assert any(e.get("type") == "orchestration_complete" for e in events)
 
     async def test_attempt_increments_across_resumes(self, monkeypatch):
-        """A resumed attempt that crashes again stores attempt=2."""
+        """A resumed attempt that crashes again stores attempt=2.
+
+        Seeded through the LEGACY shared_state key on purpose: a run paused
+        by a build that kept progress there must resume mid-step on this one,
+        and must come out with the key gone and the record in its column."""
         import core.react_engine as re_mod
         import core.orchestration.state as state_mod
 
@@ -216,9 +217,10 @@ class TestExecutorInterception:
         await _run_engine(_agent_orch(), run_id="run_att", initial_state={
             "_step_progress_s1": {"turn": 2, "context_text": "CTX2", "attempt": 1},
         })
-        ckpt = json.loads((state_mod.RUNS_DIR / "run_att.json").read_text(encoding="utf-8"))
-        assert ckpt["shared_state"]["_step_progress_s1"]["attempt"] == 2
-        assert ckpt["shared_state"]["_step_progress_s1"]["context_text"] == "CTX4"
+        ckpt = (await state_mod.SharedState.restore("run_att")).run.model_dump(mode="json")
+        assert ckpt["step_progress"]["s1"]["attempt"] == 2
+        assert ckpt["step_progress"]["s1"]["context_text"] == "CTX4"
+        assert "_step_progress_s1" not in ckpt["shared_state"]  # migrated, not duplicated
 
     async def test_clean_run_leaves_no_progress_residue(self, monkeypatch):
         import core.react_engine as re_mod
@@ -231,5 +233,6 @@ class TestExecutorInterception:
 
         monkeypatch.setattr(re_mod, "run_agent_step", clean)
         await _run_engine(_agent_orch(), run_id="run_clean")
-        ckpt = json.loads((state_mod.RUNS_DIR / "run_clean.json").read_text(encoding="utf-8"))
+        ckpt = (await state_mod.SharedState.restore("run_clean")).run.model_dump(mode="json")
         assert "_step_progress_s1" not in ckpt["shared_state"]
+        assert ckpt["step_progress"] == {}
