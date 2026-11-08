@@ -1253,7 +1253,11 @@ BUILDER_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "remove_step",
-            "description": "Delete a single step from an orchestration by its step_id.",
+            "description": (
+                "Delete a single step from an orchestration by its step_id. Every field that named it (another "
+                "step's next_step_id, a route, a branch, a loop body, the entry) is cleared, and the answer lists "
+                "what was cleared."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3510,7 +3514,16 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         await save_orchestration(await _steps_as_run_calls(orch, server_module))
         _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
-        return {"status": "step_updated", "step": steps[sidx]}
+        said = {"status": "step_updated", "step": steps[sidx]}
+        # Saved all the same: a build may point a step at the next before adding it (Naveen 11-08, #376). A run of
+        # the workflow is refused until the step exists; the answer says so now (F1458).
+        from core.orchestration.step_links import links_of
+        ids = {s.get("id") for s in steps}
+        if missing := [(field, target) for field, target in links_of(steps[sidx]) if target not in ids]:
+            said["warnings"] = [
+                f"Step '{step_id}' {field} names '{target}', which is not a step yet — add it, or point "
+                f"{field} at a step that exists, before the workflow runs." for field, target in missing]
+        return said
 
     elif tool_name == "remove_step":
         orch = await _visible_orchestration(args["orch_id"])
@@ -3523,10 +3536,17 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         if len(steps) == before:
             return {"error": f"Step '{step_id}' not found in orchestration '{args['orch_id']}'"}
         orch["steps"] = steps
+        # Every field that named it is cleared, as the canvas's delete clears them (F1458, #376): left, the step
+        # before it pointed at nothing and its run failed there, after the steps before it had run.
+        from core.orchestration.step_links import clear_links_to
+        cleared = clear_links_to(orch, step_id)
         orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         await save_orchestration(await _steps_as_run_calls(orch, server_module))
         _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
-        return {"status": "step_removed", "step_id": step_id, "remaining_steps": len(steps)}
+        said = {"status": "step_removed", "step_id": step_id, "remaining_steps": len(steps)}
+        if cleared:
+            said["cleared"] = cleared
+        return said
 
     elif tool_name == "deploy_orchestration":
         orch = await _visible_orchestration(args["orch_id"])
