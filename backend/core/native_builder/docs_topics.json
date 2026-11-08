@@ -1,5 +1,5 @@
 {
- "commit": "17ea373561076cebc0f606e282828d6b7b4223e1",
+ "commit": "a0879522baf4ce00a16de685a6b1d5b46f302c2c",
  "pages": [
   {
    "description": "AI automation without the surprises. Describe a recurring job in plain words, and get a workflow you can read, that runs the same way every time and checks with you before anything goes out.",
@@ -96,7 +96,7 @@
    "title": "Introduction"
   },
   {
-   "description": "Four kinds of agent — conversational, code, orchestrator and Team — and which one a given job actually wants.",
+   "description": "Five kinds of agent — conversational, code, orchestrator, Team and Browser — and which one a given job actually wants.",
    "edition": "both",
    "kind": "guide",
    "sections": [
@@ -124,6 +124,11 @@
      "anchor": "team",
      "excerpt": "A lead with members: other agents of yours, each with its own tools and approvals. The lead answers small questions itself and hands bigger or parallel work to its members, one at a time (it waits for each) or as a team (they work in parallel and share a task list), then answers with what they found. The API and exported files store this type as delegate. Use a Team agent when you want one entry…",
      "heading": "Team"
+    },
+    {
+     "anchor": "browser-browser",
+     "excerpt": "Works in a browser inside Synapse while you watch: it reads and clicks, payments are always yours, and it presses Submit or Send only when you've asked it to. It holds every browser tool beside its own tools. Its Browser section sets how it works the page (Reads only, the default, or Works with you), the sites it may use and the sessions it signs in with, and its actions per task. See A Browser…",
+     "heading": "Browser [#browser]"
     },
     {
      "anchor": "helpers-splitting-work-without-a-team-agent",
@@ -862,7 +867,7 @@
    "title": "Knowledge API"
   },
   {
-   "description": "Connect Claude Code, Cursor or any MCP client to Synapse: build agents and workflows, run them, answer their questions and read the results — every workflow is a tool of its own.",
+   "description": "Connect Claude Code, Cursor or any MCP client to Synapse: build agents and workflows, run them, answer their questions and read the results — every workflow you offer to MCP clients is a tool of its own.",
    "edition": "both",
    "kind": "guide",
    "sections": [
@@ -3028,7 +3033,7 @@
     },
     {
      "anchor": "windows-powershell",
-     "excerpt": "What it needs: Linux or macOS with curl or wget, or Windows PowerShell, on x64 or arm64 — and port 8765 free. Nothing else: it brings uv, Python 3.12 and, if your Node.js is missing or older than 20.9, its own Node.js 22, all under ~/.synapse (%USERPROFILE%\\.synapse on Windows), and the Chromium your agents' browser tools drive. It needs no sudo. On Linux its Node.js needs glibc 2.28 or newer; on…",
+     "excerpt": "The short addresses redirect to the scripts on the latest GitHub release: setup.sh and setup.ps1. What it needs: Linux or macOS with curl or wget, or Windows PowerShell, on x64 or arm64 — and port 8765 free. Nothing else: it brings uv, Python 3.12 and, if your Node.js is missing or older than 20.9, its own Node.js 22, all under ~/.synapse (%USERPROFILE%\\.synapse on Windows), and the Chromium your…",
      "heading": "Windows (PowerShell)"
     },
     {
@@ -3273,7 +3278,7 @@
    "sections": [
     {
      "anchor": "",
-     "excerpt": "SynapseOrch is an MCP server. Any MCP client — Claude Code, Claude Desktop, Codex, Cursor, VS Code, an agent you wrote — can connect to your workspace and use it: list its agents and workflows, run them, answer them when they stop for a person, search its knowledge bases, chat with its agents, and build. Every workflow is also a tool of its own, named after it, so a client's model finds it by…",
+     "excerpt": "SynapseOrch is an MCP server. Any MCP client — Claude Code, Claude Desktop, Codex, Cursor, VS Code, an agent you wrote — can connect to your workspace and use it: list its agents and workflows, run them, answer them when they stop for a person, search its knowledge bases, chat with its agents, and build. Every workflow you offer to MCP clients (the Offer to MCP clients switch in its settings) is…",
      "heading": ""
     },
     {
@@ -3293,7 +3298,7 @@
     },
     {
      "anchor": "3-see-what-it-can-do-tools",
-     "excerpt": "The tools come in four groups: | Group | For | |---|---| | Read | Agents, workflows, tools, skills, schedules and runs; what waits on a person (listwaiting); activity, usage, boards and recordings — and, while Knowledge is on, listknowledgebases and searchknowledge | | Build | Creating and changing agents, workflows and their steps, HTTP and Python tools, skills, schedules, board cards and, while…",
+     "excerpt": "The tools come in four groups: | Group | For | |---|---| | Read | Agents, workflows, tools, skills, schedules and runs; what waits on a person (listwaiting); activity, usage, boards and recordings — and, while Knowledge is on, listknowledgebases and searchknowledge | | Build | Creating and changing agents, workflows and their steps, HTTP and Python tools, skills, schedules (turning one on asks…",
      "heading": "3. See what it can do [#tools]"
     },
     {
@@ -4135,7 +4140,7 @@
     },
     {
      "anchor": "decide-what-happens-to-a-missed-run",
-     "excerpt": "If a run is missed — say the service was down when it was due — choose Skip it or Run it late. A weekly report is usually better skipped than sent on Wednesday. Press Create; it starts running as soon as it is saved. A schedule's play button runs it once now, which is the way to test it. Untick Enabled and save to pause it. Each scheduled run is an ordinary run: it is in Runs, it is scored if the…",
+     "excerpt": "If a run is missed — say the service was down when it was due — choose Skip it or Run it late. A weekly report is usually better skipped than sent on Wednesday. Press Create; it starts running as soon as it is saved. A schedule's play button runs it once now, which is the way to test it. Its row's On / Paused switch pauses it in one click, and turns it on again after asking, with the message each…",
      "heading": "Decide what happens to a missed run"
     },
     {
@@ -4553,7 +4558,7 @@
     },
     {
      "anchor": "run-the-install-line",
-     "excerpt": "Open Terminal (on Linux, any terminal) and paste: It prints Getting the Synapse installer… while it fetches what it runs on, then its own screen. It needs no sudo, only port 8765 free. On Linux its Node.js needs glibc 2.28 or newer; on Alpine, install Node.js 20.9 or newer yourself first.",
+     "excerpt": "Open Terminal (on Linux, any terminal) and paste: It prints Getting the Synapse installer… while it fetches what it runs on, then its own screen. The short address redirects to the latest GitHub release's setup.sh. It needs no sudo, only port 8765 free. On Linux its Node.js needs glibc 2.28 or newer; on Alpine, install Node.js 20.9 or newer yourself first.",
      "heading": "Run the install line"
     },
     {
@@ -5005,7 +5010,7 @@
    "sections": [
     {
      "anchor": "",
-     "excerpt": "A widget publishes one agent to one or more websites. Visitors chat with it without signing in to anything. That is the whole integration. Create the widget under Channels › Widgets, pick the agent, add the sites allowed to embed it, and copy the tag.",
+     "excerpt": "A widget publishes one agent to one or more websites. Visitors chat with it without signing in to anything. That is the whole integration. Create the widget under Channels › Widgets, pick the agent, add the sites allowed to embed it, and copy the tag. You can also ask Synapse AI to make or change a widget. It answers with a card, and pressing it does what the Widgets screen does: the agent, the…",
      "heading": ""
     },
     {
@@ -5162,12 +5167,12 @@
    "sections": [
     {
      "anchor": "",
-     "excerpt": "The screens, step by step: Schedules and channels, in the Guides.",
+     "excerpt": "The screens, step by step: Schedules and channels, in the Guides. For phone calls, see Phone.",
      "heading": ""
     },
     {
      "anchor": "supported-platforms",
-     "excerpt": "| Platform | Receive modes | Auth | |---|---|---| | Telegram | Polling (default) or webhook | Bot token | | Discord | Polling (default) or webhook | Bot token + App ID | | Slack | Polling (default) or webhook | Bot token + app token, or signing secret | | Microsoft Teams | Webhook only | Azure app credentials | | WhatsApp | Webhook only | Access token + verify token |",
+     "excerpt": "| Platform | Receive modes | Auth | |---|---|---| | Telegram | Polling (default) or webhook | Bot token | | Discord | Polling (default) or webhook | Bot token + App ID | | Slack | Polling (default) or webhook | Bot token + app token, or signing secret | | Microsoft Teams | Webhook only | Azure app credentials | | WhatsApp | Webhook only | Access token + app secret + verify token (Meta's Cloud…",
      "heading": "Supported platforms"
     },
     {
@@ -5211,9 +5216,9 @@
      "heading": "Microsoft Teams"
     },
     {
-     "anchor": "whatsapp",
-     "excerpt": "Uses the Meta Cloud API (WhatsApp Business). 1. Create a Meta Developer App at developers.facebook.com 2. Add the WhatsApp product 3. Set the webhook URL to https:// /api/messaging/whatsapp/webhook/ — the public address of the Synapse app, not the backend port 4. Verify the webhook using the verify token Credentials: | Field | Description | |---|---| | phonenumberid | WhatsApp phone number ID | |…",
-     "heading": "WhatsApp"
+     "anchor": "whatsapp-whatsapp",
+     "excerpt": "WhatsApp connects through Meta's WhatsApp Cloud API only: a Meta Business account and a verified number. 1. Create a Meta Developer App at developers.facebook.com, of type Business 2. Add the WhatsApp product, and pick a test or production number under Phone Numbers 3. Under WhatsApp → Configuration, set the webhook URL to https:// /api/messaging/whatsapp/webhook/ — the public address of the…",
+     "heading": "WhatsApp [#whatsapp]"
     },
     {
      "anchor": "how-agents-respond",
@@ -5324,19 +5329,68 @@
    "title": "n8n"
   },
   {
+   "description": "Let callers talk to one of your agents on a Twilio number: what callers hear, what the agent may do for them, transfers and voicemail, and every call kept with its transcript.",
+   "edition": "both",
+   "kind": "guide",
+   "sections": [
+    {
+     "anchor": "",
+     "excerpt": "A phone number from your Twilio account, answered by an agent you choose. The caller speaks; Twilio turns their words into text, the agent answers, and Twilio speaks the answer back. Every call is kept on the number with its transcript. Phone numbers are under Channels › Phone.",
+     "heading": ""
+    },
+    {
+     "anchor": "what-you-need-what-you-need",
+     "excerpt": "- A Twilio account with a voice number in it. A number bought in Twilio appears in Synapse's list; buying one from Synapse isn't offered yet. - A Twilio API key on that account, which you create in the steps below. Synapse never asks for your auth token. - Self-hosted, a public https address Twilio can reach: the Webhook address on the Channels screen (messagingwebhookbaseurl). A tunnel such as…",
+     "heading": "What you need [#what-you-need]"
+    },
+    {
+     "anchor": "connecting-a-number-connecting",
+     "excerpt": "1. Open Channels › Phone and press Add a number. 2. Press Open API keys in Twilio's console, and create a key there. Pick the same kind in Synapse: - Restricted (recommended) can only do what calls need. Tick the permissions Synapse lists: reading and updating calls, and listing, reading and updating your active numbers. Add calls.recordings/create only if you will record calls, and…",
+     "heading": "Connecting a number [#connecting]"
+    },
+    {
+     "anchor": "what-a-call-sounds-like-the-call",
+     "excerpt": "What callers hear first is said on every call before the agent speaks. Left empty, it is Hi, you're speaking with , an AI assistant for . How can I help?, with the agent's and the workspace's names filled in for and . Unless your own words end with a question, How can I help? is added, so callers know it's their turn. With recording on, This call may be recorded. is added. While the agent looks…",
+     "heading": "What a call sounds like [#the-call]"
+    },
+    {
+     "anchor": "what-the-agent-may-do-visitor-tools",
+     "excerpt": "Callers are always visitors: a phone number can be faked, so it never makes someone a member of your workspace. Under Who calls this number, tick what the agent may do for them, as for a chat widget. Nothing is ticked until you tick it. The agent can also: - Transfer the call to the Hand off to a person number, after its last words. If nobody answers, the caller can leave a voicemail. With no…",
+     "heading": "What the agent may do [#visitor-tools]"
+    },
+    {
+     "anchor": "every-call-is-kept-call-log",
+     "excerpt": "The number's Recent calls list each call. Open one for its transcript and anything Waiting on you: an approval the call asked for, which an approver, builder or admin can answer. Recording is off by default. Turned on, recordings stay in your Twilio account; Synapse keeps only the transcript, which it always keeps.",
+     "heading": "Every call is kept [#call-log]"
+    },
+    {
+     "anchor": "on-synapseorch-cloud-cloud",
+     "excerpt": "The Phone screen and the calls work the same way. A call costs 4 credits for each started minute, charged once when it ends; the agent's turns inside it aren't charged again. Your plan sets how many calls run at once and the longest a call may last: see Settings → Plan.",
+     "heading": "On SynapseOrch Cloud [#cloud]"
+    }
+   ],
+   "slug": "/integrations/phone",
+   "title": "Phone"
+  },
+  {
    "description": "Schedules let you run agents or orchestrations automatically on a time-based trigger — either on a fixed interval or a cron expression.",
    "edition": "both",
    "kind": "guide",
    "sections": [
     {
      "anchor": "creating-a-schedule",
-     "excerpt": "Open Workflows › Schedules and press New schedule. A schedule Synapse AI or an MCP client creates starts paused: check the message each run starts with, then turn it on. The screens, step by step: Schedules and channels, in the Guides.",
+     "excerpt": "Open Workflows › Schedules and press New schedule. A schedule Synapse AI, an agent or an MCP client creates starts paused, so nothing runs before you have read what each run starts with. It shows you that message and when the first run would be, and asks whether to turn it on; your yes turns it on. You can also turn it on from its row — see Turning a schedule on, and pausing it. The screens, step…",
      "heading": "Creating a schedule"
     },
     {
      "anchor": "fields",
      "excerpt": "| Field in the form | Stored as | Description | |---|---|---| | Name | name | Display name (required) | | Description | description | What this schedule does | | Run as — Agent or Workflow | targettype | What to run | | Target picker | targetid | The specific agent or workflow | | Prompt | prompt | The message the run starts with — a standing instruction | | Schedule type — Interval or Fixed time…",
      "heading": "Fields"
+    },
+    {
+     "anchor": "turning-a-schedule-on-and-pausing-it-on-and-paused",
+     "excerpt": "Each row in Workflows › Schedules has an On / Paused switch in its status column, and Turn on or Pause in its ⋮ menu. - Pausing is one click. A paused schedule starts no runs until it is turned on again; nothing else about it changes. - Turning on asks first — Turn on Weekly digest? It runs on its own from now on, until it is paused. — with the message each run starts with and when the first run…",
+     "heading": "Turning a schedule on, and pausing it [#on-and-paused]"
     },
     {
      "anchor": "interval-schedules",
@@ -6621,7 +6675,7 @@
     },
     {
      "anchor": "step-types",
-     "excerpt": "SynapseOrch has 17 step types. Add step, in the canvas's dock, lists them all; here they are grouped by what each is for: | Group | Step | What it does | |---|---|---| | Work | Agent | Runs an agent in its full reasoning loop, with its tools — or a Team agent, or a workflow wrapped as an agent. | | | LLM | One direct model call — no tools. For classification, summaries, rewrites. | | | Tool |…",
+     "excerpt": "SynapseOrch has 18 step types. Add step, in the canvas's dock, lists them all; here they are grouped by what each is for: | Group | Step | What it does | |---|---|---| | Work | Agent | Runs an agent in its full reasoning loop, with its tools — or a Team agent, or a workflow wrapped as an agent. | | | LLM | One direct model call — no tools. For classification, summaries, rewrites. | | | Tool |…",
      "heading": "Step types"
     },
     {
@@ -6687,6 +6741,11 @@
      "anchor": "tool",
      "excerpt": "Calls one specific tool, without an agent, and writes its result to the output key. Its arguments are written by a model or set on the step (Arguments, below). If a model's reply doesn't parse or the call fails, the step tries again with the error in the prompt, up to Max turns times; after that the step fails and the run stops. A call fails when the tool reports an error: a Python tool that…",
      "heading": "Tool"
+    },
+    {
+     "anchor": "browser-browser",
+     "excerpt": "Repeats a recorded task in the run's own browser, by code: no model calls while the pages still match. See Built-in browser. | Field | Description | |---|---| | Recording | The recording it repeats. Open it goes to the recording's page | | Inputs | What it types for each of the recording's inputs, from the run: { } or text | | Sends | The recorded steps that may send on their own. A run is never…",
+     "heading": "Browser [#browser]"
     },
     {
      "anchor": "evaluator",
@@ -7331,43 +7390,102 @@
    "title": "Support"
   },
   {
-   "description": "The browser tool gives agents full control over a real web browser using Playwright. Agents can navigate to URLs, click elements, fill forms, take screenshots, and extract content — making it possible to interact with any website including JavaScript-heavy SPAs.",
+   "description": "The browser tools let an agent work in a real browser inside Synapse: open pages, read them, click, and fill in forms, while you watch and take over. Each chat and run gets its own browser.",
    "edition": "both",
    "kind": "guide",
    "sections": [
     {
-     "anchor": "what-it-needs",
-     "excerpt": "Unlike the other built-in tools, the browser is not part of the backend. SynapseOrch starts @playwright/mcp as a subprocess, so the machine needs: - Node, to run npx - Playwright's browsers, downloaded to ~/.cache/ms-playwright by default. Point playwrightbrowserspath elsewhere if they live somewhere else - The browserautomationenabled setting left on, which it is by default If the browser tools…",
-     "heading": "What it needs"
+     "anchor": "",
+     "excerpt": "The browser tools give an agent a Chromium that Synapse runs for it, one for each chat or run. You watch it live, take the wheel when you want, and press payments yourself. Built-in browser covers what that looks like, plus kept site sessions and recorded tasks. A Browser agent holds every tool below, whatever else it holds. Any other agent can be given them one by one, as the Browser Automation…",
+     "heading": ""
     },
     {
-     "anchor": "tools",
-     "excerpt": "The tools come from @playwright/mcp and are named by that package, so the exact set tracks whatever version is installed rather than anything in this repository. Open Apps › Tools in the rail for the current list. Between them they cover navigating to a URL, clicking, typing into fields, taking screenshots, reading the page, and moving back and forward through history.",
-     "heading": "Tools"
+     "anchor": "tools-tools",
+     "excerpt": "| Tool | Does | |---|---| | browsernavigate | Open an address | | browsernavigateback | Go back | | browsersnapshot | Read the page: its text and the elements on it | | browserfind | Find elements on the page | | browserwaitfor | Wait for text to appear or go, or for a time | | browsertabs | List, open, close or switch tabs | | browserhover | Hover over an element | | browserclick | Click an…",
+     "heading": "Tools [#tools]"
     },
     {
-     "anchor": "use-cases",
-     "excerpt": "- Research — browse URLs, read articles, follow links - Form automation — log in, fill forms, submit data - Web monitoring — screenshot pages for visual diffs - Data extraction — extract structured data from dynamic pages (consider the web scraper for heavy crawling) - Testing — automated UI testing scenarios",
-     "heading": "Use cases"
+     "anchor": "what-stops-it-guards",
+     "excerpt": "The browser holds every agent to the same rules, in code: Submit and Send only on your own words, payments and passwords always yours, and only public http or https addresses. A Browser agent set to Reads only sends nothing at all, and so does an agent that holds these tools without being a Browser agent. Each browser also has limits: 40 actions for a task by default (a Browser agent's Actions…",
+     "heading": "What stops it [#guards]"
     },
     {
-     "anchor": "example-agent-interactions",
-     "excerpt": "",
-     "heading": "Example agent interactions"
+     "anchor": "self-hosted-self-hosted",
+     "excerpt": "The Docker images include everything the browser needs. On an install from source, it needs: - Node, for npx: the browser's tools come from Playwright MCP, which Synapse starts itself. - Playwright's Chromium: playwright install chromium. Playwright keeps it under ~/.cache/ms-playwright; if yours is somewhere else, set playwrightbrowserspath in settings. The browser starts on an agent's first…",
+     "heading": "Self-hosted [#self-hosted]"
     },
     {
-     "anchor": "playwright-configuration",
-     "excerpt": "The browser runs in headless mode by default. It uses Chromium. No additional configuration is required — Playwright is installed as part of the backend dependencies. If Playwright browsers are not installed:",
-     "heading": "Playwright configuration"
+     "anchor": "example-requests-examples",
+     "excerpt": "The second works signed in when a kept session for the site is picked for the agent, the chat or the step; the agent never signs in with a password. The third says submit the form, so the agent may press Submit. Without those words, it fills in the form and hands you the browser to press it.",
+     "heading": "Example requests [#examples]"
     },
     {
-     "anchor": "comparison-with-web-scraper",
-     "excerpt": "| | Browser | Web Scraper | |---|---|---| | JavaScript rendering | Yes | Yes (crawl4ai) | | Anti-bot evasion | Basic | Advanced (stealth mode) | | Interactive forms | Yes | No | | Screenshots | Yes | No | | Multi-page crawling | No (manual) | Yes (automatic) | | Best for | Interactive sites, forms, SPAs | High-volume scraping, paywalled sites |",
-     "heading": "Comparison with Web Scraper"
+     "anchor": "browser-or-web-scraper-comparison-with-web-scraper",
+     "excerpt": "| | Browser | Web Scraper | |---|---|---| | JavaScript rendering | Yes | Yes (crawl4ai) | | You watch and can take over | Yes | No | | Forms and signed-in sites | Yes, with you pressing what is yours | No | | CAPTCHAs and bot checks | Handed to you | Stealth mode tries to avoid them | | Many pages at once | No, one page at a time | Yes | | Best for | Interactive sites, forms, sites you sign in to…",
+     "heading": "Browser or Web Scraper [#comparison-with-web-scraper]"
     }
    ],
    "slug": "/tools/browser",
    "title": "Browser"
+  },
+  {
+   "description": "A browser inside Synapse that your agents work in while you watch: take it over and hand it back, keep agents signed in to a site, and record a task once for agents and workflows to repeat.",
+   "edition": "both",
+   "kind": "guide",
+   "sections": [
+    {
+     "anchor": "",
+     "excerpt": "Each chat and each run that uses the browser gets its own: a Chromium that Synapse runs for it, which you watch live. The agent reads and clicks through pages; you take the wheel whenever you want, and some things are always yours to do: passwords, card details, codes and payments. An agent works in the browser when it is a Browser agent, or holds the browser tools. The site sessions and…",
+     "heading": ""
+    },
+    {
+     "anchor": "watching-it-work-watching",
+     "excerpt": "In a chat, the browser opens in a pane beside the conversation when the agent first uses it. A strip under the address says who is driving: the agent, you, or nobody. Under the page, What the agent did lists each action. Closing the pane only stops you watching; the agent carries on. On a run's page, a running browser shows under Live browser, at the page's own shape. Enlarge opens it large.…",
+     "heading": "Watching it work [#watching]"
+    },
+    {
+     "anchor": "taking-over-take-over",
+     "excerpt": "Press Take over to use the page yourself. If you click the page while the agent is driving, Synapse asks first: Keep watching or Take over. The agent finishes the action it is doing, then waits. While you drive, your clicks and typing reach the page, and the address bar takes an address. When you're done: 1. Optionally, type a note for the agent in the strip, such as I signed in, carry on. 2.…",
+     "heading": "Taking over [#take-over]"
+    },
+    {
+     "anchor": "keeping-agents-signed-in-sessions",
+     "excerpt": "Synapse can keep a site's signed-in session for your agents: the site's cookies and storage, never your password. Agents never see or type a password. 1. Open Agents › Browser, on the Sessions tab. 2. Press Keep me signed in to a site, type the site's address, and press Open the browser. 3. Sign in, in the browser that opens. It is yours alone: no agent drives it and nothing is recorded. 4. Press…",
+     "heading": "Keeping agents signed in [#sessions]"
+    },
+    {
+     "anchor": "recording-a-task-recordings",
+     "excerpt": "Do a task once while Synapse records it, and agents and workflows can repeat it. 1. Open Agents › Browser, on the Recordings tab, and press Record a task. 2. Optionally, pick Sessions it starts with and a Start at page. 3. Press Open the browser, and do the task as you normally would. Each thing you do is a step: open an address, click, type, choose, press Enter, go back. 4. Press Stop and keep…",
+     "heading": "Recording a task [#recordings]"
+    },
+    {
+     "anchor": "repeating-a-recording-replay",
+     "excerpt": "A recording is repeated by code, step by step, with no model calls while the pages still match. Each step finds its target the way you'd describe it: by its role and name first, then its label, then its text, and its position on the page last. - Presses that send something for you (submit, send, post, book…) run in a chat, because you pressed them when recording. In a workflow run, which nobody…",
+     "heading": "Repeating a recording [#replay]"
+    },
+    {
+     "anchor": "when-a-page-has-changed-missed-step",
+     "excerpt": "A step that can't find its target, or doesn't reach the page it expects, stops the replay there. What happens next is set on the Browser step, under If a page changed: - Pause for you (the default): the run waits for you to do that step in its browser. - Let a Browser agent find the way: the agent you pick does that step for this run. Either way, the way found is kept as a fix for the recording…",
+     "heading": "When a page has changed [#missed-step]"
+    },
+    {
+     "anchor": "a-browser-step-or-a-browser-agent-step-or-agent",
+     "excerpt": "| | Browser step | Browser agent | |---|---|---| | What drives | A recording, replayed by code | The agent's model | | Where | A workflow step | A chat, an agent step, a channel | | Model calls | None, unless a page changed and you chose an agent to find the way | Every action | | Best for | A task done the same way every time | A task that needs reading and judgement | A Browser step repeats a…",
+     "heading": "A Browser step or a Browser agent [#step-or-agent]"
+    },
+    {
+     "anchor": "what-it-may-press-guards",
+     "excerpt": "These rules are code in the browser itself, not instructions to the model, so no page can talk an agent past them: - Submit, Send and the like only when you asked for it in your own words. A press that would send, post, book or submit a form is stopped, and the agent must quote your request back. Without a quote, it hands you the browser to press it yourself. - Payments are always yours to press…",
+     "heading": "What it may press [#guards]"
+    },
+    {
+     "anchor": "self-hosted-and-cloud-self-hosted-and-cloud",
+     "excerpt": "The browser works the same way in both. The differences: | | Self-hosted | SynapseOrch Cloud | |---|---|---| | Where the browser runs | A process beside the backend, one Chromium for each chat or run | Its own isolated VM for each browser | | Sessions are encrypted with | A key in SYNAPSEWEBSITELOGINSKEY, or one Synapse makes under the install's var/keys/ | The workspace's KMS key, as secrets are…",
+     "heading": "Self-hosted and Cloud [#self-hosted-and-cloud]"
+    }
+   ],
+   "slug": "/tools/built-in-browser",
+   "title": "Built-in browser"
   },
   {
    "description": "The code search tool gives agents semantic and lexical access to indexed repositories. It started as a single search_codebase call; it now ships as a small toolkit of eight related tools, so an agent can move from \\\"find the file\\\" to \\\"open the right lines\\\" without ever leaving the toolkit.",
@@ -7538,7 +7656,7 @@
     },
     {
      "anchor": "available-tools",
-     "excerpt": "| Tool | Description | Requires | |---|---|---| | Sandbox | Execute Python in an isolated Docker container | Docker | | Vault | Read and write persistent files | — | | SQL | Query any SQLAlchemy-compatible database | DB config | | Browser | Full Playwright browser automation | Node, and Playwright's browsers | | Web Scraper | Anti-bot evasion web scraping | — | | Code Search | Semantic search…",
+     "excerpt": "| Tool | Description | Requires | |---|---|---| | Sandbox | Execute Python in an isolated Docker container | Docker | | Vault | Read and write persistent files | — | | SQL | Query any SQLAlchemy-compatible database | DB config | | Browser | A browser inside Synapse that agents work in while you watch | Node, and Playwright's Chromium | | Web Scraper | Anti-bot evasion web scraping | — | | Code…",
      "heading": "Available tools"
     },
     {
