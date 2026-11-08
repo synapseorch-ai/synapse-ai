@@ -178,6 +178,14 @@ async def start_suite_run(suite_id: str, server_module: Any) -> dict:
         raise EvalsRefused("This set has no cases yet.", 400)
     if await suites_mod.running_for(suite_id) is not None:
         raise EvalsRefused("This set is already running.", 409)
+    # Each case starts the workflow afresh: one naming a step it does not have would run its first steps on every
+    # case and fail there (F1459, #376), so the set does not start.
+    from core.orchestration.read_shapes import cannot_start
+    from core.store.resources import get_orchestration
+
+    orch = await get_orchestration(suite.get("orchestration_id") or "")
+    if orch and (said := cannot_start(orch)) is not None:
+        raise EvalsRefused(said, 422)
     suite_run_id = suites_mod.new_suite_run_id()
 
     async def _drive():

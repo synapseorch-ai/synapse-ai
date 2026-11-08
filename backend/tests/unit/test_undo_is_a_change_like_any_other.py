@@ -382,3 +382,23 @@ async def test_an_undo_s_ops_are_checked_like_any_and_said_once(client):
     third, _, _ = await _change({"ops": [{"op": "delete_workflow", "target": {"kind": "workflow", "id": flow["id"]}}]})
     _, review, _ = await _change({"undo_of": third.run_id}, answer="no")
     assert review["outcome"] == "review" and flow_text not in review["review"] and "null" not in review["review"]
+
+
+async def test_a_half_built_workflow_deleted_comes_back(client):
+    """F1459 (ISS1, #376): the editor's save refuses a workflow that names a step it does not have, but the builder's
+    step tools save one half built (an entry named before its step, a step pointing at the next to be added), and
+    undo brings a workflow back through the builder's `create_orchestration`, which does not refuse it. Undo asks
+    what that door refuses, so such a workflow deleted is still brought back as it was."""
+    from core.store.resources import load_orchestrations, save_orchestration
+    from tests._fakes.seed import make_orchestration
+
+    flow = make_orchestration(name="Half built", entry_step_id="a", steps=[
+        {"id": "a", "name": "A", "type": "print", "print_content": "x", "output_key": "o_a", "next_step_id": "b"}])
+    await save_orchestration(flow)  # as the builder's add_steps leaves it, `b` still to come
+    first, _, done = await _change({"ops": [{"op": "delete_workflow", "target": {"kind": "workflow",
+                                                                                 "id": flow["id"]}}]})
+    assert done["applied"] == ["delete_workflow"]
+    _, checked, undone = await _change({"undo_of": first.run_id})
+    assert undone is not None and undone["applied"] == ["restore_workflow"], checked
+    [back] = [o for o in await load_orchestrations() if o.get("name") == "Half built"]
+    assert [(s["id"], s.get("next_step_id")) for s in back["steps"]] == [("a", "b")]

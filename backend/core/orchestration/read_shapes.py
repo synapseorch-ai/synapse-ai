@@ -130,6 +130,30 @@ def load_to_run(doc: dict[str, Any]) -> Orchestration:
         raise Unreadable(unreadable_words(doc, e)) from e
 
 
+def cannot_start(doc: dict[str, Any]) -> str | None:
+    """Why a run of `doc` may not start, in words; None when it may (F1459, ISS1 — GitHub #376).
+
+    A field naming a step the workflow does not have: the engine met it only at that step ("Step '…' not found"),
+    after the steps before it had run, a Tool step's side effect among them. Asked when a run starts, never when a
+    paused one is answered: that run carries on with the workflow it started with (F443)."""
+    from core.orchestration.save_rules import REFERENCE_FIX, step_reference_problems
+
+    gone = step_reference_problems(doc)
+    if not gone:
+        return None
+    return ("This workflow can't start: " + " ".join(gone) + " " + REFERENCE_FIX
+            + " Open it in the editor, or ask Synapse AI to change it.")
+
+
+def load_to_start(doc: dict[str, Any]) -> Orchestration:
+    """`load_to_run`, for a run that starts now: also `Unreadable`, before any step runs, when a field names a step
+    the workflow does not have (`cannot_start`)."""
+    orch = load_to_run(doc)
+    if (said := cannot_start(doc)) is not None:
+        raise Unreadable(said)
+    return orch
+
+
 def unreadable_words(doc: Any, exc: ValidationError) -> str:
     """Why a workflow does not read, a sentence per step: the step by its name and id, never `steps[0]`."""
     steps = doc.get("steps") if isinstance(doc, dict) else None

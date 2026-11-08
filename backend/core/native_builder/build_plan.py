@@ -1881,7 +1881,8 @@ async def dry_issues(plan: O.Plan, server_module: Any, ws: Workspace, state: dic
     for doc in [compiled.orchestration, *(i.orchestration for i in compiled.inner)]:
         if (refused := _refuse_ungated_transform(doc["steps"])) is not None:
             issues.append(refused["error"])
-        if (said := save_rules.refusal(doc, agents)) is not None:
+        # Its references are the compiler's validator's to say (`compile._validated`), already in `issues` (F1459).
+        if (said := save_rules.refusal(doc, agents, references=False)) is not None:
             issues.append(said)
         if not save_rules.browser_step_problems(doc, agents):  # its own sentences are the save rule's, said above
             before = ((await get_orchestration(doc["id"])) or {}).get("steps") if doc.get("id") else None

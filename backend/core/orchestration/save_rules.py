@@ -131,8 +131,66 @@ def reserved_problems(steps: list) -> list[str]:
     return found
 
 
-def refusal(orch: dict, agents: dict) -> str | None:
-    """Why `orch` may not be saved, in one paragraph; `None` when it may."""
+#: What a reference to a step that does not exist is mended with, after the sentences that name each (F1459).
+REFERENCE_FIX = "Point each at a step that exists, or clear it to end the workflow there."
+
+
+def step_reference_problems(orch: dict) -> list[str]:
+    """A sentence for each field that names a step `orch` does not have, in the builder's validator's own words
+    (`_validate_orchestration`, which checks each step type's fields as this does), and for an entry that names
+    none — F1459 (ISS1, GitHub #376).
+
+    The engine noticed such a field only at the step ("Step '…' not found"), after the steps before it had run. Pure,
+    as this module is. A workflow with no steps has none: a new one, or a build's skeleton."""
+    steps = [s for s in orch.get("steps") or [] if isinstance(s, dict)]
+    if not steps:
+        return []
+    ids = {s.get("id") for s in steps if s.get("id")}
+    found: list[str] = []
+    entry = orch.get("entry_step_id") or ""
+    if entry and entry not in ids:
+        found.append(f"entry_step_id '{entry}' does not match any step.")
+
+    def gone(ref) -> bool:  # empty or None is the end of the workflow
+        return bool(ref) and ref not in ids
+
+    for s in steps:
+        sid, stype = s.get("id", "?"), s.get("type")
+        if gone(nxt := s.get("next_step_id")):
+            found.append(f"Step '{sid}' next_step_id '{nxt}' points to unknown step.")
+        if gone(spent := s.get("on_exhausted_step_id")):
+            found.append(f"Step '{sid}' goes to '{spent}' when it reaches its limit (on_exhausted_step_id), "
+                         f"but no step '{spent}' exists.")
+        for label, target in (s.get("route_map") or {}).items():
+            if gone(target):
+                found.append(f"Step '{sid}' route_map[{label!r}] \u2192 '{target}' points to unknown step.")
+        for lsid in s.get("loop_step_ids") or []:
+            if lsid not in ids:
+                found.append(f"Step '{sid}' loop body references unknown step '{lsid}'.")
+        for branch in s.get("parallel_branches") or []:
+            for bsid in branch or []:
+                if bsid not in ids:
+                    found.append(f"Step '{sid}' parallel branch references unknown step '{bsid}'.")
+        if stype == "if_else":
+            if gone(s.get("if_true_step_id")):
+                found.append(f"If/Else step '{sid}' if_true_step_id points to unknown step.")
+            if gone(s.get("if_false_step_id")):
+                found.append(f"If/Else step '{sid}' if_false_step_id points to unknown step.")
+        if stype == "switch":
+            for val, target in (s.get("switch_cases") or {}).items():
+                if gone(target):
+                    found.append(f"Switch step '{sid}' case '{val}' points to unknown step '{target}'.")
+            if gone(s.get("switch_default_step_id")):
+                found.append(f"Switch step '{sid}' switch_default_step_id points to unknown step.")
+    return found
+
+
+def refusal(orch: dict, agents: dict, *, references: bool = True) -> str | None:
+    """Why `orch` may not be saved, in one paragraph; `None` when it may.
+
+    `references`: a step named that does not exist (F1459). Off where the save it predicts takes a workflow half
+    built (undo's restore goes through the builder's `create_orchestration`), or where its caller already says them
+    (a plan's build: its compiler runs the validator)."""
     unsafe = expression_problems(orch.get("steps") or [], unsafe_only=True)
     # One that cannot be read as written (a typo, `{{ … }}` inside a longer expression) is refused as well (F1433,
     # Naveen 11-06): at run time it would fail its step, so it is never saved, and check_build says so first.
@@ -153,6 +211,8 @@ def refusal(orch: dict, agents: dict) -> str | None:
         parts += engine_key_defaults(orch.get("state_schema"))
     parts += self_calls(orch, agents)
     parts += browser_step_problems(orch, agents)
+    if references and (gone := step_reference_problems(orch)):
+        parts.append(" ".join(gone) + " " + REFERENCE_FIX)
     if not parts:
         return None
     return "Refusing to save: " + " ".join(parts)

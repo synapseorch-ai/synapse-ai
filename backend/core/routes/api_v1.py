@@ -701,12 +701,13 @@ _SSE_HEADERS = {
 
 # ── Orchestration Endpoints ─────────────────────────────────────────────────
 
-def _runnable(orch_data: dict):
-    """The workflow as the engine reads it, or a 422 saying what to mend in it (F1235), never a server error."""
-    from core.orchestration.read_shapes import Unreadable, load_to_run
+def _runnable(orch_data: dict, *, to_start: bool = True):
+    """The workflow as the engine reads it, or a 422 saying what to mend in it (F1235), never a server error. A run
+    about to start is also refused when a field names a step the workflow does not have (F1459); a read of it is not."""
+    from core.orchestration.read_shapes import Unreadable, load_to_run, load_to_start
 
     try:
-        return load_to_run(orch_data)
+        return (load_to_start if to_start else load_to_run)(orch_data)
     except Unreadable as e:
         raise HTTPException(status_code=422, detail=str(e))
 
@@ -1110,5 +1111,5 @@ async def v1_get_orchestration(orch_id: str, key_record: dict = Depends(require_
     (F69). Validated, so what comes back is the model's current fields and
     not whatever older keys a stored document still carries.
     """
-    return _runnable(await _workspace_orchestration(orch_id)).model_dump(mode="json")
+    return _runnable(await _workspace_orchestration(orch_id), to_start=False).model_dump(mode="json")
 

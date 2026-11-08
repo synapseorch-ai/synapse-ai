@@ -23,7 +23,7 @@ from .step_usage import exact_window, step_scope
 from .state import SharedState
 from .steps import STEP_EXECUTORS, extract_all_json
 from .run_cap import RunCap
-from .read_shapes import Unreadable, load_to_run
+from .read_shapes import Unreadable, load_to_run, load_to_start
 from .run_gate import stop_reason
 from .answers import QuestionNotAsked
 from .time_limits import CONTAINERS, OWN_BUDGET, deadline_scope, run_ceiling, step_time_limit, timed_out
@@ -1030,7 +1030,9 @@ class OrchestrationEngine:
             return
 
         try:
-            orch = load_to_run(orch_data)
+            # A Replay starts the workflow as saved now, so it is checked as a start is (F1459); a job handed out
+            # again carries on with the run's copy, as an answer does.
+            orch = load_to_run(orch_data) if interrupted else load_to_start(orch_data)
         except Unreadable as e:  # said as the run's error, never pydantic's (F1235)
             yield {"type": "orchestration_error", "error": str(e)}
             return

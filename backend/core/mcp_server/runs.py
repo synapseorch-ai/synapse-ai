@@ -397,12 +397,12 @@ class InProcessRuns:
     async def start(self, orch: dict, message: str, inputs: dict | None) -> tuple[str, asyncio.Queue | None]:
         import core.server as _server
         from core.orchestration.engine import OrchestrationEngine
-        from core.orchestration.read_shapes import load_to_run
+        from core.orchestration.read_shapes import load_to_start
         from core.orchestration.runner import spawn_engine_run
         from core.run_ids import new_run_id
 
         run_id = new_run_id(orch["id"])
-        engine = OrchestrationEngine(load_to_run(orch), _server)
+        engine = OrchestrationEngine(load_to_start(orch), _server)
         _task, queue = spawn_engine_run(engine.run(message, run_id, initial_state=inputs or None), run_id)
         return run_id, queue
 
@@ -618,9 +618,9 @@ async def start_run(orch_id: str, message: str, inputs: dict | None, wait: float
     engine_keys = sorted(k for k in inputs or {} if str(k).startswith("_"))
     if engine_keys:
         raise ToolRefusal(f"these keys are the engine's own and cannot be set: {', '.join(engine_keys)}")
-    from core.orchestration.read_shapes import Unreadable, load_to_run
+    from core.orchestration.read_shapes import Unreadable, load_to_start
     try:
-        load_to_run(orch)
+        load_to_start(orch)
     except Unreadable as e:  # said before any backend starts it, never a server error (F1235)
         raise ToolRefusal(str(e))
     run_id, queue = await get_run_backend().start(orch, message, inputs)

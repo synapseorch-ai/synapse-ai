@@ -4539,7 +4539,7 @@ async def run_orchestrator_agent(
         return
     try:
         from core.orchestration.engine import OrchestrationEngine
-        from core.orchestration.read_shapes import Unreadable, load_to_run
+        from core.orchestration.read_shapes import Unreadable, cannot_start, load_to_run
         from core.orchestration.runner import stream_engine_events
         from core.run_ids import new_run_id
         from core.scale.context import resolve_orchestration
@@ -4555,6 +4555,10 @@ async def run_orchestrator_agent(
             orch = load_to_run(orch_data)
         except Unreadable as e:  # said in the chat, as a workflow that is gone is (F1235)
             yield {"type": "error", "message": str(e)}
+            return
+        if (said := cannot_start(orch_data)) is not None:
+            # Before any step runs (F1459, #376), and as the engine said a missing step: a chat stream reads it so.
+            yield {"type": "orchestration_error", "error": said}
             return
         engine = OrchestrationEngine(orch, server_module)
         engine.caller_tools = list(caller_tools or [])

@@ -218,7 +218,9 @@ async def _unsaveable(fields: dict) -> str | None:
     orch = {"name": fields.get("name"), "steps": json.loads(fields.get("steps_json") or "[]"),
             "entry_step_id": fields.get("entry_step_id")}
     agents = {aid: found for aid in agent_ids(orch) if (found := await get_agent(aid))}
-    said = refusal(orch, agents)
+    # Undo's restore goes through the builder's `create_orchestration`, which saves a workflow half built (a step
+    # pointing at the next before it is added), so a step named that does not exist is not its refusal (F1459).
+    said = refusal(orch, agents, references=False)
     return said.removeprefix("Refusing to save: ") if said else None
 
 
