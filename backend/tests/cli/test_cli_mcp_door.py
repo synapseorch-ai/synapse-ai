@@ -178,7 +178,11 @@ class TestWhatWaits:
 
 class TestActivityAndUsage:
     async def test_activity_names_a_failed_run(self, synapse, seed_orchestration):
-        orch = await seed_orchestration(name="Breaks", entry_step_id="missing", steps=_STEPS)
+        # A run that starts and fails at a step (a Tool step with no tool): one naming a step it does not have is
+        # refused before it starts, so it is no run at all (F1459).
+        orch = await seed_orchestration(name="Breaks", entry_step_id="call", steps=[
+            {"id": "call", "name": "Call", "type": "tool", "forced_tool": None, "output_key": "out",
+             "next_step_id": None}])
         await synapse("run", orch["id"])
         code, out, _ = await synapse("activity", "--days", "1")
         assert code == 0

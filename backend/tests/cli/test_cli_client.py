@@ -134,10 +134,21 @@ class TestRun:
         assert state["answer"] == {"ok": True, "note": "looks good"}
 
     async def test_a_failed_run_exits_4(self, synapse, seed_orchestration):
-        orch = await seed_orchestration(entry_step_id="missing", steps=_THINK)
+        # A run that starts and fails at a step: a Tool step with no tool (its references all exist, so it is not
+        # refused before it starts, F1459).
+        orch = await seed_orchestration(entry_step_id="call", steps=[
+            {"id": "call", "name": "Call", "type": "tool", "forced_tool": None, "output_key": "out",
+             "next_step_id": None}])
         code, _, err = await synapse("run", orch["id"])
         assert code == 4
         assert "failed" in err.lower()
+
+    async def test_a_workflow_that_cannot_start_is_refused_and_exits_1(self, synapse, seed_orchestration):
+        """A workflow naming a step it does not have never starts (F1459, #376): refused, the CLI's 1, in words."""
+        orch = await seed_orchestration(entry_step_id="missing", steps=_THINK)
+        code, _, err = await synapse("run", orch["id"])
+        assert code == 1
+        assert "entry_step_id 'missing' does not match any step." in err
 
     async def test_detach_prints_the_run_and_leaves_it_running(self, synapse, seed_orchestration):
         orch = await seed_orchestration()
