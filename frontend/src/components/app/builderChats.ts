@@ -21,6 +21,7 @@ import {
     type SavedResource,
 } from '@/lib/builderEvents';
 import { isPanelEvent, reattachedState, type OpenConversation } from '@/lib/builderReattach';
+import { newSessionId } from '@/lib/sessionId';
 import { readWithStallTimeout } from '@/lib/sse';
 
 /**
@@ -71,9 +72,7 @@ function beforeLastAsked(messages: BuilderMessage[]): BuilderMessage[] {
 }
 
 export function newChatId(): string {
-    return typeof crypto !== 'undefined' && crypto.randomUUID
-        ? crypto.randomUUID()
-        : String(Date.now());
+    return newSessionId();
 }
 
 /**

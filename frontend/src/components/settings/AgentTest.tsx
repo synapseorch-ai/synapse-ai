@@ -17,14 +17,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AgentTestPanel, agentContext, endTest, newTurn, reduceTest, type TestEvent, type TestTurn } from '@/components/assistant';
 import { AttachButton, AttachmentChips, AttachmentError, useImageAttachments } from '@/components/app/ImageAttachments';
 import { readWithStallTimeout } from '@/lib/sse';
+import { newSessionId } from '@/lib/sessionId';
 import { humanizeToolName } from '@/lib/toolNames';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-function newSessionId(): string {
-    const c = (globalThis as any).crypto;
-    return c?.randomUUID?.() ?? `sess_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-}
 
 /** What `/api/status` says about one agent: whether attaching an image does anything. */
 export type AgentStatus = { can_see_images?: boolean; attach_problem?: string } | undefined;

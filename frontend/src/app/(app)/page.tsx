@@ -47,6 +47,7 @@ import { refusedAnswerMessage } from '@/lib/answers';
 import { useModelSetup } from '@/components/onboarding/ModelSetupProvider';
 import { KnowledgeCitation, Message, OrchMsgType, SystemStatus } from '@/types';
 import { KnowledgeSources, linkLabels } from '@/components/knowledge/KnowledgeSources';
+import { newSessionId } from '@/lib/sessionId';
 
 /** What a chat whose agent was deleted calls it; the id stays on hover where the row shows it (F1129). */
 const GONE_AGENT = 'Deleted agent';
@@ -927,10 +928,6 @@ function sentence(text: string): string {
   return /[.!?]$/.test(text) ? text : `${text}.`;
 }
 
-function generateSessionId() {
-  const c = (globalThis as any).crypto;
-  return c?.randomUUID?.() ?? `sess_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-}
 
 /** A tab's title: the conversation's first question, on one line. */
 function tabTitle(text: string): string {
@@ -1563,7 +1560,7 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
         // Generate new session for the new agent — isolates context. A turn the
         // old agent is still writing carries on in its own conversation.
         stopReading();
-        const next = generateSessionId();
+        const next = newSessionId();
         setSessionId(next);
         // The tab is now this agent's conversation, and is saved as such.
         onChangeRef.current({ agentId, sessionId: next, title: '' });
@@ -3692,7 +3689,7 @@ export default function Home() {
     load: async () => readSavedTabs(),
     save: saveTabs,
     readStatus: readTabStatus,
-    newSessionId: generateSessionId,
+    newSessionId: newSessionId,
   });
   const { ready, start, make, state, front, pins, badges, statusLoaded, notice, setNotice } = tabs;
 
@@ -3742,7 +3739,7 @@ export default function Home() {
       await start(kept => {
         let next = kept;
         if (next.tabs.length === 0 && oldSession) next = openTab(next, make(oldSession, oldTabAgent)).state;
-        if (next.tabs.length === 0) next = openTab(next, make(generateSessionId(), newTabAgent, '', true)).state;
+        if (next.tabs.length === 0) next = openTab(next, make(newSessionId(), newTabAgent, '', true)).state;
         return next;
       });
     })();
