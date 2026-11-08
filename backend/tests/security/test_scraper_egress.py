@@ -188,6 +188,15 @@ async def test_guard_route_continues_public_requests():
     assert route.aborted_with is None
 
 
+async def test_a_data_url_is_aborted_at_the_route():
+    """Not a URL the guard can judge, so the route aborts it, never continues it (1.9.2's
+    test_the_browser_layer_aborts_what_the_preflight_cannot_see; F1463)."""
+    route = FakeRoute("data:text/html,hi")
+    await web_scraper._guard_route(route)
+    assert route.aborted_with == "blockedbyclient"
+    assert not route.continued
+
+
 async def test_guard_route_fails_closed_on_resolution_failure(monkeypatch):
     async def fake_resolve(host):
         raise OSError("resolver exploded")
@@ -355,6 +364,19 @@ def test_no_proxy_never_lets_a_page_skip_it(monkeypatch):
     """NO_PROXY names the platform's own hosts; an agent's page is never one, so the browser keeps the proxy."""
     _proxy_env(monkeypatch, https_proxy="http://egress-proxy:4750", no_proxy="*")
     assert _server(web_scraper.browser_config()) == "http://egress-proxy:4750"
+
+
+def test_the_scrapers_browser_sends_no_udp_round_the_proxy(monkeypatch):
+    """QUIC is UDP and no proxy carries it, and WebRTC's UDP leaves beside the proxy, so the scraper's Chromium starts
+    with both off, with the host's proxy or Synapse's own (1.9.3's 2bcff21f, held for the built-in browser by
+    test_browser_component; F1463 for the scraper's)."""
+    from core import egress_proxy
+
+    assert "--disable-quic" in egress_proxy.CHROMIUM_ARGS
+    assert "--force-webrtc-ip-handling-policy=disable_non_proxied_udp" in egress_proxy.CHROMIUM_ARGS
+    _proxy_env(monkeypatch)
+    for config in (web_scraper.browser_config(), web_scraper.browser_config("http://127.0.0.1:1")):
+        assert set(egress_proxy.CHROMIUM_ARGS) <= set(config.extra_args)
 
 
 def test_with_no_proxy_set_self_hosted_is_unchanged(monkeypatch):

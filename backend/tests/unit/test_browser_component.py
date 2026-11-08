@@ -1526,6 +1526,24 @@ async def test_the_tool_list_needs_no_browser(tmp_path, monkeypatch):
     assert "confirm" in names["browser_click"].inputSchema["properties"]
 
 
+def test_the_playwright_mcp_package_is_pinned_where_it_is_declared():
+    """The reviewed version, by its string, wherever it is declared: the host's constant and the API image's install.
+    The schemas test below holds only a bump that changes the tools, and needs npx (1.9.3's b92bbb54; F1463)."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    assert host.PLAYWRIGHT_MCP == "@playwright/mcp@0.0.83"
+    assert "@playwright/mcp@0.0.83" in (root / "Dockerfile.backend").read_text(encoding="utf-8")
+    named = {}
+    for path in [*root.glob("Dockerfile*"), *(root / "docker").rglob("*"), *(root / "backend").rglob("*.py")]:
+        if path.is_file() and "tests" not in path.relative_to(root).parts:
+            for version in re.findall(r"@playwright/mcp@([0-9][0-9A-Za-z.\-]*)", path.read_text(encoding="utf-8",
+                                                                                                errors="replace")):
+                named.setdefault(version, []).append(str(path.relative_to(root)))
+    assert set(named) == {"0.0.83"}, named
+
+
 def test_the_committed_tool_schemas_are_the_pinned_playwright_mcps():
     """Drift (F1135): the file the engine lists from is what @playwright/mcp at the pinned version lists today."""
     import shutil as _shutil
