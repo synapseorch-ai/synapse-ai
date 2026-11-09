@@ -250,11 +250,26 @@ async def next_turn(previous_id: str, previous_status: str | None, previous: dic
     return {**handed, "images": images}
 
 
+def _why_it_stopped(run: Any) -> str | None:
+    """Why a failed build stopped, for its line (F1483): the run's own reason, else its newest failed step's — the
+    reading every other view of a stopped run takes (`run_error.failure_reason`). A step's model failure is said in
+    `model_failures`' words: the gateway's own sentence (an empty wallet, TRI2's run), or ours for its kind, never the
+    provider's."""
+    from core.model_failures import recorded_sentence
+    from core.orchestration.run_error import clean, failure_reason, run_error
+
+    if run_error(run) is None:
+        failed = next((e for e in reversed(run.step_history or []) if isinstance(e, dict) and e.get("error")), None)
+        if failed is not None and isinstance(failed.get("model_failure"), dict):
+            return recorded_sentence(clean(failed["error"]), failed["model_failure"].get("code"))
+    return failure_reason(run.status, run.step_history, run.step_progress)
+
+
 async def failure_notice(run_id: str) -> dict | None:
     """A build that failed, said plainly in code's words (Naveen, 10-28), before F1018's one offer: the model it ran
-    on and why it stopped. None for a run that did not fail, or is not a build."""
+    on and why it stopped (`_why_it_stopped`: the run's reason or its step's, F1483). None for a run that did not
+    fail, or is not a build."""
     from core.native_builder import models_menu as MM
-    from core.orchestration.run_error import run_error
     from core.orchestration.state import SharedState
 
     try:
@@ -266,7 +281,7 @@ async def failure_notice(run_id: str) -> dict | None:
         return None
     current = _current_model(state)
     name = next((e.name for e in await MM.menu() if e.id == current), current or "this model")
-    why = (run_error(run) or "it stopped before anything was saved").strip().rstrip(".") + "."
+    why = (_why_it_stopped(run) or "it stopped before anything was saved").strip().rstrip(".") + "."
     return {"type": "builder_notice", "reason": "build_failed", "final": False, "message": failed_line(name, why)}
 
 
