@@ -82,11 +82,13 @@ def _get_text(path: str) -> tuple[str | None, str | None]:
     if raw is None:
         return None, f"Not found: {path}"
     if len(raw) > _MAX_BYTES:
-        return None, (
-            f"{path} is {len(raw)} bytes, over the {_MAX_BYTES} limit. "
-            f"Use read_file with a line range."
-        )
+        return None, f"{path} is {len(raw)} bytes, over the {_MAX_BYTES} limit. {OVER_CAP_WAY_ON}"
     return raw, None
+
+
+#: How `_get_text` ends its refusal of a file over `_MAX_BYTES`: the tools' way on. A reader with no `read_file` (the
+#: planner's spec read, F1496) knows the case by it and says its own.
+OVER_CAP_WAY_ON = "Use read_file with a line range."
 
 
 def _listing(prefix: str) -> tuple[list[str] | None, str | None]:

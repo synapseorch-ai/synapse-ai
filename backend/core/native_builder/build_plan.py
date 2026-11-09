@@ -346,7 +346,10 @@ async def _spec_of(page: dict, state: dict) -> None:
         _log.warning("a named site's spec was not read: %s", exc)
         return
     if got["problem"]:
-        page["why_not"] = "; ".join(x for x in (page.get("why_not"), f"its spec: {got['problem']}") if x)
+        # Too big to read, with the way on (F1496): the planner never puts it in `apis` to be refused there.
+        said = (f"{got['problem']}; {await own_api.way_on(name)}" if got.get("too_large")
+                else f"its spec: {got['problem']}")
+        page["why_not"] = "; ".join(x for x in (page.get("why_not"), said) if x)
         return
     own_api.keep_read(state, name, str(page["api_spec"]))
     page["api"] = own_api.answer_of(name, got)

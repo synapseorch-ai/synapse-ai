@@ -71,19 +71,59 @@ def _cap() -> int:
     return _MAX_BYTES
 
 
+def over_cap() -> str:
+    """A spec too big to read, as the card says it (F1496): the fact, in the person's words."""
+    return f"its spec is larger than the {_cap() / 1_000_000:g} MB a build reads, so its tools can't be made from it"
+
+
+#: Words an API's name has beside its provider's ("GitHub REST API" is GitHub's), left out for the catalogue's
+#: whole-name match (F1496); a version ("v3") is left out too.
+_API_NAME_WORDS = frozenset({"api", "apis", "rest", "restful", "openapi", "swagger", "spec", "http", "graphql",
+                             "public", "developer"})
+
+
+async def way_on(name: str) -> str:
+    """What the planner does with an API whose spec is too big to read (F1496; TRI2's class 3: GitHub's spec was
+    refused with nothing said, and the planner sent it again). The provider's app when the Apps catalogue holds it by
+    its whole name (`catalog_entry`, as F1486's apps first reads it), else only the calls the plan needs, each looked
+    up. A catalogue that cannot be read is one without the app: the refusal is never what fails."""
+    from core.builder_research import _words, catalog_entry
+
+    provider = " ".join(w for w in _words(name) if w not in _API_NAME_WORDS and not re.fullmatch(r"v\d+", w))
+    app = None
+    if provider:
+        try:
+            from core.builder_connect import _read_options
+
+            app = catalog_entry(provider, (await _read_options()).get("catalog") or [])
+        except Exception:  # noqa: BLE001 — no catalogue read is the calls' way on
+            app = None
+    if app is not None:
+        title = str(app.get("name") or provider)
+        return (f"{title} is in the Apps catalog: leave '{name}' out of `apis` and name each tool the plan needs for "
+                f"what it does, with {title} in the step's words: the person connects the {title} app on its card "
+                "after the yes")
+    return (f"leave '{name}' out of `apis` and name only the tools the plan needs, each for what it does, with {name} "
+            "in the step's words: the lookup finds each one's endpoint, and only those are made")
+
+
 async def spec_text(spec: str) -> tuple[str | None, str]:
-    """The spec's text, from its URL or its Vault path, or `(None, why)`."""
+    """The spec's text, from its URL or its Vault path, or `(None, why)`. One over the cap is `over_cap()`, by either
+    way (F1496): the fetch's own words name the cap in MiB, and the Vault reader's point to a tool the planner has
+    not."""
     spec = (spec or "").strip()
     if not spec:
         return None, "no spec was given: give its https URL or its Vault path"
     if _is_url(spec):
         from core.mcp_client import host_url_refusal
-        from core.safe_fetch import FetchRefused, fetch_bytes
+        from core.safe_fetch import FetchRefused, FetchTooLarge, fetch_bytes
 
         if (why := await host_url_refusal(spec)) is not None:
             return None, why
         try:
             raw = await fetch_bytes(spec, max_bytes=_cap())
+        except FetchTooLarge:
+            return None, over_cap()
         except FetchRefused as exc:
             return None, f"its spec could not be read: {exc}"
         try:
@@ -92,9 +132,11 @@ async def spec_text(spec: str) -> tuple[str | None, str]:
             return None, "its spec is not text: an OpenAPI spec is JSON or YAML"
     if "://" in spec:
         return None, "a spec is given by its https URL or its Vault path"
-    from core.vault_tools import _get_text
+    from core.vault_tools import OVER_CAP_WAY_ON, _get_text
 
     text, error = _get_text(spec.lstrip("/"))
+    if error is not None and error.endswith(OVER_CAP_WAY_ON):
+        return None, over_cap()
     return (text, "") if error is None else (None, error)
 
 
@@ -139,7 +181,8 @@ async def read(name: str, spec: str) -> dict:
     out: dict[str, Any] = {"tools": [], "base": "", "auth": None, "problem": ""}
     text, why = await spec_text(spec)
     if text is None:
-        return {**out, "problem": why}
+        # Too big to read (F1496): the planner's refusal says the way on (`way_on`), the card the fact.
+        return {**out, "problem": why, "too_large": why == over_cap()}
     try:
         parsed = _parse_spec_text(text)
     except Exception as exc:  # HTTPException from the shared parser
@@ -192,7 +235,8 @@ async def api_parts(plan: O.Plan) -> tuple[list[str], dict[str, O.ToolStatus]]:
         got = await read(part.name, part.spec)
         part.problem, part.tools = got["problem"], []
         if part.problem:
-            errors.append(f"apis '{part.name}': {part.problem}")
+            way = f"; {await way_on(part.name)}" if got.get("too_large") else ""
+            errors.append(f"apis '{part.name}': {part.problem}{way}")
             continue
         ops = {t["name"]: t for t in got["tools"]}
         listed = ", ".join(list(ops)[:LISTED])
@@ -407,6 +451,8 @@ async def read_api_spec(args: dict, server_module: Any, events: list[dict]) -> d
     got = await read(name, spec)
     if got["problem"]:
         why = got["problem"].rstrip(". ")
+        if got.get("too_large"):
+            why = f"{why}; {await way_on(name)}"  # F1496
         return {"error": f"{why[0].upper()}{why[1:]}."}
     from core.native_builder.build_plan import _state
 
