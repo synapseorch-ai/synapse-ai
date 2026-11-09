@@ -94,7 +94,8 @@ synapse = "synapse.cli:main"
 "synapse-ai" = "synapse.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/synapseorch-ai/synapse-ai"
+Homepage = "https://synapseorch.com"
+Documentation = "https://docs.synapseorch.com"
 Repository = "https://github.com/synapseorch-ai/synapse-ai"
 Issues = "https://github.com/synapseorch-ai/synapse-ai/issues"
 

@@ -11,7 +11,7 @@
     "local",
     "ollama"
   ],
-  "homepage": "https://github.com/synapseorch-ai/synapse-ai",
+  "homepage": "https://synapseorch.com",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/synapseorch-ai/synapse-ai.git"
