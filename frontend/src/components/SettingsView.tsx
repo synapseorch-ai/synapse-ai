@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 /* eslint-disable react/no-unescaped-entities */
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type ReactNode } from 'react';
 
 import { useRouter } from 'next/navigation';
 import { X } from 'lucide-react';
@@ -39,6 +39,12 @@ import { SupportTab } from './settings/SupportTab';
 import { APIKeysTab } from './settings/APIKeysTab';
 import { McpServerTab } from './settings/McpServerTab';
 import { ScaleTab } from './settings/ScaleTab';
+
+/** A tab's fields take input once the read that fills them has landed (F1492): every control in a disabled fieldset
+ *  is held, so nothing the read brings overwrites a change. `role="none"`: a frame, not a group to announce. */
+const HeldUntilRead = ({ read, children }: { read: boolean; children: ReactNode }) => (
+    <fieldset role="none" disabled={!read} className="min-w-0">{children}</fieldset>
+);
 
 
 export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initialTab?: string; initialSubTab?: string }) => {
@@ -445,9 +451,8 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
         }
     };
 
-    // Fetch data on open
+    // Sync models local state with Redux to avoid breaking existing dropdown refs mapping
     useEffect(() => {
-        // Sync models local state with Redux to avoid breaking existing dropdown refs mapping
         if (initialized) {
             setLocalModels(rModels.local || []);
             setCloudModels(rModels.cloud || []);
@@ -455,8 +460,15 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
         } else {
             dispatch(fetchAllSettingsData());
         }
+    }, [initialized, rModels, dispatch]);
 
-        // Get settings
+    // The saved settings and personal details, read once when the page opens (F1492). They were read again
+    // whenever the store's models changed, and that read put every field back to what was saved: a switch
+    // turned in the first second or two, before the models arrived, was lost on Save. Until a read lands, the
+    // fields it fills take no input (`settingsRead`, `detailsRead`), so nothing it brings overwrites a change.
+    const [settingsRead, setSettingsRead] = useState(false);
+    const [detailsRead, setDetailsRead] = useState(false);
+    useEffect(() => {
         fetch('/api/settings')
             .then(res => res.json())
             .then(data => {
@@ -521,7 +533,10 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                 setBashAllowedDirs(data.bash_allowed_dirs || []);
                 setLoginEnabled(data.login_enabled || false);
                 setLoginUsername(data.login_username || '');
-            });
+            })
+            // A read that fails leaves the fields as they open, and takes input, as it always did.
+            .catch(() => { })
+            .finally(() => setSettingsRead(true));
 
         // Personal details
         fetch('/api/personal-details')
@@ -538,11 +553,13 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                 setPdState(addr.state || '');
                 setPdZipcode(addr.zipcode || '');
             })
-            .catch(() => { });
+            .catch(() => { })
+            .finally(() => setDetailsRead(true));
 
         refreshModels();
-
-    }, [initialized, rModels, dispatch]);
+    // Once, on open: a read that ran again would put back what the person changed (F1492).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     // Refresh Bedrock models dynamically when switching into bedrock mode.
     useEffect(() => {
@@ -608,6 +625,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
 
                 {/* GENERAL TAB */}
                 {activeTab === 'general' && (
+                    <HeldUntilRead read={settingsRead}>
                     <GeneralTab
                         agentName={agentName}
                         setAgentName={setAgentName}
@@ -646,11 +664,13 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         onSave={handleSaveSection}
                         isSaving={isSaving}
                     />
+                    </HeldUntilRead>
                 )}
 
                 {/* PERSONAL DETAILS TAB */}
                 {activeTab === 'variables' && <VariablesTab />}
                 {activeTab === 'personal_details' && (
+                    <HeldUntilRead read={detailsRead}>
                     <PersonalDetailsTab
                         pdFirstName={pdFirstName} setPdFirstName={setPdFirstName}
                         pdLastName={pdLastName} setPdLastName={setPdLastName}
@@ -663,6 +683,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         pdZipcode={pdZipcode} setPdZipcode={setPdZipcode}
                         onSave={handleSavePersonalDetails}
                     />
+                    </HeldUntilRead>
                 )}
 
                 {/* DATA LAB TAB */}
@@ -683,6 +704,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
 
                 {/* MODELS TAB */}
                 {activeTab === 'models' && (
+                    <HeldUntilRead read={settingsRead}>
                     <ModelsTab
                         providers={providers}
                         mode={mode} setMode={setMode}
@@ -715,15 +737,18 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         githubCopilotCliModels={githubCopilotCliModels} setGithubCopilotCliModels={setGithubCopilotCliModels}
                         knowledgeModels={knowledgeModels} setKnowledgeModels={setKnowledgeModels}
                     />
+                    </HeldUntilRead>
                 )}
 
                 {/* INTEGRATIONS TAB */}
                 {activeTab === 'workspace' && (
+                    <HeldUntilRead read={settingsRead}>
                     <IntegrationsTab
                         n8nUrl={n8nUrl} setN8nUrl={setN8nUrl}
                         n8nApiKey={n8nApiKey} setN8nApiKey={setN8nApiKey}
                         onSave={handleSaveSection}
                     />
+                    </HeldUntilRead>
                 )}
 
                 {/* MEMORY TAB */}
