@@ -38,6 +38,9 @@ type Step = 'providers' | 'models';
 /** Synapse AI's "Same as everyday model": `builder_model` stored empty. */
 const SAME = '';
 
+/** Each option wears its provider's mark and is found by its provider's name (PICK1, F1482). */
+const SEARCH = 'Search models or providers…';
+
 const EMPTY: ProviderInfo = { available: false, models: [] };
 
 const tile = (pressed: boolean) => cn(
@@ -272,12 +275,12 @@ export function ModelSetup({ open, problem, onClose, onSaved }: {
                                 <div className="space-y-5">
                                     <Field label="Everyday model" hint="Workflows, agents and chat run on it unless they name their own.">
                                         <Combobox value={everyday || undefined} onChange={setEveryday} options={options}
-                                            placeholder="Select a model…" aria-label="Everyday model" />
+                                            placeholder="Select a model…" searchPlaceholder={SEARCH} aria-label="Everyday model" />
                                     </Field>
                                     <Field label="Synapse AI’s model" hint="Builds your workflows and answers in the assistant. A stronger model pays for itself here.">
                                         <Combobox value={assistant || 'same'} onChange={(v) => setAssistant(v === 'same' ? SAME : v)}
                                             options={[{ value: 'same', label: 'Same as everyday model' }, ...options]}
-                                            aria-label="Synapse AI’s model" />
+                                            searchPlaceholder={SEARCH} aria-label="Synapse AI’s model" />
                                     </Field>
                                     <p className="text-xs text-text-faint">You can change both in Settings → Models.</p>
                                 </div>

@@ -167,7 +167,7 @@ export function KnowledgeModels({
                         value={value.knowledge_embedding_model || SAME}
                         onChange={v => set('knowledge_embedding_model', v === SAME ? '' : v)}
                         options={embeddingOptions}
-                        searchPlaceholder="Search embedding models…"
+                        searchPlaceholder="Search embedding models or providers…"
                         aria-label="Embedding model for knowledge"
                     />
                 </Field>
@@ -176,7 +176,7 @@ export function KnowledgeModels({
                         value={value.knowledge_contextual_model || SAME}
                         onChange={v => set('knowledge_contextual_model', v === SAME ? '' : v)}
                         options={contextualOptions}
-                        searchPlaceholder="Search chat models…"
+                        searchPlaceholder="Search chat models or providers…"
                         aria-label="Contextual Retrieval model"
                     />
                 </Field>

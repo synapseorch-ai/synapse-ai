@@ -27,6 +27,7 @@ import * as React from "react";
 
 import { cn } from "@/lib/cn";
 
+import { AppMark } from "./app-mark";
 import { useOwnScroll } from "./own-scroll";
 
 import { controlStyles, type ControlSize } from "./control-styles";
@@ -35,7 +36,32 @@ import type { SelectOption } from "./select";
 export type ComboboxOption<T extends string = string> = SelectOption<T> & {
   /** Renders under a heading, the way `<optgroup>` did. */
   group?: string;
+  /**
+   * Whose it is, as a small mark on the right of its row and of the closed field: a model's provider (PICK1,
+   * F1482). Decoration beside a name that says it in words, so it is hidden from a screen reader as `AppMark` is.
+   */
+  mark?: OptionMark;
 };
+
+/** A mark an option wears: a logo of ours, else `AppMark`'s letter tile from `name`. */
+export type OptionMark = { name: string; src?: string; className?: string };
+
+/**
+ * What typing matches: the label, the id, its group and its mark's name, so "anthropic" finds Claude's models
+ * whether they sit under Anthropic or under a group of their own, as cloud's managed models do (PICK1, F1482).
+ */
+function searchText(option: ComboboxOption<string>): string {
+  const words = [option.label, option.value, option.group, option.mark?.name].filter(Boolean);
+  return [...new Set(words)].join(" ");
+}
+
+function Mark({ mark }: { mark: OptionMark }) {
+  return (
+    <span data-option-mark={mark.name} className="flex shrink-0">
+      <AppMark name={mark.name} imgSrc={mark.src} imgClassName={mark.className} size="xs" />
+    </span>
+  );
+}
 
 export function Combobox<T extends string = string>({
   value,
@@ -126,6 +152,11 @@ export function Combobox<T extends string = string>({
         <span className={trigger === "icon" ? "sr-only" : cn("truncate", trigger === "pill" && iconOnPhone && "max-md:sr-only")}>
           {selected?.label ?? placeholder}
         </span>
+        {trigger === "field" && selected?.mark && (
+          <span className="ml-auto flex shrink-0">
+            <Mark mark={selected.mark} />
+          </span>
+        )}
         <ChevronDown
           className="size-4 shrink-0 text-text-faint transition-transform group-data-[state=open]:rotate-180"
           aria-hidden
@@ -154,7 +185,7 @@ export function Combobox<T extends string = string>({
           )}
         >
           {/* `shouldFilter` on: cmdk scores against each item's `value`, which
-              is set below to the label plus the id, so typing either finds it. */}
+              is `searchText`: typing a name, an id or a provider finds it. */}
           <Command loop className="flex min-h-0 flex-col">
             <div className="flex items-center gap-2 border-b border-border px-3">
               <Search className="size-4 shrink-0 text-text-faint" aria-hidden />
@@ -192,14 +223,15 @@ export function Combobox<T extends string = string>({
                   {items.map((option) => (
                     <Command.Item
                       key={option.value}
-                      value={`${option.label} ${option.value}`}
+                      value={searchText(option)}
                       disabled={option.disabled}
                       onSelect={() => {
                         onChange(option.value);
                         setOpen(false);
                       }}
                       className={cn(
-                        "relative flex cursor-pointer select-none flex-col rounded-md px-2 py-1.5 pr-8 text-sm text-text outline-none",
+                        "relative flex cursor-pointer select-none flex-col rounded-md px-2 py-1.5 text-sm text-text outline-none",
+                        option.mark ? "pr-16" : "pr-8",
                         "data-[selected=true]:bg-surface-2",
                         "data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-45",
                         option.value === value && "text-accent-ink",
@@ -210,7 +242,12 @@ export function Combobox<T extends string = string>({
                         <span className="mt-0.5 text-xs text-text-faint">{option.hint}</span>
                       )}
                       {option.value === value && (
-                        <Check className="absolute right-2 top-2 size-4" aria-hidden />
+                        <Check className={cn("absolute top-2 size-4", option.mark ? "right-9" : "right-2")} aria-hidden />
+                      )}
+                      {option.mark && (
+                        <span className="absolute right-2 top-1.5">
+                          <Mark mark={option.mark} />
+                        </span>
                       )}
                     </Command.Item>
                   ))}

@@ -502,7 +502,7 @@ function DraftDialog({ kb, setId, onClose, onDrafted }: {
             </>}>
             <div className="space-y-4">
                 <Field label="Model that writes them" hint="Paid: one call per question (two for a paraphrase it has to ask again).">
-                    <Combobox value={chosen || undefined} onChange={setModel} options={options} searchPlaceholder="Search models…"
+                    <Combobox value={chosen || undefined} onChange={setModel} options={options} searchPlaceholder="Search models or providers…"
                         aria-label="Model that writes the questions" />
                 </Field>
                 <div className="grid grid-cols-3 gap-3">

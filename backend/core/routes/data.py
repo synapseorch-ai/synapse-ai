@@ -210,7 +210,10 @@ async def get_models(refresh: bool = False):
     # gemini-2.5-flash-lite left (F1213): Google answers it "no longer available to new users". A retired model is
     # never one (`model_availability.RETIRED`, F1299): it is left out of every provider's list below, these included.
     GEMINI_FALLBACK = ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-pro-latest", "gemini-flash-latest"]
-    ANTHROPIC_FALLBACK = ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"]
+    # Today's Opus, Sonnet and Haiku, then Fable 5.1 and the 4.x ones still served, by the claude-api skill's model table
+    # (2026-10-06) (F1482): the old list named Sonnet 4 and the two 3.5s, all retired, so a failed fetch offered only
+    # models no call could reach, and no Opus. One line: the retired-model test reads each `_FALLBACK = [` line.
+    ANTHROPIC_FALLBACK = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1", "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]
     OPENAI_FALLBACK = ["gpt-4o", "gpt-4-turbo", "gpt-4o-mini"]
     BEDROCK_FALLBACK = ["bedrock.anthropic.claude-3-5-sonnet-20240620-v1:0", "bedrock.anthropic.claude-3-sonnet-20240229-v1:0"]
     GROK_FALLBACK = ["grok-3", "grok-3-mini", "grok-2-1212", "grok-2-vision-1212"]

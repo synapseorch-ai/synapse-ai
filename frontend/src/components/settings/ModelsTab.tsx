@@ -315,7 +315,7 @@ export const ModelsTab = ({
                         onChange={setSelectedModel}
                         options={modelOptions}
                         placeholder={loadingModels ? 'Loading models…' : 'Select default model…'}
-                        searchPlaceholder="Search models…"
+                        searchPlaceholder="Search models or providers…"
                         aria-label="Default model"
                     />
                 </Field>
@@ -327,7 +327,7 @@ export const ModelsTab = ({
                         onChange={(v) => setBuilderModel(v === DEFAULT_SENTINEL ? '' : v)}
                         options={builderOptions}
                         placeholder={loadingModels ? 'Loading models…' : 'Select builder model…'}
-                        searchPlaceholder="Search models…"
+                        searchPlaceholder="Search models or providers…"
                         aria-label="Builder model"
                     />
                 </Field>
@@ -340,7 +340,7 @@ export const ModelsTab = ({
                         onChange={(v) => setBuilderQuickModel(v === DEFAULT_SENTINEL ? '' : v)}
                         options={quickOptions}
                         placeholder={loadingModels ? 'Loading models…' : 'Select a model for quick steps…'}
-                        searchPlaceholder="Search models…"
+                        searchPlaceholder="Search models or providers…"
                         aria-label="Model for quick steps"
                     />
                 </Field>
@@ -401,7 +401,7 @@ export const ModelsTab = ({
                         onChange={(v) => setEmbeddingModel(v === DEFAULT_SENTINEL ? '' : v)}
                         options={embeddingOptions}
                         placeholder={loadingModels ? 'Loading models…' : 'Select default embedding model…'}
-                        searchPlaceholder="Search embedding models…"
+                        searchPlaceholder="Search embedding models or providers…"
                         aria-label="Embedding model"
                     />
                 </Field>

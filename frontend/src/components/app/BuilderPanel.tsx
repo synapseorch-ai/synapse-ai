@@ -538,7 +538,7 @@ export function BuilderConversation({
                                     value={sessionModel || DEFAULT_SENTINEL}
                                     onChange={(v) => setSessionModel(v === DEFAULT_SENTINEL ? '' : v)}
                                     aria-label="Model for this build"
-                                    searchPlaceholder="Search models…"
+                                    searchPlaceholder="Search models or providers…"
                                     size="sm"
                                     trigger="pill"
                                     // On a phone the row's own width, not 200 px: "Default (Claude Haik…" (F1131).

@@ -15,6 +15,9 @@
  */
 
 import type { ComboboxOption } from "@/components/ui";
+// A cycle by design: providerCards takes its labels from here, and only inside functions, so neither reads the other
+// while it loads.
+import { providerMark } from "@/lib/providerCards";
 
 export const PROVIDER_LABELS: Record<string, string> = {
     ollama: "Ollama (Local)",
@@ -69,7 +72,9 @@ export interface ProviderModels {
 
 /**
  * Grouped by provider, in the order the backend lists them, skipping providers
- * with no key and providers with nothing to offer.
+ * with no key and providers with nothing to offer. Each option wears its
+ * provider's mark, and its group's name is searched with it, so "anthropic"
+ * finds Claude's models in every picker built here (PICK1, F1482).
  *
  * `Combobox` does its own filtering and does not drop the selected value out
  * from under itself, so nothing here has to guard the current selection.
@@ -81,7 +86,8 @@ export function modelOptions(
     return Object.entries(providers).flatMap(([key, info]) => {
         const list = info[kind];
         if (!info.available || !list?.length) return [];
-        return list.map((model) => ({ value: model, label: model, group: providerLabel(key) }));
+        const mark = providerMark(key);
+        return list.map((model) => ({ value: model, label: model, group: providerLabel(key), mark }));
     });
 }
 

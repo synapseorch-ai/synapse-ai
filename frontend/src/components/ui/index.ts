@@ -81,7 +81,7 @@ export { Menu, MenuItem, MenuLabel, MenuLink, MenuSegment, MenuSeparator, RowMen
 export { Select, type SelectOption } from "./select";
 export { Segmented } from "./segmented";
 export { Switch } from "./switch";
-export { Combobox, type ComboboxOption } from "./combobox";
+export { Combobox, type ComboboxOption, type OptionMark } from "./combobox";
 export { StatusBadge, normaliseStatus, type RunStatus } from "./status";
 export { InToastStack, Toast, ToastStack, toastLook, useToast, type ToastTone } from "./toast";
 export { Hint, TooltipProvider } from "./tooltip";

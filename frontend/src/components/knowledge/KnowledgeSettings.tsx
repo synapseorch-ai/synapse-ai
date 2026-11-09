@@ -411,7 +411,7 @@ export function KnowledgeSettings({
                                     value={draft.enrichment.contextual_model || DEFAULT_MODEL}
                                     onChange={v => setIn('enrichment', 'contextual_model', v === DEFAULT_MODEL ? null : v)}
                                     options={contextualOptions}
-                                    searchPlaceholder="Search chat models…"
+                                    searchPlaceholder="Search chat models or providers…"
                                     aria-label="Context model"
                                 />
                             </Field>
