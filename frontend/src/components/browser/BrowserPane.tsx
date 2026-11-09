@@ -133,6 +133,13 @@ export function BrowserPane({
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   // Whether the person has done anything to the page (a click, a key, typing): signing in needs it (F1439).
   const [touched, setTouched] = useState(false);
+  // Whether a page has opened in this browser: an http(s) page with nothing wrong with it (F1501, eb's QA B7/B15). A
+  // sign-in has nothing to keep before one has: while the browser is still opening, or when its site was blocked or
+  // never answered. Once one has, it stays so: a page that fails later doesn't undo a sign-in made before it, and the
+  // server still refuses a keep with nothing signed in.
+  const pageOpen = !!frame && /^https?:/i.test(frame.url || '') && !frame.load_error;
+  const [opened, setOpened] = useState(false);
+  useEffect(() => { if (pageOpen) setOpened(true); }, [pageOpen]);
   const send = (input: BrowserInput) => {
     if ((input.type === 'mouse' && input.event === 'click') || input.type === 'key' || input.type === 'text') setTouched(true);
     queue.current = queue.current.then(() => host.input?.(sessionId, input)).catch(() => undefined);
@@ -225,7 +232,7 @@ export function BrowserPane({
   const steps = frame?.recording?.steps ?? 0;
   const closeNow = () => {
     if (closed) onClosed?.();
-    else if (signIn) { if (touched) setClosing('sign-in'); else signIn.onFinish(false); }
+    else if (signIn) { if (touched && opened) setClosing('sign-in'); else signIn.onFinish(false); }
     else if (record) { if (steps > 0 && !record.handover) setClosing('record'); else record.onStop(false); }
   };
   const inPanel = useContext(InBrowserPanel);
@@ -320,9 +327,15 @@ export function BrowserPane({
             </p>
             <div className="ml-auto flex shrink-0 gap-2">
               <Button variant="secondary" size="sm" disabled={signIn.busy} onClick={() => signIn.onFinish(false)}>Don’t keep</Button>
-              <Button variant="person" size="sm" loading={signIn.busy} onClick={() => signIn.onFinish(true)}>Keep</Button>
+              <Button variant="person" size="sm" loading={signIn.busy} disabled={!opened}
+                      aria-describedby={opened ? undefined : `${sessionId}-keep-wait`} onClick={() => signIn.onFinish(true)}>Keep</Button>
             </div>
           </div>
+          {!opened && (
+            <p id={`${sessionId}-keep-wait`} className="leading-relaxed text-text-muted">
+              Nothing to keep yet: {frame ? 'the page didn’t open' : 'the browser is still opening'}.
+            </p>
+          )}
           {signIn.refused && <p role="alert" className="leading-relaxed text-danger">{signIn.refused}</p>}
         </div>
       ) : record && !closed ? (
