@@ -72,13 +72,17 @@ async def test_the_gateway_s_refusal_on_a_step_is_said_in_its_own_words(client):
 
 
 async def test_a_provider_s_refusal_is_said_in_our_words_never_its_own(client):
-    raw = "LLMError: anthropic 401: invalid x-api-key sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA for org org_123"
+    # A key's shape, built when the test runs: written whole it would be a key to a secret scanner, and the cloud's
+    # vendored copy of this file is scanned (pro's pre-commit).
+    key = "sk-ant-" + "api03-" + "A" * 24
+    raw = f"LLMError: anthropic 401: invalid x-api-key {key} for org org_123"
     await _failed_build("f1483_provider", [
         _step("step_plan", "failed", error=raw, model_failure={"code": "provider_refused", "ours": False}),
     ])
     message = (await effort.failure_notice("f1483_provider"))["message"]
     assert message == f"This didn't build on claude-sonnet: {MODEL_FAILURE['provider_refused']}"
     assert "x-api-key" not in message and "org_123" not in message and "sk-ant" not in message
+    assert key not in message and "A" * 24 not in message
 
 
 async def test_a_step_s_other_failure_is_said_as_the_run_records_it(client):
