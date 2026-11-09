@@ -105,10 +105,18 @@ async def test_a_login_in_its_base_url_is_said_as_one_and_its_password_never_sho
     assert password not in json.dumps(found, default=str)
 
 @pytest.mark.parametrize("path", ["/lists/../../admin", "//evil.com/lists", "/lists%2F..%2Fadmin", "lists",
-                                  "https://evil.com/lists", "/lists?apikey=abc"])
+                                  "https://evil.com/lists"])
 async def test_an_endpoint_never_climbs_out_of_its_base(path):
     found = await _report({**MAILCHIMP, "endpoints": [{"method": "GET", "path": path, "does": "x"}]})
     assert "api" not in found and "endpoint" in found["detail"]
+
+
+async def test_a_key_in_an_endpoint_s_query_is_the_key_in_the_url_verdict():
+    """F1485: an endpoint's fixed query is kept, but one that carries a key is a key in the URL, said as the verdict an
+    auth in the query is (`_NO_WAY["query"]`), never kept (until F1485 it was refused as a path)."""
+    found = await _report({**MAILCHIMP, "endpoints": [{"method": "GET", "path": "/lists?apikey=abc", "does": "x"}]})
+    assert found["how"] == "unclear" and "api" not in found
+    assert found["detail"].startswith(br._NO_WAY["query"])
 
 
 @pytest.mark.parametrize("endpoints", [[], [{"method": "GET", "path": f"/e{i}", "does": "x"} for i in range(6)],
