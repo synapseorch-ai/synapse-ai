@@ -246,7 +246,10 @@ def _tool_call(status: O.ToolStatus) -> dict:
         elif method == "DELETE":
             args["destructive"] = True
         return {"tool": "create_http_tool", "args": args, "makes": None, "kind": "tool", "name": status.name}
-    args: dict[str, Any] = {"name": status.name, "method": method, "url": base + path, "base_lock": base,
+    # Its fixed query, as the research read it (F1485): written into the URL, which the tool keeps as it calls.
+    query = str(endpoint.get("query") or "")
+    args: dict[str, Any] = {"name": status.name, "method": method, "url": base + path + (f"?{query}" if query else ""),
+                            "base_lock": base,
                             "group": status.provider or "",
                             "description": f"{endpoint.get('does') or status.name} ({status.provider}: {method} {path})"}
     if method in ("POST", "PUT", "PATCH"):
@@ -268,7 +271,8 @@ def made_schema(status: O.ToolStatus) -> dict:
     if own := api.get("tool"):
         return own["inputSchema"]
     method, path = str(endpoint.get("method") or "GET").upper(), str(endpoint.get("path") or "")
-    params = re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", path)
+    # The path's placeholders, then its fixed query's (F1485), each once.
+    params = list(dict.fromkeys(re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", f"{path}?{endpoint.get('query') or ''}")))
     properties: dict[str, Any] = {p: {"type": "string"} for p in params}
     if method in ("POST", "PUT", "PATCH"):
         properties["body"] = {"type": "object", "description": f"The JSON it sends, as {api.get('docs_url')} says"}

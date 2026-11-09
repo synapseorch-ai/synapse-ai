@@ -522,6 +522,31 @@ _NO_WAY = {"query": "this API takes its key in the URL, which I can't keep safel
            "basic": "it signs in with a username and password, which I can't take on a card yet"}
 
 
+#: One pair of an endpoint's fixed query (F1485): a plain name, and a literal value or one {param}.
+_QUERY_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.\-\[\]]{0,40}$")
+_QUERY_VALUE = re.compile(r"^(?:[A-Za-z0-9_.,:+*~\-]{0,100}|\{[A-Za-z_][A-Za-z0-9_]*\})$")
+#: A query name that carries a credential: the key-in-the-URL verdict (`_NO_WAY["query"]`), as an auth in the query.
+_QUERY_KEY = re.compile(r"(?i)(^|[_.\-\[])(api[_\-]?key|key|token|access[_\-]?token|secret|password|passwd|auth|"
+                        r"signature|sig|apikey)($|[_.\-\]])")
+
+
+def _query_refusal(query: str) -> str | None:
+    """Why an endpoint's fixed query can't be kept, or None (F1485; TRI2's `?state=open&per_page=100`): plain pairs,
+    at most ten, each a name and a literal value or one {param}; a name that carries a key is `query`, the
+    key-in-the-URL verdict."""
+    pairs = query.split("&")
+    if len(pairs) > 10:
+        return "its query has more than ten pairs"
+    for pair in pairs:
+        name, sep, value = pair.partition("=")
+        if not sep or not _QUERY_NAME.match(name) or not _QUERY_VALUE.match(value) \
+                or value in ("{body}", "{data}", "{global}"):
+            return f"its query pair {pair[:40]!r} is not a name and a plain value or one {{param}}"
+        if _QUERY_KEY.search(name):
+            return "query"
+    return None
+
+
 def _climbs(path: str) -> bool:
     """A path that could leave its base: `..`, `//` or an encoded slash or dot (the hand-off's A5)."""
     low = path.lower()
@@ -585,6 +610,15 @@ def check_api_spec(raw: Any, provider: str, own_domains: list[str], own_pages: l
     endpoints = [e for e in raw.get("endpoints") or [] if isinstance(e, dict)]
     if not 1 <= len(endpoints) <= 5 or len(endpoints) != len(raw.get("endpoints") or []):
         return None, "it needs one to five endpoints"
+    # An endpoint written with its fixed query (F1485; TRI2's `/pulls?state=open&per_page=100`): its path is checked
+    # as a path below, and its query is the call's own, kept when it is plain pairs (`_query_refusal`).
+    split = []
+    for e in endpoints:
+        p, sep, q = str(e.get("path") or "").partition("?")
+        if sep and q and (why := _query_refusal(q)) is not None:
+            return None, why if why == "query" else f"an endpoint ({str(e.get('method') or '')} {p[:60]}): {why}"
+        split.append({**e, "path": p, **({"query": q} if sep and q else {})})
+    endpoints = split
     for e in endpoints:
         p = str(e.get("path") or "")
         if str(e.get("method") or "").upper() not in _METHODS or not p.startswith("/") or _climbs(p) \
@@ -619,7 +653,8 @@ def check_api_spec(raw: Any, provider: str, own_domains: list[str], own_pages: l
         **({"auth": None, "keyless": True} if keyless else
            {"auth": {"in": "header", "name": str(auth["name"]), "scheme": str(auth["scheme"])}}),
         "endpoints": [{"method": str(e["method"]).upper(), "path": str(e["path"]), "does": str(e.get("does") or "")[:120],
-                       "tool": name} for e, name in zip(endpoints, names)],
+                       "tool": name, **({"query": str(e["query"])} if e.get("query") else {})}
+                      for e, name in zip(endpoints, names)],
         "docs_url": docs,
     }, ""
 
