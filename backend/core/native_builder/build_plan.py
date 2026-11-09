@@ -663,7 +663,9 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     # Only the person lets a tool act without asking, by a press on the card (SAI2's review, 11); never the planner.
     plan.approvals = O.Approvals(acts_without_asking=list(alone or []))
     plan, renamed, room_notes = await _make_room(plan, state)
-    filled = await O.fill(plan, server_module, found={**_found(plan, state, renamed), **own_tools},
+    # Apps first (F1486): what the research found, with an app in the catalogue before any API; the person's own
+    # API spec (`own_tools`) is theirs and stays.
+    filled = await O.fill(plan, server_module, found={**await _apps_first(_found(plan, state, renamed)), **own_tools},
                           agents=ws.agents)
     # A tool nothing here provides, while a spec this conversation read is in no part of the plan (F1385).
     if filled.missing and (back := await own_api.left_out(filled, state)):
@@ -1812,6 +1814,30 @@ def _signs_in_only(option: dict) -> bool:
     """Whether an option's own words say its API takes an OAuth sign-in and no key (F1121)."""
     said = f"{option.get('needs') or ''}\n{option.get('detail') or ''}"
     return bool(_OAUTH.search(said)) and not _A_KEY.search(said)
+
+
+async def _apps_first(found: dict[str, O.ToolStatus]) -> dict[str, O.ToolStatus]:
+    """Apps first (F1486; Naveen 11-09: "priority is apps.. first we check whether we can just connect the app with the
+    cards then only we check for api spec"). A tool the research put on a provider the Apps catalogue holds by its
+    whole name (`catalog_entry`: "Google" is never Google Calendar) is that app's, connected on its card after the yes
+    as any app is (F949), whatever the research made of the provider's API: a spec, a lead it could make no tool from
+    (TRI2's GitHub, its endpoint carrying `?state=open`), or no way in. An MCP server's verdict or an app's stays.
+    Self-hosted has no Apps catalogue: nothing changes there."""
+    if not any(s.provider and s.via in ("http_tool", "none") for s in found.values()):
+        return found
+    from core.builder_connect import _read_options
+    from core.builder_research import catalog_entry
+
+    catalog = (await _read_options()).get("catalog") or []
+    if not catalog:
+        return found
+    out: dict[str, O.ToolStatus] = {}
+    for name, status in found.items():
+        app = catalog_entry(status.provider or "", catalog) if status.via in ("http_tool", "none") else None
+        out[name] = status if app is None else status.model_copy(update={
+            "status": "found", "via": "catalog_app", "provider": str(app.get("name") or status.provider),
+            "detail": f"{app.get('name')}, in the Apps catalog", "api": None, "signs_in": False})
+    return out
 
 
 def _found(plan: O.Plan, state: dict, renamed: dict[str, str] | None = None) -> dict[str, O.ToolStatus]:
