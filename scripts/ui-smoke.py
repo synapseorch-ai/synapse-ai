@@ -9361,6 +9361,87 @@ async def check_general_switches(browser) -> str:
             "the collapse button on Workspace's line")
 
 
+#: How late the store's models arrive in `settingsreadonce`: well past the first read of the settings.
+_MODELS_LATE_S = 4.0
+
+
+@check
+async def check_settingsreadonce(browser) -> str:
+    """What a person changes on Settings as soon as it takes input is what Save sends (F1492). The page read the saved
+    settings again once the store's models arrived, and that read put every field back: VID3's boards take turned a
+    switch in the first second and posted boards_enabled false. Here the models arrive late, a switch is turned the
+    moment it takes input, and Save is pressed only once they have landed. Personal details' fields, read beside the
+    settings, keep what was typed the same way. The backend's setting is put back as it was found."""
+    found = bool(api("/api/settings").get("allow_db_write"))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    posted: list[dict] = []
+    arrived: list[float] = []
+
+    async def late(route):
+        await asyncio.sleep(_MODELS_LATE_S)
+        await route.fallback()
+
+    async def record(route):
+        if route.request.method == "POST":
+            posted.append(json.loads(route.request.post_data or "{}"))
+        await route.fallback()
+    await ctx.route("**/api/models", late)
+    await ctx.route("**/api/settings", record)
+
+    async def after_the_models(page) -> None:
+        """Until every read of the models has answered, and a moment more for any read it sets off to land."""
+        give_up = time.monotonic() + _MODELS_LATE_S + 30
+        while not arrived and time.monotonic() < give_up:
+            await asyncio.sleep(0.2)
+        if not arrived:
+            raise AssertionError("the store's models never arrived")
+        await page.wait_for_timeout(int(SETTLE * 1000))
+
+    def on_response(response):
+        if urllib.parse.urlparse(response.url).path == "/api/models":
+            arrived.append(time.monotonic())
+    try:
+        page = await ctx.new_page()
+        page.on("response", on_response)
+        await page.goto(f"{APP}/settings/general", wait_until="domcontentloaded")
+        switch = page.get_by_role("switch", name="Database write access", exact=True)
+        await switch.wait_for(timeout=30_000)
+        await switch.click()  # waits until it takes input
+        turned = await switch.get_attribute("aria-checked")
+        if turned != ("false" if found else "true"):
+            raise AssertionError(f"Database write access read {turned} once turned; it was saved {found}")
+        if arrived:
+            raise AssertionError("the models arrived before the switch was turned: the check proves nothing")
+        await after_the_models(page)
+        if await switch.get_attribute("aria-checked") != turned:
+            raise AssertionError("a later read of the settings put Database write access back after it was turned")
+        async with page.expect_response(lambda r: urllib.parse.urlparse(r.url).path == "/api/settings"
+                                        and r.request.method == "POST", timeout=15_000) as saving:
+            await page.get_by_role("button", name="Save changes", exact=True).click()
+        if not (await saving.value).ok:
+            raise AssertionError(f"Save was refused: {(await saving.value).status}")
+        sent = [p["allow_db_write"] for p in posted if "allow_db_write" in p]
+        if sent != [not found]:
+            raise AssertionError(f"Save sent allow_db_write {sent}, not the switch's {not found}")
+        if bool(api("/api/settings").get("allow_db_write")) is found:
+            raise AssertionError("the backend did not keep the switch")
+
+        arrived.clear()
+        await page.goto(f"{APP}/settings/personal_details", wait_until="domcontentloaded")
+        first = page.get_by_label("First name", exact=True)
+        await first.fill("Ada F1492", timeout=30_000)  # waits until it takes input
+        if arrived:
+            raise AssertionError("the models arrived before the name was typed: the check proves nothing")
+        await after_the_models(page)
+        if await first.input_value() != "Ada F1492":
+            raise AssertionError(f"a later read put First name back to {await first.input_value()!r}")
+    finally:
+        await ctx.close()
+        api("/api/settings", "POST", {"allow_db_write": found})
+    return ("a switch turned the moment Settings takes input survives the models' arrival and is what Save sends; "
+            "a name typed on Personal details survives it too")
+
+
 @check
 async def check_rerankers(browser) -> str:
     """With Knowledge on, Models lists the rerankers as provider cards (Naveen, M2g, as cloud): Cohere, Voyage AI,
