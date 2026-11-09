@@ -192,7 +192,8 @@ class Session:
         # from the banner, which says who drives.
         self.load_error: dict | None = None
         self._doc: tuple[str, int] | None = None       # the main frame's last document: its URL and status
-        self._refused_top: str | None = None           # the guard's reason for the main frame's last refused page
+        # The main frame's last page the guard refused, and why: (its address, the reason), said only of that page (F1504).
+        self._refused_top: tuple[str, str] | None = None
         self.handover: dict | None = None              # what the agent's current call must hand over
         self.handback: str | None = None               # what the agent hears on its next call
         self.took_at: float | None = None
@@ -371,10 +372,10 @@ class Session:
             if reason is None:
                 await route.continue_()
             else:
+                if top:  # kept before the abort: its requestfailed fires while the abort is awaited (F1504)
+                    self._refused_top = (req.url, reason)
                 await route.abort("blockedbyclient")
                 self._note("guard", "blocked", reason)
-                if top:
-                    self._refused_top = reason
         except Exception:
             pass  # the page or the request is already gone
 
@@ -1200,8 +1201,8 @@ class Session:
         if code == "ERR_HTTP_RESPONSE_CODE_FAILURE" and self._doc:  # full Chromium's word for an empty refusal
             error = {**error, "kind": "http", "status": self._doc[1]}
             error.pop("code")
-        elif code == "ERR_BLOCKED_BY_CLIENT" and self._refused_top:
-            error["why"] = self._refused_top
+        elif code == "ERR_BLOCKED_BY_CLIENT" and self._refused_top and self._refused_top[0] == request.url:
+            error["why"] = self._refused_top[1]  # its own reason, never the page's before (F1504, eb's QA B14)
         self._set_load_error(error)
 
     def _on_response(self, response) -> None:
