@@ -25,6 +25,8 @@ from typing import Any
 FIXES: dict[str, tuple[str, ...]] = {
     "model_quota": ("set_agent_model",),
     "model_refused": ("set_agent_model",),
+    # A model id no provider's ids are written as (F1491): nothing was called.
+    "model_unknown": ("set_agent_model",),
     "model_busy": ("resume_run", "set_agent_model"),
     "model_no_answer": ("set_agent_model", "set_agent_instructions"),
     "model_error": ("set_agent_model",),
@@ -48,6 +50,8 @@ FIXES: dict[str, tuple[str, ...]] = {
 MEANS: dict[str, str] = {
     "model_quota": "the model's provider refused for credit or quota: a retry won't help",
     "model_refused": "the model's provider refused the call: its key, the model's id or what was sent",
+    "model_unknown": "no provider's model ids are written as the agent's model is, so nothing was called: the error "
+                     "names the id it most likely means",
     "model_busy": "the model's provider was down, overloaded or rate-limited: it may pass on its own",
     "model_no_answer": "the model answered with nothing usable (empty, blocked or all reasoning)",
     "model_error": "the model call failed",
@@ -67,7 +71,8 @@ MEANS: dict[str, str] = {
 }
 
 _MODEL = {"quota_exhausted": "model_quota", "provider_refused": "model_refused", "rate_limited": "model_busy",
-          "provider_unavailable": "model_busy", "model_no_answer": "model_no_answer", "model_error": "model_error"}
+          "provider_unavailable": "model_busy", "model_no_answer": "model_no_answer", "model_error": "model_error",
+          "unknown_model": "model_unknown"}
 _STATUS = re.compile(r"\b(?:HTTP |status(?: code)?:? )([45]\d\d)\b", re.IGNORECASE)
 #: How much of an error is said.
 ERROR_CHARS = 600

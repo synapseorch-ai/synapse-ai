@@ -262,12 +262,60 @@ HOSTED: tuple[ProviderSpec, ...] = tuple(spec for spec in PROVIDERS if spec.host
 _BY_ID = {spec.id: spec for spec in PROVIDERS}
 
 #: An id nothing else claims is an Ollama model named bare (`mistral`), as a
-#: fresh install's default always was.
+#: fresh install's default always was. Every reader of a provider's facts (its
+#: cost, its images) still reads it for any id; one that names a provider no
+#: entry is, by a word and a dot, is never called (`unknown_said`, F1491).
 FALLBACK = _BY_ID["ollama"]
+
+#: An id naming its provider by a word and a dot (`anthropic.claude-sonnet-4-6`, Bedrock's shape; `us.amazon.…`).
+#: Not a version's dot (`llama3.2`, `qwen2.5:7b`: a digit follows), a tag's (`x:v1.2`) or a path's
+#: (`registry.ollama.ai/library/llama3`), which are Ollama's.
+_NAMED_BY_A_WORD = re.compile(r"([a-z][a-z0-9_-]*)\.[a-z]")
+
+#: How `unknown_said` begins, so a reader can find its sentence inside a recorded reason (`model_failures`).
+UNKNOWN_LEAD = "Unknown model "
 
 
 def provider(provider_id: str) -> ProviderSpec:
     return _BY_ID[provider_id]
+
+
+def unclaimed(model: str | None) -> str | None:
+    """The word an id names its provider by, when no provider is that word (F1491): `anthropic` for
+    `anthropic.claude-sonnet-4-6`.
+
+    `FALLBACK` ran such an id as an Ollama model, and the person who named Anthropic's model was told "Ollama is not
+    reachable" (TRI2's run B). None for an id a provider claims, and for a bare name (`mistral`, a fresh install's
+    default), a version (`llama3.2`) or a path, which stay Ollama's."""
+    lowered = (model or "").strip().lower()
+    named = _NAMED_BY_A_WORD.match(lowered)
+    if named is None or "/" in lowered or any(spec.matches(lowered) for spec in PROVIDERS):
+        return None
+    return named.group(1)
+
+
+def nearest(model: str) -> str | None:
+    """The id a provider claims that an `unclaimed` one most likely means: its words dropped from the front until a
+    provider claims what is left (`us.anthropic.claude-sonnet-4-6` → `claude-sonnet-4-6`). None when what is left
+    is a bare name (`amazon.nova-pro-v1:0` → `nova-pro-v1:0`, which only Ollama would take)."""
+    whole = rest = (model or "").strip()
+    while unclaimed(rest):
+        rest = rest.split(".", 1)[1]
+    return rest if rest != whole and provider_for(rest) is not FALLBACK else None
+
+
+def unknown_said(model: str | None) -> str | None:
+    """What is said of an `unclaimed` id instead of calling anything, naming the id it most likely means; None for
+    any other id."""
+    word = unclaimed(model)
+    if word is None:
+        return None
+    model = (model or "").strip()
+    said = f'{UNKNOWN_LEAD}{model}: no provider\'s model ids begin "{word}.".'
+    near = nearest(model)
+    if near:
+        return f"{said} Did you mean {near} ({provider_for(near).label})? A Bedrock model is written bedrock.<its id>."
+    return f"{said} A Bedrock model is written bedrock.{model}, an Ollama one ollama.{model}."
 
 
 def provider_for(model: str | None) -> ProviderSpec:

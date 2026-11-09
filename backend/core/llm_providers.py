@@ -519,6 +519,7 @@ RATE_LIMITED = "rate_limited"                # too many requests for now — ret
 PROVIDER_UNAVAILABLE = "provider_unavailable"  # down, overloaded, timed out, unreachable — retry
 MODEL_NO_ANSWER = "model_no_answer"          # answered with nothing usable (empty, blocked, all reasoning)
 MODEL_ERROR = "model_error"                  # anything else
+UNKNOWN_MODEL = "unknown_model"              # no provider's ids are written so; nothing was called — fix the model (F1491)
 
 RETRYABLE = frozenset({RATE_LIMITED, PROVIDER_UNAVAILABLE})
 
@@ -4130,7 +4131,13 @@ async def generate_response_ex(prompt_msg, sys_prompt, mode, current_model, curr
     call from a stand-in of the same provider and pool (F1369, cap-04: `models_menu.stand_in`). The refused call wrote
     no usage, so only the call that answered is billed, on either host; the run says so (`said_stand_in`) and the
     agent or step keeps its model. Any other failure, a local model, no stand-in, or the stand-in's own failure is
-    raised as before."""
+    raised as before.
+
+    An id that names a provider no entry is (`anthropic.claude-sonnet-4-6`) is said as unknown, with the id it most
+    likely means, and nothing is called, whatever the mode (F1491): it ran as an Ollama model."""
+    unknown = _providers.unknown_said(current_model)
+    if unknown:
+        raise LLMError(unknown, code=UNKNOWN_MODEL)
     try:
         return await _generate_response_once(prompt_msg, sys_prompt, mode, current_model, current_settings,
                                              *args, **kwargs)
@@ -4467,6 +4474,9 @@ async def embed_batch(texts: list[str], model: str, settings: dict) -> list[list
     forwarded to providers that support dimensionality control (currently Gemini).
     """
     spec = _providers.provider_for(model)
+    if _providers.unclaimed(model):
+        _log.warning(_providers.unknown_said(model))  # not sent to Ollama, which has no such model (F1491)
+        return [[0.0] * 768 for _ in range(len(texts))]
     if spec.embed is None:
         _log.debug(f"Unknown provider '{spec.id}' for embedding model '{model}'")
         return [[0.0] * 768 for _ in range(len(texts))]
@@ -4721,6 +4731,9 @@ async def embed_batch_ex(texts: list[str], model: str, settings: dict, *, input_
     if input_type not in (None, "document", "query"):
         raise ValueError(f"input_type is 'document' or 'query', not {input_type!r}")
     spec = _providers.provider_for(model)
+    unknown = _providers.unknown_said(model)
+    if unknown:
+        raise EmbeddingFailed(unknown, code=UNKNOWN_MODEL)  # not sent to Ollama (F1491)
     if spec.embed_ex is None:
         raise EmbeddingFailed(f"{spec.label} does not embed ({model}).", provider=spec.id, code=PROVIDER_REFUSED)
     try:

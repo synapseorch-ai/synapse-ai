@@ -16,6 +16,8 @@ MODEL_FAILURE = {
     "rate_limited": "The model provider is limiting requests right now. Try again shortly.",
     "provider_unavailable": "The model provider could not be reached or failed. Try again shortly.",
     "model_no_answer": "The model answered with nothing usable (empty, blocked, or only reasoning).",
+    # F1491: nothing was called. Its own sentence, which names the id it most likely means, is said where it is kept.
+    "unknown_model": "No provider's model ids are written this way, so nothing was called. Check the agent's model.",
 }
 
 #: How `llm_providers` begins a refusal the platform's gateway made itself; what follows is its sentence.
@@ -23,13 +25,17 @@ GATEWAY_REFUSED = "Model gateway refused the call: "
 
 
 def failure_sentence(exc: BaseException) -> str:
-    """The sentence for one failed model call: the gateway's own, or ours for its kind; never the provider's."""
-    from core.llm_providers import LLMError
+    """The sentence for one failed model call: the gateway's own, or ours for its kind; never the provider's. An
+    unknown model id's is ours too, and names the id it most likely means (`registry.unknown_said`, F1491)."""
+    from core.llm_providers import UNKNOWN_MODEL, LLMError
+    from core.providers.registry import UNKNOWN_LEAD
 
     if isinstance(exc, LLMError):
         message = str(exc)
         if exc.provider == "gateway" and message.startswith(GATEWAY_REFUSED):
             return message.removeprefix(GATEWAY_REFUSED)
+        if exc.code == UNKNOWN_MODEL and message.startswith(UNKNOWN_LEAD):
+            return message
         if exc.code in MODEL_FAILURE:
             return MODEL_FAILURE[exc.code]
     return "The model call failed."
@@ -39,8 +45,13 @@ def recorded_sentence(reason: str, code: str | None) -> str:
     """`failure_sentence` for a model call that failed in a step (F1483): the step's history entry keeps its reason
     (`run_error.reason_of`, "LLMError: …") and its `model_failure` code, not the exception. The gateway's refusal is
     its own sentence, after `GATEWAY_REFUSED`, which only the gateway writes, wherever the reason holds it; any other
-    is ours for its kind."""
+    is ours for its kind; an unknown model id's is its own (F1491), from where the reason holds it."""
+    from core.providers.registry import UNKNOWN_LEAD
+
     at = str(reason or "").find(GATEWAY_REFUSED)
     if at >= 0:
         return str(reason)[at + len(GATEWAY_REFUSED):].strip() or "The model call failed."
+    at = str(reason or "").find(UNKNOWN_LEAD)
+    if code == "unknown_model" and at >= 0:
+        return str(reason)[at:].strip()
     return MODEL_FAILURE.get(code or "", "The model call failed.")

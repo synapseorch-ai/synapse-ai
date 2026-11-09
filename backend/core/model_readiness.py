@@ -32,7 +32,7 @@ import httpx
 from core.llm_providers import _ollama_base_url, detect_provider_from_model
 from core.providers import cli_status
 from core.providers.cli_invocation import CLI_BINARIES, split_cli_model
-from core.providers.registry import PROVIDERS
+from core.providers.registry import PROVIDERS, unknown_said
 
 #: What each provider needs saved before it can answer, from the provider table:
 #: {provider id: (setting, label)}.
@@ -81,7 +81,10 @@ async def model_problems(settings: dict, models: list[str]) -> dict[str, str | N
     local: list[str] = []
     for model in dict.fromkeys(models):
         provider = detect_provider_from_model(model)
-        if provider in _KEYED:
+        if unknown := unknown_said(model):
+            # A provider no entry is (`anthropic.claude-…`): never called, so said here too, not "ollama pull" (F1491).
+            answers[model] = unknown
+        elif provider in _KEYED:
             field, label = _KEYED[provider]
             answers[model] = None if (settings.get(field) or "").strip() else f"No {label} key is saved."
         elif provider in _ADDRESSED:
