@@ -82,7 +82,7 @@ export function BrowserSetup({ value, onChange, sessions, libraryHref, locked }:
   return (
     <div className="grid gap-5">
       <Field
-        label="How it works the page"
+        label="What it may do on a page"
         composite
         hint={config.mode === 'read_only'
           ? 'It reads and clicks through pages, and nothing it does can send anything: forms, orders and messages are stopped in the browser.'
@@ -90,7 +90,7 @@ export function BrowserSetup({ value, onChange, sessions, libraryHref, locked }:
           : 'It works the page with you. Passwords, card details, codes and payments are always yours. A form it submits waits for your OK unless you asked for it.'}
       >
         <Segmented
-          label="How it works the page"
+          label="What it may do on a page"
           value={config.mode}
           onChange={mode => put({ mode })}
           options={[
