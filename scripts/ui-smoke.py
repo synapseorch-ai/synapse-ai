@@ -13906,8 +13906,8 @@ async def check_brwsessions(browser) -> str:
 
 @check
 async def check_brwagent(browser) -> str:
-    """A Browser agent's own section sets what bounds it, and Save sends it (BRW2, F1080, F1138, F1140): how it works
-    the page, the sites it may use, how it is signed in to each, and its actions per task. These live in the agent's
+    """A Browser agent's own section sets what bounds it, and Save sends it (BRW2, F1080, F1138, F1140): what it may do
+    on a page, the sites it may use, how it is signed in to each, and its actions per task. These live in the agent's
     settings so that no page the agent reads can change them (DESIGN §3.1). Sessions follow the sites (Naveen 10-29):
     one list, each site it may use with its session beside it, one per site; a session for a site it cannot open is
     never offered, nor another's unshared one (v5-7, F1167); an expired one says Sign in again instead of being picked;
@@ -13944,6 +13944,11 @@ async def check_brwagent(browser) -> str:
         section = page.locator("section[data-tour='setup-browser']")
         if not await section.count():
             raise AssertionError("a Browser agent has no Browser section")
+        # Its mode is what it may do on a page (F1503, eb's QA B9: it read "How it works the page").
+        if not await section.get_by_role("radiogroup", name="What it may do on a page", exact=True).count():
+            bad.append("the mode is not named 'What it may do on a page'")
+        if "How it works the page" in await section.inner_text():
+            bad.append("the Browser section still says 'How it works the page'")
         await section.get_by_role("radio", name="Works with you").click()
         # Only what the code holds (Naveen 10-29): the person's own fields and payments, and a form waits for their OK
         # unless they asked for it; no promise about every send (a page's own script is not held).
