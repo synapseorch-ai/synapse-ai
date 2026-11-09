@@ -15485,6 +15485,146 @@ async def check_brwloaderror(browser) -> str:
             "address bar to try another and the consent card kept; a page that opened says nothing; 1440 and 390")
 
 @check
+async def check_brwkeepready(browser) -> str:
+    """Keep is live once a page has opened in the sign-in browser (F1501, eb's QA B7/B15). While the browser is still
+    opening, and when the site it opened on was blocked (127.0.0.1.nip.io) or never answered, there is nothing to keep:
+    Keep waits, the card says why (and Keep is described by it), and the ✕ closes at once as Don't keep, even after a
+    click on the page, with no "Keep it" to offer. A page that opened makes Keep live, and it stays live when a later
+    page fails: a sign-in made before that is still the person's to keep."""
+    blocked = {"jpeg_b64": BRW_JPEG, "w": 1280, "h": 800, "url": "http://127.0.0.1.nip.io/", "wheel": "person",
+               "load_error": {"url": "http://127.0.0.1.nip.io/", "host": "127.0.0.1.nip.io", "kind": "blocked",
+                              "code": "ERR_BLOCKED_BY_CLIENT", "why": "127.0.0.1.nip.io is not a public address"}}
+    failed_later = {**blocked, "url": "https://nosuch.saltmarsh.example/",
+                    "load_error": {"url": "https://nosuch.saltmarsh.example/", "host": "nosuch.saltmarsh.example",
+                                   "kind": "not_found", "code": "ERR_NAME_NOT_RESOLVED"}}
+    opening = asyncio.Event()  # the opening browser's frames are held until the check is done
+    ids = iter(("bsOpening", "bsBlocked", "bsOpened"))
+    posted: list[tuple[str, dict]] = []
+    bad: list[str] = []
+
+    async def hold(route):
+        await opening.wait()
+        try:
+            await route.abort()
+        except Exception:
+            pass  # the page is gone
+
+    async def start(route):
+        await route.fulfill(status=200, json={"browser_session_id": next(ids)})
+
+    def finish(sid: str):
+        async def handler(route):
+            posted.append((sid, json.loads(route.request.post_data or "{}")))
+            await route.fulfill(status=200, json={})
+        return handler
+
+    def said(text: str) -> str:
+        return re.sub(r"\s+", " ", text.replace("’", "'"))
+
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route(re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(status=200, json={"sessions": []}))
+    await ctx.route(re.compile(r".*/api/site-sessions/new$"), start)
+    await ctx.route(re.compile(r".*/api/browser/bs\w+/input$"), lambda r: r.fulfill(status=200, json={}))
+    await ctx.route(re.compile(r".*/api/browser/bsOpening/frames$"), hold)
+    await ctx.route(re.compile(r".*/api/browser/bsBlocked/frames$"), lambda r: r.fulfill(
+        status=200, headers={"Content-Type": "text/event-stream"}, body=_frame(blocked)))
+    # The opened page and the later failure come apart, as a live browser's frames do: the pane's reader keeps only the
+    # newest frame of what one read brings, so a route's one body holding both is a page that never opened (`_held_frames`).
+    await ctx.add_init_script("""(() => { const real = window.fetch; window.__openedFrames = null;
+      window.fetch = function (input, init) {
+        const url = String((input && input.url) || input || '');
+        if (!url.includes('/api/browser/bsOpened/frames')) return real(input, init);
+        const stream = new ReadableStream({start(c) {
+          window.__openedFrames = (f) => c.enqueue(new TextEncoder().encode(f)); }});
+        return Promise.resolve(new Response(stream, {status: 200, headers: {'Content-Type': 'text/event-stream'}}));
+      }; })();""")
+    for sid in ("bsOpening", "bsBlocked", "bsOpened"):
+        await ctx.route(re.compile(rf".*/api/browser/{sid}/finish-session$"), finish(sid))
+    page = await ctx.new_page()
+
+    async def open_sign_in(site: str):
+        await page.get_by_role("button", name="Keep me signed in to a site").first.click()
+        ask = page.get_by_role("dialog", name="Keep me signed in to a site")
+        await ask.get_by_label("Site").fill(site)
+        await ask.get_by_role("button", name="Open the browser").click()
+        pane = page.get_by_role("region", name="Browser")
+        await pane.wait_for(timeout=8_000)
+        return pane
+
+    async def keep_waits(pane, why: str, at: str) -> None:
+        keep = pane.get_by_role("button", name="Keep", exact=True)
+        if not await keep.is_disabled():
+            bad.append(f"{at}: Keep is live with nothing to keep")
+        want = f"Nothing to keep yet: {why}."
+        if want not in said(await pane.inner_text()):
+            bad.append(f"{at}: the card does not say {want!r}")
+        described = await keep.get_attribute("aria-describedby")
+        if not described or want not in said(await page.locator(f"[id='{described}']").inner_text()):
+            bad.append(f"{at}: Keep is not described by why it waits")
+
+    async def closes_at_once(pane, sid: str, at: str) -> None:
+        await pane.get_by_role("button", name="Close", exact=True).click()
+        asked = page.get_by_role("dialog", name="Close without keeping this sign-in?")
+        try:
+            await asked.wait_for(timeout=1_500)
+            bad.append(f"{at}: the ✕ asks to keep a sign-in that has nothing to keep")
+            await asked.get_by_role("button", name=re.compile("Don.t keep")).click()
+        except Exception:
+            pass
+        try:
+            await pane.wait_for(state="detached", timeout=8_000)
+        except Exception:
+            bad.append(f"{at}: the ✕ left the browser open")
+        if (sid, {"keep": False}) not in posted:
+            bad.append(f"{at}: the ✕ did not end it as Don't keep ({posted})")
+
+    try:
+        await page.goto(f"{APP}/browser/sessions", wait_until="domcontentloaded")
+        await page.locator("main h1").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+
+        pane = await open_sign_in("portal.saltmarsh.example")
+        await asyncio.sleep(1.0)
+        await keep_waits(pane, "the browser is still opening", "still opening")
+        await closes_at_once(pane, "bsOpening", "still opening")
+
+        pane = await open_sign_in("127.0.0.1.nip.io")
+        await pane.get_by_role("application").wait_for(timeout=8_000)
+        await asyncio.sleep(0.5)
+        await keep_waits(pane, "the page didn't open", "blocked")
+        await pane.get_by_role("application").click()  # the person pressed the page: still nothing to keep
+        await asyncio.sleep(0.5)
+        await closes_at_once(pane, "bsBlocked", "blocked")
+
+        pane = await open_sign_in("portal.saltmarsh.example")
+        await page.wait_for_function("() => typeof window.__openedFrames === 'function'", timeout=8_000)
+        await page.evaluate("(f) => window.__openedFrames(f)",
+                            _brw_frame("https://portal.saltmarsh.example/sign-in", "person"))
+        await pane.get_by_role("application").wait_for(timeout=8_000)
+        keep = pane.get_by_role("button", name="Keep", exact=True)
+        for _ in range(25):
+            if await keep.is_enabled():
+                break
+            await asyncio.sleep(0.2)
+        else:
+            bad.append("opened: Keep is not live on a page that opened")
+        await page.evaluate("(f) => window.__openedFrames(f)", _frame(failed_later))
+        if not await _on_screen(page, "nosuch.saltmarsh.example could not be found"):
+            bad.append("opened, then failed: the later page's failure is not said")
+        if await keep.is_disabled():
+            bad.append("opened, then failed: Keep went dead, though a sign-in made before is the person's to keep")
+        if "Nothing to keep yet" in said(await pane.inner_text()):
+            bad.append("opened, then failed: the card says there is nothing to keep")
+        await pane.get_by_role("button", name=re.compile("Don.t keep")).click()
+    finally:
+        opening.set()
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("Keep waits while the sign-in browser opens and when its site was blocked, says why, and the ✕ closes at "
+            "once as Don't keep; once a page opened, Keep is live and stays so when a later page fails")
+
+@check
 async def check_brwpanel(browser) -> str:
     """A browser of the person's alone opens as a full-height panel on the right, the way the workflow page shows a
     step (F1428, Naveen 11-06), not a popup in the middle: min(1280px, 80vw) wide by default, its left edge resizing it
