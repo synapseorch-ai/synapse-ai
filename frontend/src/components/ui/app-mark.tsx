@@ -23,12 +23,14 @@ export function tileHue(seed: string): number {
 }
 
 const BOX = {
+  // A list row's mark: a picker's option, beside its name (PICK1, F1482).
+  xs: "size-5 rounded text-2xs [&>svg]:size-3.5",
   sm: "size-7 rounded-md text-xs [&>svg]:size-4",
   md: "size-9 rounded-lg text-sm [&>svg]:size-5",
   lg: "size-11 rounded-xl text-base [&>svg]:size-6",
 } as const;
 
-const IMG = { sm: "size-4", md: "size-5", lg: "size-6" } as const;
+const IMG = { xs: "size-3.5", sm: "size-4", md: "size-5", lg: "size-6" } as const;
 
 export function AppMark({
   name,

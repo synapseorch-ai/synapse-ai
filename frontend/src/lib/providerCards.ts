@@ -5,6 +5,7 @@
  */
 import { providerLabel } from '@/lib/models';
 import type { ProviderCardMeta } from '@/components/providers/ProviderCard';
+import type { OptionMark } from '@/components/ui';
 
 // Every brand mark is decoration: it sits beside the provider's own name, so an
 // `alt` would make a screen reader read that name twice — and the Local V1
@@ -226,6 +227,19 @@ export const cardMeta = (key: string): ProviderCardMeta => {
         keyLink: meta.keyLink,
         keyNote: meta.keyNote,
         warning: meta.warning,
+    };
+};
+
+/**
+ * A provider's mark on a picker's option (PICK1, F1482): its card's logo, inverted on the dark ground where its
+ * card's is, else a letter tile from its name. Never a mark drawn for the picker alone.
+ */
+export const providerMark = (key: string): OptionMark => {
+    const img = PROVIDER_META[key]?.img;
+    return {
+        name: providerLabel(key),
+        src: img,
+        className: img === OLLAMA_IMG || img === COPILOT_IMG ? 'theme-adaptive-icon' : undefined,
     };
 };
 

@@ -29,7 +29,7 @@ import { knowledgeApi, useKnowledgeEnabled, type KnowledgeBase } from '@/lib/kno
 import { cn } from '@/lib/cn';
 import { ifMatch, problemLabel, saveProblem, type SaveProblem } from '@/components/orchestration/saveConflict';
 import { SaveConflictDialog } from '@/components/orchestration/workbench/SaveConflictDialog';
-import { providerLabel } from '@/lib/models';
+import { modelOptions } from '@/lib/models';
 
 /** The longest name the server accepts (core/models.py `AGENT_NAME_MAX`, F217). */
 const AGENT_NAME_MAX = 100;
@@ -788,17 +788,11 @@ export const AgentsTab = ({
                                                         value={draftAgent.model || '__default__'}
                                                         onChange={v => setDraftAgent({ ...draftAgent, model: v === '__default__' ? null : v })}
                                                         aria-label="Model"
-                                                        searchPlaceholder="Search models…"
+                                                        searchPlaceholder="Search models or providers…"
                                                         options={[
                                                             { value: '__default__', label: `Use default (${defaultModel || 'not set'})` },
-                                                            ...Object.entries(providers ?? {}).flatMap(([providerKey, info]: [string, any]) =>
-                                                                !info.available || info.models.length === 0
-                                                                    ? []
-                                                                    : info.models.map((m: string) => ({
-                                                                        value: m,
-                                                                        label: m,
-                                                                        group: providerLabel(providerKey),
-                                                                    }))),
+                                                            // The one model list, with each provider's mark (PICK1, F1482).
+                                                            ...modelOptions(providers ?? {}),
                                                         ]}
                                                     />
                                                     <p className="mt-1 text-xs text-text-faint">Override the default model for this agent. Leave empty to use the system default.</p>
@@ -1565,7 +1559,7 @@ export const AgentsTab = ({
                                                                     value={draftAgent.helper_model || '__same__'}
                                                                     onChange={v => setDraftAgent({ ...draftAgent, helper_model: v === '__same__' ? null : v })}
                                                                     aria-label="Helper model"
-                                                                    searchPlaceholder="Search models…"
+                                                                    searchPlaceholder="Search models or providers…"
                                                                     options={helperModelOptions(providers, draftAgent.model || defaultModel || '', quickModel, draftAgent.helper_model)}
                                                                 />
                                                                 <p className="mt-1 text-xs text-text-faint">What its helpers run on. The quick-step model is set in Settings → Models.</p>
@@ -1752,10 +1746,7 @@ function ownSwitches(tools: string[]): string[] {
 /** "Helper model"'s choices: the agent's own (stored as none), the workspace's quick-step model, then every model. */
 function helperModelOptions(providers: Record<string, any> | undefined, ownModel: string, quickModel: string,
                             current: string | null | undefined) {
-    const models = Object.entries(providers ?? {}).flatMap(([providerKey, info]: [string, any]) =>
-        !info.available || info.models.length === 0
-            ? []
-            : info.models.map((m: string) => ({ value: m, label: m, group: providerLabel(providerKey) })));
+    const models = modelOptions(providers ?? {});
     const options = [
         { value: '__same__', label: `Same as this agent (${ownModel || 'not set'})` },
         { value: 'role:quick', label: quickModel ? `Quick-step model · ${quickModel}` : "Quick-step model (none set: runs on this agent's)" },

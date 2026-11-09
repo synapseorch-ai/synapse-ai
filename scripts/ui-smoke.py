@@ -13120,7 +13120,7 @@ _FIRSTRUN_MODELS = {"providers": {
 
 
 async def _firstrun_page(browser, path: str, state: dict, theme: str | None = None, width=WIDE,
-                         fresh: bool = False, late: float = 0, new_workspace: bool = False):
+                         fresh: bool = False, late: float = 0, new_workspace: bool = False, models: dict | None = None):
     """A page over a stubbed install whose model cannot answer (ONB2): `state["closed"]` is the setting,
     `state["posts"]` every settings write. `fresh` is a browser that has seen no tour (`firsttour`); `late` holds the
     readiness answer back that many seconds while the step is still to open, as a slow backend would.
@@ -13152,7 +13152,7 @@ async def _firstrun_page(browser, path: str, state: dict, theme: str | None = No
         await route.fulfill(status=200, content_type="application/json", body=json.dumps(settings))
 
     await ctx.route("**/api/onboarding/models", onboarding)
-    await ctx.route(re.compile(r".*/api/models(\?.*)?$"), _answer(_FIRSTRUN_MODELS))
+    await ctx.route(re.compile(r".*/api/models(\?.*)?$"), _answer(models or _FIRSTRUN_MODELS))
     await ctx.route(re.compile(r".*/api/settings$"), settings_route)
     await ctx.route("**/api/status", _answer({"agents": {}, "active_agent_id": None, "overall": "operational",
                                                "model": "ollama.mistral", "mode": "local", "provider": "ollama",
@@ -13238,6 +13238,99 @@ async def check_firstrun(browser) -> str:
         raise AssertionError("; ".join(bad))
     return ("opens once on a model that cannot answer, CLI states and a saved key shown, outside click kept, "
             "two models saved, Escape remembered, Home and Chat reopen it")
+
+
+#: A workspace with an Anthropic and an OpenAI key, Gemini's and Claude Code (PICK1, F1482).
+_PICKER_MODELS = {"providers": {
+    "ollama": {"available": False, "models": []},
+    "gemini": {"available": True, "models": ["gemini-2.5-flash", "gemini-2.5-pro"]},
+    "anthropic": {"available": True, "models": ["claude-sonnet-4-6", "claude-opus-4-8", "claude-haiku-4-5"]},
+    "openai": {"available": True, "models": ["gpt-5.1", "gpt-5-mini"]},
+    "anthropic_cli": {"available": True, "models": ["cli.claude.opus", "cli.claude.sonnet", "cli.claude"],
+                      "cli": {"version": "2.1.301", "signed_in": True, "sign_in_hint": None,
+                              "models_source": "list", "models_note": None, "note": None}},
+}}
+
+#: Each provider's mark in the picker: the image Settings → Models' card wears.
+_PICKER_MARKS = {"claude-": "/claude-ai-icon.svg", "gpt-": "/chatgpt-icon.svg", "gemini-": "/google-gemini-icon.svg"}
+
+
+@check
+async def check_pickerfind(browser) -> str:
+    """The first-run step's model pickers find a model by its provider's name and show whose it is (PICK1, F1482).
+    Naveen, 11-09: "hard to find the model we want … add provider icons to the right … maybe a search box". Every
+    option wears its provider's mark on its right, the one on Settings → Models' card; the search box says it takes a
+    provider; typing "anthropic" leaves Anthropic's models only, "openai" OpenAI's, "opus" every Opus; the chosen
+    model's mark shows on the closed picker. At phone width the mark stays inside the list."""
+    bad: list[str] = []
+
+    async def options(page) -> list[str]:
+        await asyncio.sleep(0.4)
+        return [t.split("\n")[0].strip() for t in await page.get_by_role("option").all_inner_texts()]
+
+    for width in (WIDE, PHONE):
+        state = {"closed": False, "posts": []}
+        ctx, page = await _firstrun_page(browser, "/dashboard", state, width=width, new_workspace=True,
+                                         models=_PICKER_MODELS)
+        dialog = page.get_by_test_id("model-setup")
+        tag = "phone" if width == PHONE else "wide"
+        try:
+            await dialog.wait_for(timeout=30_000)
+            await dialog.get_by_role("button", name="Continue").click()
+            await dialog.get_by_role("button", name="Everyday model").click()
+            search = page.get_by_role("combobox", name="Search Everyday model")
+            await search.wait_for(timeout=5_000)
+            if "provider" not in ((await search.get_attribute("placeholder")) or "").lower():
+                bad.append(f"{tag}: the search box does not say it finds a provider")
+            listed = await options(page)
+            unmarked, wrong = [], []
+            rows = page.get_by_role("option")
+            for i in range(await rows.count()):
+                row = rows.nth(i)
+                name = (await row.inner_text()).split("\n")[0].strip()
+                mark = row.locator("[data-option-mark]")
+                if not await mark.count():
+                    unmarked.append(name)
+                    continue
+                src = await mark.locator("img").first.get_attribute("src") if await mark.locator("img").count() else None
+                want = next((v for k, v in _PICKER_MARKS.items() if name.startswith(k)), None)
+                if want and not (src or "").endswith(want):
+                    wrong.append(f"{name}={src}")
+                if width == PHONE:
+                    box, mbox = await row.bounding_box(), await mark.bounding_box()
+                    if box and mbox and mbox["x"] + mbox["width"] > box["x"] + box["width"] + 0.5:
+                        bad.append(f"phone: {name}'s mark runs out of its row")
+            if unmarked:
+                bad.append(f"{tag}: {len(unmarked)} of {len(listed)} options wear no provider mark ({unmarked[:3]})")
+            if wrong:
+                bad.append(f"{tag}: marks of the wrong provider {wrong[:3]}")
+
+            await search.fill("anthropic")
+            found = await options(page)
+            if sorted(found) != sorted(_PICKER_MODELS["providers"]["anthropic"]["models"]):
+                bad.append(f"{tag}: 'anthropic' finds {found}")
+            await search.fill("openai")
+            found = await options(page)
+            if sorted(found) != sorted(_PICKER_MODELS["providers"]["openai"]["models"]):
+                bad.append(f"{tag}: 'openai' finds {found}")
+            await search.fill("opus")
+            found = await options(page)
+            if sorted(found) != ["claude-opus-4-8", "cli.claude.opus"]:
+                bad.append(f"{tag}: 'opus' finds {found}")
+            await page.get_by_role("option", name=re.compile("^claude-opus-4-8")).click()
+            trigger = dialog.get_by_role("button", name="Everyday model")
+            if not await trigger.locator("[data-option-mark] img[src$='/claude-ai-icon.svg']").count():
+                bad.append(f"{tag}: the chosen model's mark is not on the closed picker")
+            await dialog.get_by_role("button", name="Done").click()
+            await dialog.wait_for(state="hidden", timeout=5_000)
+            if (state["posts"][-1:] or [{}])[0].get("model") != "claude-opus-4-8":
+                bad.append(f"{tag}: Done saved {state['posts'][-1:]}")
+        finally:
+            await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("every option wears its provider's mark, 'anthropic'/'openai'/'opus' find theirs, the chosen mark shows, "
+            "inside the row at phone width")
 
 
 # ── the browser inside Synapse: the pane (BRW2, D330) ───────────────────────

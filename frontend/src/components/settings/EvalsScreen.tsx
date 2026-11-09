@@ -685,7 +685,7 @@ function RubricDetail({
                             value={!draft.judge_model || draft.judge_model === "default" ? JUDGE_DEFAULT : draft.judge_model}
                             onChange={(v) => setDraft({ ...draft, judge_model: v === JUDGE_DEFAULT ? "" : v })}
                             options={judgeOptions}
-                            searchPlaceholder="Search models…"
+                            searchPlaceholder="Search models or providers…"
                             aria-label="Judge model"
                         />
                     </Field>

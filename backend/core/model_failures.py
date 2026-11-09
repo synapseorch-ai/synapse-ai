@@ -33,3 +33,14 @@ def failure_sentence(exc: BaseException) -> str:
         if exc.code in MODEL_FAILURE:
             return MODEL_FAILURE[exc.code]
     return "The model call failed."
+
+
+def recorded_sentence(reason: str, code: str | None) -> str:
+    """`failure_sentence` for a model call that failed in a step (F1483): the step's history entry keeps its reason
+    (`run_error.reason_of`, "LLMError: …") and its `model_failure` code, not the exception. The gateway's refusal is
+    its own sentence, after `GATEWAY_REFUSED`, which only the gateway writes, wherever the reason holds it; any other
+    is ours for its kind."""
+    at = str(reason or "").find(GATEWAY_REFUSED)
+    if at >= 0:
+        return str(reason)[at + len(GATEWAY_REFUSED):].strip() or "The model call failed."
+    return MODEL_FAILURE.get(code or "", "The model call failed.")
