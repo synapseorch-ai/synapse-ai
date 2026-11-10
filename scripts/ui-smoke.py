@@ -14026,6 +14026,84 @@ async def check_brwagent(browser) -> str:
 
 
 @check
+async def check_brwsitepick(browser) -> str:
+    """A site added to a Browser agent starts signed in with the session the person would pick (F1511, eb's QA B3: a
+    site with one kept session read "Not signed in", and the agent ran signed out). Their own, when it is the only one
+    they may use there. Several, or only one shared with them, stay theirs to pick, and the row says how many are
+    kept. An expired one still says Sign in again, and a second host on a site keeps the session picked for it."""
+    aid = f"agent_uismoke_sitepick_{int(time.time())}"
+    api("/api/agents", "POST", {**_agent(aid, f"Browser {aid[-6:]}"), "type": "browser"})
+    mine, first, second, shared = "ss_" + "s" * 24, "ss_" + "t" * 24, "ss_" + "u" * 24, "ss_" + "v" * 24
+    listed = {"sessions": [_site_session(mine, "saltmarsh.example"),
+                           _site_session(first, "carrier.example"),
+                           _site_session(second, "carrier.example", created_at=time.time() - 86_400),
+                           _site_session(shared, "books.example", mine=False, owner="u_priya", owner_name="Priya",
+                                         shared_with="workspace", usable=True),
+                           _site_session("ss_" + "w" * 24, "old.example", expired=True,
+                                         expires_at=time.time() - 86_400)]}
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route(re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(status=200, json=listed))
+    page = await ctx.new_page()
+    posts: list[dict] = []
+    page.on("request", lambda r: posts.append(json.loads(r.post_data or "{}"))
+            if r.method == "POST" and r.url.endswith("/api/agents") else None)
+    bad: list[str] = []
+
+    def said(text: str) -> str:
+        return re.sub(r"\s+", " ", text.replace("’", "'")).strip()
+
+    try:
+        await page.goto(f"{APP}/agents?id={aid}", wait_until="domcontentloaded")
+        await page.get_by_role("tab", name="Setup").wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        section = page.locator("section[data-tour='setup-browser']")
+        add = section.get_by_role("textbox", name="Add a site")
+        for typed in ("https://portal.saltmarsh.example/stock", "tracking.carrier.example", "books.example",
+                      "old.example", "shop.saltmarsh.example"):
+            await add.fill(typed)
+            await add.press("Enter")
+        await asyncio.sleep(0.3)
+        rows = section.get_by_role("list", name="Sites it may use").get_by_role("listitem")
+
+        async def session_of(host: str) -> str:
+            pick = section.get_by_role("combobox", name=f"Session for {host}")
+            return said(await pick.inner_text()) if await pick.count() else ""
+
+        async def row_of(host: str) -> str:
+            return said(await rows.filter(has_text=host).first.inner_text())
+
+        for host in ("portal.saltmarsh.example", "shop.saltmarsh.example"):
+            if not (await session_of(host)).startswith("Yours"):
+                bad.append(f"{host}, whose only session is the person's own, starts as {await session_of(host)!r}")
+        for host, kept in (("tracking.carrier.example", "2 sessions kept for this site"),
+                           ("books.example", "1 session kept for this site")):
+            if await session_of(host) != "Not signed in":
+                bad.append(f"{host} was picked for the person: {await session_of(host)!r}")
+            if kept not in await row_of(host):
+                bad.append(f"{host}'s row does not say {kept!r}: {await row_of(host)!r}")
+        if "Sign in again" not in await row_of("old.example") or await session_of("old.example"):
+            bad.append(f"old.example's expired session is not Sign in again: {await row_of('old.example')!r}")
+        if "kept for this site" in await row_of("portal.saltmarsh.example"):
+            bad.append("a site signed in still says how many sessions are kept")
+
+        await page.get_by_role("button", name="Save agent", exact=True).click()
+        await asyncio.sleep(1.5)
+        sent = (posts[-1] if posts else {}).get("browser") or {}
+        if sent.get("sessions") != [mine]:
+            bad.append(f"Save sent sessions {sent.get('sessions')}, not the person's own one for saltmarsh.example")
+    finally:
+        await ctx.close()
+        try:
+            api(f"/api/agents/{aid}", "DELETE")
+        except Exception:
+            pass
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("a site added starts signed in with the person's own session when it is their only one there; several, or "
+            "only a shared one, stay theirs to pick and the row says how many are kept; Save sends it")
+
+
+@check
 async def check_brwclickfit(browser) -> str:
     """The person's click lands where they pressed on the page, whatever the pane's shape (BRW2, F1197; MEDIA1 10-30).
     The frame is drawn whole inside the page's box (object-contain), so a pane that isn't 16:10 has bars beside or
