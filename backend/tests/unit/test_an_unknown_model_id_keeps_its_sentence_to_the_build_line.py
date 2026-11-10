@@ -15,11 +15,13 @@ from core.orchestration.run_error import model_failure_of
 from core.providers.registry import UNKNOWN_LEAD, unknown_said
 
 ID = "anthropic.claude-sonnet-4-6"
+#: The real dispatch, taken before the unit conftest puts its stand-in in place.
+_REAL_GENERATE = L.generate_response
 
 
 async def _unknown() -> L.LLMError:
     with pytest.raises(L.LLMError) as err:
-        await L.generate_response("hi", "sys", "cloud", ID, {})
+        await _REAL_GENERATE("hi", "sys", "cloud", ID, {})
     return err.value
 
 
