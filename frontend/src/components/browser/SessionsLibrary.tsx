@@ -21,6 +21,21 @@ import {
   type SessionsHost, type SiteSession,
 } from './sessions';
 
+/**
+ * The page the person typed, when they typed more than its site (F1514, eb's QA B5): "portal.example.com/login" opens
+ * the sign-in browser on /login, not the site's home. Only on that very host; the server holds it there, over https.
+ */
+function pageTyped(text: string, host: string): string | undefined {
+  const raw = text.split(/[\n,]+/)[0]?.trim() ?? '';
+  try {
+    const url = new URL(raw.includes('://') ? raw : `https://${raw}`);
+    if (url.hostname.toLowerCase() !== host || (url.pathname === '/' && !url.search)) return undefined;
+    return `https://${host}${url.pathname}${url.search}`;
+  } catch {
+    return undefined;
+  }
+}
+
 export function SessionsLibrary({ host, browserHost, onShare }: {
   host: SessionsHost;
   /** The sign-in browser's frames and shots. */
@@ -63,8 +78,8 @@ export function SessionsLibrary({ host, browserHost, onShare }: {
     return () => { live = false; };
   }, [host]);
 
-  const open = async (site: string): Promise<string | null> => {
-    const opened = await startSignIn(host, site);
+  const open = async (site: string, start?: string): Promise<string | null> => {
+    const opened = await startSignIn(host, site, start);
     if ('refused' in opened) return opened.refused;
     setRefused(null);
     setSigning({ id: opened.browserSessionId, site });
@@ -76,7 +91,7 @@ export function SessionsLibrary({ host, browserHost, onShare }: {
     if (!site) { setStartFailed('Name the site to sign in to.'); return; }
     setStarting(true);
     setStartFailed(null);
-    const why = await open(site);
+    const why = await open(site, pageTyped(siteText, site));
     setStarting(false);
     if (why) { setStartFailed(why); return; }
     setAsking(false);
