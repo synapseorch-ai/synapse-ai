@@ -35,6 +35,13 @@ from urllib.parse import urlsplit
 #: send them to paste their key somewhere public to try it.
 _LOCAL_HOSTS = frozenset(("localhost", "127.0.0.1", "[::1]", "::1"))
 
+
+def _local(host: str) -> bool:
+    """Whether `host` is this machine: the names above, or one ending in `.localhost`, which is loopback by RFC 6761
+    and to every browser (F1525: a developer's `http://shop.localhost:3000`). Never one that only starts with it or
+    holds it elsewhere (`localhost.evil.com`), and never a path's word."""
+    return host in _LOCAL_HOSTS or host.endswith(".localhost")
+
 #: A hostname, checked rather than assumed. `urlsplit` is a parser, not a
 #: validator: it will hand back `"not a url"` as a hostname, spaces and all. An
 #: allow-list holding a value no browser can ever send is worse than an empty one
@@ -71,7 +78,7 @@ def normalise(value: str | None) -> str | None:
     host = (parts.hostname or "").lower()
     if scheme not in ("http", "https") or not host or not _HOST_RE.match(host):
         return None
-    if scheme == "http" and host not in _LOCAL_HOSTS:
+    if scheme == "http" and not _local(host):
         return None
 
     try:
