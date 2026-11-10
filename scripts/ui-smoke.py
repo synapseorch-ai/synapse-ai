@@ -15401,7 +15401,8 @@ async def check_brwsessionsite(browser) -> str:
     says what is kept in Naveen's words: the site's session, never the password, 30 days, removable. Keeping a
     session where nothing was signed in is refused (422) and said on the card, with the browser left open to sign in;
     keeping it then closes the browser and lists the session. An expired session's Sign in again opens the same
-    browser for its site."""
+    browser for its site. The address typed is where it opens (F1514, eb's QA B5): `site` is its host, `start` the
+    page itself; a site alone sends no `start`."""
     expired = _site_session("ss_" + "g" * 24, "carrier.example", expired=True, expires_at=time.time() - 86_400)
     state = {"sessions": [expired]}
     calls: list[tuple[str, str]] = []
@@ -15446,7 +15447,8 @@ async def check_brwsessionsite(browser) -> str:
             await pane.wait_for(timeout=8_000)
         except Exception:
             raise AssertionError("no browser opened")
-        if not calls or json.loads(calls[0][1]) != {"site": "portal.saltmarsh.example"}:
+        if not calls or json.loads(calls[0][1]) != {"site": "portal.saltmarsh.example",
+                                                     "start": "https://portal.saltmarsh.example/sign-in"}:
             bad.append(f"the browser was opened with {calls[:1]}")
         for absent in ("Stop", "Take over", "Hand back"):
             if await pane.get_by_role("button", name=absent, exact=True).count():
