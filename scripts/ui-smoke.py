@@ -16780,6 +16780,104 @@ async def check_brwrecordings(browser) -> str:
 
 
 @check
+async def check_brwrecname(browser) -> str:
+    """Every recording has a name a person chose or saw (F1512, eb's QA B11: none could be renamed, and each was
+    saved as "A recorded task", so picking one in a workflow was guesswork). While recording, the strip asks for its
+    name, filled from what it did until the person types; Stop and keep sends the name. A recording's own page renames
+    it, from the version it has, and its title is then the new name."""
+    rid, new_rid = "rec_" + "m" * 24, "rec_" + "p" * 24
+    calls: list[tuple[str, dict]] = []
+    state = {"doc": _recording(rid, name="A recorded task", version=2)}
+
+    async def new(route):
+        await route.fulfill(status=200, json={"recording_id": new_rid, "browser_session_id": "bsName"})
+
+    async def stop(route):
+        calls.append(("stop", json.loads(route.request.post_data or "{}")))
+        await route.fulfill(status=200, json={"recording_id": new_rid, "steps": 2})
+
+    async def one(route):
+        if route.request.method == "PATCH":
+            body = json.loads(route.request.post_data or "{}")
+            calls.append(("patch", body))
+            state["doc"] = {**state["doc"], **{k: v for k, v in body.items() if k != "base_version"},
+                            "version": state["doc"]["version"] + 1}
+        await route.fulfill(status=200, json=state["doc"])
+
+    def said(text: str) -> str:
+        return re.sub(r"\s+", " ", text.replace("’", "'")).strip()
+
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route(re.compile(r".*/api/recordings$"), lambda r: r.fulfill(status=200, json={"recordings": []}))
+    await ctx.route(re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(status=200, json={"sessions": []}))
+    await ctx.route(re.compile(r".*/api/recordings/new$"), new)
+    await ctx.route(re.compile(r".*/api/browser/bsName/frames$"), lambda r: r.fulfill(
+        status=200, headers={"Content-Type": "text/event-stream"},
+        body=_rec_frame({"steps": 2, "last": {"id": "s2", "title": "Click Login"}})))
+    await ctx.route(re.compile(r".*/api/browser/bsName/record/stop$"), stop)
+    await ctx.route(re.compile(rf".*/api/recordings/{new_rid}$"), lambda r: r.fulfill(
+        status=200, json=_recording(new_rid, name="Weekly order check")))
+    await ctx.route(re.compile(rf".*/api/recordings/{rid}$"), one)
+    await ctx.route(re.compile(rf".*/api/recordings/{rid}/versions$"), lambda r: r.fulfill(status=200, json={"versions": []}))
+    page = await ctx.new_page()
+    bad: list[str] = []
+    try:
+        # Named at Stop.
+        await page.goto(f"{APP}/browser/recordings", wait_until="domcontentloaded")
+        await page.get_by_role("button", name="Record a task").wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await page.get_by_role("button", name="Record a task").click()
+        ask = page.get_by_role("dialog", name="Record a task")
+        await ask.get_by_label("Start at").fill("portal.saltmarsh.example/orders")
+        await ask.get_by_role("button", name="Open the browser").click()
+        pane = page.get_by_role("region", name="Browser")
+        await pane.wait_for(timeout=8_000)
+        await asyncio.sleep(1.0)
+        name = pane.get_by_role("textbox", name="Name this task")
+        if not await name.count():
+            bad.append("the record strip asks for no name")
+        else:
+            filled = await name.input_value()
+            if "portal.saltmarsh.example" not in filled or "Click Login" not in filled:
+                bad.append(f"the name is not filled from what it did: {filled!r}")
+            await name.fill("Weekly order check")
+        await pane.get_by_role("button", name="Stop and keep").click()
+        await asyncio.sleep(1.0)
+        stops = [b for k, b in calls if k == "stop"]
+        if stops[-1:] != [{"keep": True, "name": "Weekly order check"}]:
+            bad.append(f"Stop and keep sent {stops[-1:]}, not the name typed")
+
+        # Renamed on its page.
+        await page.goto(f"{APP}/browser/recordings/{rid}", wait_until="domcontentloaded")
+        await page.get_by_role("heading", name="A recorded task").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        rename = page.get_by_role("button", name="Rename recording", exact=True)
+        if not await rename.count():
+            bad.append("a recording's page offers no Rename recording")
+        else:
+            await rename.click()
+            dialog = page.get_by_role("dialog", name="Rename recording")
+            field = dialog.get_by_role("textbox", name="Name")
+            if await field.input_value() != "A recorded task":
+                bad.append(f"Rename starts from {await field.input_value()!r}, not the recording's name")
+            await field.fill("  Order check, by carrier  ")
+            await dialog.get_by_role("button", name="Save").click()
+            await asyncio.sleep(1.0)
+            patches = [b for k, b in calls if k == "patch"]
+            if patches[-1:] != [{"base_version": 2, "name": "Order check, by carrier"}]:
+                bad.append(f"Rename sent {patches[-1:]}")
+            if not await page.get_by_role("heading", name="Order check, by carrier").count():
+                title = said(await page.locator("main h1").first.inner_text())
+                bad.append(f"the page's title is not the new name: {title!r}")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("the record strip asks for the task's name, filled from what it did, and Stop and keep sends it; a "
+            "recording's page renames it from the version it has, and its title follows")
+
+
+@check
 async def check_brwrecordingedit(browser) -> str:
     """A recording's own page (BRW2, F1142; DESIGN v5-6, v5.2; Naveen 10-29: its own page). Its inputs and outputs are
     listed above the steps; each step has its picture and its sentence (a rename shown instead); the person's own
