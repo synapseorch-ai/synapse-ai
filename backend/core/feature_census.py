@@ -172,8 +172,11 @@ What it does not do, and the nearest thing that does:
   report.
 - It never takes card numbers or passwords in chat, and does not store card data. Payments and bookings go through
   the provider's own checkout or a payment link; a service connects through its sign-in or a key on a secure screen.
+- It (Synapse AI) has no browser of its own. Nearest: a Browser agent, which opens real web pages in a browser the
+  person can watch, reads them and clicks through them, signed in with a session the person kept; offer to make one.
 - It cannot use a service that offers no API or app it can connect to (some booking systems are partner-only).
-  Nearest: a workflow that researches the options and asks the person to book.
+  Nearest: a Browser agent that works the site's own pages, or a workflow that researches the options and asks the
+  person to book.
 - Runs are not free: they cost what the models they use charge. Nearest: caps per run, smaller models for simple
   steps.
 """
@@ -199,6 +202,7 @@ What the product delivers, with an example of each:
 - Reports from the apps and data it connects to: a weekly summary of new deals read from a connected CRM.
 - What changes outside, fetched and sent: an exchange rate or a flight's status, each morning to Telegram.
 - A person in the loop: any step can wait for someone's approval before it acts.
+- Work on a website with no API: a Browser agent reads a supplier's order page in a real browser and says what changed.
 """
 
 
