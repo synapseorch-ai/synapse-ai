@@ -41,9 +41,9 @@ def test_no_database_set_is_not_tried_and_says_nothing(monkeypatch, capsys, conn
 
 
 def test_a_database_that_is_set_is_still_made_and_its_failure_said(monkeypatch, capsys, connects):
-    _set(monkeypatch, "postgresql://synapse:pw@db.internal:5432/codeindex")
+    _set(monkeypatch, "postgresql://synapse@db.internal:5432/codeindex")
     code_indexer.init_cocoindex()
-    assert connects == ["postgresql://synapse:pw@db.internal:5432/postgres"]
+    assert connects == ["postgresql://synapse@db.internal:5432/postgres"]
     out = capsys.readouterr().out
     assert "could not ensure database exists: connection refused" in out
-    assert os.environ["COCOINDEX_DATABASE_URL"] == "postgresql://synapse:pw@db.internal:5432/codeindex"
+    assert os.environ["COCOINDEX_DATABASE_URL"] == "postgresql://synapse@db.internal:5432/codeindex"
