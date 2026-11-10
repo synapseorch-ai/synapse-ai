@@ -131,8 +131,11 @@ SHAPES: dict[str, dict[str, list[str]]] = {
 #: answer and a repeat is still seen as one (CAP3's F1236). Each names only read_workspace's own topics: the planner
 #: holds no other tool.
 ELSEWHERE: dict[str, str] = {
+    # The build rule too (F1495, B; TRI2's class 2: prod's planner asked this topic for `github` five times).
     "tool": "This shows one custom tool, a Python or HTTP tool made in this workspace, by its exact name. Topic "
-            "`agents` lists the agents and how many tools each has; a built-in tool or an MCP server's is not here.",
+            "`agents` lists the agents and how many tools each has; a built-in tool or an MCP server's is not here. "
+            "A tool nothing here provides is never looked for: a plan names it for what it does, with the service in "
+            "the step's words, and code looks up who provides it.",
     "schedules": "This shows schedules. A workflow with none runs only when it is started: topic `workflows` lists "
                  "the workflows, `runs` what ran.",
     "runs": "This shows workflow runs. A workflow that has not run has none: to see its steps, read topic `workflow` "
