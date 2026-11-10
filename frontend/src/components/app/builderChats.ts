@@ -31,6 +31,12 @@ import { readWithStallTimeout } from '@/lib/sse';
  */
 const STOP_GRACE_MS = 5000;
 
+/**
+ * How far apart two streams' event numbers start (F1506). An event is numbered by its stream and its place in it,
+ * and a stream carries far fewer panel events than this.
+ */
+const STREAM_SPAN = 1_000_000;
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type RunEvent = Record<string, any>;
 
@@ -129,6 +135,8 @@ export class BuilderChat {
     /** Whether a message has been sent here: a read-back answering after it must not replace it. */
     private touched = false;
     private closed = false;
+    /** How many streams this chat has read: each stream's events are numbered apart from every other's (F1506). */
+    private streams = 0;
 
     constructor(
         id: string,
@@ -214,6 +222,12 @@ export class BuilderChat {
         const decoder = new TextDecoder();
         let buffer = '';
         let seq = 0;
+        // F1506: what keys an event's message is its stream's number and its place in that stream, never its place
+        // alone. Two streams of one chat can carry the same events in the same order (two answers to one review:
+        // each checks the plan and asks again), and a card keyed by its place alone took the earlier card's key: it
+        // was drawn over that card, which kept its pressed buttons. The same event read again in its stream keeps
+        // its number, so a replay still overwrites its own message.
+        const stream = ++this.streams * STREAM_SPAN;
         // The journal's id for the event that follows (`id: N`).
         let eventId: number | null = null;
 
@@ -241,8 +255,8 @@ export class BuilderChat {
                 if (!isPanelEvent(parsed?.type)) continue;
                 if (following && parsed.truncated) parsed = await fromTheRun(following.runId, parsed);
                 seq += 1;
-                const n = seq;
-                if (n === 1) first?.(parsed);
+                if (seq === 1) first?.(parsed);
+                const n = stream + seq;
                 this.update((prev) => applyBuilderEvent(prev, parsed, n));
                 if (parsed?.type === 'resource_saved') this.announce(parsed as SavedResource);
                 if (following && parsed?.type === 'human_input_required') {
