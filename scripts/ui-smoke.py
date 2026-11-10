@@ -12611,6 +12611,7 @@ async def check_widgetmarkdown(browser) -> str:
                 drawn: ['img', 'iframe', 'script', 'input', 'hr', 'svg', 'object']
                     .filter((t) => r.querySelector(t)),
                 table: [...r.querySelectorAll('table tr')].map((tr) => [...tr.children].map((c) => c.textContent)),
+                cellWrap: [...r.querySelectorAll('th, td')].map((c) => getComputedStyle(c).overflowWrap),
                 cellAttrs: [...r.querySelectorAll('table, thead, tbody, tr, th, td')].flatMap((e) =>
                     [...e.attributes].map((a) => a.name + '=' + a.value)),
                 handlers: [...r.querySelectorAll('*')].filter((e) => [...e.attributes]
@@ -12642,6 +12643,10 @@ async def check_widgetmarkdown(browser) -> str:
     # nothing of the model's but GFM's own alignment.
     if got["table"] != [["col", "val"], ["a", "1"], ["shop", "cell"]]:
         bad.append(f"the table drew as {got['table']}")
+    # A cell breaks between words only (VID4 take 8: the bubble's overflow-wrap:anywhere split "Pric|e" and
+    # "€12.|90"); a wide table scrolls sideways in its box instead.
+    if any(w == "anywhere" for w in got["cellWrap"]):
+        bad.append(f"table cells break inside words (overflow-wrap {sorted(set(got['cellWrap']))})")
     loose = [a for a in got["cellAttrs"] if not re.fullmatch(r"style=text-align: (left|center|right);?", a)]
     if loose:
         bad.append(f"table elements carry {loose}")
