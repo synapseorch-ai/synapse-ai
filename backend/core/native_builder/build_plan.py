@@ -651,7 +651,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
             plan = edited.model_copy(update={
                 "kind": "update", "title": plan.title or edited.title, "summary": plan.summary or edited.summary,
                 **{k: getattr(plan, k) for k in ("agents", "schedule", "inner_workflows", "caps", "boards", "knowledge",
-                                                 "apis", "mcp_servers", "eval", "questions", "not_carried_over")}})
+                                                 "apis", "mcp_servers", "eval", "questions", "not_carried_over",
+                                                 "asked")}})
             plan.reuse_agents = list(dict.fromkeys([*edited.reuse_agents, *plan.reuse_agents]))
     took_out: list[str] = []
     plan = _without(plan, without or [], took_out)
@@ -677,6 +678,9 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         before, _ = O.check_structure(base, ws.inventory())
         errors = [e for e in errors if not ("no step leads to it" in e and e in before)]
     errors += await _rules(plan, ws, state) + asked
+    # A part of the ask the plan leaves out is said with why, never dropped (F1515, eb's QA B13).
+    errors += [f"asked: '{a.part}' is not_done with no why_not: say why this plan does not do it, or plan it"
+               for a in plan.asked if a.how == "not_done" and not (a.why_not or "").strip()]
     # A chart they asked for has its route (F1288): something in the plan writes the Vault.
     errors += charts.issues(plan, ws, _request_words(state))
     errors += await _knowledge_parts(plan, ws)
@@ -2582,6 +2586,14 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     said += [f"{why}." for why in found.blocks.values()]
     said += found.notes
     said += unsaid_said + names_said
+    # Every part of the ask (F1515, eb's QA B13): what this plan does not do is said with why, never dropped; one they
+    # asked to run once after it is built is a Run card after the save, pressed by them, since a run spends credits.
+    not_done = [f"{' '.join(a.part.split())}: {' '.join((a.why_not or '').split())}" for a in plan.asked
+                if a.how == "not_done" and (a.why_not or "").strip()]
+    said += [f"Not in this plan: {n}." for n in not_done]
+    if any(a.how == "run_once" for a in plan.asked):
+        after_yes.append("Run it once: as soon as it is built, a card to run it comes up. A run uses credits, so it "
+                         "runs when you press Run it.")
     # A reused agent's blocked tools, said too (SAI2's nit on point 1): on the card under "Blocked here", and here.
     said += [f"{render_gate(g)}." for g in plan.gates if g.decision == "deny" and g.tool not in found.blocks]
     buildable = not (no_way or connect or found.errors or found.blocks)
@@ -2644,6 +2656,8 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
             f"- {e}" for e in [*as_said(checks, plan), *model_issues]) + "\n"
     if board_notes:
         review += "\n## Boards\n" + "\n".join(f"- {n}" for n in board_notes) + "\n"
+    if not_done:
+        review += "\n## Not in this plan\n" + "\n".join(f"- {n}" for n in not_done) + "\n"
     if periods_said:
         # What each period means, as the person said (F1210): every run works it out from its own date.
         review += "\n## Dates\n" + "\n".join(f"- {p.split('; never write')[0]}." for p in periods_said) + "\n"
@@ -2660,7 +2674,9 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
             for t in makes if t.api) + "\n"
     out = {**base, "outcome": "review", "plan": plan.model_dump(), "prompts": prompts or {}, "review": review,
            "offers": offers, "say": " ".join([*said, *board_notes]), "issues": found.errors, "offered": offered,
-           "research": prior.get("research") or [], "notes": board_notes, "changes": changes,
+           "research": prior.get("research") or [], "changes": changes,
+           # Said again after the save (`save_build`): the boards, and what this plan does not do (F1515).
+           "notes": [*board_notes, *[f"Not in this plan: {n}." for n in not_done]],
            "after_yes": after_yes,
            # The review's lead-in follows what the card offers: no "approve to build it" where it can't be built.
            "lead": LEAD_BUILD if buildable else LEAD_NOT_YET,
