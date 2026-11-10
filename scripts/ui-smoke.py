@@ -6026,6 +6026,82 @@ async def check_builderreload(browser) -> str:
     return "a waiting plan comes back and is answered; a working build is followed until it asks"
 
 
+#: Two tools in one plan that ask first, as a shop's own API gives them (VID4, 11-10: create an order, make its payment
+#: link). The plan object each review carries, with `alone` the tools the person has let act without asking.
+ALONE_TOOLS = ("shop_create_order", "shop_create_payment_link")
+
+
+def _alone_plan(alone: list[str]) -> dict:
+    asks = [t for t in ALONE_TOOLS if t not in alone]
+    return {"object": "plan", "outcome": "review",
+            "plan": {"kind": "create", "title": "Shop assistant", "summary": "An agent for the shop's website.",
+                     "steps": [{"id": "chat", "type": "agent", "name": "Shop assistant", "does": "Answers customers.",
+                                "agent": "Shop assistant"}],
+                     "agents": [{"name": "Shop assistant"}],
+                     "approvals": {"asks_first": asks, "acts_without_asking": alone}},
+            "offers": ["build", *[f"alone:{t}" for t in asks], "change", "stop"]}
+
+
+@check
+async def check_builderalone(browser) -> str:
+    """Each "Let … act without asking" press on one plan gets its own card, and the last one can be built (F1506).
+
+    A press resumes the run through `/api/builder/resume`'s own stream, and the run checks the plan again and asks
+    again: the same steps, so the same number of events, each time. The panel keyed a question's card by the event's
+    number within its stream, which starts again at 1 for every stream, so the second press's plan took the first's
+    key: it was drawn over the earlier card, which kept its pressed state, and its Build it stayed off (VID4's takes 1
+    and 2, 11-10). Two presses here, each answered by the same two events; the panel must hold both plans, and the
+    newest must offer Build it.
+    """
+    parked = {
+        "client_session_id": "conv-uismoke", "run_id": RUN_ID, "status": "paused",
+        "turns": [{"user": "an agent for our shop's website that takes orders", "assistant": ""}],
+        "pending": {"run_id": RUN_ID, "field": "feedback", "step_id": "step_human_review",
+                    "prompt": "Here is the plan.", "context_key": "plan_checked", "context": _alone_plan([])},
+    }
+    ctx, page = await _builder_back(browser, parked)
+    try:
+        await page.locator('[data-testid="assistant-open"]').first.click()
+        panel = page.locator('[data-testid="assistant-panel"]')
+        for n, tool in enumerate(ALONE_TOOLS):
+            press = panel.get_by_role("button", name=f"Let {tool} act without asking")
+            await press.last.wait_for(timeout=10_000)
+            await press.last.click()
+            for _ in range(50):
+                calls = await page.evaluate("() => window.__calls.filter((c) => c.url.includes('/api/builder/resume'))")
+                if len(calls) > n:
+                    break
+                await asyncio.sleep(0.1)
+            else:
+                raise AssertionError(f"pressing 'Let {tool} act without asking' resumed nothing")
+            await asyncio.sleep(0.3)
+            # The run takes the answer, checks the plan, and asks again: the same events after every press.
+            again = {"type": "human_input_required", "run_id": RUN_ID, "orch_step_id": "step_human_review",
+                     "prompt": "Here is the plan.", "fields": [{"name": "feedback"}], "context_key": "plan_checked",
+                     "context": _alone_plan(list(ALONE_TOOLS[:n + 1]))}
+            await page.evaluate("(events) => { for (const e of events) window.__follow.push(e); window.__follow.close(); }",
+                                [{"type": "step_start", "orch_step_id": "step_check_plan", "step_name": "Check the Plan"},
+                                 again])
+            await asyncio.sleep(0.8)
+        build = panel.get_by_role("button", name="Build it")
+        builds = await build.count()
+        last_on = builds > 0 and await build.last.is_enabled()
+        alone_cards = await panel.get_by_text("Acts without asking", exact=True).count()
+        resumed = [json.loads(c["body"]) for c in await page.evaluate("() => window.__calls")
+                   if "/api/builder/resume" in c["url"] and c["body"]]
+    finally:
+        await ctx.close()
+    said = [r.get("response", {}).get("feedback") for r in resumed]
+    if said != [f"let {t} act without asking" for t in ALONE_TOOLS]:
+        raise AssertionError(f"the presses did not answer the run in turn: {said}")
+    if alone_cards != 2:
+        raise AssertionError(f"{alone_cards} plan(s) say 'Acts without asking' after two presses, not 2: the second "
+                             "press's plan was drawn over the first's")
+    if not last_on:
+        raise AssertionError("the plan after the second press cannot be built: its Build it is off")
+    return "two act-alone presses: two plans drawn, the newest with Build it on"
+
+
 #: Agent switches recorded instead of sent: the stub's agents do not exist.
 RECORD_SWITCH = """
 window.__switches = [];
