@@ -12686,6 +12686,143 @@ async def check_widgetrefused(browser) -> str:
     return "an unlisted origin is refused, in words"
 
 
+#: widgetnoreferrer's shop (F1522): a real page on loopback, as VID4's bookstore was. A routed public page cannot
+#: load an install on loopback at all (Chrome's Private Network Access refuses v1.js before any frame exists), so the
+#: shop is a server of the check's own on a high port, down when the check ends.
+NOREF_PORT = 18952
+NOREF_SHOP = f"http://127.0.0.1:{NOREF_PORT}"
+#: The same server by another name: another origin, and not on the widget's list.
+NOREF_ELSEWHERE = f"http://localhost:{NOREF_PORT}"
+
+
+def _shop_server(key: str):
+    """A customer's page with the one tag, inline, asking the browser for no referrer: by a meta tag (`?how=meta`) or
+    by the header (`?how=header`). Served on 127.0.0.1:NOREF_PORT until `.shutdown()`."""
+    import http.server
+    import threading
+    from urllib.parse import parse_qs, urlsplit
+
+    class Shop(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            how = parse_qs(urlsplit(self.path).query).get("how", ["meta"])[0]
+            asks = '<meta name="referrer" content="no-referrer">' if how == "meta" else ""
+            body = (f'<!doctype html><html><head>{asks}<title>Harborpine shop</title></head><body><h1>Shop</h1>'
+                    '<div id="chat" style="width:400px;height:620px"></div>'
+                    f'<script src="{APP}/embed/v1.js" data-key="{key}" data-mount="#chat" async></script>'
+                    '</body></html>').encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            if how == "header":
+                self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", NOREF_PORT), Shop)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+@check
+async def check_widgetnoreferrer(browser) -> str:
+    """A customer page that asks for no referrer still gets its widget (F1522; VID4 take 4: "null is not an allowed
+    origin"). The widget learns its site from the frame's Referer, and v1.js's frame now asks for its page's origin
+    itself, which a page's `no-referrer` (a meta tag or the header) cannot take away: the shop's page, with a path and
+    a query, sends only its origin, and the widget loads and answers. A site not on the list still names itself and
+    is still refused. With no address at all (a browser that ignores the frame's policy), the refusal says so in
+    words, never "null"."""
+    widget = _smoke_widget([NOREF_SHOP])
+    key = widget["public_key"]
+    bad: list[str] = []
+    server = None
+
+    async def chat(route):
+        body = 'data: {"type": "response", "content": "Smoke answer."}\n\ndata: {"type": "done"}\n\n'
+        await route.fulfill(status=200, content_type="text/event-stream", body=body)
+
+    async def shop_with(host: str, how: str):
+        """The shop on `host` asking for no referrer `how` (meta or header), and the Referers the widget's page got."""
+        ctx = await browser.new_context(viewport={"width": 900, "height": 760})
+        referers: list[str | None] = []
+
+        async def embed(route):
+            referers.append((await route.request.all_headers()).get("referer"))
+            await route.continue_()
+
+        await ctx.route(f"{APP}/embed/{key}", embed)
+        await ctx.route("**/api/widget/chat", chat)
+        # The chat says it is ready once it has hydrated (WidgetChat's synapse:ready, which v1.js waits for too): the
+        # composer is drawn before that, and an Enter pressed into it then sends nothing (a first green run, 11-10).
+        await ctx.add_init_script("window.__synapseReady = 0; addEventListener('message', (e) => {"
+                                  " if (e.data && e.data.type === 'synapse:ready' && !e.data.refused)"
+                                  " window.__synapseReady += 1; });")
+        page = await ctx.new_page()
+        await page.goto(f"{host}/books/salt-lantern?how={how}&ref=ad-campaign#reviews", wait_until="domcontentloaded")
+        return ctx, page, referers
+
+    try:
+        server = _shop_server(key)
+        for how in ("meta", "header"):
+            ctx, page, referers = await shop_with(NOREF_SHOP, how)
+            try:
+                frame = page.frame_locator("#chat iframe")
+                box = frame.get_by_role("textbox", name="Message")
+                try:
+                    await box.wait_for(timeout=15000)
+                except Exception:
+                    said = await frame.locator("main[role=alert]").all_inner_texts()
+                    bad.append(f"no-referrer by {how}: the widget did not load (Referer {referers}, it said {said})")
+                    continue
+                if referers != [f"{NOREF_SHOP}/"]:
+                    bad.append(f"no-referrer by {how}: the widget's page got Referer {referers}, not the shop's "
+                               "origin alone")
+                await page.wait_for_function("window.__synapseReady > 0", timeout=15000)
+                await box.fill("Is The Salt Lantern in stock?")
+                await box.press("Enter")
+                try:
+                    await frame.get_by_text("Smoke answer.").wait_for(timeout=10000)
+                except Exception:
+                    bad.append(f"no-referrer by {how}: the widget loaded but never answered")
+            finally:
+                await ctx.close()
+
+        # A site not on the list names itself all the same, and is refused: the browser keeps the frame empty.
+        ctx, page, referers = await shop_with(NOREF_ELSEWHERE, "meta")
+        try:
+            await page.wait_for_timeout(6000)
+            if await page.frame_locator("#chat iframe").get_by_role("textbox", name="Message").count():
+                bad.append("a site not on the list got the composer")
+            if referers and referers != [f"{NOREF_ELSEWHERE}/"]:
+                bad.append(f"the unlisted site's frame sent Referer {referers}")
+        finally:
+            await ctx.close()
+
+        # No address at all, as from a browser that ignores the frame's policy: said in words.
+        ctx = await browser.new_context(viewport={"width": 400, "height": 620})
+        try:
+            page = await ctx.new_page()
+            await page.goto(f"{APP}/embed/{key}", wait_until="domcontentloaded")
+            alert = page.locator("main[role=alert]")
+            await alert.wait_for(timeout=15000)
+            text = await alert.inner_text()
+            if "sent no address" not in text or "null" in text:
+                bad.append(f"with no address the refusal reads {text!r}")
+        finally:
+            await ctx.close()
+    finally:
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+        api(f"/api/widgets/{widget['id']}", "DELETE")
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("a shop asking for no referrer (meta or header) sends its origin alone and gets an answer; an unlisted "
+            "site is refused; no address at all is said in words")
+
+
 # ── M2h: Logs, Evals and Schedules ───────────────────────────────────────────
 
 _M2H_LOGS = [
