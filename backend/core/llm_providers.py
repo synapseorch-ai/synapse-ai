@@ -672,6 +672,22 @@ class EmptyAnswer(LLMError):
 # tenant's own ollama_base_url is used; the env var stays as the deployment-wide
 # default. This used to be the other way round, with server startup copying one
 # tenant's setting into os.environ for every tenant to pick up.
+def _address_only(url: str) -> str:
+    """A configured address as a person may be told it (F1502, eb's review): `scheme://host:port`, never its user
+    info, path or query, where a login or a key can ride."""
+    from urllib.parse import urlsplit
+
+    try:
+        got = urlsplit(str(url or "").strip())
+        host, port = got.hostname, got.port
+    except ValueError:
+        return "its configured address"
+    if not got.scheme or not host:
+        return "its configured address"
+    host = f"[{host}]" if ":" in host else host
+    return f"{got.scheme}://{host}" + (f":{port}" if port else "")
+
+
 def _ollama_base_url(settings: dict | None = None) -> str:
     configured = (settings or {}).get("ollama_base_url") or ""
     return configured.strip() or os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
@@ -4130,7 +4146,7 @@ async def _chat_ollama(call: ChatCall, spec) -> LLMResult:
             # httpx says "All connection attempts failed"; the person needs
             # to know it was Ollama, and where it was looked for (F182).
             raise LLMError(f"Local Agent Error: Ollama is not reachable at {_ollama_base}.",
-                           said=f"Ollama is not reachable at {_ollama_base}.") from e
+                           said=f"Ollama is not reachable at {_address_only(_ollama_base)}.") from e
         except Exception as e:
             raise LLMError(f"Local Agent Error: {e}") from e
 

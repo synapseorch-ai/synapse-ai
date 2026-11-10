@@ -102,3 +102,24 @@ async def test_a_step_kept_before_f1502_keeps_its_reading(client):
                            shared_state={"intent": "create", OrchestrationEngine.MODEL_OVERRIDE_KEY: CLI})
     await SharedState(run).checkpoint()
     assert (await effort.failure_notice("f1502_before"))["message"] == f"This didn't build on {CLI}: {wallet}"
+
+
+async def test_an_address_in_our_sentence_is_its_host_alone(monkeypatch):
+    """eb's review: Ollama's configured address can carry a login or a key, and `said` reaches the person and the run's
+    public record. It names scheme://host:port only; the whole address stays in the reason, as it always has."""
+    import httpx
+
+    from _fakes.fake_http import install_httpx
+
+    def refuse(url, kwargs):
+        raise httpx.ConnectError("All connection attempts failed")
+
+    install_httpx(monkeypatch, refuse)
+    base = "http://alice:s3cret-pass@ollama.internal:11434/v1?token=tok-0123456789"
+    with pytest.raises(L.LLMError) as err:
+        await L.generate_response("hi", "sys", "local", "ollama.mistral", {"ollama_base_url": base})
+    assert err.value.said == "Ollama is not reachable at http://ollama.internal:11434."
+    said = model_failure_of(err.value)["said"]
+    assert said == "Ollama is not reachable at http://ollama.internal:11434."
+    for secret in ("alice", "s3cret-pass", "token", "tok-0123456789", "/v1"):
+        assert secret not in said and secret not in failure_sentence(err.value)
