@@ -31,6 +31,9 @@ def failure_sentence(exc: BaseException) -> str:
     from core.providers.registry import UNKNOWN_LEAD
 
     if isinstance(exc, LLMError):
+        if exc.said:
+            # Our own sentence, where our code worded the failure wholly itself (F1502): never a provider's words.
+            return str(exc.said)
         message = str(exc)
         if exc.provider == "gateway" and message.startswith(GATEWAY_REFUSED):
             return message.removeprefix(GATEWAY_REFUSED)

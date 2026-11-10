@@ -261,7 +261,10 @@ def _why_it_stopped(run: Any) -> str | None:
     if run_error(run) is None:
         failed = next((e for e in reversed(run.step_history or []) if isinstance(e, dict) and e.get("error")), None)
         if failed is not None and isinstance(failed.get("model_failure"), dict):
-            return recorded_sentence(clean(failed["error"]), failed["model_failure"].get("code"))
+            # What the step kept for a person (F1502: our own sentence where we wrote one); a step kept before it is
+            # read from its reason, as F1483 read it.
+            said = failed["model_failure"].get("said")
+            return clean(str(said)) if said else recorded_sentence(clean(failed["error"]), failed["model_failure"].get("code"))
     return failure_reason(run.status, run.step_history, run.step_progress)
 
 
