@@ -66,9 +66,23 @@ export function BrowserSetup({ value, onChange, sessions, libraryHref, locked }:
       return !row || sites.some(host => onSite(host, row.site));
     });
   const setSites = (sites: string[]) => put({ sites, sessions: sites.length ? keepFor(sites, config.sessions) : [] });
+  // A site added starts signed in with the session the person would pick (F1511, eb's QA B3): their own, when it is
+  // the only one they may use there and none is picked for its site yet. Several, or one shared with them, stay theirs
+  // to pick, and the row says how many are kept.
+  const onlyTheirs = (host: string): string[] => {
+    const usable = (sessions ?? []).filter(s => onSite(host, s.site) && mayUse(s) && !s.expired);
+    const signedIn = config.sessions.some(id => {
+      const row = (sessions ?? []).find(s => s.id === id);
+      return !!row && onSite(host, row.site);
+    });
+    return usable.length === 1 && usable[0].mine && !signedIn ? [usable[0].id] : [];
+  };
   const addSites = () => {
     const more = parseSites(adding).filter(h => !config.sites.includes(h));
-    if (more.length) setSites([...config.sites, ...more]);
+    if (more.length) {
+      const sites = [...config.sites, ...more];
+      put({ sites, sessions: [...new Set([...keepFor(sites, config.sessions), ...more.flatMap(onlyTheirs)])] });
+    }
     setAdding('');
   };
   const pick = (host: string, id: string) => {
@@ -169,9 +183,18 @@ function SiteRow({ host, sessions, picked, libraryHref, locked, onPick, onRemove
   const usable = here.filter(s => mayUse(s) && !s.expired);
   const current = usable.find(s => picked.includes(s.id));
   const expired = here.some(s => s.mine && s.expired);
+  // None picked where some are kept: how many, so "Not signed in" reads as a choice still to make (F1511).
+  const unpicked = !locked && sessions !== null && !current && usable.length > 0;
   return (
     <li className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2">
-      <span className="min-w-0 grow basis-48 text-sm text-text [overflow-wrap:anywhere]" translate="no">{host}</span>
+      <div className="min-w-0 grow basis-48">
+        <span className="block text-sm text-text [overflow-wrap:anywhere]" translate="no">{host}</span>
+        {unpicked && (
+          <span className="block text-xs text-text-muted">
+            {usable.length === 1 ? '1 session' : `${usable.length} sessions`} kept for this site
+          </span>
+        )}
+      </div>
       <div className="flex min-w-0 items-center gap-2 text-xs text-text-muted">
         {locked ? (
           <span>Sessions come with Solo and up. <a href={locked.upgradeHref} className="font-medium text-accent-ink underline-offset-2 hover:underline">See plans</a></span>
