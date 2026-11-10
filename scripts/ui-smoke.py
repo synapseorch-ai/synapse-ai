@@ -12567,11 +12567,13 @@ WIDGET_MD = "\n".join([
     " ![pixel](https://track.example/p.png)",
     "",
     "| col | val |",
-    "|-----|-----|",
+    "|:----|----:|",
     "| a | 1 |",
+    "| [shop](https://shop.uismoke.example/b) | [cell](javascript:window.__pwned=1) |",
 ])
 #: The only links that reply may draw.
-WIDGET_LINKS = {PAY_LINK, "https://help.uismoke.example/start", "mailto:help@uismoke.example"}
+WIDGET_LINKS = {PAY_LINK, "https://help.uismoke.example/start", "mailto:help@uismoke.example",
+                "https://shop.uismoke.example/b"}
 
 
 @check
@@ -12580,7 +12582,9 @@ async def check_widgetmarkdown(browser) -> str:
     asterisks showed, and a payment link could not be clicked (VID4, 11-10). Drawn now: bold, emphasis, a list, line
     breaks, and links to the web and mail only, each in a new tab with noopener noreferrer nofollow; a bare link
     stops before the sentence's full stop. Never drawn: raw HTML (an <a> tag, an <img onerror>), an image, a table,
-    a javascript:, data: or vbscript: link, or a link dressed as another address. The chat's stream is stubbed."""
+    a javascript:, data: or vbscript: link, or a link dressed as another address. A table is drawn as a table (VID4
+    take 7: unwrapped, it read as one run-on line), its cells with no attribute but GFM's alignment. The chat's
+    stream is stubbed."""
     widget = _smoke_widget([WIDGET_SHOP])
     try:
         ctx, page = await _widget_page(browser, widget["public_key"], WIDGET_SHOP)
@@ -12604,8 +12608,11 @@ async def check_widgetmarkdown(browser) -> str:
                 links: [...r.querySelectorAll('a')].map((a) => ({href: a.getAttribute('href'), text: a.textContent,
                     target: a.getAttribute('target'), rel: a.getAttribute('rel'),
                     after: (a.nextSibling && a.nextSibling.textContent || '').slice(0, 1)})),
-                drawn: ['img', 'table', 'td', 'iframe', 'script', 'input', 'hr']
+                drawn: ['img', 'iframe', 'script', 'input', 'hr', 'svg', 'object']
                     .filter((t) => r.querySelector(t)),
+                table: [...r.querySelectorAll('table tr')].map((tr) => [...tr.children].map((c) => c.textContent)),
+                cellAttrs: [...r.querySelectorAll('table, thead, tbody, tr, th, td')].flatMap((e) =>
+                    [...e.attributes].map((a) => a.name + '=' + a.value)),
                 handlers: [...r.querySelectorAll('*')].filter((e) => [...e.attributes]
                     .some((a) => a.name.startsWith('on'))).length,
                 text: r.innerText,
@@ -12631,16 +12638,26 @@ async def check_widgetmarkdown(browser) -> str:
     pay = next((a for a in got["links"] if a["href"] == PAY_LINK), None)
     if pay and (pay["text"] != PAY_LINK or pay["after"] != "."):
         bad.append(f"the payment link is {pay}: the full stop must stay outside it")
+    # A table is drawn as one (Naveen 11-10, VID4 take 7: unwrapped, it read as one run-on line), its cells carrying
+    # nothing of the model's but GFM's own alignment.
+    if got["table"] != [["col", "val"], ["a", "1"], ["shop", "cell"]]:
+        bad.append(f"the table drew as {got['table']}")
+    loose = [a for a in got["cellAttrs"] if not re.fullmatch(r"style=text-align: (left|center|right);?", a)]
+    if loose:
+        bad.append(f"table elements carry {loose}")
     if got["drawn"] or got["handlers"] or got["pwned"]:
         bad.append(f"drawn {got['drawn']}, {got['handlers']} handler(s), pwned {got['pwned']}")
-    for kept in ("click me", "as data", "as vb", "https://good.example", "raw tag"):
+    aligns = sorted({a for a in got["cellAttrs"]})
+    if aligns != ["style=text-align: left;", "style=text-align: right;"]:
+        bad.append(f"the cells' alignment came out as {aligns}, not GFM's left and right")
+    for kept in ("click me", "as data", "as vb", "https://good.example", "raw tag", "cell"):
         if kept not in got["text"]:
             bad.append(f"{kept!r} should stay as text")
     if bad:
         raise AssertionError("; ".join(bad) + f" — html: {got['html'][:400]}")
     return ("bold, emphasis, a list, a line break and three links (web, mail, the bare payment link before its full "
-            "stop) drawn, each new-tab noopener noreferrer nofollow; no raw HTML, image, table, script link or "
-            "disguised link")
+            "stop) and a table drawn, each link new-tab noopener noreferrer nofollow; no raw HTML, image, script "
+            "link or disguised link")
 
 
 @check
