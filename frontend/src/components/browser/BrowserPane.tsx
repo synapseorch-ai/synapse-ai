@@ -16,6 +16,7 @@ import { SessionPicker } from './SessionPicker';
 import { stepCount } from './recordings';
 import { onSite, shortDate, type KeptSession } from './sessions';
 import { useBrowserFrames, useKeptLog, type FrameMemory } from './useBrowserFrames';
+import { useInputs } from './useInputs';
 
 /**
  * The agent's browser, live, beside the chat or on a run's page (BRW2, D330).
@@ -129,8 +130,8 @@ export function BrowserPane({
   const [note, setNote] = useState('');
   const [wheelFailed, setWheelFailed] = useState<string | null>(null);
 
-  // One input at a time, in the order made: typing must arrive as typed.
-  const queue = useRef<Promise<unknown>>(Promise.resolve());
+  // One input at a time, in the order made, typing joined while a send is out; one the browser didn't take is said.
+  const inputs = useInputs(host, sessionId);
   // Whether the person has done anything to the page (a click, a key, typing): signing in needs it (F1439).
   const [touched, setTouched] = useState(false);
   // Whether a page has opened in this browser: an http(s) page with nothing wrong with it (F1501, eb's QA B7/B15). A
@@ -142,7 +143,7 @@ export function BrowserPane({
   useEffect(() => { if (pageOpen) setOpened(true); }, [pageOpen]);
   const send = (input: BrowserInput) => {
     if ((input.type === 'mouse' && input.event === 'click') || input.type === 'key' || input.type === 'text') setTouched(true);
-    queue.current = queue.current.then(() => host.input?.(sessionId, input)).catch(() => undefined);
+    inputs.send(input);
   };
 
   const takeOver = async () => {
@@ -379,6 +380,12 @@ export function BrowserPane({
         </div>
       )}
       {!closed && frame?.load_error && <LoadErrorLine error={frame.load_error} driving={driving} />}
+      {!closed && driving && inputs.failed && (
+        <p role="alert" className="flex shrink-0 items-center gap-2 border-b border-danger bg-danger-subtle px-3 py-1.5 text-xs text-text">
+          <AlertCircle className="size-3.5 shrink-0 text-danger" aria-hidden />
+          That didn’t reach the page. Try again.
+        </p>
+      )}
 
       <div
         className={cn('relative flex items-center justify-center overflow-hidden bg-surface-2',
