@@ -175,7 +175,10 @@ from core.native_builder import prompt_lint, seed
 #: F1395 (BLD1): step_plan_route's `refetch` (the person chose to change the workflow named like the build) goes back
 #: to step_fetch_existing, which allows five now that it is in a cycle through a person, no prompt change, 90fe66cf…
 #: (on 92b7aa88).
-BUNDLE_SHA256 = "90fe66cf2a35511fe2a11d93871fd50befeccfe481d231e5a5200b2f3f1cab22"
+#: F1495 A1+D (BLD2): the planner's "What you are given" names `named_services` (code's line on each service the
+#: request names: never look for one) and says its tools are the workflows', never its own to call, e05fd271… (on
+#: 093684ec).
+BUNDLE_SHA256 = "e05fd271c321785cea692c8adf5e616803a652869fbea5fc62e0de27cc1efe63"
 
 
 def _sha(definitions) -> str:
