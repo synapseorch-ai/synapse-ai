@@ -7935,6 +7935,166 @@ async def check_evalsactions(browser) -> str:
 
 
 @check
+async def check_evalsstarting(browser) -> str:
+    """A set shows its Stop even when the screen's first read comes before its run exists (F1509).
+
+    Start answers before the set's run is written: in-process here, after a queue on cloud. The screen made one
+    read after Run, and when that read came first the set read as not running. The 2.5 s poll never began, so
+    Stop never showed and the set's runs stayed as they were (evalsactions failed now and then on this). Now the
+    screen keeps the run it started as "Starting…" and polls until the list reads it running, or the set's runs
+    list it (a set that ended between reads), or two minutes pass, when it says the set didn't start.
+    Each leg makes the race certain: the reads after Run answer that the set is not running. No set here has
+    a rubric, so nothing is scored and no model is called.
+    """
+    stamp = int(time.time())
+    slow_id, quick_id = f"orch_uismoke_esl_{stamp}", f"orch_uismoke_esq_{stamp}"
+    slow = print_orchestration(slow_id, f"ui-smoke starting slow {stamp}")
+    slow["steps"][0] = {"id": f"{slow_id}_a", "name": "Wait", "type": "transform", "output_key": "one",
+                        "transform_code": "import time\ntime.sleep(8)\nresult = 1", "next_step_id": f"{slow_id}_end"}
+    api("/api/orchestrations", "POST", slow)
+    api("/api/orchestrations", "POST", print_orchestration(quick_id, f"ui-smoke starting quick {stamp}"))
+    one = [{"name": "one", "input": "hi", "notes": ""}]
+    sets = {
+        key: api("/api/evals/suites", "POST", {"name": f"Smoke {key} set {stamp}", "orchestration_id": oid,
+                                                "cases": one})
+        for key, oid in (("slow", slow_id), ("quick", quick_id), ("lost", quick_id))
+    }
+    bad: list[str] = []
+
+    def unseen(suite_id: str, reads: int | None):
+        """After this set's Run, its next `reads` list reads (None: every one) answer that it is not running."""
+        left = {"armed": False, "reads": reads}
+
+        async def on_run(route):
+            if route.request.method == "POST":
+                left["armed"] = True
+            await route.fallback()
+
+        async def on_list(route):
+            if route.request.method != "GET" or not left["armed"] or left["reads"] == 0:
+                return await route.fallback()
+            if left["reads"] is not None:
+                left["reads"] -= 1
+            res = await route.fetch()
+            body = await res.json()
+            await route.fulfill(response=res, json=[{**x, "running": False} if x["id"] == suite_id else x
+                                                    for x in body])
+        return on_run, on_list
+
+    async def opened(page, key: str):
+        await page.goto(f"{APP}/evals", wait_until="domcontentloaded")
+        await page.get_by_role("button", name=re.compile(f"^Smoke {key} set {stamp}")).click(timeout=30_000)
+        detail = page.locator('section[aria-label="Detail"]')
+        await detail.get_by_role("button", name="Run", exact=True).click(timeout=10_000)
+        await page.get_by_role("dialog").get_by_role("button", name="Run set").click()
+        return detail
+
+    async def starts(detail) -> None:
+        starting = detail.get_by_role("button", name=re.compile("Starting"))
+        try:
+            await starting.wait_for(timeout=5_000)
+        except Exception:
+            raise AssertionError("a set whose read after Run missed its run offers Run again, not Starting…")
+        if not await starting.is_disabled():
+            raise AssertionError("Starting… can be clicked, so a second click would start a second set")
+
+    async def runs_listed(detail, want: int) -> None:
+        rows = detail.get_by_role("list", name="Runs of this set").get_by_role("listitem")
+        for _ in range(20):
+            if await rows.count() == want:
+                return
+            await asyncio.sleep(0.5)
+        raise AssertionError(f"the set's runs list {await rows.count()} runs after it ended (expected {want})")
+
+    async def back_to_run(detail, within: float) -> None:
+        run = detail.get_by_role("button", name="Run", exact=True)
+        try:
+            await run.wait_for(timeout=within * 1000)
+        except Exception:
+            raise AssertionError(f"no Run within {within:g} s of the set ending")
+        if await run.is_disabled():
+            raise AssertionError("Run is back but cannot be clicked")
+
+    async def slow_leg() -> None:
+        # The read after Run is the one that misses; the poll's reads after it are the real list.
+        ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+        try:
+            page = await ctx.new_page()
+            on_run, on_list = unseen(sets["slow"]["id"], 1)
+            await page.route(f"**/api/evals/suites/{sets['slow']['id']}/run", on_run)
+            await page.route("**/api/evals/suites", on_list)
+            detail = await opened(page, "slow")
+            await starts(detail)
+            try:
+                await detail.get_by_role("button", name=re.compile("Stop")).wait_for(timeout=8_000)
+            except Exception:
+                raise AssertionError("a started set shows no Stop when its first read beat its run")
+            await back_to_run(detail, 30)
+            await runs_listed(detail, 1)
+        finally:
+            await ctx.close()
+
+    async def quick_leg() -> None:
+        # Every read misses it: it ran and ended between them. Its runs say so, and Starting… clears.
+        ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+        try:
+            page = await ctx.new_page()
+            on_run, on_list = unseen(sets["quick"]["id"], None)
+            await page.route(f"**/api/evals/suites/{sets['quick']['id']}/run", on_run)
+            await page.route("**/api/evals/suites", on_list)
+            detail = await opened(page, "quick")
+            await starts(detail)
+            await back_to_run(detail, 15)
+            await runs_listed(detail, 1)
+            if await detail.get_by_text("didn't start", exact=False).count():
+                raise AssertionError("a set that ran says it didn't start")
+        finally:
+            await ctx.close()
+
+    async def lost_leg() -> None:
+        # Start answers and nothing ever runs: after two minutes the screen says so, and Run is back.
+        ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+        try:
+            await ctx.clock.install()
+            page = await ctx.new_page()
+            sid = sets["lost"]["id"]
+            await page.route(f"**/api/evals/suites/{sid}/run", lambda r: r.fulfill(json={
+                "suite_run_id": f"esr_uismoke{stamp}", "status": "queued",
+                "estimate": {"cases": 1, "runs": 1, "judge_calls": 0}}))
+            detail = await opened(page, "lost")
+            await starts(detail)
+            await asyncio.sleep(1.0)
+            await ctx.clock.fast_forward(125_000)
+            try:
+                await detail.get_by_text("It didn't start; try again.").wait_for(timeout=10_000)
+            except Exception:
+                raise AssertionError("a set never seen running goes quiet after two minutes, and does not say "
+                                     "it didn't start")
+            await back_to_run(detail, 5)
+        finally:
+            await ctx.close()
+
+    try:
+        for label, leg in (("slow", slow_leg), ("quick", quick_leg), ("lost", lost_leg)):
+            try:
+                await leg()
+            except AssertionError as exc:
+                bad.append(f"{label}: {exc}")
+    finally:
+        for suite in sets.values():
+            try:
+                api(f"/api/evals/suites/{suite.get('id')}", "DELETE")
+            except Exception:
+                pass
+        drop_fixture(slow_id)
+        drop_fixture(quick_id)
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("A started set reads Starting… until its run is seen, then shows Stop; a set that ended between reads "
+            "lists its run; one never seen says it didn't start")
+
+
+@check
 async def check_plurals(browser) -> str:
     """Counts agree with their nouns and stamps are in the reader's time (F205).
 
