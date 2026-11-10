@@ -16357,6 +16357,66 @@ async def check_brwlogfold(browser) -> str:
 
 
 @check
+async def check_brwslowopen(browser) -> str:
+    """A browser slow to open says why (F1516, eb's QA B8: a cloud browser's first open took ~30 s with only "Opening the
+    browser…" on screen). For the first seconds it says only that, so a browser that opens at once (the laptop's)
+    never says more; then the pane says a private browser is starting and the first one takes a while, and the line
+    goes when the page arrives."""
+    slow = re.compile("Starting a private browser")
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route(re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(status=200, json={"sessions": []}))
+    await ctx.route(re.compile(r".*/api/site-sessions/new$"),
+                    lambda r: r.fulfill(status=200, json={"browser_session_id": "bsSlow"}))
+    await ctx.route(re.compile(r".*/api/browser/bsSlow/finish-session$"), lambda r: r.fulfill(status=200, json={}))
+    # Its frames come when the check says, as a cold browser's first does (`_held_frames`' pattern).
+    await ctx.add_init_script("""(() => { const real = window.fetch; window.__slowFrames = null;
+      window.fetch = function (input, init) {
+        const url = String((input && input.url) || input || '');
+        if (!url.includes('/api/browser/bsSlow/frames')) return real(input, init);
+        const stream = new ReadableStream({start(c) {
+          window.__slowFrames = (f) => c.enqueue(new TextEncoder().encode(f)); }});
+        return Promise.resolve(new Response(stream, {status: 200, headers: {'Content-Type': 'text/event-stream'}}));
+      }; })();""")
+    page = await ctx.new_page()
+    bad: list[str] = []
+    try:
+        await page.goto(f"{APP}/browser/sessions", wait_until="domcontentloaded")
+        await page.locator("main h1").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await page.get_by_role("button", name="Keep me signed in to a site").first.click()
+        ask = page.get_by_role("dialog", name="Keep me signed in to a site")
+        await ask.get_by_label("Site").fill("portal.saltmarsh.example")
+        await ask.get_by_role("button", name="Open the browser").click()
+        pane = page.get_by_role("region", name="Browser")
+        await pane.wait_for(timeout=8_000)
+        await asyncio.sleep(1.5)
+        if "Opening the browser" not in await pane.inner_text():
+            bad.append("an opening browser does not say Opening the browser")
+        if await pane.get_by_text(slow).count():
+            bad.append("the slow-start line shows before a browser has been slow")
+        await asyncio.sleep(6.5)
+        line = pane.get_by_role("status").filter(has_text=slow)
+        if not await line.count():
+            bad.append("a browser still opening after 8 s does not say a private browser is starting")
+        elif "first one" not in await line.first.inner_text():
+            bad.append(f"the slow-start line does not say the first one takes a while: {await line.first.inner_text()!r}")
+        await page.wait_for_function("() => typeof window.__slowFrames === 'function'", timeout=8_000)
+        await page.evaluate("(f) => window.__slowFrames(f)",
+                            _brw_frame("https://portal.saltmarsh.example/sign-in", "person"))
+        await pane.get_by_role("application").wait_for(timeout=8_000)
+        await asyncio.sleep(0.5)
+        if await pane.get_by_text(slow).count():
+            bad.append("the slow-start line stays after the page arrived")
+        await pane.get_by_role("button", name=re.compile("Don.t keep")).click()
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("an opening browser says only that for its first seconds, then that a private browser is starting and the "
+            "first one takes a while, until the page arrives")
+
+
+@check
 async def check_brwturnreopens(browser) -> str:
     """A browser turn that arrives while the person watches the chat brings its pane back (F1428, eb and Naveen 11-06):
     they asked for that browser's task. On a phone the chat stays in front and the Browser button is marked, until they
