@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from core import site_sessions
 from core.browser import client as browser_client
+from core.browser import gate
 
 router = APIRouter()
 
@@ -62,6 +63,9 @@ async def open_sign_in(text: str, start: str | None = None) -> str:
     """The person's own browser for keeping the site in `text`, open on the page they typed (`start`) on its host, over
     https (F1425, F1514)."""
     host = _host_of(text)
+    # A site the browser's guard will never open is said before any browser starts (F1517, eb's QA B15).
+    if refused := await gate.refused_site(host):
+        raise HTTPException(status_code=422, detail=f"This browser can't open {host}: {refused}.")
     return await browser_client.tools.open_login_session([_site_of(host)], start_url=_page_on(host, start))
 
 
