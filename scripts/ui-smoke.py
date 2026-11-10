@@ -18808,16 +18808,19 @@ async def check_widgetasksfirst(browser) -> str:
               "visitor_tools": ["search_books", "create_order"]}
 
     async def rows(page) -> dict[str, str]:
-        # Every group open, then each tool's row by its checkbox's name.
-        for button in await page.locator("button[aria-expanded='false'][aria-label*=' tools, ']").all():
-            await button.click()
-        await asyncio.sleep(0.3)
-        got = {}
-        for name in ("search_books", "create_order"):
-            row = page.locator("li", has=page.get_by_role("checkbox", name=re.compile(rf"can use {name}$")))
-            await row.first.wait_for(timeout=10_000)
-            got[name] = await row.first.inner_text()
-        return got
+        # The picker loads after the page's heading (the agent's tools, then the catalogue's groups): until both rows
+        # show, open any group that is still closed (the first try found none yet and timed out, 11-11).
+        def row(name):
+            return page.locator("li", has=page.get_by_role("checkbox", name=re.compile(rf"can use {name}$"))).first
+        for _ in range(60):
+            if await row("search_books").count() and await row("create_order").count():
+                break
+            for button in await page.locator("button[aria-expanded='false'][aria-label*=' tools, ']").all():
+                await button.click()
+            await asyncio.sleep(0.25)
+        else:
+            raise AssertionError("the picker never showed both tools")
+        return {name: await row(name).inner_text() for name in ("search_books", "create_order")}
 
     bad: list[str] = []
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
