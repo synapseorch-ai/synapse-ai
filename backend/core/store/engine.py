@@ -16,6 +16,7 @@ none of the structure.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Awaitable, Callable
@@ -43,6 +44,10 @@ SessionBinder = Callable[[AsyncSession], Awaitable[None]]
 
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
+
+#: What `get_store`'s first use waits on, with the event loop it belongs to (F1529). An asyncio lock is bound to the
+#: loop that first waits on it, and each test runs on a loop of its own, so a new loop gets a new lock.
+_first_use: tuple[asyncio.AbstractEventLoop, asyncio.Lock] | None = None
 
 #: Called on every session this module opens, before the caller sees it.
 #:
@@ -181,12 +186,29 @@ async def get_store() -> async_sessionmaker[AsyncSession]:
 
     Deliberately lazy: importing this module must not open a database, or every
     unit test and every `--help` invocation pays for a connection.
+
+    The first use is one flight (F1529). Callers that arrive while it runs wait
+    for it rather than each building an engine and running `create_all` on the
+    same file, where all but one failed with "table ... already exists". The
+    server reads the store in its lifespan before it serves, so this is met by
+    whatever drives the engine without it: an embedder, a script, the stress
+    suite. A first use that fails keeps nothing, and the next caller tries again.
     """
-    global _engine, _session_factory
-    if _session_factory is None:
-        _engine = build_engine(default_url())
-        await init_db(_engine)
-        _session_factory = build_session_factory(_engine)
+    global _engine, _session_factory, _first_use
+    if _session_factory is not None:
+        return _session_factory
+    loop = asyncio.get_running_loop()
+    if _first_use is None or _first_use[0] is not loop:
+        _first_use = (loop, asyncio.Lock())
+    async with _first_use[1]:
+        if _session_factory is None:
+            engine = build_engine(default_url())
+            try:
+                await init_db(engine)
+            except BaseException:
+                await engine.dispose()
+                raise
+            _engine, _session_factory = engine, build_session_factory(engine)
     return _session_factory
 
 
@@ -202,11 +224,12 @@ def set_store(session_factory: async_sessionmaker[AsyncSession]) -> None:
 
 async def reset_store() -> None:
     """Drop the cached engine. For tests, and for a config reload."""
-    global _engine, _session_factory
+    global _engine, _session_factory, _first_use
     if _engine is not None:
         await _engine.dispose()
     _engine = None
     _session_factory = None
+    _first_use = None
 
 
 def set_session_binder(binder: SessionBinder | None) -> None:
