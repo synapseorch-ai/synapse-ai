@@ -21,6 +21,8 @@ from core.native_builder import models_menu as MM
 from core.orchestration.run_error import model_failure_of, reason_of
 
 SESSION = "builder::panel:f1502"
+#: The real dispatch, taken before the unit conftest puts its stand-in in place (as test_first_run_says_what_is_wrong).
+_REAL_GENERATE = L.generate_response
 CLI = "cli.gemini.flash"
 SIGNED_OUT = ("Error: Please set an Auth method in your settings.json or specify GEMINI_API_KEY\n"
               "    at validateAuth (file:///usr/lib/gemini/index.js:12:9)\n"
@@ -117,7 +119,7 @@ async def test_an_address_in_our_sentence_is_its_host_alone(monkeypatch):
     install_httpx(monkeypatch, refuse)
     base = "http://alice:s3cret-pass@ollama.internal:11434/v1?token=tok-0123456789"
     with pytest.raises(L.LLMError) as err:
-        await L.generate_response("hi", "sys", "local", "ollama.mistral", {"ollama_base_url": base})
+        await _REAL_GENERATE("hi", "sys", "local", "ollama.mistral", {"ollama_base_url": base})
     assert err.value.said == "Ollama is not reachable at http://ollama.internal:11434."
     said = model_failure_of(err.value)["said"]
     assert said == "Ollama is not reachable at http://ollama.internal:11434."
