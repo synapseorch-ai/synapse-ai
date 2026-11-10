@@ -560,9 +560,9 @@ class TestWhatAnOwnerCanTick:
         response = await client.get("/api/widgets/visitor-tools", params={"agent_id": agent["id"]})
         assert response.status_code == 200, response.text
         assert response.json()["tools"] == [
-            {"name": "danger", "category": "destructive"},
-            {"name": "peek", "category": "read_only"},
-            {"name": "spawn_subtask", "category": "undeclared"},
+            {"name": "danger", "category": "destructive", "asks_first": False},
+            {"name": "peek", "category": "read_only", "asks_first": False},
+            {"name": "spawn_subtask", "category": "undeclared", "asks_first": False},
         ]
 
     async def test_a_tool_this_agent_asks_first_about_is_said(self, client, seed_agent, two_tools):

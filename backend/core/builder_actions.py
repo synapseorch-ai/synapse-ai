@@ -963,9 +963,17 @@ def _widget_view(widget: dict, agents: dict[str, str], tools: list[dict] | None 
 
 
 def _visitor_lines(tools: list[dict]) -> list[str]:
-    """Each visitor tool that acts, on a line of its own (TRI1, F1262)."""
-    return [f"A visitor's turn can use {t['name']}, which {_ACTS_AS.get(t['category'], 'acts')}."
-            for t in tools if t.get("category") != "read_only"]
+    """Each visitor tool that acts, on a line of its own (TRI1, F1262). One the agent asks first about says instead
+    that a visitor can't approve it, so on the site it is refused, and the two ways out (F1524, VID4's takes 1-2:
+    a shop agent built for a website refused its own order call, and nothing said why)."""
+    lines = []
+    for t in tools:
+        if t.get("asks_first"):
+            lines.append(f"{t['name']} asks first on this agent, and a visitor can't approve it, so on your site it is "
+                         f"refused: let {t['name']} act without asking, or leave it off visitors' tools.")
+        elif t.get("category") != "read_only":
+            lines.append(f"A visitor's turn can use {t['name']}, which {_ACTS_AS.get(t['category'], 'acts')}.")
+    return lines
 
 
 async def _widget(action: str, args: dict) -> dict:

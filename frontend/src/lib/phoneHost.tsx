@@ -86,7 +86,9 @@ function OssVisitorTools({ agentIds, ticked, onChange, disabled }: VisitorToolsP
             fetch(`/api/widgets/visitor-tools?agent_id=${enc(id)}`).then(r => (r.ok ? r.json() : { tools: [] })).catch(() => ({ tools: [] }))))
             .then(lists => {
                 const merged = new Map<string, VisitorToolChoice>();
-                for (const l of lists) for (const t of (l.tools ?? []) as VisitorToolChoice[]) merged.set(t.name, t);
+                // A tool asks first if any of the number's agents asks first about it (F1524).
+                for (const l of lists) for (const t of (l.tools ?? []) as VisitorToolChoice[])
+                    merged.set(t.name, { ...t, asks_first: !!(merged.get(t.name)?.asks_first || t.asks_first) });
                 if (!gone) setTools({ key, list: [...merged.values()].sort((a, b) => a.name.localeCompare(b.name)) });
             });
         return () => { gone = true; };
@@ -96,7 +98,7 @@ function OssVisitorTools({ agentIds, ticked, onChange, disabled }: VisitorToolsP
     if (!list.length) return <p className="m-0 text-[13px] text-text-faint">This agent has no tools to offer.</p>;
     return (
         <fieldset disabled={disabled} className="m-0 min-w-0 border-0 p-0">
-            <VisitorToolGroups tools={list} ticked={ticked} onChange={onChange} idPrefix="phone-caller-tool" subject="Callers" />
+            <VisitorToolGroups tools={list} ticked={ticked} onChange={onChange} idPrefix="phone-caller-tool" subject="Callers" asked="held" />
         </fieldset>
     );
 }

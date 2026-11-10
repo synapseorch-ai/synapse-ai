@@ -222,7 +222,9 @@ export const MessagingTab = () => {
                     .then(r => (r.ok ? r.json() : { tools: [] }))
                     .catch(() => ({ tools: [] }))));
             const merged = new Map<string, SenderToolChoice>();
-            for (const list of lists) for (const t of (list.tools ?? []) as SenderToolChoice[]) merged.set(t.name, t);
+            // A tool asks first if any of the channel's agents asks first about it (F1524).
+            for (const list of lists) for (const t of (list.tools ?? []) as SenderToolChoice[])
+                merged.set(t.name, { ...t, asks_first: !!(merged.get(t.name)?.asks_first || t.asks_first) });
             if (!cancelled) {
                 setToolChoices({ key: assignedKey, tools: [...merged.values()].sort((a, b) => a.name.localeCompare(b.name)) });
             }

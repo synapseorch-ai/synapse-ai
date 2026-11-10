@@ -40,8 +40,8 @@ class TestWhatAnOwnerCanTick:
         agent = S.make_agent(knowledge=[CONTRACTS.id, REPORTS.id])
         await S.seed_agents([agent])
         assert await self._listed(client, agent["id"]) == [
-            {"name": "read_knowledge", "category": "read_only"},
-            {"name": "search_knowledge", "category": "read_only"},
+            {"name": "read_knowledge", "category": "read_only", "asks_first": False},
+            {"name": "search_knowledge", "category": "read_only", "asks_first": False},
         ]
 
     async def test_not_without_a_base_open_to_visitors(self, client, no_other_tools):
