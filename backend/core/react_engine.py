@@ -217,6 +217,31 @@ _REASONING_ONLY_NUDGE = (
     "Give your final answer now, or make your next tool call.\n"
 )
 
+#: What a model is told when its final reply was the page it read, not an answer (F1510, eb's QA B18). Asked once;
+#: a second such reply fails the turn.
+_PAGE_ECHO_NUDGE = (
+    "\nSystem: your last reply repeated the page's state instead of answering. Give your final answer in your own "
+    "words: what you found on the page, not the page itself.\n"
+)
+
+#: A line of a page's snapshot as the engine shows it to a Browser agent (F1510): Playwright's refs, node lines,
+#: yaml fence and headings, and the engine's own browser markers. A person's answer doesn't carry these.
+_PAGE_LINE = _re.compile(
+    r"\[ref=e\d+\]|<<BROWSER_STATE>>|<<BROWSER_HISTORY>>|CURRENT BROWSER STATE|^\s*```yaml"
+    r"|^#{1,4} (?:Page|Snapshot)\b|^(?:- )?Page (?:URL|Title):|^Snapshot:\s*$|^\s*- /url:"
+    r"|^\s*- (?:generic|checkbox|radio|text|link|heading|img|button|textbox|list|listitem|separator|paragraph"
+    r"|row|cell|table|combobox|option|navigation|banner|main|contentinfo|region)\b"
+)
+
+
+def _is_the_page(reply: str) -> bool:
+    """A final reply that is the page it read rather than an answer (F1510): it opens with the snapshot and most of
+    its lines are the snapshot's. One that answers first and then quotes some of the page is an answer."""
+    lines = [line for line in reply.splitlines() if line.strip() and line.strip() != "```"]
+    if not lines or not _PAGE_LINE.search(lines[0]):
+        return False
+    return 2 * sum(1 for line in lines if _PAGE_LINE.search(line)) >= len(lines)
+
 
 #: The vault's read tools, on any server that serves them (`core/vault_tools.py`, `tools/file_reader.py`).
 _VAULT_READERS = frozenset({"read_file", "read_json", "search_files", "read_file_by_lines"})
@@ -2026,6 +2051,7 @@ async def run_agent_step(
     _partial_answer: list[str] = []
     _parse_retries = 0        # consecutive responses that looked like a tool call and were not
     _reasoning_retries = 0    # replies that were all reasoning, asked for again (F305)
+    _page_retries = 0         # final replies that were the page read, asked for again (F1510)
     _retry_effort: str | None = None  # the effort that retry asks with, a step lower, for one call (F863)
     # Approvals carried across a pause: a call the user allowed runs once, a
     # call they refused becomes a refusal the model reads.
@@ -3123,6 +3149,27 @@ async def run_agent_step(
                         yield _e
                     await _save_failed_turn()
                     raise _no_answer("\n\n".join(reasoning_blocks), _llm_result.stop_reason)
+
+                # ── A reply that is the page it read is not an answer (F1510) ──
+                # On prod a Browser agent on Nova Lite gave the page's snapshot, under the engine's own heading for
+                # it, as its answer (eb's QA B18). Asked once more, in its own words; a second fails the turn as the
+                # model not answering. Only in a turn that read a page.
+                if _browser_snapshot is not None and _is_the_page(action_text):
+                    if _page_retries < 1 and turn + 1 < max_turns:
+                        _page_retries += 1
+                        _log.warning("⚠️ Reply repeated the page instead of answering: asked again")
+                        current_context_text += _PAGE_ECHO_NUDGE
+                        for _e in _unstream("not_done"):
+                            yield _e
+                        yield {"type": "status", "message": "The reply repeated the page: asked for an answer"}
+                        continue
+                    for _e in _unstream("error"):
+                        yield _e
+                    await _save_failed_turn()
+                    from core.llm_providers import EmptyAnswer
+                    _echoed = EmptyAnswer("Error: The model repeated the page instead of answering.")
+                    _echoed.stop_reason = _llm_result.stop_reason
+                    raise _echoed
 
                 # A lead with members still working is asked once (TEAM1a): an answer now stops
                 # them. One waiting on a person's approval parks the turn instead.
