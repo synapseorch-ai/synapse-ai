@@ -2,7 +2,7 @@
 
 /*
  * A schedule turned on or paused from its row (F1452): the On / Paused switch in the list's status column, the row
- * menu's Turn on / Pause, and the ask before it is turned on (`scheduleSwitch.ts` says why it asks and what it
+ * menu's Turn on / Pause, and the ask before it is turned on (`scheduleSwitchState.ts` says why it asks and what it
  * says). Both products draw it; each brings its own save — OSS's PATCH, cloud's — and its own toast. Nothing here
  * reads an API.
  */
@@ -13,8 +13,8 @@ import { Button, Modal } from '@/components/ui';
 import { when } from './model';
 import {
     refusedWords, settled, shownEnabled, turnOnWords, withAsk, withoutAsk, type EnabledAsks,
-} from './scheduleSwitch';
-import { type ScheduleLike } from './workflowList';
+} from './scheduleSwitchState';
+import { type ScheduleLike } from './workflowRows';
 
 export type SwitchSchedule = ScheduleLike & { id: string; name: string; enabled: boolean; prompt?: string | null };
 

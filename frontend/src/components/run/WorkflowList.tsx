@@ -12,7 +12,7 @@
  *            how many, when it was last updated
  *
  * Colour only for meaning (D202). Each product maps its API onto
- * `WorkflowListRow` (`workflowList.ts`) and brings its own controls through
+ * `WorkflowListRow` (`workflowRows.ts`) and brings its own controls through
  * `actions` and `menu`; cloud's selection and bulk delete come through `select`.
  * Nothing here reads an API.
  */
@@ -30,7 +30,7 @@ import { Took, useClock, When } from './When';
 import {
     lastBucket, matchWorkflow, sortWorkflows, WORKFLOW_SORTS,
     type WorkflowListRow, type WorkflowSort,
-} from './workflowList';
+} from './workflowRows';
 
 export function WorkflowList({
     rows, hrefOf, onOpen, actions, actionsWidth = '36px', menu, select, toolbar, empty,

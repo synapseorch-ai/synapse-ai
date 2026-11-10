@@ -9,7 +9,7 @@
  *   line 2 — the description, or the message it sends
  *
  * Both products draw it; each maps its schedules onto `ScheduleListRow`
- * (`scheduleList.ts`) and brings its own controls through `actions`, and opens
+ * (`scheduleRows.ts`) and brings its own controls through `actions`, and opens
  * its own editor through `onOpen`. Colour only for meaning (D202): a finished
  * last run is a time, with no word. Nothing here reads an API.
  *
@@ -27,7 +27,7 @@ import { cn } from '@/lib/cn';
 import { type Clock } from './model';
 import { RUN_DOT } from './RunList';
 import { useClock, When } from './When';
-import { lastRunBucket, matchSchedule, type ScheduleListRow } from './scheduleList';
+import { lastRunBucket, matchSchedule, type ScheduleListRow } from './scheduleRows';
 
 export function ScheduleList({
     rows, onOpen, actions, actionsWidth = '120px', runHref, empty, toolbar, className, onEnabledChange, enabledBusy,

@@ -3,7 +3,7 @@
 /*
  * The Logs tab (M2h): its kinds as pills, the logs as quiet two-line rows in the
  * runs list's style, and the head over the open transcript. Both products draw
- * them; each maps its listing onto `LogListRow` (`logList.ts`), matches its
+ * them; each maps its listing onto `LogListRow` (`logRows.ts`), matches its
  * workflow logs to the runs it has read, and brings its own controls (OSS's
  * Delete) through `actions`.
  *
@@ -22,7 +22,7 @@ import { money, type Clock, type RunBucket } from './model';
 import { ROW_CURRENT } from './DetailHead';
 import { RUN_DOT } from './RunList';
 import { Took, useClock, When } from './When';
-import { groupLogs, logBucket, logSize, type LogListRow } from './logList';
+import { groupLogs, logBucket, logSize, type LogListRow } from './logRows';
 
 const PILL = 'inline-flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 text-[13px] font-medium transition-colors';
 

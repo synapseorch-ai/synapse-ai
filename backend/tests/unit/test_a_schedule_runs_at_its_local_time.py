@@ -215,7 +215,7 @@ async def test_the_planner_reads_the_persons_clock_and_render_and_the_lists_say_
     assert pack["person_timezone"] == "Asia/Kolkata"
     assert (await _pack())["person_timezone"] == "UTC"
     assert zone_words("America/New_York") == "New York time" and zone_words(None) == zone_words("UTC") == "UTC"
-    lists = (Path(__file__).resolve().parents[3] / "frontend/src/components/run/workflowList.ts").read_text()
+    lists = (Path(__file__).resolve().parents[3] / "frontend/src/components/run/workflowRows.ts").read_text()
     assert "return `${tz.split('/').pop()!.replace(/_/g, ' ')} time`;" in lists
 
 
