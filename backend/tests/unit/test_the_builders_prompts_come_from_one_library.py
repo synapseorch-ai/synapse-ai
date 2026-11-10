@@ -178,7 +178,9 @@ from core.native_builder import prompt_lint, seed
 #: F1495 A1+D (BLD2): the planner's "What you are given" names `named_services` (code's line on each service the
 #: request names: never look for one) and says its tools are the workflows', never its own to call, e05fd271… (on
 #: 093684ec).
-BUNDLE_SHA256 = "e05fd271c321785cea692c8adf5e616803a652869fbea5fc62e0de27cc1efe63"
+#: F1515 (BRW4): the planner's # Finishing says, at `submit_plan`, that its `asked` lists every part of the ask (plan,
+#: run_once with its message, not_done with why_not), b99eeb85… (on F1495's a8a36701).
+BUNDLE_SHA256 = "b99eeb8567c02207de6d57f8c34b3271f8d7c6a4227ad63ddf9f243550341424"
 
 
 def _sha(definitions) -> str:
