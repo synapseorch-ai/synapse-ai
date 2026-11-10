@@ -558,12 +558,25 @@ def exempt_in_plan(plan: str) -> set[str]:
     return set(re.findall(r"`([^`\s]+)`", rest[:end.start()] if end else rest))
 
 
+def acts(name: str, tool: Any) -> bool:
+    """Whether the tool `name`, declared as `tool`, changes something outside this workspace: the plan check's one test
+    (`acting_tool`), and a reply's cut where it was written as text (F1523, `react_engine._reply_kept`). The builder's
+    own reads, and a tool nothing provides, do not; anything undeclared does, as the policy treats it (TAG1)."""
+    from core.builder_access import READS
+    from core.tools import tool_hints
+
+    if name in READS or tool is None:
+        return False
+    hints = tool_hints(tool, trusted=getattr(tool, "trusted", True))
+    return not (hints.declared and hints.read_only)
+
+
 async def acting_tool(name: str, server_module: Any, custom: list | None = None):
     """The tool `name` when it changes something outside this workspace, else None: one that declares it only reads,
     one nothing provides (F489's to say), or one a lookup cannot reach. Anything undeclared acts, as the policy
-    treats it; an outside server's own claim to only read is not believed (TAG1)."""
+    treats it; an outside server's own claim to only read is not believed (TAG1). What acts is `acts`."""
     from core.builder_access import READS
-    from core.tools import resolve_one_tool, tool_hints
+    from core.tools import resolve_one_tool
 
     if name in READS:
         # The builder's own reads (the role door's list): they read, and change nothing. Undeclared under TAG1, they
@@ -577,10 +590,7 @@ async def acting_tool(name: str, server_module: Any, custom: list | None = None)
         tool = await resolve_one_tool(server_module, name, {"tools": [name]}, custom)
     except Exception:  # noqa: BLE001 — a lookup that cannot run is not evidence either way
         return None
-    if tool is None:
-        return None
-    hints = tool_hints(tool, trusted=getattr(tool, "trusted", True))
-    return None if hints.declared and hints.read_only else tool
+    return tool if acts(name, tool) else None
 
 
 async def unapproved(workflows: list[dict], agents: dict[str, dict], server_module: Any, *,
