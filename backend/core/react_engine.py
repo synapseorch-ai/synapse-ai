@@ -1958,7 +1958,10 @@ async def run_agent_step(
             _record.update(refused=True, reason=_open_refusal)
             _open_refusal = None
         _turn_calls.append(_record)
-        _key = json.dumps([_record["tool"], _record["args"], _record["result"]], sort_keys=True, default=str)
+        # Case-folded (F1495, C1): a call that differs only in case reads nothing new. Prod's planner read
+        # `{topic: tool, name: github}` and `{…, name: GitHub}`, whose results echo the name, as two reads.
+        _key = json.dumps([_record["tool"], _record["args"], _record["result"]], sort_keys=True,
+                          default=str).casefold()
         _repeat_count = _repeat_count + 1 if _key == _repeat_key else 1
         _repeat_key = _key
         if _record["tool"] in _reads_only or _record["tool"] in _builder_reads():
