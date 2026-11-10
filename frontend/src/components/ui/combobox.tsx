@@ -55,6 +55,27 @@ function searchText(option: ComboboxOption<string>): string {
   return [...new Set(words)].join(" ");
 }
 
+/** A text's words: its runs of letters and digits, in lower case ("openrouter.anthropic/claude-opus-4.5" → openrouter,
+ *  anthropic, claude, opus, 4, 5). */
+function wordsOf(text: string): string[] {
+  return text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+}
+
+/**
+ * How well what was typed finds an option, for cmdk (F1493): 1 when every word typed begins one of the option's
+ * words ("opus", "gpt oss", "sonnet 4.6"), ½ when what was typed is inside its text whole ("pus"), else 0, which
+ * hides it. cmdk's own score took any of the letters in order, across the label, the id and the group: "opus" listed
+ * GPT OSS Safeguard (o-ss … p … u … s), Llama 4 Scout and Claude Sonnet 4.6. Equal scores keep the list's order.
+ */
+export function matchScore(text: string, typed: string): number {
+  const wanted = wordsOf(typed);
+  if (!wanted.length) return 1;
+  const own = wordsOf(text);
+  if (wanted.every((w) => own.some((o) => o.startsWith(w)))) return 1;
+  const plain = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+  return plain(text).includes(plain(typed)) ? 0.5 : 0;
+}
+
 function Mark({ mark }: { mark: OptionMark }) {
   return (
     <span data-option-mark={mark.name} className="flex shrink-0">
@@ -107,6 +128,8 @@ export function Combobox<T extends string = string>({
   "aria-describedby"?: string;
 }) {
   const [open, setOpen] = React.useState(false);
+  // What was typed, held here to rank the groups by it (below). Each opening starts it empty, as cmdk's own did.
+  const [search, setSearch] = React.useState("");
   const selected = options.find((o) => o.value === value);
   // Portalled out of any dialog it opens in: without this a Modal's or a Drawer's scroll lock threw away
   // every wheel and swipe over it (F700, `own-scroll.ts`).
@@ -125,8 +148,27 @@ export function Combobox<T extends string = string>({
     return [...byGroup.entries()];
   }, [options]);
 
+  // cmdk ranks the options inside a group by `matchScore`, but 1.1.1 never moves a group: it looks a group up by its
+  // id, and the page carries the group's heading. So a group goes first here when its best option does, and groups
+  // that score the same keep their order: "mini" lists OpenAI's gpt-5-mini before the Gemini models it is only
+  // inside of (F1493).
+  const ranked = React.useMemo(() => {
+    if (!search) return groups;
+    const best = (items: ComboboxOption<T>[]) => Math.max(...items.map((o) => matchScore(searchText(o), search)));
+    return groups
+      .map((group) => [group, best(group[1])] as const)
+      .sort((a, b) => b[1] - a[1])
+      .map(([group]) => group);
+  }, [groups, search]);
+
   return (
-    <RPopover.Root open={open} onOpenChange={setOpen}>
+    <RPopover.Root
+      open={open}
+      onOpenChange={(next) => {
+        if (next) setSearch("");
+        setOpen(next);
+      }}
+    >
       <RPopover.Trigger
         data-no-focus-ring=""
         disabled={disabled}
@@ -184,12 +226,15 @@ export function Combobox<T extends string = string>({
             "max-h-[var(--radix-popover-content-available-height)]",
           )}
         >
-          {/* `shouldFilter` on: cmdk scores against each item's `value`, which
-              is `searchText`: typing a name, an id or a provider finds it. */}
-          <Command loop className="flex min-h-0 flex-col">
+          {/* `shouldFilter` on: cmdk scores each item's `value`, which is
+              `searchText`, with `matchScore`: typing the start of a word of its
+              name, its id or its provider finds it (F1493). */}
+          <Command loop filter={matchScore} className="flex min-h-0 flex-col">
             <div className="flex items-center gap-2 border-b border-border px-3">
               <Search className="size-4 shrink-0 text-text-faint" aria-hidden />
               <Command.Input
+                value={search}
+                onValueChange={setSearch}
                 autoFocus
                 placeholder={searchPlaceholder}
                 // A placeholder is not a name: without this the field read as an
@@ -209,7 +254,7 @@ export function Combobox<T extends string = string>({
                 {emptyMessage}
               </Command.Empty>
 
-              {groups.map(([group, items]) => (
+              {ranked.map(([group, items]) => (
                 <Command.Group
                   key={group || "_"}
                   heading={group || undefined}
