@@ -15413,6 +15413,113 @@ async def check_brwsessionsite(browser) -> str:
             "keep is said and the browser stays; Keep lists it; Sign in again opens the browser for its site")
 
 @check
+async def check_brwtyping(browser) -> str:
+    """What the person types reaches a slow browser whole and in order, and an input the browser didn't take is said
+    (F1508, eb's QA B4: on cloud every character was its own call to the browser, each waiting for the one before, so
+    typing lagged seconds behind; and a click right after typing vanished with nothing said). Typed while a send is
+    out, text goes with the next send, joined; a key and a click keep their place. A refused input says "That didn't
+    reach the page. Try again.", nothing made after it is sent (the page never gets half of what was typed), and the
+    line clears with the next input that arrives."""
+    sent: list[dict] = []
+    holds: list[asyncio.Event] = [asyncio.Event()]
+    gate: dict = {"hold": holds[0], "refuse": False}
+    bad: list[str] = []
+
+    async def take(route):
+        sent.append(json.loads(route.request.post_data or "{}"))
+        hold = gate["hold"]
+        if hold is not None:  # this input is slow, as a cold relay is: the person types on meanwhile
+            gate["hold"] = None
+            await hold.wait()
+        if gate["refuse"]:
+            gate["refuse"] = False
+            return await route.fulfill(status=502, json={"detail": "The browser isn't answering."})
+        await route.fulfill(status=200, json={"ok": True})
+
+    def said(inputs: list[dict]) -> list:
+        return [i.get("text") if i.get("type") == "text" else (i.get("type"), i.get("key") or i.get("event"))
+                for i in inputs]
+
+    async def settled(count: int) -> None:
+        for _ in range(40):
+            if len(sent) >= count:
+                break
+            await asyncio.sleep(0.1)
+        await asyncio.sleep(0.6)  # and nothing more comes
+
+    refused = re.compile("reach the page. Try again")
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route(re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(status=200, json={"sessions": []}))
+    await ctx.route(re.compile(r".*/api/site-sessions/new$"),
+                    lambda r: r.fulfill(status=200, json={"browser_session_id": "bsType"}))
+    await ctx.route(re.compile(r".*/api/browser/bsType/frames$"), lambda r: r.fulfill(
+        status=200, headers={"Content-Type": "text/event-stream"},
+        body=_brw_frame("https://portal.saltmarsh.example/sign-in", "person")))
+    await ctx.route(re.compile(r".*/api/browser/bsType/input$"), take)
+    await ctx.route(re.compile(r".*/api/browser/bsType/finish-session$"), lambda r: r.fulfill(status=200, json={}))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/browser/sessions", wait_until="domcontentloaded")
+        await page.locator("main h1").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await page.get_by_role("button", name="Keep me signed in to a site").first.click()
+        ask = page.get_by_role("dialog", name="Keep me signed in to a site")
+        await ask.get_by_label("Site").fill("portal.saltmarsh.example")
+        await ask.get_by_role("button", name="Open the browser").click()
+        pane = page.get_by_role("region", name="Browser")
+        await pane.wait_for(timeout=8_000)
+        screen = pane.get_by_role("application")
+        await screen.wait_for(timeout=8_000)
+
+        # The click is slow to arrive; the person types their name, Enter and a password meanwhile.
+        release = gate["hold"]
+        await screen.click()
+        await asyncio.sleep(0.3)
+        await page.keyboard.type("us", delay=40)
+        await page.keyboard.press("Enter")
+        await page.keyboard.type("pw", delay=40)
+        await asyncio.sleep(0.3)
+        release.set()
+        await settled(4)
+        want = [("mouse", "click"), "us", ("key", "Enter"), "pw"]
+        if said(sent) != want:
+            bad.append(f"typed while the click was out, the browser got {said(sent)}, not {want}")
+
+        # The next input is refused; what the person typed while it was out is not sent after it.
+        before = len(sent)
+        release = gate["hold"] = asyncio.Event()
+        holds.append(release)
+        gate["refuse"] = True
+        await page.keyboard.type("x")
+        await asyncio.sleep(0.3)
+        await page.keyboard.type("yz", delay=40)
+        await asyncio.sleep(0.3)
+        release.set()
+        await settled(before + 1)
+        if said(sent[before:]) != ["x"]:
+            bad.append(f"after a refused input the browser still got {said(sent[before + 1:])}")
+        try:
+            await pane.get_by_role("alert").filter(has_text=refused).wait_for(timeout=3_000)
+        except Exception:
+            bad.append("a refused input is not said")
+
+        # The next input that arrives clears it.
+        before = len(sent)
+        await page.keyboard.type("q")
+        await settled(before + 1)
+        if await pane.get_by_role("alert").filter(has_text=refused).count():
+            bad.append("the refusal is still said after an input arrived")
+        await pane.get_by_role("button", name=re.compile("Don.t keep")).click()
+    finally:
+        for hold in holds:
+            hold.set()
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("typed while a send is out, text goes with the next send, a key and a click in their place; a refused "
+            "input is said, nothing after it is sent, and the next one that arrives clears it")
+
+@check
 async def check_brwloaderror(browser) -> str:
     """A page that did not open says why above the page, never a blank pane (F1425; Naveen's scratch, eb 11-06). Signing
     in to x.com opened a white pane: x.com answers this browser 403 with nothing in it. The frame's `load_error` is
