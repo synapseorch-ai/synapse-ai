@@ -18795,6 +18795,66 @@ async def check_widgetconfirm(browser) -> str:
 
 
 @check
+async def check_widgetasksfirst(browser) -> str:
+    """A tool the agent asks first about is marked where visitors' tools are picked (F1524, VID4's takes 1-2): on a
+    website a visitor can't approve, so it is refused there, and the row says so with an "Asks first" badge; a phone
+    caller's waits for a person instead, and the Phone screen says that. A tool that runs without asking has neither."""
+    tools = {"tools": [{"name": "search_books", "category": "read_only", "asks_first": False},
+                       {"name": "create_order", "category": "open_world", "asks_first": True}]}
+    widget = {"id": "w_smoke", "name": "Smoke widget", "agent_id": "a1", "public_key": "pk_smoke",
+              "allowed_origins": ["https://example.com"], "enabled": True, "greeting": "Hi", "accent": "#2563eb",
+              "title": "", "launcher_label": "", "daily_message_cap": 500, "font": "system", "theme": "auto",
+              "header_style": "accent", "launcher": "bubble", "logo": "", "position": "right",
+              "visitor_tools": ["search_books", "create_order"]}
+
+    async def rows(page) -> dict[str, str]:
+        # Every group open, then each tool's row by its checkbox's name.
+        for button in await page.locator("button[aria-expanded='false'][aria-label*=' tools, ']").all():
+            await button.click()
+        await asyncio.sleep(0.3)
+        got = {}
+        for name in ("search_books", "create_order"):
+            row = page.locator("li", has=page.get_by_role("checkbox", name=re.compile(rf"can use {name}$")))
+            await row.first.wait_for(timeout=10_000)
+            got[name] = await row.first.inner_text()
+        return got
+
+    bad: list[str] = []
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route("**/api/widgets", _answer([widget]))
+    await ctx.route("**/api/widgets/visitor-tools*", _answer(tools))
+    await ctx.route("**/embed/preview/**", _answer("<html></html>", content_type="text/html"))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/widgets", wait_until="domcontentloaded")
+        await page.get_by_role("heading", name="Smoke widget").wait_for(timeout=30_000)
+        got = await rows(page)
+        if "Asks first" not in got["create_order"] or "can't approve" not in got["create_order"] \
+                or "refused" not in got["create_order"]:
+            bad.append(f"the widget's create_order row reads {got['create_order']!r}")
+        if "Asks first" in got["search_books"]:
+            bad.append("a tool that runs without asking is marked")
+    finally:
+        await ctx.close()
+
+    ctx = await _phone_context(browser)
+    await ctx.route("**/api/widgets/visitor-tools*", _answer(tools))  # the last route wins
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/channels/phone", wait_until="domcontentloaded")
+        await page.get_by_role("heading", name="Smoke support line").wait_for(timeout=30_000)
+        got = await rows(page)
+        if "Asks first" not in got["create_order"] or "waits" not in got["create_order"] \
+                or "refused" in got["create_order"]:
+            bad.append(f"the phone's create_order row reads {got['create_order']!r}")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "an asked-first tool is marked: refused for a widget's visitors, waiting for a person on a call"
+
+
+@check
 async def check_onetoaststack(browser) -> str:
     """A page's toast and a live notification's stack in one host, never one box over the other (F520).
 

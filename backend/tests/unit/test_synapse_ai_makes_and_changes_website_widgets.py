@@ -121,6 +121,29 @@ async def test_a_visitor_tool_that_acts_has_its_own_line_and_one_out_of_reach_is
     assert cards == [] and "can't reach run_bash" in said["error"]
 
 
+async def test_a_visitor_tool_this_agent_asks_first_about_is_said_refused_with_the_two_ways_out(seed_agent):
+    """F1524 (VID4's takes 1-2): a visitor can't approve, so on the site a tool the agent asks first about is refused.
+    The card names each, with the two ways out, in place of the line that says what it does; a tool that runs
+    without asking keeps its own line."""
+    await seed_agent(name="Shop assistant")
+
+    async def choices(agent_id: str) -> list[dict]:
+        return [{"name": "search_books", "category": "read_only", "asks_first": False},
+                {"name": "send_receipt", "category": "open_world", "asks_first": False},
+                {"name": "create_order", "category": "open_world", "asks_first": True}]
+    W.set_widget_host(W.WidgetHost(load=service.list_widgets, choices=choices))
+
+    _, [card] = await _prepare({"action": "widget_create", "name": "Shop", "agent": "Shop assistant",
+                                "visitor_tools": ["search_books", "send_receipt", "create_order"]})
+    lines = card["detail"].splitlines()
+    asked = [line for line in lines if "create_order" in line]
+    assert len(asked) == 1, lines
+    assert "asks first" in asked[0] and "can't approve" in asked[0] and "refused" in asked[0]
+    assert "act without asking" in asked[0] and "leave it off" in asked[0]
+    assert "A visitor's turn can use send_receipt, which reaches outside this workspace." in lines
+    assert not any("search_books" in line for line in lines)
+
+
 async def test_the_builder_s_own_agents_and_a_site_that_is_not_one_are_refused_in_words(seed_agent):
     await _agents({"id": "agent_native_builder_saver_create", "name": "Saver", "system": True},
                   {"name": "Front desk"})
