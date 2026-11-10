@@ -75,6 +75,15 @@ type SuiteRun = {
     started_at: string;
 };
 
+/** A set this screen started, until its run is seen (F1509): Start answers before the run is written. */
+type Started = { runId: string; at: number };
+
+/** How long a started set may go unseen before the screen says it didn't start (F1509): cloud's queue included. */
+const START_SEEN_MS = 120_000;
+
+/** A set's run while it is in flight. */
+const IN_FLIGHT = new Set(["running", "cancelling"]);
+
 type ToastFn = (message: string, tone?: "success" | "warning" | "danger") => void;
 
 /** What the detail shows: a rubric, a set, or a new one of either. */
@@ -108,6 +117,9 @@ export function EvalsScreen() {
     const [suites, setSuites] = useState<Suite[]>([]);
     const [loading, setLoading] = useState(true);
     const [picked, setPicked] = useState<Open | null>(null);
+    // The sets started here whose run is not seen yet, and those never seen (F1509).
+    const [started, setStarted] = useState<Record<string, Started>>({});
+    const [unstarted, setUnstarted] = useState<Record<string, boolean>>({});
     const detailRef = useRef<HTMLElement>(null);
 
     const refresh = useCallback(async () => {
@@ -129,12 +141,16 @@ export function EvalsScreen() {
         }
     }, []);
 
-    const refreshSuites = useCallback(async () => {
+    /** The sets as read now, or null when the read failed. */
+    const refreshSuites = useCallback(async (): Promise<Suite[] | null> => {
         try {
             const res = await fetch("/api/evals/suites");
-            setSuites(res.ok ? await res.json() : []);
+            const list: Suite[] = res.ok ? await res.json() : [];
+            setSuites(list);
+            return res.ok ? list : null;
         } catch {
             setSuites([]);
+            return null;
         }
     }, []);
 
@@ -142,15 +158,51 @@ export function EvalsScreen() {
         void refresh();
     }, [refresh]);
 
+    const onStarted = (id: string, runId: string) => {
+        setStarted((prev) => ({ ...prev, [id]: { runId, at: Date.now() } }));
+        setUnstarted((prev) => without(prev, [id]));
+    };
+
     // While a set runs, its tally is written as each case lands; a poll turns that
     // into progress somebody can watch. It runs while any set runs, open or not
-    // (F204: a set started and left kept its Stop button after it had finished).
-    const anyRunning = suites.some((s) => s.running);
+    // (F204: a set started and left kept its Stop button after it had finished),
+    // and while a set started here is not seen yet (F1509): Start answers before
+    // the run is written (after a queue on cloud), so the one read after Run could
+    // miss it, and the poll never began. A started set is seen when the list reads
+    // it running, or when its runs list it ended (it ran between two reads). One
+    // not seen within START_SEEN_MS is said not to have started, never dropped quietly.
+    const anyRunning = suites.some((s) => s.running) || Object.keys(started).length > 0;
+    const poll = useCallback(async () => {
+        const list = await refreshSuites();
+        if (list === null) return;
+        const nowRunning = list.filter((s) => s.running && unstarted[s.id]).map((s) => s.id);
+        if (nowRunning.length > 0) setUnstarted((prev) => without(prev, nowRunning));
+        const settled = await Promise.all(Object.entries(started).map(async ([id, { runId, at }]) => {
+            const suite = list.find((s) => s.id === id);
+            if (!suite || suite.running) return { id, runId, seen: true, lost: false, name: "" };
+            const runs: SuiteRun[] = await fetch(`/api/evals/suites/${id}/runs?limit=5`)
+                .then((res) => (res.ok ? res.json() : []))
+                .catch(() => []);
+            const run = runs.find((r) => r.id === runId);
+            // Listed and still in flight: the next read of the list says running.
+            if (run) return { id, runId, seen: !IN_FLIGHT.has(run.status), lost: false, name: suite.name };
+            return { id, runId, seen: false, lost: Date.now() - at > START_SEEN_MS, name: suite.name };
+        }));
+        const over = settled.filter((x) => x.seen || x.lost);
+        if (over.length === 0) return;
+        // Only the start this read was about: one made since keeps waiting.
+        setStarted((prev) => without(prev, over.filter((x) => prev[x.id]?.runId === x.runId).map((x) => x.id)));
+        const lost = over.filter((x) => x.lost);
+        if (lost.length > 0) {
+            setUnstarted((prev) => ({ ...prev, ...Object.fromEntries(lost.map((x) => [x.id, true])) }));
+            show(`“${lost[0].name}” didn't start; try again.`, "danger");
+        }
+    }, [started, unstarted, refreshSuites, show]);
     useEffect(() => {
         if (!anyRunning) return;
-        const timer = setInterval(() => void refreshSuites(), 2500);
+        const timer = setInterval(() => void poll(), 2500);
         return () => clearInterval(timer);
-    }, [anyRunning, refreshSuites]);
+    }, [anyRunning, poll]);
 
     // The detail never opens empty: the first rubric, else the first set.
     const stillThere = (o: Open | null): o is Open => {
@@ -234,7 +286,9 @@ export function EvalsScreen() {
                                             current={isOpen("set", suite.id)}
                                             onClick={() => choose({ kind: "set", id: suite.id })}
                                             title={suite.name}
-                                            meta={suite.running ? <span className="text-accent-ink">Running</span> : undefined}
+                                            meta={suite.running ? <span className="text-accent-ink">Running</span>
+                                                : started[suite.id] ? <span className="text-text-muted">Starting…</span>
+                                                : undefined}
                                             sub={`${count(suite.estimate.cases, "case")} · ${
                                                 orchestrations.find((o) => o.id === suite.orchestration_id)?.name ?? "no workflow"}`}
                                         />
@@ -276,8 +330,11 @@ export function EvalsScreen() {
                                 key={openSuite?.id ?? "new"}
                                 suite={openSuite}
                                 orchestrations={orchestrations}
+                                starting={!!openSuite && !!started[openSuite.id]}
+                                unstarted={!!openSuite && !!unstarted[openSuite.id]}
                                 onToast={show}
-                                onChanged={refreshSuites}
+                                onStarted={(runId) => openSuite && onStarted(openSuite.id, runId)}
+                                onChanged={async () => { await refreshSuites(); }}
                                 onSaved={async (id) => { await refreshSuites(); setPicked({ kind: "set", id }); }}
                                 onDeleted={async () => { setPicked(null); await refreshSuites(); }}
                                 onCancelNew={() => setPicked(null)}
@@ -725,11 +782,16 @@ function RubricDetail({
  * saved on arrival: a set the model wrote unattended tests what it finds easy.
  */
 function SetDetail({
-    suite, orchestrations, onToast, onChanged, onSaved, onDeleted, onCancelNew,
+    suite, orchestrations, starting, unstarted, onToast, onStarted, onChanged, onSaved, onDeleted, onCancelNew,
 }: {
     suite: Suite | null;
     orchestrations: Orchestration[];
+    /** Started here, its run not seen yet (F1509). */
+    starting: boolean;
+    /** Started here and never seen within START_SEEN_MS (F1509). */
+    unstarted: boolean;
     onToast: ToastFn;
+    onStarted: (runId: string) => void;
     onChanged: () => Promise<void>;
     onSaved: (id: string) => Promise<void>;
     onDeleted: () => Promise<void>;
@@ -756,13 +818,14 @@ function SetDetail({
         }
     }, [suiteId]);
 
-    const running = !!suite?.running;
+    // Read again when the set starts or ends, and polled while it is starting or runs (F1509).
+    const inFlight = !!suite?.running || starting;
     useEffect(() => {
         void loadHistory();
-        if (!running) return;
+        if (!inFlight) return;
         const timer = setInterval(() => void loadHistory(), 2500);
         return () => clearInterval(timer);
-    }, [running, loadHistory]);
+    }, [inFlight, loadHistory]);
 
     async function save() {
         setBusy(true);
@@ -827,6 +890,9 @@ function SetDetail({
         try {
             const res = await fetch(`/api/evals/suites/${suite.id}/run`, { method: "POST" });
             if (!res.ok) throw new Error((await res.json()).detail);
+            // Start answers before its run is written (F1509): the set reads Starting… until the run is seen.
+            const body = await res.json().catch(() => null);
+            if (typeof body?.suite_run_id === "string" && body.suite_run_id) onStarted(body.suite_run_id);
             onToast(scored
                 ? "Running. Cases are scored as they finish."
                 : "Running. No rubric is bound, so the cases will not be scored.",
@@ -882,6 +948,11 @@ function SetDetail({
                             <Button size="sm" variant="secondary" onClick={stop}>
                                 <Square className="h-3.5 w-3.5" aria-hidden /> Stop
                             </Button>
+                        ) : starting ? (
+                            // Not Run: a second click would start a second set (F1509).
+                            <Button size="sm" disabled>
+                                <Play className="h-3.5 w-3.5" aria-hidden /> Starting…
+                            </Button>
                         ) : (
                             <Button size="sm" onClick={() => setConfirmRun(true)} disabled={suite.estimate.cases === 0}>
                                 <Play className="h-3.5 w-3.5" aria-hidden /> Run
@@ -889,10 +960,10 @@ function SetDetail({
                         )}
                         <IconButton
                             label="Delete set"
-                            title={suite.running ? "Stop the set's run first" : "Delete set"}
+                            title={suite.running ? "Stop the set's run first" : starting ? "The set is starting" : "Delete set"}
                             icon={Trash}
                             tone="danger"
-                            disabled={suite.running}
+                            disabled={suite.running || starting}
                             onClick={() => setConfirmDelete(true)}
                         />
                     </>
@@ -902,6 +973,9 @@ function SetDetail({
             {suite && (
                 <section aria-labelledby="set-runs" className="grid gap-1">
                     <h3 id="set-runs" className="m-0 text-[13px] font-semibold text-text">Runs of this set</h3>
+                    {unstarted && !starting && !suite.running && (
+                        <p className="m-0 text-xs font-medium text-danger">{"It didn't start; try again."}</p>
+                    )}
                     {suite.running && latest && (
                         <p className="m-0 text-xs text-accent-ink">
                             Running — {latest.scored_count} of {latest.case_count} scored.
@@ -1083,6 +1157,14 @@ function SetDetail({
             />
         </div>
     );
+}
+
+/** `map` without `ids`: the same object when none of them is in it. */
+function without<T>(map: Record<string, T>, ids: string[]): Record<string, T> {
+    if (!ids.some((id) => id in map)) return map;
+    const next = { ...map };
+    for (const id of ids) delete next[id];
+    return next;
 }
 
 /** What running a set costs, said before it starts: it is the most expensive action here. */
