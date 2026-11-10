@@ -13414,6 +13414,57 @@ async def check_pickerfind(browser) -> str:
             "inside the row at phone width")
 
 
+#: The pickers' list with OpenRouter's ids beside it (F1493). Under cmdk's own score "opus" also found
+#: openrouter.openai/gpt-oss-120b, openrouter.moonshotai/kimi-k3 and openrouter.anthropic/claude-sonnet-4.5, letters in
+#: order across the id and "OpenRouter", as on cloud it found GPT OSS Safeguard, Llama 4 Scout and Claude Sonnet 4.6.
+_PICKER_WORD_MODELS = {"providers": {
+    **_PICKER_MODELS["providers"],
+    "openrouter": {"available": True, "models": [
+        "openrouter.openai/gpt-oss-120b", "openrouter.moonshotai/kimi-k3",
+        "openrouter.anthropic/claude-sonnet-4.5", "openrouter.anthropic/claude-opus-4.5"]},
+}}
+
+
+@check
+async def check_pickerwords(browser) -> str:
+    """A picker finds what begins a word of a model's name, id or provider, never its letters scattered in order
+    (F1493): "opus" listed GPT OSS Safeguard and Llama 4 Scout on cloud. "opus" lists the three Opus models only,
+    "gpt oss" the one GPT OSS; "mini" lists gpt-5-mini first, then the Gemini models it is only inside of; "pus",
+    inside "opus" and starting no word, lists the Opus models after all."""
+    opus = ["claude-opus-4-8", "cli.claude.opus", "openrouter.anthropic/claude-opus-4.5"]
+    bad: list[str] = []
+    state = {"closed": False, "posts": []}
+    ctx, page = await _firstrun_page(browser, "/dashboard", state, new_workspace=True, models=_PICKER_WORD_MODELS)
+    dialog = page.get_by_test_id("model-setup")
+    try:
+        await dialog.wait_for(timeout=30_000)
+        await dialog.get_by_role("button", name="Continue").click()
+        await dialog.get_by_role("button", name="Everyday model").click()
+        search = page.get_by_role("combobox", name="Search Everyday model")
+        await search.wait_for(timeout=5_000)
+
+        async def found(typed: str) -> list[str]:
+            await search.fill(typed)
+            await asyncio.sleep(0.4)
+            return [t.split("\n")[0].strip() for t in await page.get_by_role("option").all_inner_texts()]
+
+        if sorted(got := await found("opus")) != sorted(opus):
+            bad.append(f"'opus' finds {got}")
+        if (got := await found("gpt oss")) != ["openrouter.openai/gpt-oss-120b"]:
+            bad.append(f"'gpt oss' finds {got}")
+        got = await found("mini")
+        if got[:1] != ["gpt-5-mini"] or sorted(got[1:]) != ["gemini-2.5-flash", "gemini-2.5-pro"]:
+            bad.append(f"'mini' finds {got}, not gpt-5-mini first, then the Gemini models")
+        if sorted(got := await found("pus")) != sorted(opus):
+            bad.append(f"'pus' finds {got}")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("'opus' lists the Opus models only, 'gpt oss' GPT OSS, 'mini' a word's start before a name it is inside, "
+            "'pus' what holds it")
+
+
 # ── the browser inside Synapse: the pane (BRW2, D330) ───────────────────────
 
 #: A 16×10 JPEG: a frame of the screencast, and the screenshot after an action.
