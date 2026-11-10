@@ -41,6 +41,9 @@ const HERO_CHROME = '12rem';
 /** The enlarged dialog's title and footer around its picture (F1376). */
 const ENLARGED_CHROME = '12rem';
 
+/** How long a browser may take to open before the pane says a private one is starting (F1516). */
+const SLOW_OPEN_MS = 6_000;
+
 export function BrowserPane({
   host, sessionId, agentName, actions, memory, closedBefore = false, onClosed, onHide, onHandedBack, signIn, record, owner, signedIn, picks,
   hero = false, enlarge = false, className, style, children,
@@ -104,6 +107,14 @@ export function BrowserPane({
 }) {
   const { frame, closed: streamClosed, log } = useBrowserFrames(host.framesUrl(sessionId), !closedBefore, memory, sessionId);
   const closed = closedBefore || streamClosed;
+  // A browser still opening after a few seconds is a cold one starting (F1516, eb's QA B8: ~30 s on cloud): said, so
+  // the wait is understood. One that opens at once (the laptop's) never shows it.
+  const [slowOpen, setSlowOpen] = useState(false);
+  useEffect(() => {
+    if (frame || closed) return;
+    const timer = setTimeout(() => setSlowOpen(true), SLOW_OPEN_MS);
+    return () => clearTimeout(timer);
+  }, [frame, closed]);
   const [stopping, setStopping] = useState(false);
   const [stopFailed, setStopFailed] = useState(false);
 
@@ -413,9 +424,16 @@ export function BrowserPane({
         ) : closed ? (
           <p className="text-sm text-text-muted">Browser closed</p>
         ) : (
-          <div className="flex items-center gap-2 text-sm text-text-muted">
-            <Spinner size={16} />
-            Opening the browser…
+          <div role="status" className="flex max-w-sm flex-col items-center gap-1.5 text-center text-sm text-text-muted">
+            <span className="flex items-center gap-2">
+              <Spinner size={16} />
+              Opening the browser…
+            </span>
+            {slowOpen && (
+              <span className="text-xs leading-relaxed">
+                Starting a private browser for you. The first one can take half a minute or so.
+              </span>
+            )}
           </div>
         )}
         {asks?.dialog ? (
