@@ -2,6 +2,9 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
+// Its own module, not the kit's index: the widget's page loads only what it draws.
+import { VisitorMarkdown } from '@/components/ui/visitor-markdown';
+
 import styles from './embed.module.css';
 
 /**
@@ -621,16 +624,22 @@ export default function WidgetChat({
             {notice}
           </p>
         )}
-        {messages.map((message, index) => (
-          <p
-            key={index}
-            className={`${styles.bubble} ${
-              message.role === 'user' ? styles.fromUser : styles.fromAgent
-            } ${message.failed ? styles.failed : ''}`}
-          >
-            {message.text}
-          </p>
-        ))}
+        {messages.map((message, index) => {
+          const bubble = `${styles.bubble} ${
+            message.role === 'user' ? styles.fromUser : styles.fromAgent
+          } ${message.failed ? styles.failed : ''}`;
+          // F1518: an agent's reply is drawn as markdown, on the policy a stranger's screen needs (no raw HTML, no
+          // images, links to the web and mail only); the visitor's own words, and a failure, as they were typed.
+          return message.role === 'assistant' && !message.failed ? (
+            <div key={index} className={`${bubble} ${styles.markdown}`}>
+              <VisitorMarkdown>{message.text}</VisitorMarkdown>
+            </div>
+          ) : (
+            <p key={index} className={bubble}>
+              {message.text}
+            </p>
+          );
+        })}
         {status && <p className={styles.status}>{status}</p>}
         {failed && !busy && (
           <button type="button" onClick={retry} className={styles.retry}>

@@ -37,6 +37,8 @@
   --edge: #9ea3a7;
   --danger-bg: #fff0ee;
   --danger-text: #a3201e;
+  /* F1518: a link in a reply, blue on the light surface (AA). */
+  --link: #1d4ed8;
 
   /* Filled in by the [data-font] rules below. */
   --font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
@@ -137,6 +139,25 @@
 }
 .fromAgent { align-self: flex-start; background: var(--surface); border-bottom-left-radius: 6px; }
 .failed { background: var(--danger-bg); color: var(--danger-text); }
+
+/* F1518: an agent's reply drawn as markdown (VisitorMarkdown). Its blocks bring their own lines, so the bubble's
+   pre-wrap is off; a link is the one blue thing in it, underlined, never the customer's accent (a pale accent would
+   hide it). */
+.markdown { white-space: normal; }
+.markdown p, .markdown ul, .markdown ol, .markdown pre { margin: 0 0 8px; }
+.markdown > :last-child { margin-bottom: 0; }
+.markdown ul, .markdown ol { padding-left: 20px; }
+.markdown li + li { margin-top: 2px; }
+.markdown a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+.markdown code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+  background: var(--line);
+  padding: 0 3px;
+  border-radius: 4px;
+}
+.markdown pre { white-space: pre-wrap; }
+.markdown pre code { background: none; padding: 0; }
 
 .status { margin: 0; color: var(--muted); font-size: 13px; }
 
@@ -261,6 +282,7 @@
   --edge: #3a4147;
   --danger-bg: #391917;
   --danger-text: #f9b4ae;
+  --link: #93b4ff;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -273,6 +295,7 @@
     --edge: #3a4147;
     --danger-bg: #391917;
     --danger-text: #f9b4ae;
+    --link: #93b4ff;
   }
 
   .refusal { background: #0d1216; color: #bcc2c7; }
