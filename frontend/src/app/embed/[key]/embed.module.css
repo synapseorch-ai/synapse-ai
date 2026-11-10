@@ -158,6 +158,11 @@
 }
 .markdown pre { white-space: pre-wrap; }
 .markdown pre code { background: none; padding: 0; }
+/* A table scrolls sideways inside the bubble ([data-table], VisitorMarkdown) rather than widening it. */
+.markdown [data-table] { overflow-x: auto; margin: 0 0 8px; }
+.markdown table { border-collapse: collapse; font-size: 13px; }
+.markdown th, .markdown td { padding: 3px 8px 3px 0; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.markdown th { font-weight: 600; }
 
 .status { margin: 0; color: var(--muted); font-size: 13px; }
 

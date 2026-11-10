@@ -9,8 +9,8 @@
  * - **No raw HTML.** `skipHtml`: an HTML node is dropped, never sanitised and kept, so `<a href=…>x</a>` leaves
  *   `x` as text and `<img onerror>` leaves nothing.
  * - **A short list of elements**, the rest unwrapped to their text: paragraphs and breaks, strong, emphasis,
- *   strikethrough, lists, code, links; a heading is a bold paragraph. No image (no tracking pixel, no button drawn
- *   as one), no table, no rule, no task box.
+ *   strikethrough, lists, code, links, tables; a heading is a bold paragraph. No image (no tracking pixel, no
+ *   button drawn as one), no rule, no task box.
  * - **Links only to http, https and mailto**, each opened in a new tab with `noopener noreferrer nofollow`. Any
  *   other scheme (`javascript:`, `data:`, `vbscript:`, a path of the widget's own app) is its text. So is a link
  *   whose words are an address other than the one it goes to: `[https://good.example](https://evil.example)`.
@@ -27,9 +27,13 @@ import remarkGfm from "remark-gfm";
 
 import { keepLineBreaks, type MdNode } from "./markdown";
 
-/** The elements a reply may draw; anything else is unwrapped to its children (an image or a rule to nothing). */
+/**
+ * The elements a reply may draw; anything else is unwrapped to its children (an image or a rule to nothing). A
+ * table is drawn (Naveen 11-10: unwrapped, VID4 take 7's catalogue table read as one run-on line): elements only,
+ * the one attribute on a cell GFM's own alignment (a text-align of left, center or right), never the model's.
+ */
 const ALLOWED = ["p", "br", "strong", "em", "del", "ul", "ol", "li", "code", "pre", "a",
-                 "h1", "h2", "h3", "h4", "h5", "h6"];
+                 "h1", "h2", "h3", "h4", "h5", "h6", "table", "thead", "tbody", "tr", "th", "td"];
 
 /** The schemes a reply's link may open: the web and mail. */
 const SAFE_HREF = /^(?:https?:|mailto:)/i;
@@ -57,6 +61,12 @@ function textOf(node: MdNode | undefined): string {
   return (node.children ?? []).map(textOf).join("");
 }
 
+/** A cell's alignment, only when it is GFM's own: left, center or right; any other style is dropped. */
+export function aligned(style: unknown): { textAlign: "left" | "center" | "right" } | undefined {
+  const value = (style as { textAlign?: unknown } | undefined)?.textAlign;
+  return value === "left" || value === "center" || value === "right" ? { textAlign: value } : undefined;
+}
+
 const strongHeading: Components["h1"] = ({ children }) => <p><strong>{children}</strong></p>;
 
 const COMPONENTS: Components = {
@@ -70,6 +80,15 @@ const COMPONENTS: Components = {
     );
   },
   h1: strongHeading, h2: strongHeading, h3: strongHeading, h4: strongHeading, h5: strongHeading, h6: strongHeading,
+  // A wide table scrolls sideways inside its bubble rather than widening it (the host styles `[data-table]`).
+  table: ({ children }) => (
+    <div data-table="">
+      <table>{children}</table>
+    </div>
+  ),
+  // A cell keeps GFM's alignment and nothing else, checked here rather than trusted (eb 11-10).
+  th: ({ children, style }) => <th style={aligned(style)}>{children}</th>,
+  td: ({ children, style }) => <td style={aligned(style)}>{children}</td>,
 };
 
 const PLUGINS = [remarkGfm, keepLineBreaks];
