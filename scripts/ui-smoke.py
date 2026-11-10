@@ -12443,14 +12443,20 @@ WIDGET_SHOP = "https://shop.uismoke.example"  # a site of its own; only localhos
 
 def _smoke_widget(origins: list[str]) -> dict:
     """A widget for the checks below, on the agent an existing widget already serves (a publishable one), or on the
-    first agent. The caller deletes it."""
+    first agent, or, on a store with none (a fresh scratch: its list leaves out Synapse AI), on one made here that
+    calls no tool (F1518's red run, 11-10: "list index out of range"). The caller deletes the widget."""
     widgets = api("/api/widgets")
     widgets = widgets.get("widgets", widgets) if isinstance(widgets, dict) else widgets
     agent = next((w["agent_id"] for w in widgets if w.get("agent_id")), None)
     if not agent:
         agents = api("/api/agents")
         agents = agents.get("agents", agents) if isinstance(agents, dict) else agents
-        agent = agents[0]["id"]
+        agent = agents[0]["id"] if agents else None
+    if not agent:
+        made = api("/api/agents", "POST", {"id": "uismoke_widget_agent", "name": "UI smoke widget agent",
+                                           "description": "Answers in the widget checks", "tools": [],
+                                           "skip_default_tools": True, "system_prompt": "Answer briefly."})
+        agent = (made.get("agent") or made).get("id", "uismoke_widget_agent")
     made = api("/api/widgets", "POST", {"name": "uismoke widget", "agent_id": agent, "allowed_origins": origins,
                                         "title": "Smoke help", "greeting": "Hi from the smoke test."})
     return made.get("widget", made)
