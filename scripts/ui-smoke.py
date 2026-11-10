@@ -8583,20 +8583,54 @@ async def check_dialogfocus(browser) -> str:
         await ctx.close()
 
 
+#: An open list's box once it has stopped moving, and what the hit test finds at its middle then. Read on animation
+#: frames until the box is the same on three frames running, for at most 2 s. A long Select's first frame comes before
+#: Radix has set --radix-select-content-available-height, so its max-height, min(18rem, that variable), is not a
+#: length yet: the list is placed at its whole height, on the side of its trigger with more room, and moved below the
+#: trigger a frame or more later. A box read on that first frame sent the wheel to a point the list had left, over the
+#: dialog's backdrop, which the dialog's scroll lock swallows (F1526, 11-11: 3 of 12 on 73f7e2cf, a Select alone among
+#: them; its pointer-events stayed auto and nothing covered it). `covered` names what is at the middle when it is not
+#: the list, so a list under a backdrop, or one that takes no pointer events, fails in its own words.
+_SETTLED_LIST = r"""async (e) => {
+  const frame = () => new Promise((done) => requestAnimationFrame(() => done()));
+  const read = () => { const b = e.getBoundingClientRect(); return {x: b.x, y: b.y, width: b.width, height: b.height}; };
+  const start = performance.now();
+  let box = read(), same = 0;
+  while (same < 3 && performance.now() - start < 2000) {
+    await frame();
+    const next = read();
+    same = ['x', 'y', 'width', 'height'].every((k) => Math.abs(next[k] - box[k]) < 0.5) ? same + 1 : 0;
+    box = next;
+  }
+  const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+  const covered = !hit ? 'nothing' : e.contains(hit) ? ''
+    : [hit.tagName.toLowerCase(), ...String(hit.className || '').trim().split(/\s+/).slice(0, 4)].join('.');
+  return {box, settled: same >= 3, covered};
+}"""
+
+
 async def _wheel_scrolls(page, scroller) -> str | None:
-    """None when the wheel over an open list scrolls it and the list fits the window; else what is wrong."""
+    """None when the wheel over an open list scrolls it and the list fits the window; else what is wrong.
+
+    Measured where the list settled, not where its first frame drew it (_SETTLED_LIST).
+    """
     try:
         await scroller.wait_for(timeout=5_000)
     except Exception:
         return "its list never opened"
-    box = await scroller.bounding_box()
+    found = await scroller.evaluate(_SETTLED_LIST)
+    box = found["box"]
     height = page.viewport_size["height"]
-    if not box:
+    if box["width"] <= 0 or box["height"] <= 0:
         return "its list has no box"
+    if not found["settled"]:
+        return f"its list was still moving after 2 s (last at {box['y']:.0f}..{box['y'] + box['height']:.0f})"
     if box["y"] < -1 or box["y"] + box["height"] > height + 1:
         return f"its list runs off the window ({box['y']:.0f}..{box['y'] + box['height']:.0f} of {height}px)"
     if await scroller.evaluate("e => e.scrollHeight <= e.clientHeight"):
         return "its list is not taller than its box, so it cannot be measured"
+    if found["covered"]:
+        return f"the middle of its list is under {found['covered']}"
     await page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
     await page.mouse.wheel(0, 400)
     await asyncio.sleep(0.5)
