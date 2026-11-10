@@ -72,7 +72,10 @@ export function BrowserPane({
    * at the person's own step (`handover`) says what to do there, then Carry on.
    */
   record?: {
-    onStop: (keep: boolean) => void;
+    /** `name`: the one the person gave a new recording at Stop (`askName`), or none. */
+    onStop: (keep: boolean, name?: string) => void;
+    /** A new recording: the strip asks for its name, filled from what it did until the person types (F1512). */
+    askName?: boolean;
     busy?: boolean;
     handover?: { reason: string } | null;
     onCarryOn?: () => void;
@@ -340,7 +343,7 @@ export function BrowserPane({
           {signIn.refused && <p role="alert" className="leading-relaxed text-danger">{signIn.refused}</p>}
         </div>
       ) : record && !closed ? (
-        <RecordStrip record={record} recording={frame?.recording} />
+        <RecordStrip record={record} recording={frame?.recording} site={url ? hostOf(url) : ''} />
       ) : banner ? (
         <MomentStrip banner={banner} agentName={agentName} onDone={driving ? handBack : undefined}
                      onRelease={release} onAllow={allow} onTakeOver={canDrive && !driving ? takeOver : undefined}
@@ -611,10 +614,17 @@ const HOLDING: Record<NonNullable<FrameRecording['holding']>, string> = {
 };
 
 /** The record browser's strip (F1142): it is recording, how far, what isn't kept; or, mid-replay, the person's step. */
-function RecordStrip({ record, recording }: {
+function RecordStrip({ record, recording, site }: {
   record: NonNullable<React.ComponentProps<typeof BrowserPane>['record']>;
   recording?: FrameRecording;
+  /** The page's site, for the name a new recording is given until the person names it. */
+  site: string;
 }) {
+  // Every recording has a name someone chose or saw (F1512, eb's QA B11): filled from what it did, the site and its
+  // latest step, until the person types their own.
+  const [typed, setTyped] = useState<string | null>(null);
+  const name = typed ?? [site, recording?.last?.title].filter(Boolean).join(' · ');
+  const asking = !!record.askName && !record.handover;
   return (
     <div role="status" className="flex shrink-0 flex-col gap-2 border-b border-person bg-person-subtle px-3 py-2.5 text-xs text-text">
       <div className="flex flex-wrap items-center gap-2">
@@ -641,10 +651,18 @@ function RecordStrip({ record, recording }: {
           {record.handover ? (
             <Button variant="person" size="sm" loading={record.busy} onClick={record.onCarryOn}>Carry on</Button>
           ) : (
-            <Button variant="person" size="sm" loading={record.busy} onClick={() => record.onStop(true)}>Stop and keep</Button>
+            <Button variant="person" size="sm" loading={record.busy}
+                    onClick={() => record.onStop(true, asking ? name.trim() || undefined : undefined)}>Stop and keep</Button>
           )}
         </div>
       </div>
+      {asking && (
+        <label className="flex flex-wrap items-center gap-2">
+          <span className="font-medium">Name</span>
+          <Input size="sm" value={name} maxLength={120} onChange={e => setTyped(e.target.value)}
+                 aria-label="Name this task" placeholder="What this task does" className="min-w-[12rem] flex-1" />
+        </label>
+      )}
       {record.failed && <p role="alert" className="leading-relaxed text-danger">{record.failed}</p>}
     </div>
   );

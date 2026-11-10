@@ -144,10 +144,11 @@ export function RecordTask({ host, sessionsHost, browserHost, onKept, label = 'R
     setOpen(done.opened);
   };
 
-  const stop = async (keep: boolean) => {
+  const stop = async (keep: boolean, name?: string) => {
     if (!open) return;
     setStopping(true);
-    const done = await stopRecording(host, open.browserSessionId, { keep, ...(keep && workflowId ? { workflow_id: workflowId } : {}) });
+    const done = await stopRecording(host, open.browserSessionId, {
+      keep, ...(keep && name ? { name } : {}), ...(keep && workflowId ? { workflow_id: workflowId } : {}) });
     setStopping(false);
     if ('refused' in done) { setStopFailed(done.refused); return; }
     setOpen(null);
@@ -194,7 +195,7 @@ export function RecordTask({ host, sessionsHost, browserHost, onKept, label = 'R
             sessionId={open.browserSessionId}
             agentName="You"
             actions={[]}
-            record={{ onStop: stop, busy: stopping, failed: stopFailed }}
+            record={{ onStop: stop, busy: stopping, failed: stopFailed, askName: true }}
             onClosed={() => setOpen(null)}
             className="h-full"
           />
