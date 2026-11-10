@@ -355,6 +355,54 @@ async def _spec_of(page: dict, state: dict) -> None:
     page["api"] = own_api.answer_of(name, got)
 
 
+async def _named_services(state: dict, server_module: Any) -> dict[str, str]:
+    """What code knows of each service the request names (`request.providers`), for the planner before it plans
+    (F1495, A1; TRI2's class 2: prod's planner, on Sonnet 4.6, spent 11 of 14 turns looking for a GitHub tool, with
+    nothing in front of it on GitHub). No model and no web: a tool server connected here by the service's name, else
+    the Apps catalogue's app by its whole name (`catalog_entry`: "Google" is never Google Calendar), else nothing here.
+    Each with the build rule, so there is nothing to look for: connected, its tools by name; otherwise its tools named
+    for what they do, connected on a card after the yes or looked up after the plan (`step_plan_lookup`)."""
+    from core.builder_research import _slug, catalog_entry
+    from core.native_builder.lookup import MAX_PROVIDERS
+
+    request = _obj(state.get("request"))
+    said = request.get("providers") if isinstance(request, dict) else None
+    named = list(dict.fromkeys(p.strip() for p in said or [] if isinstance(p, str) and p.strip()))[:MAX_PROVIDERS]
+    if not named:
+        return {}
+    servers = _servers(server_module)
+    try:
+        from core.builder_connect import _read_options
+
+        catalog = (await _read_options()).get("catalog") or []
+    except Exception as exc:  # noqa: BLE001 — no catalogue read is a pack that says "looked up after the plan"
+        _log.warning("the Apps catalogue was not read for the pack: %s", exc)
+        catalog = []
+    out: dict[str, str] = {}
+    for name in named:
+        app = catalog_entry(name, catalog)
+        slugs = {_slug(name), *((_slug(str(app.get("slug") or "")), _slug(str(app.get("name") or ""))) if app else ())}
+        here = next((s for s in sorted(servers) if _slug(s) in slugs - {""}), None)
+        rule = f"name its tools in the plan for what they do, with {name} in the step's words"
+        if here is not None:
+            tools = ", ".join(f"{here}__{t}" for t in servers[here][:12])
+            out[name] = (f"connected here: its tools are {tools} (in `tools`): use them by those exact names. Nothing "
+                         "to look for here.")
+        elif app is not None:
+            out[name] = (f"an app in the Apps catalog, not connected yet: {rule}; the person connects it on its card "
+                         "after the yes. Nothing to look for here.")
+        else:
+            out[name] = (f"nothing here provides it yet: {rule}; code looks up who provides it after the plan. Nothing "
+                         "to look for here.")
+    return out
+
+
+#: Whose the pack's `tools` are (F1495, D): prod's planner and a Haiku 4.5 run both called `list_tool_servers` from
+#: that list first, refused as no tool of theirs.
+TOOLS_ARE = ("What this workspace's workflows use, by exact name: a plan's steps and agents name them. You call none "
+             "of them: your own tools are the ones you were given.")
+
+
 async def read_plan_context(args: dict, server_module: Any, events: list[dict]) -> dict:
     from core.builder_help import product_capabilities
     from core.native_builder import features
@@ -365,6 +413,9 @@ async def read_plan_context(args: dict, server_module: Any, events: list[dict]) 
     tools = ws.tools[:PACK_TOOLS]
     pack: dict[str, Any] = {
         "kind": "update" if base is not None else "create",
+        # Each service the request names, as code knows it (F1495, A1): first, so the planner never looks for one.
+        **({"named_services": services} if (services := await _named_services(state, server_module)) else {}),
+        "tools_are": TOOLS_ARE,  # F1495, D
         "tools": tools,
         **({"more_tools": len(ws.tools) - len(tools)} if len(ws.tools) > len(tools) else {}),
         "agents": [{"id": i, "name": a.get("name"), "does": " ".join(str(a.get("description") or "").split())[:140],
