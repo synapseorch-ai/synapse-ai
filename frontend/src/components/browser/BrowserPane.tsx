@@ -16,6 +16,7 @@ import { SessionPicker } from './SessionPicker';
 import { stepCount } from './recordings';
 import { onSite, shortDate, type KeptSession } from './sessions';
 import { useBrowserFrames, useKeptLog, type FrameMemory } from './useBrowserFrames';
+import { useInputs } from './useInputs';
 
 /**
  * The agent's browser, live, beside the chat or on a run's page (BRW2, D330).
@@ -39,6 +40,9 @@ import { useBrowserFrames, useKeptLog, type FrameMemory } from './useBrowserFram
 const HERO_CHROME = '12rem';
 /** The enlarged dialog's title and footer around its picture (F1376). */
 const ENLARGED_CHROME = '12rem';
+
+/** How long a browser may take to open before the pane says a private one is starting (F1516). */
+const SLOW_OPEN_MS = 6_000;
 
 export function BrowserPane({
   host, sessionId, agentName, actions, memory, closedBefore = false, onClosed, onHide, onHandedBack, signIn, record, owner, signedIn, picks,
@@ -71,7 +75,10 @@ export function BrowserPane({
    * at the person's own step (`handover`) says what to do there, then Carry on.
    */
   record?: {
-    onStop: (keep: boolean) => void;
+    /** `name`: the one the person gave a new recording at Stop (`askName`), or none. */
+    onStop: (keep: boolean, name?: string) => void;
+    /** A new recording: the strip asks for its name, filled from what it did until the person types (F1512). */
+    askName?: boolean;
     busy?: boolean;
     handover?: { reason: string } | null;
     onCarryOn?: () => void;
@@ -100,6 +107,14 @@ export function BrowserPane({
 }) {
   const { frame, closed: streamClosed, log } = useBrowserFrames(host.framesUrl(sessionId), !closedBefore, memory, sessionId);
   const closed = closedBefore || streamClosed;
+  // A browser still opening after a few seconds is a cold one starting (F1516, eb's QA B8: ~30 s on cloud): said, so
+  // the wait is understood. One that opens at once (the laptop's) never shows it.
+  const [slowOpen, setSlowOpen] = useState(false);
+  useEffect(() => {
+    if (frame || closed) return;
+    const timer = setTimeout(() => setSlowOpen(true), SLOW_OPEN_MS);
+    return () => clearTimeout(timer);
+  }, [frame, closed]);
   const [stopping, setStopping] = useState(false);
   const [stopFailed, setStopFailed] = useState(false);
 
@@ -129,13 +144,20 @@ export function BrowserPane({
   const [note, setNote] = useState('');
   const [wheelFailed, setWheelFailed] = useState<string | null>(null);
 
-  // One input at a time, in the order made: typing must arrive as typed.
-  const queue = useRef<Promise<unknown>>(Promise.resolve());
+  // One input at a time, in the order made, typing joined while a send is out; one the browser didn't take is said.
+  const inputs = useInputs(host, sessionId);
   // Whether the person has done anything to the page (a click, a key, typing): signing in needs it (F1439).
   const [touched, setTouched] = useState(false);
+  // Whether a page has opened in this browser: an http(s) page with nothing wrong with it (F1501, eb's QA B7/B15). A
+  // sign-in has nothing to keep before one has: while the browser is still opening, or when its site was blocked or
+  // never answered. Once one has, it stays so: a page that fails later doesn't undo a sign-in made before it, and the
+  // server still refuses a keep with nothing signed in.
+  const pageOpen = !!frame && /^https?:/i.test(frame.url || '') && !frame.load_error;
+  const [opened, setOpened] = useState(false);
+  useEffect(() => { if (pageOpen) setOpened(true); }, [pageOpen]);
   const send = (input: BrowserInput) => {
     if ((input.type === 'mouse' && input.event === 'click') || input.type === 'key' || input.type === 'text') setTouched(true);
-    queue.current = queue.current.then(() => host.input?.(sessionId, input)).catch(() => undefined);
+    inputs.send(input);
   };
 
   const takeOver = async () => {
@@ -225,7 +247,7 @@ export function BrowserPane({
   const steps = frame?.recording?.steps ?? 0;
   const closeNow = () => {
     if (closed) onClosed?.();
-    else if (signIn) { if (touched) setClosing('sign-in'); else signIn.onFinish(false); }
+    else if (signIn) { if (touched && opened) setClosing('sign-in'); else signIn.onFinish(false); }
     else if (record) { if (steps > 0 && !record.handover) setClosing('record'); else record.onStop(false); }
   };
   const inPanel = useContext(InBrowserPanel);
@@ -320,13 +342,19 @@ export function BrowserPane({
             </p>
             <div className="ml-auto flex shrink-0 gap-2">
               <Button variant="secondary" size="sm" disabled={signIn.busy} onClick={() => signIn.onFinish(false)}>Don’t keep</Button>
-              <Button variant="person" size="sm" loading={signIn.busy} onClick={() => signIn.onFinish(true)}>Keep</Button>
+              <Button variant="person" size="sm" loading={signIn.busy} disabled={!opened}
+                      aria-describedby={opened ? undefined : `${sessionId}-keep-wait`} onClick={() => signIn.onFinish(true)}>Keep</Button>
             </div>
           </div>
+          {!opened && (
+            <p id={`${sessionId}-keep-wait`} className="leading-relaxed text-text-muted">
+              Nothing to keep yet: {frame ? 'the page didn’t open' : 'the browser is still opening'}.
+            </p>
+          )}
           {signIn.refused && <p role="alert" className="leading-relaxed text-danger">{signIn.refused}</p>}
         </div>
       ) : record && !closed ? (
-        <RecordStrip record={record} recording={frame?.recording} />
+        <RecordStrip record={record} recording={frame?.recording} site={url ? hostOf(url) : ''} />
       ) : banner ? (
         <MomentStrip banner={banner} agentName={agentName} onDone={driving ? handBack : undefined}
                      onRelease={release} onAllow={allow} onTakeOver={canDrive && !driving ? takeOver : undefined}
@@ -366,6 +394,12 @@ export function BrowserPane({
         </div>
       )}
       {!closed && frame?.load_error && <LoadErrorLine error={frame.load_error} driving={driving} />}
+      {!closed && driving && inputs.failed && (
+        <p role="alert" className="flex shrink-0 items-center gap-2 border-b border-danger bg-danger-subtle px-3 py-1.5 text-xs text-text">
+          <AlertCircle className="size-3.5 shrink-0 text-danger" aria-hidden />
+          That didn’t reach the page. Try again.
+        </p>
+      )}
 
       <div
         className={cn('relative flex items-center justify-center overflow-hidden bg-surface-2',
@@ -390,9 +424,16 @@ export function BrowserPane({
         ) : closed ? (
           <p className="text-sm text-text-muted">Browser closed</p>
         ) : (
-          <div className="flex items-center gap-2 text-sm text-text-muted">
-            <Spinner size={16} />
-            Opening the browser…
+          <div role="status" className="flex max-w-sm flex-col items-center gap-1.5 text-center text-sm text-text-muted">
+            <span className="flex items-center gap-2">
+              <Spinner size={16} />
+              Opening the browser…
+            </span>
+            {slowOpen && (
+              <span className="text-xs leading-relaxed">
+                Starting a private browser for you. The first one can take half a minute or so.
+              </span>
+            )}
           </div>
         )}
         {asks?.dialog ? (
@@ -591,10 +632,17 @@ const HOLDING: Record<NonNullable<FrameRecording['holding']>, string> = {
 };
 
 /** The record browser's strip (F1142): it is recording, how far, what isn't kept; or, mid-replay, the person's step. */
-function RecordStrip({ record, recording }: {
+function RecordStrip({ record, recording, site }: {
   record: NonNullable<React.ComponentProps<typeof BrowserPane>['record']>;
   recording?: FrameRecording;
+  /** The page's site, for the name a new recording is given until the person names it. */
+  site: string;
 }) {
+  // Every recording has a name someone chose or saw (F1512, eb's QA B11): filled from what it did, the site and its
+  // latest step, until the person types their own.
+  const [typed, setTyped] = useState<string | null>(null);
+  const name = typed ?? [site, recording?.last?.title].filter(Boolean).join(' · ');
+  const asking = !!record.askName && !record.handover;
   return (
     <div role="status" className="flex shrink-0 flex-col gap-2 border-b border-person bg-person-subtle px-3 py-2.5 text-xs text-text">
       <div className="flex flex-wrap items-center gap-2">
@@ -621,10 +669,18 @@ function RecordStrip({ record, recording }: {
           {record.handover ? (
             <Button variant="person" size="sm" loading={record.busy} onClick={record.onCarryOn}>Carry on</Button>
           ) : (
-            <Button variant="person" size="sm" loading={record.busy} onClick={() => record.onStop(true)}>Stop and keep</Button>
+            <Button variant="person" size="sm" loading={record.busy}
+                    onClick={() => record.onStop(true, asking ? name.trim() || undefined : undefined)}>Stop and keep</Button>
           )}
         </div>
       </div>
+      {asking && (
+        <label className="flex flex-wrap items-center gap-2">
+          <span className="font-medium">Name</span>
+          <Input size="sm" value={name} maxLength={120} onChange={e => setTyped(e.target.value)}
+                 aria-label="Name this task" placeholder="What this task does" className="min-w-[12rem] flex-1" />
+        </label>
+      )}
       {record.failed && <p role="alert" className="leading-relaxed text-danger">{record.failed}</p>}
     </div>
   );

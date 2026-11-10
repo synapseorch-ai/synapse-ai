@@ -64,7 +64,7 @@ def _get_db_url() -> str:
     to the form psycopg can parse (user@host).
     Also appends sslmode=disable for localhost connections to avoid SSL cert
     verification errors against local PostgreSQL."""
-    raw = load_settings().get("sql_connection_string", "")
+    raw = (load_settings().get("sql_connection_string") or "").strip()
     url = sanitize_db_url(raw)
     if url and ("localhost" in url or "127.0.0.1" in url):
         sep = "&" if "?" in url else "?"
@@ -336,8 +336,13 @@ def create_repo_flow(repo_id: str, repo_path: str, included_patterns: list[str],
 def _ensure_database_exists():
     if not COCOINDEX_AVAILABLE:
         return
+    db_url = _get_db_url()
+    if not db_url:
+        # No code-index database is set: none to make, and nothing to say (F1494). An empty one became the admin
+        # address "/postgres", and psycopg's "missing "=" after "/postgres"" was printed on every start.
+        return
     from urllib.parse import urlparse, urlunparse
-    parsed = urlparse(_get_db_url())
+    parsed = urlparse(db_url)
     db_name = parsed.path.lstrip("/")
     admin_url = urlunparse(parsed._replace(path="/postgres"))
     try:
@@ -354,8 +359,11 @@ def _ensure_database_exists():
 def init_cocoindex():
     if not COCOINDEX_AVAILABLE:
         return
+    db_url = _get_db_url()
+    if not db_url:
+        return  # no code-index database set: nothing tried, nothing said (F1494)
     _ensure_database_exists()
-    os.environ["COCOINDEX_DATABASE_URL"] = _get_db_url()
+    os.environ["COCOINDEX_DATABASE_URL"] = db_url
     print("CocoIndex init check done.")
 
 

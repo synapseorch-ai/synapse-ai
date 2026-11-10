@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from core import site_sessions
 from core.browser import client as browser_client
+from core.browser import gate
 
 router = APIRouter()
 
@@ -40,11 +41,32 @@ def _site_of(text: str) -> str:
     return registrable_domain(_host_of(text))
 
 
-async def open_sign_in(text: str) -> str:
-    """The person's own browser for keeping the site in `text`, open on the host they typed (F1425): over https, and
-    nothing else of what they typed reaches its address."""
+def _page_on(host: str, start: str | None) -> str:
+    """Where a sign-in browser opens (F1514, eb's QA B5): the page the person typed, on the very host they named, over
+    https, with its path and query; never a login (`user:pass@`), a port, another host or another scheme. Anything
+    else is the host's front page, as F1425 opened it."""
+    front = f"https://{host}"
+    raw = (start or "").strip()
+    if not raw:
+        return front
+    try:
+        page = urlparse(raw if "://" in raw else f"https://{raw}")
+        if page.scheme not in ("http", "https") or page.username or page.password or page.port is not None \
+                or (page.hostname or "") != host:
+            return front
+    except ValueError:
+        return front
+    return f"{front}{page.path or '/'}" + (f"?{page.query}" if page.query else "")
+
+
+async def open_sign_in(text: str, start: str | None = None) -> str:
+    """The person's own browser for keeping the site in `text`, open on the page they typed (`start`) on its host, over
+    https (F1425, F1514)."""
     host = _host_of(text)
-    return await browser_client.tools.open_login_session([_site_of(host)], start_url=f"https://{host}")
+    # A site the browser's guard will never open is said before any browser starts (F1517, eb's QA B15).
+    if refused := await gate.refused_site(host):
+        raise HTTPException(status_code=422, detail=f"This browser can't open {host}: {refused}.")
+    return await browser_client.tools.open_login_session([_site_of(host)], start_url=_page_on(host, start))
 
 
 @router.get("/api/site-sessions")
@@ -60,12 +82,14 @@ async def list_site_sessions():
 
 class NewSession(BaseModel):
     site: str
+    #: The address as the person typed it: the page the browser opens on, on `site`'s own host (F1514).
+    start: str | None = None
 
 
 @router.post("/api/site-sessions/new")
 async def new_site_session(body: NewSession):
     """"Keep me signed in to a site": a browser that is the person's alone, on that site."""
-    return {"browser_session_id": await open_sign_in(body.site)}
+    return {"browser_session_id": await open_sign_in(body.site, body.start)}
 
 
 @router.patch("/api/site-sessions/{session_id}")

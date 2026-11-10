@@ -1442,107 +1442,37 @@
  },
  "amazon.titan-embed-text-v1": {
   "chat_bare": {
-   "calls": [
-    {
-     "body_keys": [
-      "model",
-      "prompt",
-      "stream",
-      "system"
-     ],
-     "http": "http://127.0.0.1:11434/api/generate",
-     "model": "amazon.titan-embed-text-v1",
-     "options": null,
-     "think": null
-    },
-    {
-     "log_usage": "ollama"
-    }
-   ],
-   "outcome": "ok"
+   "calls": [],
+   "outcome": {
+    "message": "Unknown model amazon.titan-embed-text-v1: no provider's model ids begin \"amazon.\". A Bedrock model is written bedrock.amazon.titan-embed-text-v1, an Ollama one ollama.amazon.titan-embed-text-v1.",
+    "raised": "LLMError"
+   }
   },
   "chat_capped": {
-   "calls": [
-    {
-     "body_keys": [
-      "model",
-      "options",
-      "prompt",
-      "stream",
-      "system"
-     ],
-     "http": "http://ollama.test:11434/api/generate",
-     "model": "amazon.titan-embed-text-v1",
-     "options": {
-      "num_predict": 1000
-     },
-     "think": null
-    },
-    {
-     "log_usage": "ollama"
-    }
-   ],
-   "outcome": "ok"
+   "calls": [],
+   "outcome": {
+    "message": "Unknown model amazon.titan-embed-text-v1: no provider's model ids begin \"amazon.\". A Bedrock model is written bedrock.amazon.titan-embed-text-v1, an Ollama one ollama.amazon.titan-embed-text-v1.",
+    "raised": "LLMError"
+   }
   },
   "chat_tools": {
-   "calls": [
-    {
-     "body_keys": [
-      "messages",
-      "model",
-      "stream",
-      "tools"
-     ],
-     "http": "http://ollama.test:11434/api/chat",
-     "model": "amazon.titan-embed-text-v1",
-     "options": null,
-     "think": null
-    },
-    {
-     "log_usage": "ollama"
-    }
-   ],
-   "outcome": "ok"
+   "calls": [],
+   "outcome": {
+    "message": "Unknown model amazon.titan-embed-text-v1: no provider's model ids begin \"amazon.\". A Bedrock model is written bedrock.amazon.titan-embed-text-v1, an Ollama one ollama.amazon.titan-embed-text-v1.",
+    "raised": "LLMError"
+   }
   },
   "embed": {
-   "calls": [
-    {
-     "args": [
-      [
-       "t"
-      ],
-      "amazon.titan-embed-text-v1",
-      "<settings>"
-     ],
-     "call": "_embed_ollama",
-     "kwargs": {}
-    }
-   ],
+   "calls": [],
    "outcome": {
-    "dims": 2,
+    "dims": 768,
     "vectors": 1
    }
   },
   "embed_dims": {
-   "calls": [
-    {
-     "args": [
-      [
-       "t"
-      ],
-      "amazon.titan-embed-text-v1",
-      {
-       "<settings+>": {
-        "__embed_output_dim": 256
-       }
-      }
-     ],
-     "call": "_embed_ollama",
-     "kwargs": {}
-    }
-   ],
+   "calls": [],
    "outcome": {
-    "dims": 2,
+    "dims": 768,
     "vectors": 1
    }
   },
@@ -1552,107 +1482,37 @@
  },
  "amazon.titan-embed-text-v2:0": {
   "chat_bare": {
-   "calls": [
-    {
-     "body_keys": [
-      "model",
-      "prompt",
-      "stream",
-      "system"
-     ],
-     "http": "http://127.0.0.1:11434/api/generate",
-     "model": "amazon.titan-embed-text-v2:0",
-     "options": null,
-     "think": null
-    },
-    {
-     "log_usage": "ollama"
-    }
-   ],
-   "outcome": "ok"
+   "calls": [],
+   "outcome": {
+    "message": "Unknown model amazon.titan-embed-text-v2:0: no provider's model ids begin \"amazon.\". A Bedrock model is written bedrock.amazon.titan-embed-text-v2:0, an Ollama one ollama.amazon.titan-embed-text-v2:0.",
+    "raised": "LLMError"
+   }
   },
   "chat_capped": {
-   "calls": [
-    {
-     "body_keys": [
-      "model",
-      "options",
-      "prompt",
-      "stream",
-      "system"
-     ],
-     "http": "http://ollama.test:11434/api/generate",
-     "model": "amazon.titan-embed-text-v2:0",
-     "options": {
-      "num_predict": 1000
-     },
-     "think": null
-    },
-    {
-     "log_usage": "ollama"
-    }
-   ],
-   "outcome": "ok"
+   "calls": [],
+   "outcome": {
+    "message": "Unknown model amazon.titan-embed-text-v2:0: no provider's model ids begin \"amazon.\". A Bedrock model is written bedrock.amazon.titan-embed-text-v2:0, an Ollama one ollama.amazon.titan-embed-text-v2:0.",
+    "raised": "LLMError"
+   }
   },
   "chat_tools": {
-   "calls": [
-    {
-     "body_keys": [
-      "messages",
-      "model",
-      "stream",
-      "tools"
-     ],
-     "http": "http://ollama.test:11434/api/chat",
-     "model": "amazon.titan-embed-text-v2:0",
-     "options": null,
-     "think": null
-    },
-    {
-     "log_usage": "ollama"
-    }
-   ],
-   "outcome": "ok"
+   "calls": [],
+   "outcome": {
+    "message": "Unknown model amazon.titan-embed-text-v2:0: no provider's model ids begin \"amazon.\". A Bedrock model is written bedrock.amazon.titan-embed-text-v2:0, an Ollama one ollama.amazon.titan-embed-text-v2:0.",
+    "raised": "LLMError"
+   }
   },
   "embed": {
-   "calls": [
-    {
-     "args": [
-      [
-       "t"
-      ],
-      "amazon.titan-embed-text-v2:0",
-      "<settings>"
-     ],
-     "call": "_embed_ollama",
-     "kwargs": {}
-    }
-   ],
+   "calls": [],
    "outcome": {
-    "dims": 2,
+    "dims": 768,
     "vectors": 1
    }
   },
   "embed_dims": {
-   "calls": [
-    {
-     "args": [
-      [
-       "t"
-      ],
-      "amazon.titan-embed-text-v2:0",
-      {
-       "<settings+>": {
-        "__embed_output_dim": 256
-       }
-      }
-     ],
-     "call": "_embed_ollama",
-     "kwargs": {}
-    }
-   ],
+   "calls": [],
    "outcome": {
-    "dims": 2,
+    "dims": 768,
     "vectors": 1
    }
   },

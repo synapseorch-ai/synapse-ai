@@ -519,6 +519,7 @@ RATE_LIMITED = "rate_limited"                # too many requests for now — ret
 PROVIDER_UNAVAILABLE = "provider_unavailable"  # down, overloaded, timed out, unreachable — retry
 MODEL_NO_ANSWER = "model_no_answer"          # answered with nothing usable (empty, blocked, all reasoning)
 MODEL_ERROR = "model_error"                  # anything else
+UNKNOWN_MODEL = "unknown_model"              # no provider's ids are written so; nothing was called — fix the model (F1491)
 
 RETRYABLE = frozenset({RATE_LIMITED, PROVIDER_UNAVAILABLE})
 
@@ -590,9 +591,14 @@ class LLMError(Exception):
     via_gateway: bool = False
 
     def __init__(self, message: str = "", *, provider: str | None = None,
-                 status: int | None = None, code: str | None = None, detail: str | None = None):
+                 status: int | None = None, code: str | None = None, detail: str | None = None,
+                 said: str | None = None):
         super().__init__(message)
         self.provider = provider
+        #: Our own sentence for this failure, set only where our code words it wholly itself (a CLI not signed in, a
+        #: provider with no address, Ollama not reachable), never with what a provider or a CLI printed: what a person
+        #: is told (`model_failures.failure_sentence`, F1502). None: the failure is said by its kind (D118).
+        self.said = said
         #: The provider's own sentence, read from its whole answer (`_body_message`): the message above keeps only
         #: the start of a body, and a longer sentence was cut there (F782).
         self.detail = detail
@@ -666,6 +672,22 @@ class EmptyAnswer(LLMError):
 # tenant's own ollama_base_url is used; the env var stays as the deployment-wide
 # default. This used to be the other way round, with server startup copying one
 # tenant's setting into os.environ for every tenant to pick up.
+def _address_only(url: str) -> str:
+    """A configured address as a person may be told it (F1502, eb's review): `scheme://host:port`, never its user
+    info, path or query, where a login or a key can ride."""
+    from urllib.parse import urlsplit
+
+    try:
+        got = urlsplit(str(url or "").strip())
+        host, port = got.hostname, got.port
+    except ValueError:
+        return "its configured address"
+    if not got.scheme or not host:
+        return "its configured address"
+    host = f"[{host}]" if ":" in host else host
+    return f"{got.scheme}://{host}" + (f":{port}" if port else "")
+
+
 def _ollama_base_url(settings: dict | None = None) -> str:
     configured = (settings or {}).get("ollama_base_url") or ""
     return configured.strip() or os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
@@ -1123,7 +1145,8 @@ async def call_cli_provider(
         raise LLMError(f"Unknown CLI base '{base}'. Supported: {list(_inv.CLI_BINARIES)}")
     executable = shutil.which(binary)
     if not executable:
-        raise LLMError(f"CLI binary '{binary}' was not found in PATH. Install {_CLI_LABELS[base]} and sign in to it first.")
+        said = f"CLI binary '{binary}' was not found in PATH. Install {_CLI_LABELS[base]} and sign in to it first."
+        raise LLMError(said, said=said)
 
     catalog = await _cli_status.codex_catalog() if base == "cli.codex" else None
     token = await _cli_status.github_token() if base == "cli.copilot" else None
@@ -1160,7 +1183,8 @@ async def call_cli_provider(
     except LLMError:
         raise
     except FileNotFoundError:
-        raise LLMError(f"CLI binary for '{cli_model}' not found in PATH. Install and authenticate the CLI first: {binary}")
+        said = f"CLI binary for '{cli_model}' not found in PATH. Install and authenticate the CLI first: {binary}"
+        raise LLMError(said, said=said)
     except Exception as e:
         raise LLMError(f"CLI provider '{cli_model}' unexpected error: {e}")
     finally:
@@ -1204,10 +1228,11 @@ def _cli_failure(base: str, cli_model: str, text: str, *, auth: bool = False) ->
         lines.append(line)
     tail = "\n".join(lines)[-600:]
     if any(p in tail.lower() for p in _CLI_RATE_LIMIT):
-        return LLMError(f"CLI provider '{cli_model}' rate limit / capacity error.\nDetails: {tail[-400:]}")
+        said = f"CLI provider '{cli_model}' rate limit / capacity error."
+        return LLMError(f"{said}\nDetails: {tail[-400:]}", said=said)  # its Details are the CLI's (F1502)
     if auth or _match_auth(tail):
-        return LLMError(f"CLI provider '{cli_model}' is not signed in. {_CLI_SIGN_IN[base]}, then retry.\n"
-                        f"Details: {tail[-300:]}")
+        said = f"CLI provider '{cli_model}' is not signed in. {_CLI_SIGN_IN[base]}, then retry."
+        return LLMError(f"{said}\nDetails: {tail[-300:]}", said=said)  # its Details are the CLI's (F1502)
     return LLMError(f"CLI provider '{cli_model}' failed: {tail[-400:]}")
 
 
@@ -1216,8 +1241,10 @@ def _refuse_own_tools(cli_model: str, tools: list[str], said: str = "") -> LLMEr
     answer to Synapse's prompt: the CLI was to run no tool at all (CLIM1).
     `said`: what the CLI said of it, its own words after ours (F1320)."""
     told = f" ({said})" if said else ""
-    return LLMError(f"CLI provider '{cli_model}' ran its own tool ({', '.join(sorted(set(tools)))}) instead of "
-                    f"answering{told}; Synapse runs these CLIs for their model only, so its answer was refused.")
+    ran = f"CLI provider '{cli_model}' ran its own tool ({', '.join(sorted(set(tools)))}) instead of answering"
+    end = "; Synapse runs these CLIs for their model only, so its answer was refused."
+    # Ours without the CLI's own words (F1502): those stay in the reason, never in what a person is told.
+    return LLMError(f"{ran}{told}{end}", said=f"{ran}{end}")
 
 
 def _cli_said(base: str, text: object) -> str:
@@ -2798,7 +2825,8 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
         (response_text, input_tokens, output_tokens)
     """
     if not chat_url and (not base_url or not base_url.strip()):
-        raise LLMError(f"{label} provider: base URL is not configured.")
+        said = f"{label} provider: base URL is not configured."
+        raise LLMError(said, said=said)
 
     V1_TIMEOUT = LLM_REQUEST_TIMEOUT
     MAX_RETRIES = 5
@@ -4117,7 +4145,8 @@ async def _chat_ollama(call: ChatCall, spec) -> LLMResult:
         except (httpx.ConnectError, httpx.ConnectTimeout) as e:
             # httpx says "All connection attempts failed"; the person needs
             # to know it was Ollama, and where it was looked for (F182).
-            raise LLMError(f"Local Agent Error: Ollama is not reachable at {_ollama_base}.") from e
+            raise LLMError(f"Local Agent Error: Ollama is not reachable at {_ollama_base}.",
+                           said=f"Ollama is not reachable at {_address_only(_ollama_base)}.") from e
         except Exception as e:
             raise LLMError(f"Local Agent Error: {e}") from e
 
@@ -4130,7 +4159,13 @@ async def generate_response_ex(prompt_msg, sys_prompt, mode, current_model, curr
     call from a stand-in of the same provider and pool (F1369, cap-04: `models_menu.stand_in`). The refused call wrote
     no usage, so only the call that answered is billed, on either host; the run says so (`said_stand_in`) and the
     agent or step keeps its model. Any other failure, a local model, no stand-in, or the stand-in's own failure is
-    raised as before."""
+    raised as before.
+
+    An id that names a provider no entry is (`anthropic.claude-sonnet-4-6`) is said as unknown, with the id it most
+    likely means, and nothing is called, whatever the mode (F1491): it ran as an Ollama model."""
+    unknown = _providers.unknown_said(current_model)
+    if unknown:
+        raise LLMError(unknown, code=UNKNOWN_MODEL)
     try:
         return await _generate_response_once(prompt_msg, sys_prompt, mode, current_model, current_settings,
                                              *args, **kwargs)
@@ -4309,7 +4344,8 @@ async def _generate_response_once(
     )
     spec = _providers.branch_for(mode, current_model)
     if spec is None:
-        raise LLMError(f"Error: Unknown cloud model selected ({current_model}).")
+        raise LLMError(f"Error: Unknown cloud model selected ({current_model}).",
+                       said=f"Unknown cloud model selected ({current_model}).")
     try:
         _answer = await _providers.resolve(spec.chat)(call, spec)
         (result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
@@ -4467,6 +4503,9 @@ async def embed_batch(texts: list[str], model: str, settings: dict) -> list[list
     forwarded to providers that support dimensionality control (currently Gemini).
     """
     spec = _providers.provider_for(model)
+    if _providers.unclaimed(model):
+        _log.warning(_providers.unknown_said(model))  # not sent to Ollama, which has no such model (F1491)
+        return [[0.0] * 768 for _ in range(len(texts))]
     if spec.embed is None:
         _log.debug(f"Unknown provider '{spec.id}' for embedding model '{model}'")
         return [[0.0] * 768 for _ in range(len(texts))]
@@ -4721,6 +4760,9 @@ async def embed_batch_ex(texts: list[str], model: str, settings: dict, *, input_
     if input_type not in (None, "document", "query"):
         raise ValueError(f"input_type is 'document' or 'query', not {input_type!r}")
     spec = _providers.provider_for(model)
+    unknown = _providers.unknown_said(model)
+    if unknown:
+        raise EmbeddingFailed(unknown, code=UNKNOWN_MODEL)  # not sent to Ollama (F1491)
     if spec.embed_ex is None:
         raise EmbeddingFailed(f"{spec.label} does not embed ({model}).", provider=spec.id, code=PROVIDER_REFUSED)
     try:

@@ -88,7 +88,11 @@ def model_failure_of(exc: BaseException) -> dict | None:
     seen = 0
     while exc is not None and seen < 5:
         if isinstance(exc, LLMError):
-            return {"code": exc.code, "ours": failure_is_ours(exc)}
+            from core.model_failures import failure_sentence
+
+            # `said`: what a person is told of it, decided here where the error is whole (F1502): our own sentence
+            # where our code worded it, the gateway's, or ours for its kind; never a provider's words.
+            return {"code": exc.code, "ours": failure_is_ours(exc), "said": clean(failure_sentence(exc))}
         exc, seen = exc.__cause__ or exc.__context__, seen + 1
     return None
 

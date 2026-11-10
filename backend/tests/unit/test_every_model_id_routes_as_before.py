@@ -14,7 +14,12 @@ dispatch did not ignore. Each must route as its lower-case form does.
 
 Recorded since, on purpose: F322 moved five embedding ids off Ollama —
 `text-embedding-3-small`, `-3-large`, `text-embedding-ada-002` to OpenAI,
-`text-embedding-004` and `embedding-001` to Gemini.
+`text-embedding-004` and `embedding-001` to Gemini. F1491 stopped two reaching
+Ollama: `amazon.titan-embed-text-v1` and `-v2:0`, Bedrock's ids written without
+`bedrock.`, which no provider claims. Chat says them as unknown and calls nothing,
+and `embed_batch` answers its zeros without a call. Only those two entries were
+rewritten: a whole rewrite would also replace `MIXED_CASE`'s recordings of the
+chains with the table's.
 
 `PF1_WRITE_GOLDEN=1` rewrites the file from whatever the code does now — only
 ever from the chains' code, or to record a change a commit makes on purpose.

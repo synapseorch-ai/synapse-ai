@@ -6026,6 +6026,82 @@ async def check_builderreload(browser) -> str:
     return "a waiting plan comes back and is answered; a working build is followed until it asks"
 
 
+#: Two tools in one plan that ask first, as a shop's own API gives them (VID4, 11-10: create an order, make its payment
+#: link). The plan object each review carries, with `alone` the tools the person has let act without asking.
+ALONE_TOOLS = ("shop_create_order", "shop_create_payment_link")
+
+
+def _alone_plan(alone: list[str]) -> dict:
+    asks = [t for t in ALONE_TOOLS if t not in alone]
+    return {"object": "plan", "outcome": "review",
+            "plan": {"kind": "create", "title": "Shop assistant", "summary": "An agent for the shop's website.",
+                     "steps": [{"id": "chat", "type": "agent", "name": "Shop assistant", "does": "Answers customers.",
+                                "agent": "Shop assistant"}],
+                     "agents": [{"name": "Shop assistant"}],
+                     "approvals": {"asks_first": asks, "acts_without_asking": alone}},
+            "offers": ["build", *[f"alone:{t}" for t in asks], "change", "stop"]}
+
+
+@check
+async def check_builderalone(browser) -> str:
+    """Each "Let … act without asking" press on one plan gets its own card, and the last one can be built (F1506).
+
+    A press resumes the run through `/api/builder/resume`'s own stream, and the run checks the plan again and asks
+    again: the same steps, so the same number of events, each time. The panel keyed a question's card by the event's
+    number within its stream, which starts again at 1 for every stream, so the second press's plan took the first's
+    key: it was drawn over the earlier card, which kept its pressed state, and its Build it stayed off (VID4's takes 1
+    and 2, 11-10). Two presses here, each answered by the same two events; the panel must hold both plans, and the
+    newest must offer Build it.
+    """
+    parked = {
+        "client_session_id": "conv-uismoke", "run_id": RUN_ID, "status": "paused",
+        "turns": [{"user": "an agent for our shop's website that takes orders", "assistant": ""}],
+        "pending": {"run_id": RUN_ID, "field": "feedback", "step_id": "step_human_review",
+                    "prompt": "Here is the plan.", "context_key": "plan_checked", "context": _alone_plan([])},
+    }
+    ctx, page = await _builder_back(browser, parked)
+    try:
+        await page.locator('[data-testid="assistant-open"]').first.click()
+        panel = page.locator('[data-testid="assistant-panel"]')
+        for n, tool in enumerate(ALONE_TOOLS):
+            press = panel.get_by_role("button", name=f"Let {tool} act without asking")
+            await press.last.wait_for(timeout=10_000)
+            await press.last.click()
+            for _ in range(50):
+                calls = await page.evaluate("() => window.__calls.filter((c) => c.url.includes('/api/builder/resume'))")
+                if len(calls) > n:
+                    break
+                await asyncio.sleep(0.1)
+            else:
+                raise AssertionError(f"pressing 'Let {tool} act without asking' resumed nothing")
+            await asyncio.sleep(0.3)
+            # The run takes the answer, checks the plan, and asks again: the same events after every press.
+            again = {"type": "human_input_required", "run_id": RUN_ID, "orch_step_id": "step_human_review",
+                     "prompt": "Here is the plan.", "fields": [{"name": "feedback"}], "context_key": "plan_checked",
+                     "context": _alone_plan(list(ALONE_TOOLS[:n + 1]))}
+            await page.evaluate("(events) => { for (const e of events) window.__follow.push(e); window.__follow.close(); }",
+                                [{"type": "step_start", "orch_step_id": "step_check_plan", "step_name": "Check the Plan"},
+                                 again])
+            await asyncio.sleep(0.8)
+        build = panel.get_by_role("button", name="Build it")
+        builds = await build.count()
+        last_on = builds > 0 and await build.last.is_enabled()
+        alone_cards = await panel.get_by_text("Acts without asking", exact=True).count()
+        resumed = [json.loads(c["body"]) for c in await page.evaluate("() => window.__calls")
+                   if "/api/builder/resume" in c["url"] and c["body"]]
+    finally:
+        await ctx.close()
+    said = [r.get("response", {}).get("feedback") for r in resumed]
+    if said != [f"let {t} act without asking" for t in ALONE_TOOLS]:
+        raise AssertionError(f"the presses did not answer the run in turn: {said}")
+    if alone_cards != 2:
+        raise AssertionError(f"{alone_cards} plan(s) say 'Acts without asking' after two presses, not 2: the second "
+                             "press's plan was drawn over the first's")
+    if not last_on:
+        raise AssertionError("the plan after the second press cannot be built: its Build it is off")
+    return "two act-alone presses: two plans drawn, the newest with Build it on"
+
+
 #: Agent switches recorded instead of sent: the stub's agents do not exist.
 RECORD_SWITCH = """
 window.__switches = [];
@@ -9361,6 +9437,87 @@ async def check_general_switches(browser) -> str:
             "the collapse button on Workspace's line")
 
 
+#: How late the store's models arrive in `settingsreadonce`: well past the first read of the settings.
+_MODELS_LATE_S = 4.0
+
+
+@check
+async def check_settingsreadonce(browser) -> str:
+    """What a person changes on Settings as soon as it takes input is what Save sends (F1492). The page read the saved
+    settings again once the store's models arrived, and that read put every field back: VID3's boards take turned a
+    switch in the first second and posted boards_enabled false. Here the models arrive late, a switch is turned the
+    moment it takes input, and Save is pressed only once they have landed. Personal details' fields, read beside the
+    settings, keep what was typed the same way. The backend's setting is put back as it was found."""
+    found = bool(api("/api/settings").get("allow_db_write"))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    posted: list[dict] = []
+    arrived: list[float] = []
+
+    async def late(route):
+        await asyncio.sleep(_MODELS_LATE_S)
+        await route.fallback()
+
+    async def record(route):
+        if route.request.method == "POST":
+            posted.append(json.loads(route.request.post_data or "{}"))
+        await route.fallback()
+    await ctx.route("**/api/models", late)
+    await ctx.route("**/api/settings", record)
+
+    async def after_the_models(page) -> None:
+        """Until every read of the models has answered, and a moment more for any read it sets off to land."""
+        give_up = time.monotonic() + _MODELS_LATE_S + 30
+        while not arrived and time.monotonic() < give_up:
+            await asyncio.sleep(0.2)
+        if not arrived:
+            raise AssertionError("the store's models never arrived")
+        await page.wait_for_timeout(int(SETTLE * 1000))
+
+    def on_response(response):
+        if urllib.parse.urlparse(response.url).path == "/api/models":
+            arrived.append(time.monotonic())
+    try:
+        page = await ctx.new_page()
+        page.on("response", on_response)
+        await page.goto(f"{APP}/settings/general", wait_until="domcontentloaded")
+        switch = page.get_by_role("switch", name="Database write access", exact=True)
+        await switch.wait_for(timeout=30_000)
+        await switch.click()  # waits until it takes input
+        turned = await switch.get_attribute("aria-checked")
+        if turned != ("false" if found else "true"):
+            raise AssertionError(f"Database write access read {turned} once turned; it was saved {found}")
+        if arrived:
+            raise AssertionError("the models arrived before the switch was turned: the check proves nothing")
+        await after_the_models(page)
+        if await switch.get_attribute("aria-checked") != turned:
+            raise AssertionError("a later read of the settings put Database write access back after it was turned")
+        async with page.expect_response(lambda r: urllib.parse.urlparse(r.url).path == "/api/settings"
+                                        and r.request.method == "POST", timeout=15_000) as saving:
+            await page.get_by_role("button", name="Save changes", exact=True).click()
+        if not (await saving.value).ok:
+            raise AssertionError(f"Save was refused: {(await saving.value).status}")
+        sent = [p["allow_db_write"] for p in posted if "allow_db_write" in p]
+        if sent != [not found]:
+            raise AssertionError(f"Save sent allow_db_write {sent}, not the switch's {not found}")
+        if bool(api("/api/settings").get("allow_db_write")) is found:
+            raise AssertionError("the backend did not keep the switch")
+
+        arrived.clear()
+        await page.goto(f"{APP}/settings/personal_details", wait_until="domcontentloaded")
+        first = page.get_by_label("First name", exact=True)
+        await first.fill("Ada F1492", timeout=30_000)  # waits until it takes input
+        if arrived:
+            raise AssertionError("the models arrived before the name was typed: the check proves nothing")
+        await after_the_models(page)
+        if await first.input_value() != "Ada F1492":
+            raise AssertionError(f"a later read put First name back to {await first.input_value()!r}")
+    finally:
+        await ctx.close()
+        api("/api/settings", "POST", {"allow_db_write": found})
+    return ("a switch turned the moment Settings takes input survives the models' arrival and is what Save sends; "
+            "a name typed on Personal details survives it too")
+
+
 @check
 async def check_rerankers(browser) -> str:
     """With Knowledge on, Models lists the rerankers as provider cards (Naveen, M2g, as cloud): Cohere, Voyage AI,
@@ -12286,14 +12443,20 @@ WIDGET_SHOP = "https://shop.uismoke.example"  # a site of its own; only localhos
 
 def _smoke_widget(origins: list[str]) -> dict:
     """A widget for the checks below, on the agent an existing widget already serves (a publishable one), or on the
-    first agent. The caller deletes it."""
+    first agent, or, on a store with none (a fresh scratch: its list leaves out Synapse AI), on one made here that
+    calls no tool (F1518's red run, 11-10: "list index out of range"). The caller deletes the widget."""
     widgets = api("/api/widgets")
     widgets = widgets.get("widgets", widgets) if isinstance(widgets, dict) else widgets
     agent = next((w["agent_id"] for w in widgets if w.get("agent_id")), None)
     if not agent:
         agents = api("/api/agents")
         agents = agents.get("agents", agents) if isinstance(agents, dict) else agents
-        agent = agents[0]["id"]
+        agent = agents[0]["id"] if agents else None
+    if not agent:
+        made = api("/api/agents", "POST", {"id": "uismoke_widget_agent", "name": "UI smoke widget agent",
+                                           "description": "Answers in the widget checks", "tools": [],
+                                           "skip_default_tools": True, "system_prompt": "Answer briefly."})
+        agent = (made.get("agent") or made).get("id", "uismoke_widget_agent")
     made = api("/api/widgets", "POST", {"name": "uismoke widget", "agent_id": agent, "allowed_origins": origins,
                                         "title": "Smoke help", "greeting": "Hi from the smoke test."})
     return made.get("widget", made)
@@ -12382,6 +12545,124 @@ async def check_widgetcomposer(browser) -> str:
     if bad:
         raise AssertionError("; ".join(bad))
     return "one field with a round Send and Stop; Shift+Enter, an IME Enter, Enter and Stop as the product's composer"
+
+
+#: One reply a steered agent might send a stranger (F1518): what it may draw, and every way it might try more.
+#: Its payment line is VID4 take 6's, with a full stop after the bare link.
+PAY_LINK = "http://books.harborpine.localhost:18941/demo-checkout/HP-1042"
+WIDGET_MD = "\n".join([
+    "**The Salt Lantern** by *Inês Valadares*, €12.90.",
+    "",
+    "- 6 copies available",
+    "- 312 pages",
+    "",
+    f"Your order is placed and waiting for payment. Here is your payment link: {PAY_LINK}.",
+    "Line two of the same paragraph.",
+    "",
+    "Or see [our help page](https://help.uismoke.example/start), or write to [us](mailto:help@uismoke.example).",
+    "",
+    "Not these: [click me](javascript:window.__pwned=1) [as data](data:text/html;base64,PHNjcmlwdD4=)"
+    " [as vb](vbscript:msgbox(1)) [https://good.example](https://evil.example)"
+    ' <a href="https://raw.example/tag">raw tag</a> <img src=x onerror="window.__pwned=1">'
+    " ![pixel](https://track.example/p.png)",
+    "",
+    "| col | val |",
+    "|:----|----:|",
+    "| a | 1 |",
+    "| [shop](https://shop.uismoke.example/b) | [cell](javascript:window.__pwned=1) |",
+])
+#: The only links that reply may draw.
+WIDGET_LINKS = {PAY_LINK, "https://help.uismoke.example/start", "mailto:help@uismoke.example",
+                "https://shop.uismoke.example/b"}
+
+
+@check
+async def check_widgetmarkdown(browser) -> str:
+    """An agent's reply in the widget is drawn as markdown on a stranger's policy (F1518). It was plain text: the
+    asterisks showed, and a payment link could not be clicked (VID4, 11-10). Drawn now: bold, emphasis, a list, line
+    breaks, and links to the web and mail only, each in a new tab with noopener noreferrer nofollow; a bare link
+    stops before the sentence's full stop. Never drawn: raw HTML (an <a> tag, an <img onerror>), an image, a table,
+    a javascript:, data: or vbscript: link, or a link dressed as another address. A table is drawn as a table (VID4
+    take 7: unwrapped, it read as one run-on line), its cells with no attribute but GFM's alignment. The chat's
+    stream is stubbed."""
+    widget = _smoke_widget([WIDGET_SHOP])
+    try:
+        ctx, page = await _widget_page(browser, widget["public_key"], WIDGET_SHOP)
+        try:
+            body = ("data: " + json.dumps({"type": "response", "content": WIDGET_MD}) + "\n\n"
+                    'data: {"type": "done"}\n\n')
+            await page.route("**/api/widget/chat", lambda route: route.fulfill(
+                status=200, content_type="text/event-stream", body=body))
+            box = page.get_by_role("textbox", name="Message")
+            await box.wait_for(timeout=15000)
+            await box.fill("Have you got The Salt Lantern?")
+            await box.press("Enter")
+            reply = page.locator("[class*='fromAgent']").last
+            await page.get_by_text("Line two of the same paragraph.").wait_for(timeout=10000)
+            got = await reply.evaluate("""(r) => ({
+                html: r.innerHTML,
+                strong: [...r.querySelectorAll('strong')].map((e) => e.textContent),
+                em: [...r.querySelectorAll('em')].map((e) => e.textContent),
+                items: r.querySelectorAll('li').length,
+                breaks: r.querySelectorAll('br').length,
+                links: [...r.querySelectorAll('a')].map((a) => ({href: a.getAttribute('href'), text: a.textContent,
+                    target: a.getAttribute('target'), rel: a.getAttribute('rel'),
+                    after: (a.nextSibling && a.nextSibling.textContent || '').slice(0, 1)})),
+                drawn: ['img', 'iframe', 'script', 'input', 'hr', 'svg', 'object']
+                    .filter((t) => r.querySelector(t)),
+                table: [...r.querySelectorAll('table tr')].map((tr) => [...tr.children].map((c) => c.textContent)),
+                cellWrap: [...r.querySelectorAll('th, td')].map((c) => getComputedStyle(c).overflowWrap),
+                cellAttrs: [...r.querySelectorAll('table, thead, tbody, tr, th, td')].flatMap((e) =>
+                    [...e.attributes].map((a) => a.name + '=' + a.value)),
+                handlers: [...r.querySelectorAll('*')].filter((e) => [...e.attributes]
+                    .some((a) => a.name.startsWith('on'))).length,
+                text: r.innerText,
+                pwned: !!window.__pwned,
+            })""")
+        finally:
+            await ctx.close()
+    finally:
+        api(f"/api/widgets/{widget['id']}", "DELETE")
+    bad: list[str] = []
+    if "**" in got["text"] or "The Salt Lantern" not in got["strong"] or "Inês Valadares" not in got["em"]:
+        bad.append(f"bold and emphasis not drawn: strong {got['strong']}, em {got['em']}")
+    if got["items"] != 2:
+        bad.append(f"{got['items']} list items, not 2")
+    if got["breaks"] < 1:
+        bad.append("a single line break was not kept")
+    hrefs = {a["href"] for a in got["links"]}
+    if hrefs != WIDGET_LINKS:
+        bad.append(f"links drawn {sorted(hrefs)}, not {sorted(WIDGET_LINKS)}")
+    for a in got["links"]:
+        if a["target"] != "_blank" or a["rel"] != "noopener noreferrer nofollow":
+            bad.append(f"{a['href']} opens with target={a['target']} rel={a['rel']}")
+    pay = next((a for a in got["links"] if a["href"] == PAY_LINK), None)
+    if pay and (pay["text"] != PAY_LINK or pay["after"] != "."):
+        bad.append(f"the payment link is {pay}: the full stop must stay outside it")
+    # A table is drawn as one (Naveen 11-10, VID4 take 7: unwrapped, it read as one run-on line), its cells carrying
+    # nothing of the model's but GFM's own alignment.
+    if got["table"] != [["col", "val"], ["a", "1"], ["shop", "cell"]]:
+        bad.append(f"the table drew as {got['table']}")
+    # A cell breaks between words only (VID4 take 8: the bubble's overflow-wrap:anywhere split "Pric|e" and
+    # "€12.|90"); a wide table scrolls sideways in its box instead.
+    if any(w == "anywhere" for w in got["cellWrap"]):
+        bad.append(f"table cells break inside words (overflow-wrap {sorted(set(got['cellWrap']))})")
+    loose = [a for a in got["cellAttrs"] if not re.fullmatch(r"style=text-align: (left|center|right);?", a)]
+    if loose:
+        bad.append(f"table elements carry {loose}")
+    if got["drawn"] or got["handlers"] or got["pwned"]:
+        bad.append(f"drawn {got['drawn']}, {got['handlers']} handler(s), pwned {got['pwned']}")
+    aligns = sorted({a for a in got["cellAttrs"]})
+    if aligns != ["style=text-align: left;", "style=text-align: right;"]:
+        bad.append(f"the cells' alignment came out as {aligns}, not GFM's left and right")
+    for kept in ("click me", "as data", "as vb", "https://good.example", "raw tag", "cell"):
+        if kept not in got["text"]:
+            bad.append(f"{kept!r} should stay as text")
+    if bad:
+        raise AssertionError("; ".join(bad) + f" — html: {got['html'][:400]}")
+    return ("bold, emphasis, a list, a line break and three links (web, mail, the bare payment link before its full "
+            "stop) and a table drawn, each link new-tab noopener noreferrer nofollow; no raw HTML, image, script "
+            "link or disguised link")
 
 
 @check
@@ -13333,6 +13614,57 @@ async def check_pickerfind(browser) -> str:
             "inside the row at phone width")
 
 
+#: The pickers' list with OpenRouter's ids beside it (F1493). Under cmdk's own score "opus" also found
+#: openrouter.openai/gpt-oss-120b, openrouter.moonshotai/kimi-k3 and openrouter.anthropic/claude-sonnet-4.5, letters in
+#: order across the id and "OpenRouter", as on cloud it found GPT OSS Safeguard, Llama 4 Scout and Claude Sonnet 4.6.
+_PICKER_WORD_MODELS = {"providers": {
+    **_PICKER_MODELS["providers"],
+    "openrouter": {"available": True, "models": [
+        "openrouter.openai/gpt-oss-120b", "openrouter.moonshotai/kimi-k3",
+        "openrouter.anthropic/claude-sonnet-4.5", "openrouter.anthropic/claude-opus-4.5"]},
+}}
+
+
+@check
+async def check_pickerwords(browser) -> str:
+    """A picker finds what begins a word of a model's name, id or provider, never its letters scattered in order
+    (F1493): "opus" listed GPT OSS Safeguard and Llama 4 Scout on cloud. "opus" lists the three Opus models only,
+    "gpt oss" the one GPT OSS; "mini" lists gpt-5-mini first, then the Gemini models it is only inside of; "pus",
+    inside "opus" and starting no word, lists the Opus models after all."""
+    opus = ["claude-opus-4-8", "cli.claude.opus", "openrouter.anthropic/claude-opus-4.5"]
+    bad: list[str] = []
+    state = {"closed": False, "posts": []}
+    ctx, page = await _firstrun_page(browser, "/dashboard", state, new_workspace=True, models=_PICKER_WORD_MODELS)
+    dialog = page.get_by_test_id("model-setup")
+    try:
+        await dialog.wait_for(timeout=30_000)
+        await dialog.get_by_role("button", name="Continue").click()
+        await dialog.get_by_role("button", name="Everyday model").click()
+        search = page.get_by_role("combobox", name="Search Everyday model")
+        await search.wait_for(timeout=5_000)
+
+        async def found(typed: str) -> list[str]:
+            await search.fill(typed)
+            await asyncio.sleep(0.4)
+            return [t.split("\n")[0].strip() for t in await page.get_by_role("option").all_inner_texts()]
+
+        if sorted(got := await found("opus")) != sorted(opus):
+            bad.append(f"'opus' finds {got}")
+        if (got := await found("gpt oss")) != ["openrouter.openai/gpt-oss-120b"]:
+            bad.append(f"'gpt oss' finds {got}")
+        got = await found("mini")
+        if got[:1] != ["gpt-5-mini"] or sorted(got[1:]) != ["gemini-2.5-flash", "gemini-2.5-pro"]:
+            bad.append(f"'mini' finds {got}, not gpt-5-mini first, then the Gemini models")
+        if sorted(got := await found("pus")) != sorted(opus):
+            bad.append(f"'pus' finds {got}")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("'opus' lists the Opus models only, 'gpt oss' GPT OSS, 'mini' a word's start before a name it is inside, "
+            "'pus' what holds it")
+
+
 # ── the browser inside Synapse: the pane (BRW2, D330) ───────────────────────
 
 #: A 16×10 JPEG: a frame of the screencast, and the screenshot after an action.
@@ -13774,8 +14106,8 @@ async def check_brwsessions(browser) -> str:
 
 @check
 async def check_brwagent(browser) -> str:
-    """A Browser agent's own section sets what bounds it, and Save sends it (BRW2, F1080, F1138, F1140): how it works
-    the page, the sites it may use, how it is signed in to each, and its actions per task. These live in the agent's
+    """A Browser agent's own section sets what bounds it, and Save sends it (BRW2, F1080, F1138, F1140): what it may do
+    on a page, the sites it may use, how it is signed in to each, and its actions per task. These live in the agent's
     settings so that no page the agent reads can change them (DESIGN §3.1). Sessions follow the sites (Naveen 10-29):
     one list, each site it may use with its session beside it, one per site; a session for a site it cannot open is
     never offered, nor another's unshared one (v5-7, F1167); an expired one says Sign in again instead of being picked;
@@ -13812,6 +14144,11 @@ async def check_brwagent(browser) -> str:
         section = page.locator("section[data-tour='setup-browser']")
         if not await section.count():
             raise AssertionError("a Browser agent has no Browser section")
+        # Its mode is what it may do on a page (F1503, eb's QA B9: it read "How it works the page").
+        if not await section.get_by_role("radiogroup", name="What it may do on a page", exact=True).count():
+            bad.append("the mode is not named 'What it may do on a page'")
+        if "How it works the page" in await section.inner_text():
+            bad.append("the Browser section still says 'How it works the page'")
         await section.get_by_role("radio", name="Works with you").click()
         # Only what the code holds (Naveen 10-29): the person's own fields and payments, and a form waits for their OK
         # unless they asked for it; no promise about every send (a page's own script is not held).
@@ -13886,6 +14223,84 @@ async def check_brwagent(browser) -> str:
         raise AssertionError("; ".join(bad))
     return ("the Browser section sets the mode, each site with its session beside it (only its own sites', an expired "
             "one signs in again, a site taken off takes its session), and the action budget; Save sends them")
+
+
+@check
+async def check_brwsitepick(browser) -> str:
+    """A site added to a Browser agent starts signed in with the session the person would pick (F1511, eb's QA B3: a
+    site with one kept session read "Not signed in", and the agent ran signed out). Their own, when it is the only one
+    they may use there. Several, or only one shared with them, stay theirs to pick, and the row says how many are
+    kept. An expired one still says Sign in again, and a second host on a site keeps the session picked for it."""
+    aid = f"agent_uismoke_sitepick_{int(time.time())}"
+    api("/api/agents", "POST", {**_agent(aid, f"Browser {aid[-6:]}"), "type": "browser"})
+    mine, first, second, shared = "ss_" + "s" * 24, "ss_" + "t" * 24, "ss_" + "u" * 24, "ss_" + "v" * 24
+    listed = {"sessions": [_site_session(mine, "saltmarsh.example"),
+                           _site_session(first, "carrier.example"),
+                           _site_session(second, "carrier.example", created_at=time.time() - 86_400),
+                           _site_session(shared, "books.example", mine=False, owner="u_priya", owner_name="Priya",
+                                         shared_with="workspace", usable=True),
+                           _site_session("ss_" + "w" * 24, "old.example", expired=True,
+                                         expires_at=time.time() - 86_400)]}
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route(re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(status=200, json=listed))
+    page = await ctx.new_page()
+    posts: list[dict] = []
+    page.on("request", lambda r: posts.append(json.loads(r.post_data or "{}"))
+            if r.method == "POST" and r.url.endswith("/api/agents") else None)
+    bad: list[str] = []
+
+    def said(text: str) -> str:
+        return re.sub(r"\s+", " ", text.replace("’", "'")).strip()
+
+    try:
+        await page.goto(f"{APP}/agents?id={aid}", wait_until="domcontentloaded")
+        await page.get_by_role("tab", name="Setup").wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        section = page.locator("section[data-tour='setup-browser']")
+        add = section.get_by_role("textbox", name="Add a site")
+        for typed in ("https://portal.saltmarsh.example/stock", "tracking.carrier.example", "books.example",
+                      "old.example", "shop.saltmarsh.example"):
+            await add.fill(typed)
+            await add.press("Enter")
+        await asyncio.sleep(0.3)
+        rows = section.get_by_role("list", name="Sites it may use").get_by_role("listitem")
+
+        async def session_of(host: str) -> str:
+            pick = section.get_by_role("combobox", name=f"Session for {host}")
+            return said(await pick.inner_text()) if await pick.count() else ""
+
+        async def row_of(host: str) -> str:
+            return said(await rows.filter(has_text=host).first.inner_text())
+
+        for host in ("portal.saltmarsh.example", "shop.saltmarsh.example"):
+            if not (await session_of(host)).startswith("Yours"):
+                bad.append(f"{host}, whose only session is the person's own, starts as {await session_of(host)!r}")
+        for host, kept in (("tracking.carrier.example", "2 sessions kept for this site"),
+                           ("books.example", "1 session kept for this site")):
+            if await session_of(host) != "Not signed in":
+                bad.append(f"{host} was picked for the person: {await session_of(host)!r}")
+            if kept not in await row_of(host):
+                bad.append(f"{host}'s row does not say {kept!r}: {await row_of(host)!r}")
+        if "Sign in again" not in await row_of("old.example") or await session_of("old.example"):
+            bad.append(f"old.example's expired session is not Sign in again: {await row_of('old.example')!r}")
+        if "kept for this site" in await row_of("portal.saltmarsh.example"):
+            bad.append("a site signed in still says how many sessions are kept")
+
+        await page.get_by_role("button", name="Save agent", exact=True).click()
+        await asyncio.sleep(1.5)
+        sent = (posts[-1] if posts else {}).get("browser") or {}
+        if sent.get("sessions") != [mine]:
+            bad.append(f"Save sent sessions {sent.get('sessions')}, not the person's own one for saltmarsh.example")
+    finally:
+        await ctx.close()
+        try:
+            api(f"/api/agents/{aid}", "DELETE")
+        except Exception:
+            pass
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("a site added starts signed in with the person's own session when it is their only one there; several, or "
+            "only a shared one, stay theirs to pick and the row says how many are kept; Save sends it")
 
 
 @check
@@ -15186,7 +15601,8 @@ async def check_brwsessionsite(browser) -> str:
     says what is kept in Naveen's words: the site's session, never the password, 30 days, removable. Keeping a
     session where nothing was signed in is refused (422) and said on the card, with the browser left open to sign in;
     keeping it then closes the browser and lists the session. An expired session's Sign in again opens the same
-    browser for its site."""
+    browser for its site. The address typed is where it opens (F1514, eb's QA B5): `site` is its host, `start` the
+    page itself; a site alone sends no `start`."""
     expired = _site_session("ss_" + "g" * 24, "carrier.example", expired=True, expires_at=time.time() - 86_400)
     state = {"sessions": [expired]}
     calls: list[tuple[str, str]] = []
@@ -15231,7 +15647,8 @@ async def check_brwsessionsite(browser) -> str:
             await pane.wait_for(timeout=8_000)
         except Exception:
             raise AssertionError("no browser opened")
-        if not calls or json.loads(calls[0][1]) != {"site": "portal.saltmarsh.example"}:
+        if not calls or json.loads(calls[0][1]) != {"site": "portal.saltmarsh.example",
+                                                     "start": "https://portal.saltmarsh.example/sign-in"}:
             bad.append(f"the browser was opened with {calls[:1]}")
         for absent in ("Stop", "Take over", "Hand back"):
             if await pane.get_by_role("button", name=absent, exact=True).count():
@@ -15274,6 +15691,113 @@ async def check_brwsessionsite(browser) -> str:
         raise AssertionError("; ".join(bad))
     return ("Keep me signed in opens a browser for the person alone; the consent card says what is kept; a refused "
             "keep is said and the browser stays; Keep lists it; Sign in again opens the browser for its site")
+
+@check
+async def check_brwtyping(browser) -> str:
+    """What the person types reaches a slow browser whole and in order, and an input the browser didn't take is said
+    (F1508, eb's QA B4: on cloud every character was its own call to the browser, each waiting for the one before, so
+    typing lagged seconds behind; and a click right after typing vanished with nothing said). Typed while a send is
+    out, text goes with the next send, joined; a key and a click keep their place. A refused input says "That didn't
+    reach the page. Try again.", nothing made after it is sent (the page never gets half of what was typed), and the
+    line clears with the next input that arrives."""
+    sent: list[dict] = []
+    holds: list[asyncio.Event] = [asyncio.Event()]
+    gate: dict = {"hold": holds[0], "refuse": False}
+    bad: list[str] = []
+
+    async def take(route):
+        sent.append(json.loads(route.request.post_data or "{}"))
+        hold = gate["hold"]
+        if hold is not None:  # this input is slow, as a cold relay is: the person types on meanwhile
+            gate["hold"] = None
+            await hold.wait()
+        if gate["refuse"]:
+            gate["refuse"] = False
+            return await route.fulfill(status=502, json={"detail": "The browser isn't answering."})
+        await route.fulfill(status=200, json={"ok": True})
+
+    def said(inputs: list[dict]) -> list:
+        return [i.get("text") if i.get("type") == "text" else (i.get("type"), i.get("key") or i.get("event"))
+                for i in inputs]
+
+    async def settled(count: int) -> None:
+        for _ in range(40):
+            if len(sent) >= count:
+                break
+            await asyncio.sleep(0.1)
+        await asyncio.sleep(0.6)  # and nothing more comes
+
+    refused = re.compile("reach the page. Try again")
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route(re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(status=200, json={"sessions": []}))
+    await ctx.route(re.compile(r".*/api/site-sessions/new$"),
+                    lambda r: r.fulfill(status=200, json={"browser_session_id": "bsType"}))
+    await ctx.route(re.compile(r".*/api/browser/bsType/frames$"), lambda r: r.fulfill(
+        status=200, headers={"Content-Type": "text/event-stream"},
+        body=_brw_frame("https://portal.saltmarsh.example/sign-in", "person")))
+    await ctx.route(re.compile(r".*/api/browser/bsType/input$"), take)
+    await ctx.route(re.compile(r".*/api/browser/bsType/finish-session$"), lambda r: r.fulfill(status=200, json={}))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/browser/sessions", wait_until="domcontentloaded")
+        await page.locator("main h1").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await page.get_by_role("button", name="Keep me signed in to a site").first.click()
+        ask = page.get_by_role("dialog", name="Keep me signed in to a site")
+        await ask.get_by_label("Site").fill("portal.saltmarsh.example")
+        await ask.get_by_role("button", name="Open the browser").click()
+        pane = page.get_by_role("region", name="Browser")
+        await pane.wait_for(timeout=8_000)
+        screen = pane.get_by_role("application")
+        await screen.wait_for(timeout=8_000)
+
+        # The click is slow to arrive; the person types their name, Enter and a password meanwhile.
+        release = gate["hold"]
+        await screen.click()
+        await asyncio.sleep(0.3)
+        await page.keyboard.type("us", delay=40)
+        await page.keyboard.press("Enter")
+        await page.keyboard.type("pw", delay=40)
+        await asyncio.sleep(0.3)
+        release.set()
+        await settled(4)
+        want = [("mouse", "click"), "us", ("key", "Enter"), "pw"]
+        if said(sent) != want:
+            bad.append(f"typed while the click was out, the browser got {said(sent)}, not {want}")
+
+        # The next input is refused; what the person typed while it was out is not sent after it.
+        before = len(sent)
+        release = gate["hold"] = asyncio.Event()
+        holds.append(release)
+        gate["refuse"] = True
+        await page.keyboard.type("x")
+        await asyncio.sleep(0.3)
+        await page.keyboard.type("yz", delay=40)
+        await asyncio.sleep(0.3)
+        release.set()
+        await settled(before + 1)
+        if said(sent[before:]) != ["x"]:
+            bad.append(f"after a refused input the browser still got {said(sent[before + 1:])}")
+        try:
+            await pane.get_by_role("alert").filter(has_text=refused).wait_for(timeout=3_000)
+        except Exception:
+            bad.append("a refused input is not said")
+
+        # The next input that arrives clears it.
+        before = len(sent)
+        await page.keyboard.type("q")
+        await settled(before + 1)
+        if await pane.get_by_role("alert").filter(has_text=refused).count():
+            bad.append("the refusal is still said after an input arrived")
+        await pane.get_by_role("button", name=re.compile("Don.t keep")).click()
+    finally:
+        for hold in holds:
+            hold.set()
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("typed while a send is out, text goes with the next send, a key and a click in their place; a refused "
+            "input is said, nothing after it is sent, and the next one that arrives clears it")
 
 @check
 async def check_brwloaderror(browser) -> str:
@@ -15351,6 +15875,146 @@ async def check_brwloaderror(browser) -> str:
         raise AssertionError("; ".join(bad))
     return ("a page that did not open says why above the page (x.com's 403: turned this browser away), with the "
             "address bar to try another and the consent card kept; a page that opened says nothing; 1440 and 390")
+
+@check
+async def check_brwkeepready(browser) -> str:
+    """Keep is live once a page has opened in the sign-in browser (F1501, eb's QA B7/B15). While the browser is still
+    opening, and when the site it opened on was blocked (127.0.0.1.nip.io) or never answered, there is nothing to keep:
+    Keep waits, the card says why (and Keep is described by it), and the ✕ closes at once as Don't keep, even after a
+    click on the page, with no "Keep it" to offer. A page that opened makes Keep live, and it stays live when a later
+    page fails: a sign-in made before that is still the person's to keep."""
+    blocked = {"jpeg_b64": BRW_JPEG, "w": 1280, "h": 800, "url": "http://127.0.0.1.nip.io/", "wheel": "person",
+               "load_error": {"url": "http://127.0.0.1.nip.io/", "host": "127.0.0.1.nip.io", "kind": "blocked",
+                              "code": "ERR_BLOCKED_BY_CLIENT", "why": "127.0.0.1.nip.io is not a public address"}}
+    failed_later = {**blocked, "url": "https://nosuch.saltmarsh.example/",
+                    "load_error": {"url": "https://nosuch.saltmarsh.example/", "host": "nosuch.saltmarsh.example",
+                                   "kind": "not_found", "code": "ERR_NAME_NOT_RESOLVED"}}
+    opening = asyncio.Event()  # the opening browser's frames are held until the check is done
+    ids = iter(("bsOpening", "bsBlocked", "bsOpened"))
+    posted: list[tuple[str, dict]] = []
+    bad: list[str] = []
+
+    async def hold(route):
+        await opening.wait()
+        try:
+            await route.abort()
+        except Exception:
+            pass  # the page is gone
+
+    async def start(route):
+        await route.fulfill(status=200, json={"browser_session_id": next(ids)})
+
+    def finish(sid: str):
+        async def handler(route):
+            posted.append((sid, json.loads(route.request.post_data or "{}")))
+            await route.fulfill(status=200, json={})
+        return handler
+
+    def said(text: str) -> str:
+        return re.sub(r"\s+", " ", text.replace("’", "'"))
+
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route(re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(status=200, json={"sessions": []}))
+    await ctx.route(re.compile(r".*/api/site-sessions/new$"), start)
+    await ctx.route(re.compile(r".*/api/browser/bs\w+/input$"), lambda r: r.fulfill(status=200, json={}))
+    await ctx.route(re.compile(r".*/api/browser/bsOpening/frames$"), hold)
+    await ctx.route(re.compile(r".*/api/browser/bsBlocked/frames$"), lambda r: r.fulfill(
+        status=200, headers={"Content-Type": "text/event-stream"}, body=_frame(blocked)))
+    # The opened page and the later failure come apart, as a live browser's frames do: the pane's reader keeps only the
+    # newest frame of what one read brings, so a route's one body holding both is a page that never opened (`_held_frames`).
+    await ctx.add_init_script("""(() => { const real = window.fetch; window.__openedFrames = null;
+      window.fetch = function (input, init) {
+        const url = String((input && input.url) || input || '');
+        if (!url.includes('/api/browser/bsOpened/frames')) return real(input, init);
+        const stream = new ReadableStream({start(c) {
+          window.__openedFrames = (f) => c.enqueue(new TextEncoder().encode(f)); }});
+        return Promise.resolve(new Response(stream, {status: 200, headers: {'Content-Type': 'text/event-stream'}}));
+      }; })();""")
+    for sid in ("bsOpening", "bsBlocked", "bsOpened"):
+        await ctx.route(re.compile(rf".*/api/browser/{sid}/finish-session$"), finish(sid))
+    page = await ctx.new_page()
+
+    async def open_sign_in(site: str):
+        await page.get_by_role("button", name="Keep me signed in to a site").first.click()
+        ask = page.get_by_role("dialog", name="Keep me signed in to a site")
+        await ask.get_by_label("Site").fill(site)
+        await ask.get_by_role("button", name="Open the browser").click()
+        pane = page.get_by_role("region", name="Browser")
+        await pane.wait_for(timeout=8_000)
+        return pane
+
+    async def keep_waits(pane, why: str, at: str) -> None:
+        keep = pane.get_by_role("button", name="Keep", exact=True)
+        if not await keep.is_disabled():
+            bad.append(f"{at}: Keep is live with nothing to keep")
+        want = f"Nothing to keep yet: {why}."
+        if want not in said(await pane.inner_text()):
+            bad.append(f"{at}: the card does not say {want!r}")
+        described = await keep.get_attribute("aria-describedby")
+        if not described or want not in said(await page.locator(f"[id='{described}']").inner_text()):
+            bad.append(f"{at}: Keep is not described by why it waits")
+
+    async def closes_at_once(pane, sid: str, at: str) -> None:
+        await pane.get_by_role("button", name="Close", exact=True).click()
+        asked = page.get_by_role("dialog", name="Close without keeping this sign-in?")
+        try:
+            await asked.wait_for(timeout=1_500)
+            bad.append(f"{at}: the ✕ asks to keep a sign-in that has nothing to keep")
+            await asked.get_by_role("button", name=re.compile("Don.t keep")).click()
+        except Exception:
+            pass
+        try:
+            await pane.wait_for(state="detached", timeout=8_000)
+        except Exception:
+            bad.append(f"{at}: the ✕ left the browser open")
+        if (sid, {"keep": False}) not in posted:
+            bad.append(f"{at}: the ✕ did not end it as Don't keep ({posted})")
+
+    try:
+        await page.goto(f"{APP}/browser/sessions", wait_until="domcontentloaded")
+        await page.locator("main h1").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+
+        pane = await open_sign_in("portal.saltmarsh.example")
+        await asyncio.sleep(1.0)
+        await keep_waits(pane, "the browser is still opening", "still opening")
+        await closes_at_once(pane, "bsOpening", "still opening")
+
+        pane = await open_sign_in("127.0.0.1.nip.io")
+        await pane.get_by_role("application").wait_for(timeout=8_000)
+        await asyncio.sleep(0.5)
+        await keep_waits(pane, "the page didn't open", "blocked")
+        await pane.get_by_role("application").click()  # the person pressed the page: still nothing to keep
+        await asyncio.sleep(0.5)
+        await closes_at_once(pane, "bsBlocked", "blocked")
+
+        pane = await open_sign_in("portal.saltmarsh.example")
+        await page.wait_for_function("() => typeof window.__openedFrames === 'function'", timeout=8_000)
+        await page.evaluate("(f) => window.__openedFrames(f)",
+                            _brw_frame("https://portal.saltmarsh.example/sign-in", "person"))
+        await pane.get_by_role("application").wait_for(timeout=8_000)
+        keep = pane.get_by_role("button", name="Keep", exact=True)
+        for _ in range(25):
+            if await keep.is_enabled():
+                break
+            await asyncio.sleep(0.2)
+        else:
+            bad.append("opened: Keep is not live on a page that opened")
+        await page.evaluate("(f) => window.__openedFrames(f)", _frame(failed_later))
+        if not await _on_screen(page, "nosuch.saltmarsh.example could not be found"):
+            bad.append("opened, then failed: the later page's failure is not said")
+        if await keep.is_disabled():
+            bad.append("opened, then failed: Keep went dead, though a sign-in made before is the person's to keep")
+        if "Nothing to keep yet" in said(await pane.inner_text()):
+            bad.append("opened, then failed: the card says there is nothing to keep")
+        await pane.get_by_role("button", name=re.compile("Don.t keep")).click()
+    finally:
+        opening.set()
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("Keep waits while the sign-in browser opens and when its site was blocked, says why, and the ✕ closes at "
+            "once as Don't keep; once a page opened, Keep is live and stays so when a later page fails")
 
 @check
 async def check_brwpanel(browser) -> str:
@@ -15893,6 +16557,66 @@ async def check_brwlogfold(browser) -> str:
 
 
 @check
+async def check_brwslowopen(browser) -> str:
+    """A browser slow to open says why (F1516, eb's QA B8: a cloud browser's first open took ~30 s with only "Opening the
+    browser…" on screen). For the first seconds it says only that, so a browser that opens at once (the laptop's)
+    never says more; then the pane says a private browser is starting and the first one takes a while, and the line
+    goes when the page arrives."""
+    slow = re.compile("Starting a private browser")
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route(re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(status=200, json={"sessions": []}))
+    await ctx.route(re.compile(r".*/api/site-sessions/new$"),
+                    lambda r: r.fulfill(status=200, json={"browser_session_id": "bsSlow"}))
+    await ctx.route(re.compile(r".*/api/browser/bsSlow/finish-session$"), lambda r: r.fulfill(status=200, json={}))
+    # Its frames come when the check says, as a cold browser's first does (`_held_frames`' pattern).
+    await ctx.add_init_script("""(() => { const real = window.fetch; window.__slowFrames = null;
+      window.fetch = function (input, init) {
+        const url = String((input && input.url) || input || '');
+        if (!url.includes('/api/browser/bsSlow/frames')) return real(input, init);
+        const stream = new ReadableStream({start(c) {
+          window.__slowFrames = (f) => c.enqueue(new TextEncoder().encode(f)); }});
+        return Promise.resolve(new Response(stream, {status: 200, headers: {'Content-Type': 'text/event-stream'}}));
+      }; })();""")
+    page = await ctx.new_page()
+    bad: list[str] = []
+    try:
+        await page.goto(f"{APP}/browser/sessions", wait_until="domcontentloaded")
+        await page.locator("main h1").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await page.get_by_role("button", name="Keep me signed in to a site").first.click()
+        ask = page.get_by_role("dialog", name="Keep me signed in to a site")
+        await ask.get_by_label("Site").fill("portal.saltmarsh.example")
+        await ask.get_by_role("button", name="Open the browser").click()
+        pane = page.get_by_role("region", name="Browser")
+        await pane.wait_for(timeout=8_000)
+        await asyncio.sleep(1.5)
+        if "Opening the browser" not in await pane.inner_text():
+            bad.append("an opening browser does not say Opening the browser")
+        if await pane.get_by_text(slow).count():
+            bad.append("the slow-start line shows before a browser has been slow")
+        await asyncio.sleep(6.5)
+        line = pane.get_by_role("status").filter(has_text=slow)
+        if not await line.count():
+            bad.append("a browser still opening after 8 s does not say a private browser is starting")
+        elif "first one" not in await line.first.inner_text():
+            bad.append(f"the slow-start line does not say the first one takes a while: {await line.first.inner_text()!r}")
+        await page.wait_for_function("() => typeof window.__slowFrames === 'function'", timeout=8_000)
+        await page.evaluate("(f) => window.__slowFrames(f)",
+                            _brw_frame("https://portal.saltmarsh.example/sign-in", "person"))
+        await pane.get_by_role("application").wait_for(timeout=8_000)
+        await asyncio.sleep(0.5)
+        if await pane.get_by_text(slow).count():
+            bad.append("the slow-start line stays after the page arrived")
+        await pane.get_by_role("button", name=re.compile("Don.t keep")).click()
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("an opening browser says only that for its first seconds, then that a private browser is starting and the "
+            "first one takes a while, until the page arrives")
+
+
+@check
 async def check_brwturnreopens(browser) -> str:
     """A browser turn that arrives while the person watches the chat brings its pane back (F1428, eb and Naveen 11-06):
     they asked for that browser's task. On a phone the chat stays in front and the Browser button is marked, until they
@@ -16315,6 +17039,104 @@ async def check_brwrecordings(browser) -> str:
         raise AssertionError("; ".join(bad))
     return ("Recordings lists each with its sites, steps, last change and a waiting fix; Record a task picks sessions "
             "and a start, the strip says what it is keeping, and Stop keeps it and opens it")
+
+
+@check
+async def check_brwrecname(browser) -> str:
+    """Every recording has a name a person chose or saw (F1512, eb's QA B11: none could be renamed, and each was
+    saved as "A recorded task", so picking one in a workflow was guesswork). While recording, the strip asks for its
+    name, filled from what it did until the person types; Stop and keep sends the name. A recording's own page renames
+    it, from the version it has, and its title is then the new name."""
+    rid, new_rid = "rec_" + "m" * 24, "rec_" + "p" * 24
+    calls: list[tuple[str, dict]] = []
+    state = {"doc": _recording(rid, name="A recorded task", version=2)}
+
+    async def new(route):
+        await route.fulfill(status=200, json={"recording_id": new_rid, "browser_session_id": "bsName"})
+
+    async def stop(route):
+        calls.append(("stop", json.loads(route.request.post_data or "{}")))
+        await route.fulfill(status=200, json={"recording_id": new_rid, "steps": 2})
+
+    async def one(route):
+        if route.request.method == "PATCH":
+            body = json.loads(route.request.post_data or "{}")
+            calls.append(("patch", body))
+            state["doc"] = {**state["doc"], **{k: v for k, v in body.items() if k != "base_version"},
+                            "version": state["doc"]["version"] + 1}
+        await route.fulfill(status=200, json=state["doc"])
+
+    def said(text: str) -> str:
+        return re.sub(r"\s+", " ", text.replace("’", "'")).strip()
+
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route(re.compile(r".*/api/recordings$"), lambda r: r.fulfill(status=200, json={"recordings": []}))
+    await ctx.route(re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(status=200, json={"sessions": []}))
+    await ctx.route(re.compile(r".*/api/recordings/new$"), new)
+    await ctx.route(re.compile(r".*/api/browser/bsName/frames$"), lambda r: r.fulfill(
+        status=200, headers={"Content-Type": "text/event-stream"},
+        body=_rec_frame({"steps": 2, "last": {"id": "s2", "title": "Click Login"}})))
+    await ctx.route(re.compile(r".*/api/browser/bsName/record/stop$"), stop)
+    await ctx.route(re.compile(rf".*/api/recordings/{new_rid}$"), lambda r: r.fulfill(
+        status=200, json=_recording(new_rid, name="Weekly order check")))
+    await ctx.route(re.compile(rf".*/api/recordings/{rid}$"), one)
+    await ctx.route(re.compile(rf".*/api/recordings/{rid}/versions$"), lambda r: r.fulfill(status=200, json={"versions": []}))
+    page = await ctx.new_page()
+    bad: list[str] = []
+    try:
+        # Named at Stop.
+        await page.goto(f"{APP}/browser/recordings", wait_until="domcontentloaded")
+        await page.get_by_role("button", name="Record a task").wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await page.get_by_role("button", name="Record a task").click()
+        ask = page.get_by_role("dialog", name="Record a task")
+        await ask.get_by_label("Start at").fill("portal.saltmarsh.example/orders")
+        await ask.get_by_role("button", name="Open the browser").click()
+        pane = page.get_by_role("region", name="Browser")
+        await pane.wait_for(timeout=8_000)
+        await asyncio.sleep(1.0)
+        name = pane.get_by_role("textbox", name="Name this task")
+        if not await name.count():
+            bad.append("the record strip asks for no name")
+        else:
+            filled = await name.input_value()
+            if "portal.saltmarsh.example" not in filled or "Click Login" not in filled:
+                bad.append(f"the name is not filled from what it did: {filled!r}")
+            await name.fill("Weekly order check")
+        await pane.get_by_role("button", name="Stop and keep").click()
+        await asyncio.sleep(1.0)
+        stops = [b for k, b in calls if k == "stop"]
+        if stops[-1:] != [{"keep": True, "name": "Weekly order check"}]:
+            bad.append(f"Stop and keep sent {stops[-1:]}, not the name typed")
+
+        # Renamed on its page.
+        await page.goto(f"{APP}/browser/recordings/{rid}", wait_until="domcontentloaded")
+        await page.get_by_role("heading", name="A recorded task").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        rename = page.get_by_role("button", name="Rename recording", exact=True)
+        if not await rename.count():
+            bad.append("a recording's page offers no Rename recording")
+        else:
+            await rename.click()
+            dialog = page.get_by_role("dialog", name="Rename recording")
+            field = dialog.get_by_role("textbox", name="Name")
+            if await field.input_value() != "A recorded task":
+                bad.append(f"Rename starts from {await field.input_value()!r}, not the recording's name")
+            await field.fill("  Order check, by carrier  ")
+            await dialog.get_by_role("button", name="Save").click()
+            await asyncio.sleep(1.0)
+            patches = [b for k, b in calls if k == "patch"]
+            if patches[-1:] != [{"base_version": 2, "name": "Order check, by carrier"}]:
+                bad.append(f"Rename sent {patches[-1:]}")
+            if not await page.get_by_role("heading", name="Order check, by carrier").count():
+                title = said(await page.locator("main h1").first.inner_text())
+                bad.append(f"the page's title is not the new name: {title!r}")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("the record strip asks for the task's name, filled from what it did, and Stop and keep sends it; a "
+            "recording's page renames it from the version it has, and its title follows")
 
 
 @check

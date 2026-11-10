@@ -346,10 +346,61 @@ async def _spec_of(page: dict, state: dict) -> None:
         _log.warning("a named site's spec was not read: %s", exc)
         return
     if got["problem"]:
-        page["why_not"] = "; ".join(x for x in (page.get("why_not"), f"its spec: {got['problem']}") if x)
+        # Too big to read, with the way on (F1496): the planner never puts it in `apis` to be refused there.
+        said = (f"{got['problem']}; {await own_api.way_on(name)}" if got.get("too_large")
+                else f"its spec: {got['problem']}")
+        page["why_not"] = "; ".join(x for x in (page.get("why_not"), said) if x)
         return
     own_api.keep_read(state, name, str(page["api_spec"]))
     page["api"] = own_api.answer_of(name, got)
+
+
+async def _named_services(state: dict, server_module: Any) -> dict[str, str]:
+    """What code knows of each service the request names (`request.providers`), for the planner before it plans
+    (F1495, A1; TRI2's class 2: prod's planner, on Sonnet 4.6, spent 11 of 14 turns looking for a GitHub tool, with
+    nothing in front of it on GitHub). No model and no web: a tool server connected here by the service's name, else
+    the Apps catalogue's app by its whole name (`catalog_entry`: "Google" is never Google Calendar), else nothing here.
+    Each with the build rule, so there is nothing to look for: connected, its tools by name; otherwise its tools named
+    for what they do, connected on a card after the yes or looked up after the plan (`step_plan_lookup`)."""
+    from core.builder_research import _slug, catalog_entry
+    from core.native_builder.lookup import MAX_PROVIDERS
+
+    request = _obj(state.get("request"))
+    said = request.get("providers") if isinstance(request, dict) else None
+    named = list(dict.fromkeys(p.strip() for p in said or [] if isinstance(p, str) and p.strip()))[:MAX_PROVIDERS]
+    if not named:
+        return {}
+    servers = _servers(server_module)
+    try:
+        from core.builder_connect import _read_options
+
+        catalog = (await _read_options()).get("catalog") or []
+    except Exception as exc:  # noqa: BLE001 — no catalogue read is a pack that says "looked up after the plan"
+        _log.warning("the Apps catalogue was not read for the pack: %s", exc)
+        catalog = []
+    out: dict[str, str] = {}
+    for name in named:
+        app = catalog_entry(name, catalog)
+        slugs = {_slug(name), *((_slug(str(app.get("slug") or "")), _slug(str(app.get("name") or ""))) if app else ())}
+        here = next((s for s in sorted(servers) if _slug(s) in slugs - {""}), None)
+        rule = f"name its tools in the plan for what they do, with {name} in the step's words"
+        if here is not None:
+            tools = ", ".join(f"{here}__{t}" for t in servers[here][:12])
+            out[name] = (f"connected here: its tools are {tools} (in `tools`): use them by those exact names. Nothing "
+                         "to look for here.")
+        elif app is not None:
+            out[name] = (f"an app in the Apps catalog, not connected yet: {rule}; the person connects it on its card "
+                         "after the yes. Nothing to look for here.")
+        else:
+            out[name] = (f"nothing here provides it yet: {rule}; code looks up who provides it after the plan. Nothing "
+                         "to look for here.")
+    return out
+
+
+#: Whose the pack's `tools` are (F1495, D): prod's planner and a Haiku 4.5 run both called `list_tool_servers` from
+#: that list first, refused as no tool of theirs.
+TOOLS_ARE = ("What this workspace's workflows use, by exact name: a plan's steps and agents name them. You call none "
+             "of them: your own tools are the ones you were given.")
 
 
 async def read_plan_context(args: dict, server_module: Any, events: list[dict]) -> dict:
@@ -362,6 +413,9 @@ async def read_plan_context(args: dict, server_module: Any, events: list[dict]) 
     tools = ws.tools[:PACK_TOOLS]
     pack: dict[str, Any] = {
         "kind": "update" if base is not None else "create",
+        # Each service the request names, as code knows it (F1495, A1): first, so the planner never looks for one.
+        **({"named_services": services} if (services := await _named_services(state, server_module)) else {}),
+        "tools_are": TOOLS_ARE,  # F1495, D
         "tools": tools,
         **({"more_tools": len(ws.tools) - len(tools)} if len(ws.tools) > len(tools) else {}),
         "agents": [{"id": i, "name": a.get("name"), "does": " ".join(str(a.get("description") or "").split())[:140],
@@ -597,7 +651,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
             plan = edited.model_copy(update={
                 "kind": "update", "title": plan.title or edited.title, "summary": plan.summary or edited.summary,
                 **{k: getattr(plan, k) for k in ("agents", "schedule", "inner_workflows", "caps", "boards", "knowledge",
-                                                 "apis", "mcp_servers", "eval", "questions", "not_carried_over")}})
+                                                 "apis", "mcp_servers", "eval", "questions", "not_carried_over",
+                                                 "asked")}})
             plan.reuse_agents = list(dict.fromkeys([*edited.reuse_agents, *plan.reuse_agents]))
     took_out: list[str] = []
     plan = _without(plan, without or [], took_out)
@@ -623,6 +678,9 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         before, _ = O.check_structure(base, ws.inventory())
         errors = [e for e in errors if not ("no step leads to it" in e and e in before)]
     errors += await _rules(plan, ws, state) + asked
+    # A part of the ask the plan leaves out is said with why, never dropped (F1515, eb's QA B13).
+    errors += [f"asked: '{a.part}' is not_done with no why_not: say why this plan does not do it, or plan it"
+               for a in plan.asked if a.how == "not_done" and not (a.why_not or "").strip()]
     # A chart they asked for has its route (F1288): something in the plan writes the Vault.
     errors += charts.issues(plan, ws, _request_words(state))
     errors += await _knowledge_parts(plan, ws)
@@ -2528,6 +2586,14 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     said += [f"{why}." for why in found.blocks.values()]
     said += found.notes
     said += unsaid_said + names_said
+    # Every part of the ask (F1515, eb's QA B13): what this plan does not do is said with why, never dropped; one they
+    # asked to run once after it is built is a Run card after the save, pressed by them, since a run spends credits.
+    not_done = [f"{' '.join(a.part.split())}: {' '.join((a.why_not or '').split())}" for a in plan.asked
+                if a.how == "not_done" and (a.why_not or "").strip()]
+    said += [f"Not in this plan: {n}." for n in not_done]
+    if any(a.how == "run_once" for a in plan.asked):
+        after_yes.append("Run it once: as soon as it is built, a card to run it comes up. A run uses credits, so it "
+                         "runs when you press Run it.")
     # A reused agent's blocked tools, said too (SAI2's nit on point 1): on the card under "Blocked here", and here.
     said += [f"{render_gate(g)}." for g in plan.gates if g.decision == "deny" and g.tool not in found.blocks]
     buildable = not (no_way or connect or found.errors or found.blocks)
@@ -2590,6 +2656,8 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
             f"- {e}" for e in [*as_said(checks, plan), *model_issues]) + "\n"
     if board_notes:
         review += "\n## Boards\n" + "\n".join(f"- {n}" for n in board_notes) + "\n"
+    if not_done:
+        review += "\n## Not in this plan\n" + "\n".join(f"- {n}" for n in not_done) + "\n"
     if periods_said:
         # What each period means, as the person said (F1210): every run works it out from its own date.
         review += "\n## Dates\n" + "\n".join(f"- {p.split('; never write')[0]}." for p in periods_said) + "\n"
@@ -2606,7 +2674,9 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
             for t in makes if t.api) + "\n"
     out = {**base, "outcome": "review", "plan": plan.model_dump(), "prompts": prompts or {}, "review": review,
            "offers": offers, "say": " ".join([*said, *board_notes]), "issues": found.errors, "offered": offered,
-           "research": prior.get("research") or [], "notes": board_notes, "changes": changes,
+           "research": prior.get("research") or [], "changes": changes,
+           # Said again after the save (`save_build`): the boards, and what this plan does not do (F1515).
+           "notes": [*board_notes, *[f"Not in this plan: {n}." for n in not_done]],
            "after_yes": after_yes,
            # The review's lead-in follows what the card offers: no "approve to build it" where it can't be built.
            "lead": LEAD_BUILD if buildable else LEAD_NOT_YET,

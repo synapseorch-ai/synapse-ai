@@ -785,12 +785,34 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
         _log.warning("build save of run %s not marked saved: %s", run_id, exc)
     left = [c for c in calls if c.get("makes")]
     notes = "".join(f" {n}" for n in checked.get("notes") or [])  # what the card said it does not do, said again
+    notes += await _run_once_card(plan, calls, made, events)
     from core.native_builder.parts_words import summary
 
     # What it does, part by part, and what is missing or off: the plan's own words as code read it at the save
     # (F1228), never a model's account of what it built.
     return {"outcome": "saved", "made": {c["name"]: made[c["makes"]] for c in left if c["makes"] in made},
             "effect": await _read_back(calls, made) + notes, "does": summary(now)}
+
+
+async def _run_once_card(plan: O.Plan, calls: list[dict], made: dict[str, str], events: list[dict]) -> str:
+    """What the person asked to run once after it is built (F1515, eb's QA B13): a Run card for the workflow this build
+    saved, the change route's own (`prepare_action`'s run_workflow), pressed by them, since a run spends credits. Never
+    run by code. Returns what is said of it."""
+    once = [a for a in plan.asked if a.how == "run_once"]
+    main = next((c for c in reversed(calls) if c["kind"] == "orchestration"), None)
+    if not once or main is None:
+        return ""
+    flow_id = main["args"].get("orch_id") if main.get("update") else made.get(main["makes"] or "")
+    if not flow_id:
+        return ""
+    from core.builder_actions import _FeatureOff, _NotOffered, _offer
+
+    message = next((" ".join(a.message.split()) for a in once if (a.message or "").strip()), "")
+    try:
+        events.append(await _offer("run_workflow", {"workflow": flow_id, "message": message}))
+    except (_FeatureOff, _NotOffered) as why:
+        return f" Run it once: not offered here ({why})."
+    return " Run it once: a card to run it is up; press Run it when you're ready."
 
 
 async def _connect_cards(plan: O.Plan, names: list[str], events: list[dict]) -> tuple[list[str], str]:

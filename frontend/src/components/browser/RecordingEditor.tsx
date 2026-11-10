@@ -54,6 +54,8 @@ export function RecordingEditor({ host, sessionsHost, browserHost, id, frame, on
   const [fixedChosen, setFixedChosen] = useState(false);
   const [versions, setVersions] = useState<RecordingVersion[] | null>(null);
   const [showVersions, setShowVersions] = useState(false);
+  // The recording's name as it is being changed (F1512, eb's QA B11); null while not renaming.
+  const [renaming, setRenaming] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<RecordingStep | null>(null);
   const [deletingAll, setDeletingAll] = useState(false);
   const [redoFrom, setRedoFrom] = useState<RecordingStep | null>(null);
@@ -165,8 +167,15 @@ export function RecordingEditor({ host, sessionsHost, browserHost, id, frame, on
     setDeletingAll(false);
   };
 
+  const rename = async () => {
+    const next = (renaming ?? '').trim();
+    if (!next) return;
+    if (next === doc.name || await save({ name: next })) setRenaming(null);
+  };
+
   const actions = (
     <>
+      <Button variant="secondary" size="sm" onClick={() => setRenaming(doc.name)}>Rename recording</Button>
       <Button variant="secondary" size="sm" onClick={openVersions}>Versions</Button>
       <Button variant="ghost" size="sm" className="text-text-muted hover:text-danger" onClick={() => setDeletingAll(true)}>Delete recording</Button>
     </>
@@ -240,6 +249,23 @@ export function RecordingEditor({ host, sessionsHost, browserHost, id, frame, on
                      onDelete={() => setDeleting(step)} onRedo={() => setRedoFrom(step)} />
           ))}
         </ol>
+
+        <Modal
+          open={renaming !== null}
+          onClose={() => setRenaming(null)}
+          title="Rename recording"
+          description="Its name is how you and your agents pick it in a workflow."
+          footer={(
+            <>
+              <Button variant="secondary" onClick={() => setRenaming(null)}>Cancel</Button>
+              <Button onClick={rename} loading={saving} disabled={!(renaming ?? '').trim()}>Save</Button>
+            </>
+          )}
+        >
+          <Input value={renaming ?? ''} maxLength={120} aria-label="Name" autoFocus
+                 onChange={e => setRenaming(e.target.value)}
+                 onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void rename(); } }} />
+        </Modal>
 
         <Modal open={showVersions} onClose={() => setShowVersions(false)} title="Versions"
                description="Each saved change is a version.">

@@ -282,6 +282,20 @@ class Edit(_Written):
     fields: dict[str, Any] = Field(default_factory=dict, description="update_step / set_meta: what changes")
 
 
+class PlanPart(_Written):
+    """One part of what the person asked, and what becomes of it in a plan (F1515, eb's QA B13), as a change's
+    `asked` (`AskedPart`, F1364)."""
+
+    part: str = Field(description="One thing they want, in their words")
+    how: Literal["plan", "run_once", "not_done"] = Field(
+        description="plan: this build does it; run_once: they asked for it to run once when it is built (a Run card "
+                    "follows the save, which they press); not_done: this plan does not do it, and why_not says why")
+    message: str | None = Field(None, description="run_once: what that run works on, in their words, when the "
+                                                  "workflow takes a message")
+    why_not: str | None = Field(None, description="not_done: why (another route or screen does it, or it can't be "
+                                                  "done here)")
+
+
 class PlanDraft(_Written):
     """What the planner writes (`submit_plan`)."""
 
@@ -310,6 +324,9 @@ class PlanDraft(_Written):
                                                     "cases, made with it")
     not_carried_over: list[str] = Field(default_factory=list, description="A pasted export: what it had that the "
                                                                           "plan does not carry over")
+    asked: list[PlanPart] = Field(default_factory=list, description=(
+        "Every part of what they asked, one entry each: what this plan does, what runs once after it is built, and "
+        "what it does not do and why"))
     settings: dict[str, Any] | None = Field(None, description="Optional workflow settings by their engine names: "
                                                               "state_schema, result_key")
 

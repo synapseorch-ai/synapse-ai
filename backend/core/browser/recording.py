@@ -20,18 +20,32 @@ ACTIONS = frozenset({"open", "click", "type", "press", "choose", "back"})
 MAX_STEPS = 200
 FULL_WORDS = f"This recording is full: {MAX_STEPS} steps. Stop it to keep it."
 
-#: What a step's target is, read in the page (`el` the element acted on).
+#: What a step's target is, read in the page (`el` the element acted on). A checkbox's or a radio's value is never its
+#: name: a browser defaults it to "on" (F1500, eb's QA B12: "Click on"). One with no label of its own is said by the
+#: words beside it (`near`), for the step's sentence only, so replay never asks for it by a name the page doesn't give.
 TARGET_JS = """(el) => {
   if (!el || !el.tagName) return null;
   const tag = el.tagName.toLowerCase(), type = (el.getAttribute('type') || '').toLowerCase();
   const implicit = {a: 'link', button: 'button', select: 'combobox', textarea: 'textbox', option: 'option'};
-  const inputRole = ['checkbox', 'radio'].includes(type) ? type : (['submit', 'button', 'reset', 'image'].includes(type)
-    ? 'button' : 'textbox');
+  const choice = tag === 'input' && ['checkbox', 'radio'].includes(type);
+  const inputRole = choice ? type : (['submit', 'button', 'reset', 'image'].includes(type) ? 'button' : 'textbox');
   const role = el.getAttribute('role') || (tag === 'input' ? inputRole : implicit[tag] || '');
   const label = ((el.labels && el.labels[0] && el.labels[0].innerText) || el.getAttribute('aria-label')
     || el.getAttribute('placeholder') || '').trim().slice(0, 80);
   const name = (el.getAttribute('aria-label') || (['input', 'textarea', 'select'].includes(tag) ? label : el.innerText)
-    || el.value || el.getAttribute('title') || el.getAttribute('alt') || '').trim().slice(0, 80);
+    || (choice ? '' : el.value) || el.getAttribute('title') || el.getAttribute('alt') || '').trim().slice(0, 80);
+  // The words beside a box with no label: its text siblings up to the next control or line break, after it, else before.
+  const beside = (start, step) => {
+    const words = [];
+    for (let n = start, i = 0; n && i < 6; n = n[step], i++) {
+      if (n.nodeType === 1 && n.matches('input, select, textarea, button, br, hr, p, div, li, tr, td, label')) break;
+      if (n.nodeType === 1 || n.nodeType === 3) words.push(n.textContent || '');
+    }
+    if (step === 'previousSibling') words.reverse();
+    return words.join(' ').replace(/\\s+/g, ' ').trim();
+  };
+  const near = choice && !label && !name
+    ? (beside(el.nextSibling, 'nextSibling') || beside(el.previousSibling, 'previousSibling')).slice(0, 80) : '';
   const path = [];
   for (let n = el; n && n.nodeType === 1 && path.length < 4; n = n.parentElement) {
     if (n.id && /^[A-Za-z][\\w-]{0,40}$/.test(n.id)) { path.unshift('#' + n.id); break; }
@@ -39,7 +53,7 @@ TARGET_JS = """(el) => {
     path.unshift(n.tagName.toLowerCase() + (same.length > 1 ? `:nth-of-type(${same.indexOf(n) + 1})` : ''));
   }
   const field = ['input', 'textarea', 'select'].includes(tag) || el.isContentEditable;
-  return {role, name, label, text: field ? '' : (el.innerText || '').trim().slice(0, 80), css: path.join(' > '),
+  return {role, name, label, text: field ? '' : (el.innerText || '').trim().slice(0, 80), near, css: path.join(' > '),
           tag, type, autocomplete: (el.getAttribute('autocomplete') || '').toLowerCase(),
           field: !!field && !['checkbox', 'radio', 'submit', 'button', 'reset', 'image'].includes(type)};
 }"""
@@ -69,7 +83,8 @@ def page_of(url: str) -> str:
 
 def _where(target: dict | None) -> str:
     target = target or {}
-    return target.get("label") or target.get("name") or target.get("text") or target.get("css") or "the page"
+    return (target.get("label") or target.get("name") or target.get("text") or target.get("near") or target.get("css")
+            or "the page")
 
 
 def line_of(step: dict) -> str:

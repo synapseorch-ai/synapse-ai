@@ -17,7 +17,34 @@ from __future__ import annotations
 import re
 from urllib.parse import urlparse
 
-from core.egress_guard import check_host
+from core.egress_guard import BlockedEgress, UnresolvedHost, check_host
+
+
+def _refused_host(host: str, exc: Exception) -> str:
+    """Why the guard won't let `host` through, as the guard found it (F1505, eb's QA B6: a tracker that didn't resolve
+    read as "not a public address"). Each is still refused: the guard never fails open."""
+    name = host or "that host"
+    if isinstance(exc, UnresolvedHost):
+        return f"{name} could not be found"
+    if isinstance(exc, BlockedEgress):
+        return f"{name} is not a public address"
+    return f"{name} could not be checked"
+
+
+async def refused_site(host: str) -> str | None:
+    """Whether a browser may be opened for `host` at all (F1517, eb's QA B15's door): the guard's own reason for a host
+    it will never open, a private or blocked address, else None. Asked before any browser (on cloud, a VM) starts. A
+    name that can't be found now, or a fault in the guard, is left to the browser, as at open: its page says so."""
+    try:
+        await check_host(host)
+    except UnresolvedHost:
+        return None
+    except BlockedEgress as exc:
+        return _refused_host(host, exc)
+    except Exception:  # noqa: BLE001 — "could not be checked" stays the browser's to say, as before
+        return None
+    return None
+
 
 #: Tools the agent may call, with the tags the component vouches for (TAG1).
 #: Clicking and typing are not read-only, but what one click *does* is decided at
@@ -92,8 +119,8 @@ async def verdict(url: str, method: str, mode: str, *, sites: list[str] | None =
     host = parsed.hostname or ""
     try:
         await check_host(host)
-    except Exception:
-        return f"{host or 'that host'} is not a public address"
+    except Exception as exc:
+        return _refused_host(host, exc)
     if sites and not site_allowed(host, sites):
         return f"{host} is not one of this agent's sites"
     if mode != CO_DRIVE and method.upper() not in _READS:
@@ -120,8 +147,8 @@ async def socket_verdict(url: str, mode: str, *, scope: list[str] | None = None)
     host = parsed.hostname or ""
     try:
         await check_host(host)
-    except Exception:
-        return f"{host or 'that host'} is not a public address"
+    except Exception as exc:
+        return _refused_host(host, exc)
     if mode != CO_DRIVE:
         return f"a WebSocket to {host}: this browser is read-only"
     if scope is not None and not any(same_site(host, site.removeprefix("*.")) for site in scope):

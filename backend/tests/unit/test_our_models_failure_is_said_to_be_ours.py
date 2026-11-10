@@ -14,6 +14,7 @@ reads the same from the exception it is handed.
 import pytest
 
 import core.llm_providers as llm
+from core.model_failures import MODEL_FAILURE
 from _fakes import seed as S
 
 
@@ -93,9 +94,13 @@ class TestTheFailedStepSaysSo:
         run = await self._run(monkeypatch, seed_agent, "run_f1012_ours", gateway=True)
         [entry] = run.step_history
         assert entry["status"] == "failed"
-        assert entry.get("model_failure") == {"code": llm.PROVIDER_UNAVAILABLE, "ours": True}
+        # F1502: the entry keeps what a person is told of it, ours for its kind here.
+        assert entry.get("model_failure") == {"code": llm.PROVIDER_UNAVAILABLE, "ours": True,
+                                               "said": MODEL_FAILURE[llm.PROVIDER_UNAVAILABLE]}
 
     async def test_an_own_key_failure_is_marked_theirs(self, monkeypatch, seed_agent):
         run = await self._run(monkeypatch, seed_agent, "run_f1012_theirs", gateway=False)
         [entry] = run.step_history
-        assert entry.get("model_failure") == {"code": llm.PROVIDER_UNAVAILABLE, "ours": False}
+        # F1502: the entry keeps what a person is told of it, ours for its kind here.
+        assert entry.get("model_failure") == {"code": llm.PROVIDER_UNAVAILABLE, "ours": False,
+                                               "said": MODEL_FAILURE[llm.PROVIDER_UNAVAILABLE]}

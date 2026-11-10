@@ -85,11 +85,15 @@ export async function removeSession(host: SessionsHost, id: string): Promise<boo
   return !!res && (res.ok || res.status === 404);
 }
 
-export async function startSignIn(host: SessionsHost, site: string): Promise<{ browserSessionId: string } | { refused: string }> {
+/**
+ * Opens the person's own browser to sign in to `site`; `start`, the address as typed, is the page it opens on (F1514):
+ * the server opens it only on that very host, over https, and otherwise the host's front page.
+ */
+export async function startSignIn(host: SessionsHost, site: string, start?: string): Promise<{ browserSessionId: string } | { refused: string }> {
   const res = await fetch(host.newUrl(), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ site }),
+    body: JSON.stringify(start ? { site, start } : { site }),
   }).catch(() => null);
   const body = await res?.json().catch(() => ({})) ?? {};
   if (res?.ok && typeof body.browser_session_id === 'string') return { browserSessionId: body.browser_session_id };
