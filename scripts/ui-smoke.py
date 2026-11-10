@@ -12541,6 +12541,102 @@ async def check_widgetcomposer(browser) -> str:
     return "one field with a round Send and Stop; Shift+Enter, an IME Enter, Enter and Stop as the product's composer"
 
 
+#: One reply a steered agent might send a stranger (F1518): what it may draw, and every way it might try more.
+#: Its payment line is VID4 take 6's, with a full stop after the bare link.
+PAY_LINK = "http://books.harborpine.localhost:18941/demo-checkout/HP-1042"
+WIDGET_MD = "\n".join([
+    "**The Salt Lantern** by *Inês Valadares*, €12.90.",
+    "",
+    "- 6 copies available",
+    "- 312 pages",
+    "",
+    f"Your order is placed and waiting for payment. Here is your payment link: {PAY_LINK}.",
+    "Line two of the same paragraph.",
+    "",
+    "Or see [our help page](https://help.uismoke.example/start), or write to [us](mailto:help@uismoke.example).",
+    "",
+    "Not these: [click me](javascript:window.__pwned=1) [as data](data:text/html;base64,PHNjcmlwdD4=)"
+    " [as vb](vbscript:msgbox(1)) [https://good.example](https://evil.example)"
+    ' <a href="https://raw.example/tag">raw tag</a> <img src=x onerror="window.__pwned=1">'
+    " ![pixel](https://track.example/p.png)",
+    "",
+    "| col | val |",
+    "|-----|-----|",
+    "| a | 1 |",
+])
+#: The only links that reply may draw.
+WIDGET_LINKS = {PAY_LINK, "https://help.uismoke.example/start", "mailto:help@uismoke.example"}
+
+
+@check
+async def check_widgetmarkdown(browser) -> str:
+    """An agent's reply in the widget is drawn as markdown on a stranger's policy (F1518). It was plain text: the
+    asterisks showed, and a payment link could not be clicked (VID4, 11-10). Drawn now: bold, emphasis, a list, line
+    breaks, and links to the web and mail only, each in a new tab with noopener noreferrer nofollow; a bare link
+    stops before the sentence's full stop. Never drawn: raw HTML (an <a> tag, an <img onerror>), an image, a table,
+    a javascript:, data: or vbscript: link, or a link dressed as another address. The chat's stream is stubbed."""
+    widget = _smoke_widget([WIDGET_SHOP])
+    try:
+        ctx, page = await _widget_page(browser, widget["public_key"], WIDGET_SHOP)
+        try:
+            body = ("data: " + json.dumps({"type": "response", "content": WIDGET_MD}) + "\n\n"
+                    'data: {"type": "done"}\n\n')
+            await page.route("**/api/widget/chat", lambda route: route.fulfill(
+                status=200, content_type="text/event-stream", body=body))
+            box = page.get_by_role("textbox", name="Message")
+            await box.wait_for(timeout=15000)
+            await box.fill("Have you got The Salt Lantern?")
+            await box.press("Enter")
+            reply = page.locator("[class*='fromAgent']").last
+            await page.get_by_text("Line two of the same paragraph.").wait_for(timeout=10000)
+            got = await reply.evaluate("""(r) => ({
+                html: r.innerHTML,
+                strong: [...r.querySelectorAll('strong')].map((e) => e.textContent),
+                em: [...r.querySelectorAll('em')].map((e) => e.textContent),
+                items: r.querySelectorAll('li').length,
+                breaks: r.querySelectorAll('br').length,
+                links: [...r.querySelectorAll('a')].map((a) => ({href: a.getAttribute('href'), text: a.textContent,
+                    target: a.getAttribute('target'), rel: a.getAttribute('rel'),
+                    after: (a.nextSibling && a.nextSibling.textContent || '').slice(0, 1)})),
+                drawn: ['img', 'table', 'td', 'iframe', 'script', 'input', 'hr']
+                    .filter((t) => r.querySelector(t)),
+                handlers: [...r.querySelectorAll('*')].filter((e) => [...e.attributes]
+                    .some((a) => a.name.startsWith('on'))).length,
+                text: r.innerText,
+                pwned: !!window.__pwned,
+            })""")
+        finally:
+            await ctx.close()
+    finally:
+        api(f"/api/widgets/{widget['id']}", "DELETE")
+    bad: list[str] = []
+    if "**" in got["text"] or "The Salt Lantern" not in got["strong"] or "Inês Valadares" not in got["em"]:
+        bad.append(f"bold and emphasis not drawn: strong {got['strong']}, em {got['em']}")
+    if got["items"] != 2:
+        bad.append(f"{got['items']} list items, not 2")
+    if got["breaks"] < 1:
+        bad.append("a single line break was not kept")
+    hrefs = {a["href"] for a in got["links"]}
+    if hrefs != WIDGET_LINKS:
+        bad.append(f"links drawn {sorted(hrefs)}, not {sorted(WIDGET_LINKS)}")
+    for a in got["links"]:
+        if a["target"] != "_blank" or a["rel"] != "noopener noreferrer nofollow":
+            bad.append(f"{a['href']} opens with target={a['target']} rel={a['rel']}")
+    pay = next((a for a in got["links"] if a["href"] == PAY_LINK), None)
+    if pay and (pay["text"] != PAY_LINK or pay["after"] != "."):
+        bad.append(f"the payment link is {pay}: the full stop must stay outside it")
+    if got["drawn"] or got["handlers"] or got["pwned"]:
+        bad.append(f"drawn {got['drawn']}, {got['handlers']} handler(s), pwned {got['pwned']}")
+    for kept in ("click me", "as data", "as vb", "https://good.example", "raw tag"):
+        if kept not in got["text"]:
+            bad.append(f"{kept!r} should stay as text")
+    if bad:
+        raise AssertionError("; ".join(bad) + f" — html: {got['html'][:400]}")
+    return ("bold, emphasis, a list, a line break and three links (web, mail, the bare payment link before its full "
+            "stop) drawn, each new-tab noopener noreferrer nofollow; no raw HTML, image, table, script link or "
+            "disguised link")
+
+
 @check
 async def check_widgetrefused(browser) -> str:
     """A site not on the widget's list gets the refusal, in words, with no composer (M2i kept the rule as it was)."""
