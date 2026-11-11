@@ -80,6 +80,10 @@ ENV SYNAPSE_AUTOGEN_TOKEN=1
 ENV SYNAPSE_SECRETS_DIR=/data
 ENV SYNAPSE_TOKEN_MODE=generate
 
+# Inside the container the backend listens on 0.0.0.0 (F1534): the published port (127.0.0.1:8765 in
+# docker-compose.yml, README's docker run) and the compose network reach it there. Native installs listen on
+# 127.0.0.1 unless SYNAPSE_BACKEND_HOST says otherwise.
+ENV SYNAPSE_BACKEND_HOST=0.0.0.0
 EXPOSE 3000 8765
 
 ENTRYPOINT ["/entrypoint.sh"]

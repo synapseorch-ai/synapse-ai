@@ -1169,5 +1169,9 @@ app.add_exception_handler(BrowserUnavailable, browser_unavailable_response)
 
 if __name__ == "__main__":
     import uvicorn
+
+    from core.bind import backend_host, listening_words
     _port = int(os.getenv("SYNAPSE_BACKEND_PORT", "8765"))
-    uvicorn.run(app, host="0.0.0.0", port=_port)
+    _host = backend_host()  # this computer only, unless SYNAPSE_BACKEND_HOST says otherwise (F1534)
+    print(f"Starting the backend, {listening_words(_host, _port)}...")
+    uvicorn.run(app, host=_host, port=_port)
