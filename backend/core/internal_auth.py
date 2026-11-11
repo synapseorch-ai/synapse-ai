@@ -154,6 +154,13 @@ def _has_session(request: Request) -> bool:
     return session_ok(token)
 
 
+def signed_in(request: Request) -> bool:
+    """Whether `request` comes from someone this install lets in: always when it has no gate (login off and no access
+    link), else with a session, by header or cookie. For a route the middleware does not gate because a browser
+    reaches it by navigating (`/auth/login`, F1535): the middleware's own test."""
+    return not _gate_required() or _has_session(request)
+
+
 _LOGIN_REQUIRED = JSONResponse(status_code=401, content={"detail": "Login required"})
 
 

@@ -886,16 +886,38 @@ import os
 # Prometheus /metrics endpoint (enterprise observability)
 # ---------------------------------------------------------------------------
 
+#: What the metrics say to a caller without the right token (F1534).
+_METRICS_NEED = ("The metrics need a token: send METRICS_TOKEN as `Authorization: Bearer <token>`. "
+                 "Set METRICS_TOKEN in the backend's environment to scrape them.")
+
+
+def metrics_refusal(headers) -> tuple[int, str] | None:
+    """None when `headers` carry `Authorization: Bearer <METRICS_TOKEN>` or the frontend's internal token
+    (X-Synapse-Internal); else (401 when none was sent, 403 when a wrong one was, the words)."""
+    import hmac
+
+    bearer = headers.get("Authorization", "")
+    internal = headers.get("X-Synapse-Internal", "")
+    metrics_token = os.getenv("METRICS_TOKEN", "")
+    internal_token = os.getenv("SYNAPSE_INTERNAL_TOKEN", "")
+    if metrics_token and hmac.compare_digest(bearer.encode(), f"Bearer {metrics_token}".encode()):
+        return None
+    if internal_token and hmac.compare_digest(internal.encode(), internal_token.encode()):
+        return None
+    return (403 if bearer or internal else 401), _METRICS_NEED
+
+
 @router.get("/metrics", include_in_schema=False)
 async def prometheus_metrics(request: Request):
-    """Prometheus scrape endpoint. Protected by METRICS_TOKEN env var if set."""
+    """Prometheus scrape endpoint: it answers `Authorization: Bearer <METRICS_TOKEN>` or the frontend's internal token
+    only (F1534). /api/v<N> is skipped by the internal-token middleware (the versioned API checks its own keys), and
+    this route used to check METRICS_TOKEN only when one was set, so on an install without one, which is every
+    install, anyone who could reach the port read the process's metrics. 401 with no token, 403 with a wrong one."""
     from fastapi.responses import Response as FastAPIResponse
 
-    token = os.getenv("METRICS_TOKEN", "")
-    if token:
-        auth = request.headers.get("Authorization", "")
-        if auth != f"Bearer {token}":
-            raise HTTPException(401, detail="Unauthorized")
+    refused = metrics_refusal(request.headers)
+    if refused:
+        raise HTTPException(refused[0], detail=refused[1])
 
     from core.scale.metrics import get_metrics_response
     content, content_type = get_metrics_response()

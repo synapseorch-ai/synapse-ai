@@ -2543,6 +2543,59 @@ async def check_humanprompt(browser) -> str:
     return f"{{{{ offers {len(offered)} state key(s) and no global; {{s offers nothing"
 
 
+@check
+async def check_evaluatorprompt(browser) -> str:
+    """An Evaluator's prompt is edited like the engine fills it: `{{ state.key }}` and `{{ global.key }}` (F1536).
+
+    Naveen's "Plan Approved?" read a Human step's reply as `{{ state.approve_plan }}`, which the engine never filled
+    in an Evaluator: it was a plain textarea, with no keys and no hint. The engine now fills it as it fills an LLM
+    step's prompt, so `{{` offers the run's state keys and the workspace's variables, and the hint says so.
+    """
+    oid = f"orch_uismoke_eval_{int(time.time())}"
+    api("/api/orchestrations", "POST", {
+        "id": oid, "name": "ui-smoke evaluator prompt", "description": "Temporary fixture created by scripts/ui-smoke.py.",
+        "entry_step_id": f"{oid}_human", "state_schema": {}, "trigger": "manual",
+        "steps": [
+            {"id": f"{oid}_human", "name": "Approve the Plan", "type": "human", "human_prompt": "Proceed?",
+             "output_key": "approve_plan", "next_step_id": f"{oid}_judge", "position_x": 0, "position_y": 0},
+            {"id": f"{oid}_judge", "name": "Plan Approved?", "type": "evaluator", "input_keys": ["approve_plan"],
+             "evaluator_prompt": "The person replied:", "route_map": {"approved": None, "revise": None},
+             "output_key": "plan_decision", "position_x": 320, "position_y": 0},
+        ]})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route("**/api/settings/variables", _answer({"values": {"glossary_url": "https://example.invalid"}}))
+    page = await ctx.new_page()
+    try:
+        await open_step(page, oid, "Plan Approved?")
+        box = page.get_by_role("textbox", name="Evaluator prompt", exact=True)
+        if not await box.count():
+            raise AssertionError("no textbox named 'Evaluator prompt' on the evaluator's panel")
+        if await box.get_attribute("aria-autocomplete") != "list":
+            raise AssertionError("the evaluator prompt is a plain textarea: it offers no state keys")
+        panel = await page.evaluate("""() => document.body.innerText""")
+        if "Type {{ for state and variables" not in panel:
+            raise AssertionError("the evaluator prompt's hint does not say {{ state.key }} is filled in")
+        await box.click()
+        await page.keyboard.press("End")
+        await page.keyboard.type(" {{ st")
+        await asyncio.sleep(0.5)
+        offered = await page.get_by_role("listbox", name="Suggestions").get_by_role("option").all_inner_texts()
+        if not any("state.approve_plan" in o for o in offered):
+            raise AssertionError(f"typing {{{{ offered {offered!r}, not the run's state keys")
+        await page.keyboard.press("Backspace")
+        await page.keyboard.press("Backspace")
+        await page.keyboard.type("gl")
+        await asyncio.sleep(0.5)
+        globals_ = [o for o in await page.get_by_role("listbox", name="Suggestions").get_by_role("option")
+                    .all_inner_texts() if "global." in o]
+        if not globals_:
+            raise AssertionError("typing {{ gl offered no variable: an evaluator's prompt fills them as an LLM's does")
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    return f"{{{{ offers state.approve_plan among {len(offered)} key(s) and {len(globals_)} variable(s); the hint says so"
+
+
 # ── the palette and the graph ────────────────────────────────────────────────
 
 def laid_out_orchestration(oid: str, n: int = 3) -> dict:

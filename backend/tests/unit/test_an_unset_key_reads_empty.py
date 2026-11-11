@@ -7,10 +7,11 @@ model echoed it into its draft.
 
 Naveen's call (D267): in the prompts a model reads (Agent, LLM, Tool, Retrieve)
 an unset state key reads empty, in either form; a declared default already
-fills it. A Human or a Print step's text, which a person reads, keeps the gap,
-and so does `{{ global.x }}` and a wrong path inside a key that is set. The
-builder's validator and the editor warn, without blocking, that a step reads a
-key before any step writes it.
+fills it. A Human or a Print step's text, which a person reads, keeps the gap.
+A `{{ global.x }}` that is not set, or a wrong path inside a key that is set,
+is said in words in a model's prompt, never left as the placeholder (F1536,
+Naveen 11-11). The builder's validator and the editor warn, without blocking,
+that a step reads a key before any step writes it.
 """
 import pytest
 
@@ -28,8 +29,8 @@ class TestRendering:
         ("Improve it. {{ state.feedback }}", "Improve it. "),
         ("Improve it. {{state.feedback}}", "Improve it. "),
         ("Was: {{ state.none }}", "Was: "),
-        ("{{ global.missing }}", "{{ global.missing }}"),
-        ("{{ state.d.missing }}", "{{ state.d.missing }}"),
+        ("{{ global.missing }}", "(no value: no variable named 'missing')"),
+        ("{{ state.d.missing }}", "(no value: state.d has no 'missing')"),
         ("{{ state.d }}", '{"a": 1}'),  # an object is JSON in the one form (F1252: the older form wrote str())
         ("{{ state.n }}", "0"),
         ("Asked: {{ state.blank.question }}", "Asked: "),
@@ -37,12 +38,12 @@ class TestRendering:
         ("{{ state.none.x }}", ""),
         ("{{ state.d.a }}", "1"),
         ("{{ state.blank.question }}", ""),
-        ("{{ state.d.missing }}", "{{ state.d.missing }}"),
+        ("{{ state.d.missing }}", "(no value: state.d has no 'missing')"),
         ("{{ state.trap.say }}", "{{ global.KEY }}"),
-    ], ids=["legacy", "spaced", "unspaced", "none-value", "global-keeps-the-gap",
-            "wrong-path-keeps-the-gap", "set-dict", "falsy-zero-is-set", "field-of-an-empty-default",
+    ], ids=["legacy", "spaced", "unspaced", "none-value", "global-is-said",
+            "wrong-path-is-said", "set-dict", "falsy-zero-is-set", "field-of-an-empty-default",
             "field-of-an-empty-dict", "field-of-none", "legacy-path", "legacy-path-of-an-empty-default",
-            "legacy-wrong-path-keeps-the-gap", "legacy-path-is-one-pass"])
+            "legacy-wrong-path-is-said", "legacy-path-is-one-pass"])
     def test_in_a_models_prompt(self, template, expected):
         """A field of a key that holds only its empty default reads empty too (SAI2-P2): it is not written yet, as
         an unset key is not, and a second pass's "what you were told" read as template text on the first pass."""
@@ -154,6 +155,13 @@ def test_no_model_step_of_the_shipped_builder_reads_a_reference_as_text():
 
     orch = Orchestration.model_validate(bundled_definitions()["orchestration"])
     state = {k: (v or {}).get("default") for k, v in (orch.state_schema or {}).items()}
-    left = {s.id: re.findall(r"\{\{?\s*state\.[\w.]+\s*\}?\}", _fill_task_template(s.prompt_template, state, {}))
-            for s in orch.steps if s.type.value in ("agent", "llm", "evaluator", "tool") and s.prompt_template}
+    # Each text a model reads (F1536: an Evaluator's prompt and its route descriptions too), and what it says for a
+    # key that is not there: a reference is never left as text, and the builder's own steps never read a gap.
+    texts = {s.id: [s.prompt_template or "", s.evaluator_prompt or "", *(s.route_descriptions or {}).values()]
+             for s in orch.steps if s.type.value in ("agent", "llm", "evaluator", "tool", "workflow")}
+    kinds = {s.id: s.type.value for s in orch.steps}
+    left = {sid: re.findall(r"\{\{?\s*state\.[\w.]+\s*\}?\}|\(no value[^)]*\)",
+                            " ".join(_fill_task_template(t, state, {}, unwritten_in_words=kinds[sid] == "evaluator")
+                                     for t in ts if t))
+            for sid, ts in texts.items()}
     assert {k: v for k, v in left.items() if v} == {}

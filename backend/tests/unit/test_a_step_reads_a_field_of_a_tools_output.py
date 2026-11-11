@@ -91,7 +91,7 @@ def test_a_model_s_prompt_reads_a_field_of_json_text_and_never_renders_it():
     assert _fill_task_template("{{ state.checked.say }} / {{ state.checked.count }}", state, {}) == (
         "Two cards are up. / 3")
     assert _fill_task_template("{{ state.trap.say }}", state, {"API_KEY": "s3cret"}) == "{{ global.API_KEY }}"
-    assert _fill_task_template("{{ state.plain.say }}", state, {}) == "{{ state.plain.say }}"
+    assert _fill_task_template("{{ state.plain.say }}", state, {}) == "(no value: state.plain has no 'say')"  # F1536
     assert _fill_task_template("{{ state.unset.say }}", state, {}) == ""
 
 
@@ -104,8 +104,8 @@ def test_text_nested_too_deep_to_read_has_no_fields_and_fails_nothing():
     state = {"deep": deep}
     assert evaluate_expression("state.deep.a", state, "fallback").value == "fallback"
     assert render_state_refs("{{ state.deep.a }}", state) == "{{ state.deep.a }}"
-    assert _fill_task_template("{{ state.deep.a }}", state, {}) == "{{ state.deep.a }}"
-    assert _fill_task_template("{{ state.deep.a }}", state, {}) == "{{ state.deep.a }}"
+    assert _fill_task_template("{{ state.deep.a }}", state, {}) == "(no value: state.deep has no 'a')"  # F1536
+    assert _fill_task_template("{{ state.deep.a }}", state, {}) == "(no value: state.deep has no 'a')"
 
 
 def test_a_set_argument_into_text_nested_too_deep_names_nothing():
@@ -136,7 +136,7 @@ def test_json_text_is_read_to_a_counted_depth_whatever_the_stack():
 
     assert evaluate_expression("state.deep.a", over, "fallback").value == "fallback"
     assert render_state_refs("{{ state.deep.a }}", over) == "{{ state.deep.a }}"
-    assert _fill_task_template("{{ state.deep.a }}", over, {}) == "{{ state.deep.a }}"
+    assert _fill_task_template("{{ state.deep.a }}", over, {}) == "(no value: state.deep has no 'a')"  # F1536
     with pytest.raises(MissingStateRef):
         render_tool_arguments({"x": "{{ state.deep.a }}"}, over)
 

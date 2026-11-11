@@ -1490,7 +1490,12 @@ def route_named(reply: str, labels: list[str]) -> str | None:
 class EvaluatorStepExecutor:
     """Pure routing node — no agent. Makes a single LLM call using
     evaluator_prompt + route_descriptions + context from input_keys
-    to decide which route to take."""
+    to decide which route to take.
+
+    Its prompt and its route descriptions are filled in from the run as an LLM step's prompt is
+    (`context._fill_task_template`, F1536): they were sent as typed, so Naveen's "Plan Approved?" read the Human
+    step's reply as `{{ state.approve_plan }}`, which is no reply, and routed `revise`. A key no step has written yet
+    is said in words here, not left empty: the step judges on it."""
 
     async def execute(
         self, step: StepConfig, run: OrchestrationRun, engine: "OrchestrationEngine"
@@ -1498,9 +1503,18 @@ class EvaluatorStepExecutor:
         from core.llm_providers import generate_response as llm_generate_response
         from core.config import load_settings
 
+        from .context import _fill_task_template
+
         if not step.route_map:
             yield {"type": "step_warning", "orch_step_id": step.id, "message": "No routes defined"}
             return
+
+        variables = getattr(engine, "global_variables", None) or {}
+        with _reading_for(step.model, run):
+            instructions = _fill_task_template(step.evaluator_prompt or "", run.shared_state, variables,
+                                               unwritten_in_words=True)
+            descriptions = {label: _fill_task_template(text, run.shared_state, variables, unwritten_in_words=True)
+                            for label, text in (step.route_descriptions or {}).items() if text}
 
         # Build context from input_keys
         context_parts = []
@@ -1523,7 +1537,7 @@ class EvaluatorStepExecutor:
         route_lines = []
         labels = list(step.route_map.keys())
         for label_name, target_id in step.route_map.items():
-            custom_desc = step.route_descriptions.get(label_name, "")
+            custom_desc = descriptions.get(label_name, "")
             if custom_desc:
                 route_lines.append(f'  - "{label_name}": {custom_desc}')
             elif target_id is None:
@@ -1535,8 +1549,8 @@ class EvaluatorStepExecutor:
         routes_text = "\n".join(route_lines)
 
         evaluator_instructions = ""
-        if step.evaluator_prompt:
-            evaluator_instructions = f"EVALUATOR INSTRUCTIONS:\n{step.evaluator_prompt}\n\n"
+        if instructions:
+            evaluator_instructions = f"EVALUATOR INSTRUCTIONS:\n{instructions}\n\n"
 
         # Date/time goes last: every provider's prompt cache is a prefix cache,
         # and a minute-granular timestamp in the first 200 chars defeats it for
