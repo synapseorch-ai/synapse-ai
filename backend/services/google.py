@@ -1,6 +1,9 @@
 import os
 import json
 import base64
+import hmac
+import secrets
+import time
 from pathlib import Path
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -65,11 +68,39 @@ def google_credentials_dir() -> Path:
 class UnauthenticatedError(Exception):
     pass
 
-# Module-level storage: keeps the Flow object alive between get_auth_url() and
-# finish_auth() so that the internally-generated code_verifier (PKCE) and state
-# are preserved. Without this, a fresh Flow in finish_auth loses the verifier
-# and Google returns "Missing code verifier".
-_pending_flow = None
+#: The Google sign-ins waiting for their callback, by their own random `state` (F1535): each keeps its Flow, and with
+#: it the PKCE code_verifier Google checks, for `PENDING_S`. Only the callback carrying that state may use it, once:
+#: one process-wide slot used to hold the waiting sign-in, the callback ignored `state`, and with the slot empty it
+#: fell back to a fresh flow with no verifier, so a code from anyone's sign-in to this client was redeemed and kept
+#: as the install's Google connection (login CSRF). A wrong state uses nothing up.
+PENDING_S = 600
+_PENDING_MAX = 8
+_pending: dict[str, tuple[Flow, float]] = {}
+NOT_STARTED_HERE = ("This Google sign-in did not start here, or took more than 10 minutes, so nothing was kept. "
+                    "Connect Google again from Settings → Integrations.")
+
+
+class SignInRefused(Exception):
+    """A Google callback that is not the callback of a sign-in started here: nothing is kept (F1535)."""
+
+
+def _now() -> float:
+    return time.monotonic()
+
+
+def _forget_expired(now: float) -> None:
+    for state in [s for s, (_flow, until) in _pending.items() if until <= now]:
+        _pending.pop(state, None)
+
+
+def _take(state: str | None) -> Flow:
+    """The waiting sign-in this `state` belongs to, taken so it cannot be used again; `SignInRefused` otherwise."""
+    _forget_expired(_now())
+    given = (state or "").encode()
+    for known in list(_pending):
+        if given and hmac.compare_digest(known.encode(), given):
+            return _pending.pop(known)[0]
+    raise SignInRefused(NOT_STARTED_HERE)
 
 def _email_from_token_data(token_data: dict) -> str | None:
     """Best-effort extract of the user's email from a token dict."""
@@ -200,9 +231,7 @@ async def get_google_credentials(refresh: bool = True):
 
 
 async def get_auth_url(redirect_uri):
-    """Generates the OAuth2 authorization URL and stores the flow for later use."""
-    global _pending_flow
-
+    """The Google sign-in's address, with a random `state` of its own; its flow waits for that state's callback."""
     client_config = await load_client_config()
     if not client_config:
         raise FileNotFoundError(
@@ -210,36 +239,27 @@ async def get_auth_url(redirect_uri):
             "Please upload credentials.json via Settings → Integrations."
         )
 
+    state = secrets.token_urlsafe(32)
     flow = Flow.from_client_config(
         client_config, SCOPES, redirect_uri=redirect_uri
     )
     auth_url, _ = flow.authorization_url(
         access_type='offline',
         prompt='consent',
+        state=state,
     )
-    # Keep the flow alive so finish_auth can reuse it (preserves code_verifier)
-    _pending_flow = flow
-    print(f"DEBUG: Auth URL generated — flow stored for callback.")
+    now = _now()
+    _forget_expired(now)
+    while len(_pending) >= _PENDING_MAX:  # the oldest goes; a stranger cannot start one (F1535, /auth/login)
+        _pending.pop(next(iter(_pending)))
+    _pending[state] = (flow, now + PENDING_S)
     return auth_url
 
-async def finish_auth(code, redirect_uri):
-    """Exchanges the auth code using the stored flow (preserves code_verifier)."""
-    global _pending_flow
-
-    # Reuse the stored flow to keep the code_verifier intact
-    if _pending_flow is not None:
-        flow = _pending_flow
-        _pending_flow = None
-        print("DEBUG: Using stored flow for token exchange.")
-    else:
-        # Fallback: create fresh flow (may fail if PKCE was involved)
-        print("WARNING: No stored flow found — creating fresh flow (may fail with PKCE).")
-        client_config = await load_client_config()
-        if not client_config:
-            raise FileNotFoundError("Google credentials have not been configured.")
-        flow = Flow.from_client_config(
-            client_config, SCOPES, redirect_uri=redirect_uri
-        )
+async def finish_auth(code, state):
+    """Exchanges the code with the flow of the sign-in `state` belongs to (its code_verifier), and keeps the tokens.
+    `SignInRefused`, before anything is exchanged or kept, for any other callback: no state, a wrong or used one, one
+    past its 10 minutes, or none waiting. There is no fresh flow to fall back to (F1535)."""
+    flow = _take(state)
 
     # Allow Google to return extra/different scopes without raising an error
     os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1'

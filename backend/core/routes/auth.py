@@ -2,11 +2,13 @@
 Authentication routes: Google OAuth + Synapse login gate.
 """
 import os
+from urllib.parse import urlencode
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse, JSONResponse
 from pydantic import BaseModel
 from services.google import get_auth_url, finish_auth
 from core.config import load_settings
+from core.internal_auth import signed_in
 from core.user_auth import verify_password, create_session_token, verify_session_token
 
 router = APIRouter()
@@ -22,8 +24,20 @@ REDIRECT_URI = f"http://localhost:{_BACKEND_PORT}/auth/callback"
 _FRONTEND_BASE = f"http://localhost:{_FRONTEND_PORT}"
 
 
+def _back_to_app(result: str, reason: str | None = None) -> RedirectResponse:
+    """The app, told how the Google sign-in went; the reason encoded, so its text cannot add to the address (F1535)."""
+    query = {"google_auth": result, **({"reason": reason} if reason else {})}
+    return RedirectResponse(f"{_FRONTEND_BASE}?{urlencode(query)}")
+
+
 @router.get("/auth/login")
-async def login():
+async def login(request: Request):
+    # A browser navigates here, so the internal-token middleware does not gate it, and the frontend's proxy lets /auth/
+    # past its login gate. Starting a sign-in takes a session when the install has a gate (F1535): a stranger on the
+    # network, or a page in someone else's browser, cannot start one or push out the person's. The app's own
+    # Settings → Integrations link comes through the frontend, which passes the person's session cookie on.
+    if not signed_in(request):
+        return _back_to_app("error", "Sign in to Synapse first, then connect Google from Settings → Integrations.")
     try:
         auth_url = await get_auth_url(redirect_uri=REDIRECT_URI)
         return RedirectResponse(auth_url)
@@ -116,10 +130,15 @@ async def user_logout():
 
 
 @router.get("/auth/callback")
-async def callback(code: str, state: str = None):
+async def callback(code: str = "", state: str | None = None, error: str | None = None):
+    """Google sends the person back here. Only the callback of a sign-in started here, by its `state`, is kept
+    (F1535); anything else is refused in words and keeps nothing. No session is asked for: Google sends the browser
+    to the backend's own address, which may not carry the app's cookie."""
+    if error:  # the person said no on Google's screen, or Google refused: nothing to exchange
+        return _back_to_app("error", f"Google did not connect: {error}.")
     try:
-        await finish_auth(code=code, redirect_uri=REDIRECT_URI)
+        await finish_auth(code=code, state=state)
         # Redirect back to the frontend with a success flag so the UI can refresh
-        return RedirectResponse(f"{_FRONTEND_BASE}?google_auth=success")
+        return _back_to_app("success")
     except Exception as e:
-        return RedirectResponse(f"{_FRONTEND_BASE}?google_auth=error&reason={str(e)}")
+        return _back_to_app("error", str(e))
