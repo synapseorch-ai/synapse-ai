@@ -17,7 +17,7 @@
  */
 import type { HumanField } from '@/components/orchestration/humanFields';
 import { roleOf, type StepRole } from '@/components/run/model';
-import { cronWords, scheduleWords, zoneWords } from '@/components/run/workflowList';
+import { cronWords, scheduleWords, zoneWords } from '@/components/run/workflowRows';
 import type { ChangeRow } from '@/lib/builderEvents';
 import { STEP_TYPE_META, type StepType } from '@/types/orchestration';
 

@@ -667,6 +667,41 @@ def _saved_as(op: Op, fields: dict[str, Any]) -> list[str]:
 
 # ── what an op calls, and what it leaves ──────────────────────────────────────────────────────────────────────────
 
+def sites_as_typed(sites: Any, words: str) -> Any:
+    """A widget's sites, each with the scheme the person typed for its host and port (F1525, VID4's take 3: asked for
+    "http://books.harborpine.localhost:18942", the planner wrote the host bare, and a bare host is https). Their words
+    come before the model's retelling, so a typed scheme wins over the one written; a site they never typed with a
+    scheme, and a `*.` pattern, are left as written. Only what they wrote as a URL counts (`named_sites._URL`, its
+    trailing punctuation trimmed as `named_sites.named` trims it)."""
+    from urllib.parse import urlsplit
+
+    from core.native_builder.named_sites import _URL
+
+    def key(raw: str) -> str | None:
+        try:
+            parts = urlsplit(raw if "//" in raw else f"//{raw}")
+            port = parts.port
+        except ValueError:
+            return None
+        host = (parts.hostname or "").lower()
+        return f"{host}:{port}" if host and port else host or None
+
+    typed: dict[str, str] = {}
+    for m in _URL.finditer(words or ""):
+        url = m.group(0).rstrip(".,;:!?")
+        if (k := key(url)) is not None:
+            typed.setdefault(k, url.split(":", 1)[0].lower())
+    if not isinstance(sites, list):
+        return sites
+    out = []
+    for site in sites:
+        raw = str(site).strip()
+        k = None if raw.startswith("*.") else key(raw)
+        scheme = typed.get(k) if k else None
+        out.append(f"{scheme}://{raw.split('//', 1)[1] if '//' in raw else raw}" if scheme else site)
+    return out
+
+
 def act_arguments(op: Op, target_id: str, fields: dict[str, Any]) -> dict[str, Any]:
     """`prepare_action`'s arguments for an act on a resolved target."""
     name_arg = "name" if op.name in MAKES_TARGET else _ACT_ARG[op.target]

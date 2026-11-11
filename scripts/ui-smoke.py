@@ -7935,6 +7935,166 @@ async def check_evalsactions(browser) -> str:
 
 
 @check
+async def check_evalsstarting(browser) -> str:
+    """A set shows its Stop even when the screen's first read comes before its run exists (F1509).
+
+    Start answers before the set's run is written: in-process here, after a queue on cloud. The screen made one
+    read after Run, and when that read came first the set read as not running. The 2.5 s poll never began, so
+    Stop never showed and the set's runs stayed as they were (evalsactions failed now and then on this). Now the
+    screen keeps the run it started as "Starting…" and polls until the list reads it running, or the set's runs
+    list it (a set that ended between reads), or two minutes pass, when it says the set didn't start.
+    Each leg makes the race certain: the reads after Run answer that the set is not running. No set here has
+    a rubric, so nothing is scored and no model is called.
+    """
+    stamp = int(time.time())
+    slow_id, quick_id = f"orch_uismoke_esl_{stamp}", f"orch_uismoke_esq_{stamp}"
+    slow = print_orchestration(slow_id, f"ui-smoke starting slow {stamp}")
+    slow["steps"][0] = {"id": f"{slow_id}_a", "name": "Wait", "type": "transform", "output_key": "one",
+                        "transform_code": "import time\ntime.sleep(8)\nresult = 1", "next_step_id": f"{slow_id}_end"}
+    api("/api/orchestrations", "POST", slow)
+    api("/api/orchestrations", "POST", print_orchestration(quick_id, f"ui-smoke starting quick {stamp}"))
+    one = [{"name": "one", "input": "hi", "notes": ""}]
+    sets = {
+        key: api("/api/evals/suites", "POST", {"name": f"Smoke {key} set {stamp}", "orchestration_id": oid,
+                                                "cases": one})
+        for key, oid in (("slow", slow_id), ("quick", quick_id), ("lost", quick_id))
+    }
+    bad: list[str] = []
+
+    def unseen(suite_id: str, reads: int | None):
+        """After this set's Run, its next `reads` list reads (None: every one) answer that it is not running."""
+        left = {"armed": False, "reads": reads}
+
+        async def on_run(route):
+            if route.request.method == "POST":
+                left["armed"] = True
+            await route.fallback()
+
+        async def on_list(route):
+            if route.request.method != "GET" or not left["armed"] or left["reads"] == 0:
+                return await route.fallback()
+            if left["reads"] is not None:
+                left["reads"] -= 1
+            res = await route.fetch()
+            body = await res.json()
+            await route.fulfill(response=res, json=[{**x, "running": False} if x["id"] == suite_id else x
+                                                    for x in body])
+        return on_run, on_list
+
+    async def opened(page, key: str):
+        await page.goto(f"{APP}/evals", wait_until="domcontentloaded")
+        await page.get_by_role("button", name=re.compile(f"^Smoke {key} set {stamp}")).click(timeout=30_000)
+        detail = page.locator('section[aria-label="Detail"]')
+        await detail.get_by_role("button", name="Run", exact=True).click(timeout=10_000)
+        await page.get_by_role("dialog").get_by_role("button", name="Run set").click()
+        return detail
+
+    async def starts(detail) -> None:
+        starting = detail.get_by_role("button", name=re.compile("Starting"))
+        try:
+            await starting.wait_for(timeout=5_000)
+        except Exception:
+            raise AssertionError("a set whose read after Run missed its run offers Run again, not Starting…")
+        if not await starting.is_disabled():
+            raise AssertionError("Starting… can be clicked, so a second click would start a second set")
+
+    async def runs_listed(detail, want: int) -> None:
+        rows = detail.get_by_role("list", name="Runs of this set").get_by_role("listitem")
+        for _ in range(20):
+            if await rows.count() == want:
+                return
+            await asyncio.sleep(0.5)
+        raise AssertionError(f"the set's runs list {await rows.count()} runs after it ended (expected {want})")
+
+    async def back_to_run(detail, within: float) -> None:
+        run = detail.get_by_role("button", name="Run", exact=True)
+        try:
+            await run.wait_for(timeout=within * 1000)
+        except Exception:
+            raise AssertionError(f"no Run within {within:g} s of the set ending")
+        if await run.is_disabled():
+            raise AssertionError("Run is back but cannot be clicked")
+
+    async def slow_leg() -> None:
+        # The read after Run is the one that misses; the poll's reads after it are the real list.
+        ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+        try:
+            page = await ctx.new_page()
+            on_run, on_list = unseen(sets["slow"]["id"], 1)
+            await page.route(f"**/api/evals/suites/{sets['slow']['id']}/run", on_run)
+            await page.route("**/api/evals/suites", on_list)
+            detail = await opened(page, "slow")
+            await starts(detail)
+            try:
+                await detail.get_by_role("button", name=re.compile("Stop")).wait_for(timeout=8_000)
+            except Exception:
+                raise AssertionError("a started set shows no Stop when its first read beat its run")
+            await back_to_run(detail, 30)
+            await runs_listed(detail, 1)
+        finally:
+            await ctx.close()
+
+    async def quick_leg() -> None:
+        # Every read misses it: it ran and ended between them. Its runs say so, and Starting… clears.
+        ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+        try:
+            page = await ctx.new_page()
+            on_run, on_list = unseen(sets["quick"]["id"], None)
+            await page.route(f"**/api/evals/suites/{sets['quick']['id']}/run", on_run)
+            await page.route("**/api/evals/suites", on_list)
+            detail = await opened(page, "quick")
+            await starts(detail)
+            await back_to_run(detail, 15)
+            await runs_listed(detail, 1)
+            if await detail.get_by_text("didn't start", exact=False).count():
+                raise AssertionError("a set that ran says it didn't start")
+        finally:
+            await ctx.close()
+
+    async def lost_leg() -> None:
+        # Start answers and nothing ever runs: after two minutes the screen says so, and Run is back.
+        ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+        try:
+            await ctx.clock.install()
+            page = await ctx.new_page()
+            sid = sets["lost"]["id"]
+            await page.route(f"**/api/evals/suites/{sid}/run", lambda r: r.fulfill(json={
+                "suite_run_id": f"esr_uismoke{stamp}", "status": "queued",
+                "estimate": {"cases": 1, "runs": 1, "judge_calls": 0}}))
+            detail = await opened(page, "lost")
+            await starts(detail)
+            await asyncio.sleep(1.0)
+            await ctx.clock.fast_forward(125_000)
+            try:
+                await detail.get_by_text("It didn't start; try again.").wait_for(timeout=10_000)
+            except Exception:
+                raise AssertionError("a set never seen running goes quiet after two minutes, and does not say "
+                                     "it didn't start")
+            await back_to_run(detail, 5)
+        finally:
+            await ctx.close()
+
+    try:
+        for label, leg in (("slow", slow_leg), ("quick", quick_leg), ("lost", lost_leg)):
+            try:
+                await leg()
+            except AssertionError as exc:
+                bad.append(f"{label}: {exc}")
+    finally:
+        for suite in sets.values():
+            try:
+                api(f"/api/evals/suites/{suite.get('id')}", "DELETE")
+            except Exception:
+                pass
+        drop_fixture(slow_id)
+        drop_fixture(quick_id)
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("A started set reads Starting… until its run is seen, then shows Stop; a set that ended between reads "
+            "lists its run; one never seen says it didn't start")
+
+
+@check
 async def check_plurals(browser) -> str:
     """Counts agree with their nouns and stamps are in the reader's time (F205).
 
@@ -8423,20 +8583,54 @@ async def check_dialogfocus(browser) -> str:
         await ctx.close()
 
 
+#: An open list's box once it has stopped moving, and what the hit test finds at its middle then. Read on animation
+#: frames until the box is the same on three frames running, for at most 2 s. A long Select's first frame comes before
+#: Radix has set --radix-select-content-available-height, so its max-height, min(18rem, that variable), is not a
+#: length yet: the list is placed at its whole height, on the side of its trigger with more room, and moved below the
+#: trigger a frame or more later. A box read on that first frame sent the wheel to a point the list had left, over the
+#: dialog's backdrop, which the dialog's scroll lock swallows (F1526, 11-11: 3 of 12 on 73f7e2cf, a Select alone among
+#: them; its pointer-events stayed auto and nothing covered it). `covered` names what is at the middle when it is not
+#: the list, so a list under a backdrop, or one that takes no pointer events, fails in its own words.
+_SETTLED_LIST = r"""async (e) => {
+  const frame = () => new Promise((done) => requestAnimationFrame(() => done()));
+  const read = () => { const b = e.getBoundingClientRect(); return {x: b.x, y: b.y, width: b.width, height: b.height}; };
+  const start = performance.now();
+  let box = read(), same = 0;
+  while (same < 3 && performance.now() - start < 2000) {
+    await frame();
+    const next = read();
+    same = ['x', 'y', 'width', 'height'].every((k) => Math.abs(next[k] - box[k]) < 0.5) ? same + 1 : 0;
+    box = next;
+  }
+  const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+  const covered = !hit ? 'nothing' : e.contains(hit) ? ''
+    : [hit.tagName.toLowerCase(), ...String(hit.className || '').trim().split(/\s+/).slice(0, 4)].join('.');
+  return {box, settled: same >= 3, covered};
+}"""
+
+
 async def _wheel_scrolls(page, scroller) -> str | None:
-    """None when the wheel over an open list scrolls it and the list fits the window; else what is wrong."""
+    """None when the wheel over an open list scrolls it and the list fits the window; else what is wrong.
+
+    Measured where the list settled, not where its first frame drew it (_SETTLED_LIST).
+    """
     try:
         await scroller.wait_for(timeout=5_000)
     except Exception:
         return "its list never opened"
-    box = await scroller.bounding_box()
+    found = await scroller.evaluate(_SETTLED_LIST)
+    box = found["box"]
     height = page.viewport_size["height"]
-    if not box:
+    if box["width"] <= 0 or box["height"] <= 0:
         return "its list has no box"
+    if not found["settled"]:
+        return f"its list was still moving after 2 s (last at {box['y']:.0f}..{box['y'] + box['height']:.0f})"
     if box["y"] < -1 or box["y"] + box["height"] > height + 1:
         return f"its list runs off the window ({box['y']:.0f}..{box['y'] + box['height']:.0f} of {height}px)"
     if await scroller.evaluate("e => e.scrollHeight <= e.clientHeight"):
         return "its list is not taller than its box, so it cannot be measured"
+    if found["covered"]:
+        return f"the middle of its list is under {found['covered']}"
     await page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
     await page.mouse.wheel(0, 400)
     await asyncio.sleep(0.5)
@@ -12684,6 +12878,143 @@ async def check_widgetrefused(browser) -> str:
     finally:
         api(f"/api/widgets/{widget['id']}", "DELETE")
     return "an unlisted origin is refused, in words"
+
+
+#: widgetnoreferrer's shop (F1522): a real page on loopback, as VID4's bookstore was. A routed public page cannot
+#: load an install on loopback at all (Chrome's Private Network Access refuses v1.js before any frame exists), so the
+#: shop is a server of the check's own on a high port, down when the check ends.
+NOREF_PORT = 18952
+NOREF_SHOP = f"http://127.0.0.1:{NOREF_PORT}"
+#: The same server by another name: another origin, and not on the widget's list.
+NOREF_ELSEWHERE = f"http://localhost:{NOREF_PORT}"
+
+
+def _shop_server(key: str):
+    """A customer's page with the one tag, inline, asking the browser for no referrer: by a meta tag (`?how=meta`) or
+    by the header (`?how=header`). Served on 127.0.0.1:NOREF_PORT until `.shutdown()`."""
+    import http.server
+    import threading
+    from urllib.parse import parse_qs, urlsplit
+
+    class Shop(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            how = parse_qs(urlsplit(self.path).query).get("how", ["meta"])[0]
+            asks = '<meta name="referrer" content="no-referrer">' if how == "meta" else ""
+            body = (f'<!doctype html><html><head>{asks}<title>Harborpine shop</title></head><body><h1>Shop</h1>'
+                    '<div id="chat" style="width:400px;height:620px"></div>'
+                    f'<script src="{APP}/embed/v1.js" data-key="{key}" data-mount="#chat" async></script>'
+                    '</body></html>').encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            if how == "header":
+                self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", NOREF_PORT), Shop)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+@check
+async def check_widgetnoreferrer(browser) -> str:
+    """A customer page that asks for no referrer still gets its widget (F1522; VID4 take 4: "null is not an allowed
+    origin"). The widget learns its site from the frame's Referer, and v1.js's frame now asks for its page's origin
+    itself, which a page's `no-referrer` (a meta tag or the header) cannot take away: the shop's page, with a path and
+    a query, sends only its origin, and the widget loads and answers. A site not on the list still names itself and
+    is still refused. With no address at all (a browser that ignores the frame's policy), the refusal says so in
+    words, never "null"."""
+    widget = _smoke_widget([NOREF_SHOP])
+    key = widget["public_key"]
+    bad: list[str] = []
+    server = None
+
+    async def chat(route):
+        body = 'data: {"type": "response", "content": "Smoke answer."}\n\ndata: {"type": "done"}\n\n'
+        await route.fulfill(status=200, content_type="text/event-stream", body=body)
+
+    async def shop_with(host: str, how: str):
+        """The shop on `host` asking for no referrer `how` (meta or header), and the Referers the widget's page got."""
+        ctx = await browser.new_context(viewport={"width": 900, "height": 760})
+        referers: list[str | None] = []
+
+        async def embed(route):
+            referers.append((await route.request.all_headers()).get("referer"))
+            await route.continue_()
+
+        await ctx.route(f"{APP}/embed/{key}", embed)
+        await ctx.route("**/api/widget/chat", chat)
+        # The chat says it is ready once it has hydrated (WidgetChat's synapse:ready, which v1.js waits for too): the
+        # composer is drawn before that, and an Enter pressed into it then sends nothing (a first green run, 11-10).
+        await ctx.add_init_script("window.__synapseReady = 0; addEventListener('message', (e) => {"
+                                  " if (e.data && e.data.type === 'synapse:ready' && !e.data.refused)"
+                                  " window.__synapseReady += 1; });")
+        page = await ctx.new_page()
+        await page.goto(f"{host}/books/salt-lantern?how={how}&ref=ad-campaign#reviews", wait_until="domcontentloaded")
+        return ctx, page, referers
+
+    try:
+        server = _shop_server(key)
+        for how in ("meta", "header"):
+            ctx, page, referers = await shop_with(NOREF_SHOP, how)
+            try:
+                frame = page.frame_locator("#chat iframe")
+                box = frame.get_by_role("textbox", name="Message")
+                try:
+                    await box.wait_for(timeout=15000)
+                except Exception:
+                    said = await frame.locator("main[role=alert]").all_inner_texts()
+                    bad.append(f"no-referrer by {how}: the widget did not load (Referer {referers}, it said {said})")
+                    continue
+                if referers != [f"{NOREF_SHOP}/"]:
+                    bad.append(f"no-referrer by {how}: the widget's page got Referer {referers}, not the shop's "
+                               "origin alone")
+                await page.wait_for_function("window.__synapseReady > 0", timeout=15000)
+                await box.fill("Is The Salt Lantern in stock?")
+                await box.press("Enter")
+                try:
+                    await frame.get_by_text("Smoke answer.").wait_for(timeout=10000)
+                except Exception:
+                    bad.append(f"no-referrer by {how}: the widget loaded but never answered")
+            finally:
+                await ctx.close()
+
+        # A site not on the list names itself all the same, and is refused: the browser keeps the frame empty.
+        ctx, page, referers = await shop_with(NOREF_ELSEWHERE, "meta")
+        try:
+            await page.wait_for_timeout(6000)
+            if await page.frame_locator("#chat iframe").get_by_role("textbox", name="Message").count():
+                bad.append("a site not on the list got the composer")
+            if referers and referers != [f"{NOREF_ELSEWHERE}/"]:
+                bad.append(f"the unlisted site's frame sent Referer {referers}")
+        finally:
+            await ctx.close()
+
+        # No address at all, as from a browser that ignores the frame's policy: said in words.
+        ctx = await browser.new_context(viewport={"width": 400, "height": 620})
+        try:
+            page = await ctx.new_page()
+            await page.goto(f"{APP}/embed/{key}", wait_until="domcontentloaded")
+            alert = page.locator("main[role=alert]")
+            await alert.wait_for(timeout=15000)
+            text = await alert.inner_text()
+            if "sent no address" not in text or "null" in text:
+                bad.append(f"with no address the refusal reads {text!r}")
+        finally:
+            await ctx.close()
+    finally:
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+        api(f"/api/widgets/{widget['id']}", "DELETE")
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("a shop asking for no referrer (meta or header) sends its origin alone and gets an answer; an unlisted "
+            "site is refused; no address at all is said in words")
 
 
 # ── M2h: Logs, Evals and Schedules ───────────────────────────────────────────
@@ -18495,6 +18826,69 @@ async def check_widgetconfirm(browser) -> str:
     finally:
         await ctx.close()
     return "Delete and Issue a new key ask in a dialog; Cancel keeps the widget open"
+
+
+@check
+async def check_widgetasksfirst(browser) -> str:
+    """A tool the agent asks first about is marked where visitors' tools are picked (F1524, VID4's takes 1-2): on a
+    website a visitor can't approve, so it is refused there, and the row says so with an "Asks first" badge; a phone
+    caller's waits for a person instead, and the Phone screen says that. A tool that runs without asking has neither."""
+    tools = {"tools": [{"name": "search_books", "category": "read_only", "asks_first": False},
+                       {"name": "create_order", "category": "open_world", "asks_first": True}]}
+    widget = {"id": "w_smoke", "name": "Smoke widget", "agent_id": "a1", "public_key": "pk_smoke",
+              "allowed_origins": ["https://example.com"], "enabled": True, "greeting": "Hi", "accent": "#2563eb",
+              "title": "", "launcher_label": "", "daily_message_cap": 500, "font": "system", "theme": "auto",
+              "header_style": "accent", "launcher": "bubble", "logo": "", "position": "right",
+              "visitor_tools": ["search_books", "create_order"]}
+
+    async def rows(page) -> dict[str, str]:
+        # The picker loads after the page's heading (the agent's tools, then the catalogue's groups): until both rows
+        # show, open any group that is still closed (the first try found none yet and timed out, 11-11).
+        def row(name):
+            return page.locator("li", has=page.get_by_role("checkbox", name=re.compile(rf"can use {name}$"))).first
+        for _ in range(60):
+            if await row("search_books").count() and await row("create_order").count():
+                break
+            for button in await page.locator("button[aria-expanded='false'][aria-label*=' tools, ']").all():
+                await button.click()
+            await asyncio.sleep(0.25)
+        else:
+            raise AssertionError("the picker never showed both tools")
+        return {name: await row(name).inner_text() for name in ("search_books", "create_order")}
+
+    bad: list[str] = []
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route("**/api/widgets", _answer([widget]))
+    await ctx.route("**/api/widgets/visitor-tools*", _answer(tools))
+    await ctx.route("**/embed/preview/**", _answer("<html></html>", content_type="text/html"))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/widgets", wait_until="domcontentloaded")
+        await page.get_by_role("heading", name="Smoke widget").wait_for(timeout=30_000)
+        got = await rows(page)
+        if "Asks first" not in got["create_order"] or "can't approve" not in got["create_order"] \
+                or "refused" not in got["create_order"]:
+            bad.append(f"the widget's create_order row reads {got['create_order']!r}")
+        if "Asks first" in got["search_books"]:
+            bad.append("a tool that runs without asking is marked")
+    finally:
+        await ctx.close()
+
+    ctx = await _phone_context(browser)
+    await ctx.route("**/api/widgets/visitor-tools*", _answer(tools))  # the last route wins
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/channels/phone", wait_until="domcontentloaded")
+        await page.get_by_role("heading", name="Smoke support line").wait_for(timeout=30_000)
+        got = await rows(page)
+        if "Asks first" not in got["create_order"] or "waits" not in got["create_order"] \
+                or "refused" in got["create_order"]:
+            bad.append(f"the phone's create_order row reads {got['create_order']!r}")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "an asked-first tool is marked: refused for a widget's visitors, waiting for a person on a call"
 
 
 @check

@@ -560,10 +560,44 @@ class TestWhatAnOwnerCanTick:
         response = await client.get("/api/widgets/visitor-tools", params={"agent_id": agent["id"]})
         assert response.status_code == 200, response.text
         assert response.json()["tools"] == [
-            {"name": "danger", "category": "destructive"},
-            {"name": "peek", "category": "read_only"},
-            {"name": "spawn_subtask", "category": "undeclared"},
+            {"name": "danger", "category": "destructive", "asks_first": False},
+            {"name": "peek", "category": "read_only", "asks_first": False},
+            {"name": "spawn_subtask", "category": "undeclared", "asks_first": False},
         ]
+
+    async def test_a_tool_this_agent_asks_first_about_is_said(self, client, seed_agent, two_tools):
+        """F1524 (VID4's takes 1-2): a visitor can't approve, so a tool the agent's own policy asks first about is
+        refused on the site. The list says which, by the agent's policy over the workspace's floor, and each tool's
+        category stays what it does."""
+        agent = await seed_agent(tools=["danger", "peek"], tool_policy={"tool:peek": "confirm"})
+        response = await client.get("/api/widgets/visitor-tools", params={"agent_id": agent["id"]})
+        assert response.status_code == 200, response.text
+        assert response.json()["tools"] == [
+            {"name": "danger", "category": "destructive", "asks_first": False},
+            {"name": "peek", "category": "read_only", "asks_first": True},
+        ]
+        await client.post("/api/settings", json={"agent_name": "Synapse",
+                                                 "tool_policy_defaults": {"destructive": "confirm"}})
+        response = await client.get("/api/widgets/visitor-tools", params={"agent_id": agent["id"]})
+        assert {t["name"]: t["asks_first"] for t in response.json()["tools"]} == {"danger": True, "peek": True}
+
+    async def test_a_workflows_tool_step_asks_first_by_its_own_agent(self, client, seed_agent, seed_orchestration,
+                                                                    two_tools):
+        """A Tool step runs under its own agent's policy, as the engine runs it (`steps.py`); an Agent step's tools
+        under that agent's."""
+        from _fakes import seed as S
+
+        careful = S.make_agent(tools=["peek"], tool_policy={"tool:peek": "confirm"})
+        orch = await seed_orchestration(entry_step_id="t", steps=[
+            {"id": "t", "name": "T", "type": "tool", "forced_tool": "danger", "agent_id": careful["id"],
+             "next_step_id": "a"},
+            {"id": "a", "name": "A", "type": "agent", "agent_id": careful["id"], "next_step_id": None},
+        ])
+        lead = S.make_orchestrator_agent(orch["id"])
+        careful["tool_policy"]["tool:danger"] = "confirm"
+        await S.seed_agents([careful, lead])
+        response = await client.get("/api/widgets/visitor-tools", params={"agent_id": lead["id"]})
+        assert {t["name"]: t["asks_first"] for t in response.json()["tools"]} == {"danger": True, "peek": True}
 
     async def test_a_workflows_steps_are_the_list(self, client, seed_agent, seed_orchestration, two_tools):
         """A visitor on an orchestrator agent runs its workflow, so the list is

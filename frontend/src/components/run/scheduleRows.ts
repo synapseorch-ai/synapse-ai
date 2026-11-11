@@ -6,7 +6,7 @@
  * runs carry no schedule, so it knows only when).
  */
 import { bucketOf, type RunBucket } from './model';
-import { scheduleWords, type ScheduleLike } from './workflowList';
+import { scheduleWords, type ScheduleLike } from './workflowRows';
 
 export type ScheduleListRow = {
     id: string;

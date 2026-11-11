@@ -32,6 +32,20 @@ class TestNormalise:
         assert origins.normalise("http://acme.com") is None
         assert origins.normalise("http://127.0.0.1:3000") == "http://127.0.0.1:3000"
 
+    def test_a_localhost_subdomain_may_be_http_too(self):
+        """Every `*.localhost` name is loopback (RFC 6761), as browsers treat it: a developer's
+        `http://shop.localhost:3000` is as local as `http://localhost:3000` (F1525, VID4's take 3)."""
+        assert origins.normalise("http://books.harborpine.localhost:18942") == "http://books.harborpine.localhost:18942"
+        assert origins.normalise("http://a.b.localhost") == "http://a.b.localhost"
+        assert origins.matches("http://shop.localhost:3000", ["http://shop.localhost:3000"]) is True
+
+    @pytest.mark.parametrize("value", ["http://localhost.evil.com", "http://evil.com/localhost",
+                                       "http://xlocalhost", "http://evil-localhost.com", "http://localhost.com"])
+    def test_a_name_that_only_looks_local_stays_refused_on_http(self, value):
+        """Only the name `localhost` or one ending in `.localhost` is local: not one that starts with it, holds it in
+        a path, or ends with the letters."""
+        assert origins.normalise(value) is None
+
     @pytest.mark.parametrize("value", ["", None, "   ", "ftp://acme.com", "javascript:alert(1)"])
     def test_junk_is_none_rather_than_a_guess(self, value):
         assert origins.normalise(value) is None

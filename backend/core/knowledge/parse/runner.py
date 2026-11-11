@@ -43,6 +43,7 @@ from pathlib import Path
 from core.knowledge.parse import UnsupportedFormat
 from core.knowledge.parse.limits import ParseRefused, ParserFailed
 from core.knowledge.parsed import ParsedDocument, ParseWarning
+from core.process_env import WINDOWS_START
 
 POLL_S = 0.2
 #: How often the child's page count is read.
@@ -52,14 +53,11 @@ BACKEND_ROOT = Path(__file__).resolve().parents[3]
 #: Environment variables the parsing process keeps; everything else is dropped.
 ENV_ALLOW = frozenset({
     "PATH", "HOME", "USER", "LOGNAME", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TEMP", "TMP",
-    # Windows needs these to start a process at all.
-    "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
-    "PROGRAMDATA", "PROGRAMFILES", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
     # Docling's models, offline; thread counts.
     "DOCLING_ARTIFACTS_PATH", "HF_HOME", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "OMP_NUM_THREADS",
     "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "TORCH_NUM_THREADS",
     "SYNAPSE_SOFFICE", "PYTHONIOENCODING", "PYTHONUTF8",
-})
+}) | WINDOWS_START  # Windows needs these to start a process at all (core.process_env, F1533).
 ENV_ALLOW_PREFIXES = ("LC_", "SYNAPSE_KNOWLEDGE_")
 
 

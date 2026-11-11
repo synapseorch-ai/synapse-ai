@@ -79,6 +79,16 @@ const LOADER = String.raw`
   }
 
   var frame = document.createElement('iframe');
+  // This page's origin, and only its origin (F1522). The widget learns which site
+  // it is on from this frame's Referer, and a page that sends
+  // Referrer-Policy: no-referrer, by header or by <meta name="referrer">, would
+  // give it none ("null is not an allowed origin"). An element's own policy is the
+  // one its navigation uses. 'origin' rather than the browser's default,
+  // 'strict-origin-when-cross-origin': that one sends nothing from an https page
+  // to an install on plain http, and a page's whole address, path and query, to
+  // its own origin. The value is still the browser's: a policy decides how much of
+  // the page's address is sent, never what it says.
+  frame.referrerPolicy = 'origin';
   frame.src = origin + '/embed/' + encodeURIComponent(key);
   frame.title = label;
   frame.setAttribute('aria-label', label);

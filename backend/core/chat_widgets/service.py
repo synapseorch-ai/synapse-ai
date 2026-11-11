@@ -84,23 +84,37 @@ async def visitor_tool_choices(agent_id: str) -> list[dict]:
     visitor's turn runs the workflow and the list holds in every step (F280).
     The engine's own tools (the task list, skills) are always a visitor's and
     memory never is, so neither is offered here.
+
+    `asks_first` (F1524): whether the policy the tool runs under asks a person
+    before it, which on a widget or a channel nobody can answer, so there the
+    call is refused (`core.visitor`). It is the agent's own policy over the
+    workspace's floor, as the engine resolves it: an agent's tools by that
+    agent's, a workflow's Tool step by its own agent's (`steps.py`). A tool
+    reached twice asks first if either asks. `category` stays what the tool
+    does, as before.
     """
     import core.server as _server
+    from core.config import load_settings
     from core.scale.context import resolve_agent, resolve_custom_tools, resolve_orchestration
-    from core.tool_policy import DEFAULT_POLICY, decide
+    from core.tool_policy import DEFAULT_POLICY, decide, resolve_policy
     from core.tools import aggregate_all_tools, resolve_one_tool
 
     agent = await resolve_agent(agent_id) if agent_id else None
     if agent is None:
         raise WidgetRefused(f"No agent '{agent_id}'.", 404)
     custom = await resolve_custom_tools()
-    found: dict[str, str] = {}
+    settings = load_settings()
+    found: dict[str, dict] = {}
 
-    def note(tool) -> None:
+    def note(tool, holder: dict | None) -> None:
         name = getattr(tool, "name", "") or ""
-        if name and name not in found and name not in _visitor.ENGINE_TOOLS \
-                and name not in _visitor.NEVER_FOR_VISITORS:
-            found[name] = decide(tool, DEFAULT_POLICY)[1]
+        if not name or name in _visitor.ENGINE_TOOLS or name in _visitor.NEVER_FOR_VISITORS:
+            return
+        asks = decide(tool, resolve_policy(holder or {}, settings))[0] == "confirm"
+        if name in found:
+            found[name]["asks_first"] = found[name]["asks_first"] or asks
+            return
+        found[name] = {"name": name, "category": decide(tool, DEFAULT_POLICY)[1], "asks_first": asks}
 
     async def walk(node: dict, depth: int) -> None:
         if node.get("type") == "orchestrator":
@@ -109,7 +123,8 @@ async def visitor_tool_choices(agent_id: str) -> list[dict]:
             for step in (orch or {}).get("steps") or []:
                 if step.get("type") == "tool" and step.get("forced_tool"):
                     tool = await resolve_one_tool(_server, step["forced_tool"], {}, custom)
-                    note(tool if tool is not None else _named(step["forced_tool"]))
+                    holder = await resolve_agent(step["agent_id"]) if step.get("agent_id") else None
+                    note(tool if tool is not None else _named(step["forced_tool"]), holder)
                 elif step.get("type") == "agent" and step.get("agent_id"):
                     child = await resolve_agent(step["agent_id"])
                     if child is not None:
@@ -117,11 +132,11 @@ async def visitor_tool_choices(agent_id: str) -> list[dict]:
             return
         tools, *_ = await aggregate_all_tools(_server, node, custom)
         for tool in tools:
-            note(tool)
+            note(tool, node)
         if "spawn_subtask" in (node.get("tools") or []):
-            note(_named("spawn_subtask"))
+            note(_named("spawn_subtask"), node)
         if node.get("type") == "delegate":
-            note(_named("delegate_to_agent"))
+            note(_named("delegate_to_agent"), node)
         # Knowledge's tools, over the agent's bases opened to visitors (D153 #12):
         # with none, a ticked tool would reach nothing.
         from core.knowledge import tools as knowledge_tools
@@ -129,10 +144,10 @@ async def visitor_tool_choices(agent_id: str) -> list[dict]:
         visitor_bases = await knowledge_tools.agent_bases(node, visitor=True)
         if visitor_bases:
             for tool in knowledge_tools.build_tools(visitor_bases):
-                note(tool)
+                note(tool, node)
 
     await walk(agent, 0)
-    return [{"name": n, "category": c} for n, c in sorted(found.items())]
+    return [found[n] for n in sorted(found)]
 
 
 def _named(name: str):
@@ -146,13 +161,15 @@ async def reachable_visitor_tools(agent_id: str, names: list[str], choices: list
     """`names`, each with its category, when the agent's visitor turn can reach every one; else the ones it can't, by
     name (TRI1, F1262: a card never lets a visitor hold a tool by a name the agent doesn't have)."""
     choices = choices if choices is not None else await visitor_tool_choices(agent_id)
-    known = {c["name"]: c["category"] for c in choices}
+    known = {c["name"]: c for c in choices}
     wanted = _visitor.clean_tools(names)
     missing = [n for n in wanted if n not in known]
     if missing:
         offered = ", ".join(sorted(known)) or "none"
         raise WidgetRefused(f"The agent's visitor turn can't reach {', '.join(missing)}. It can offer: {offered}.", 422)
-    return [{"name": n, "category": known[n]} for n in wanted]
+    # What it does, and whether it asks first and so is refused for a visitor (F1524).
+    return [{"name": n, "category": known[n]["category"], "asks_first": bool(known[n].get("asks_first"))}
+            for n in wanted]
 
 
 # ── the owner's acts ─────────────────────────────────────────────────────────

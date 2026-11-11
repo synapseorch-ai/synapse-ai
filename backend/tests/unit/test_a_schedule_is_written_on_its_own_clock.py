@@ -78,7 +78,7 @@ def test_a_cron_in_words_on_its_clock(cron, tz, words):
 
 
 def test_the_words_match_the_apps():
-    lists = (ROOT / "frontend/src/components/run/workflowList.ts").read_text()
+    lists = (ROOT / "frontend/src/components/run/workflowRows.ts").read_text()
     assert "const DAYS = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'];" in lists
     assert "return `Monthly, ${ordinalDay(Number(dom))} ${time}`;" in lists
 

@@ -15,7 +15,9 @@ export const dynamic = 'force-dynamic';
  * 1. **The parent origin is checked** against the widget's allow-list, and the
  *    visitor token is minted only if it passes. The origin comes from `Referer`,
  *    which the browser sets on a subframe navigation and the embedding page
- *    cannot forge from script. It is deliberately *not* read from a query
+ *    cannot forge from script. v1.js's frame asks for it with its own referrer
+ *    policy, `origin`, so a page that sends no referrer still names its origin
+ *    and nothing more (F1522). It is deliberately *not* read from a query
  *    parameter — the host page controls its own URL, so a parameter would be the
  *    embedding site vouching for itself.
  *
@@ -36,10 +38,16 @@ export const dynamic = 'force-dynamic';
 
 type PageProps = { params: Promise<{ key: string }> };
 
+/** What the visitor reads when the browser named no page at all (F1522), never "null is not an allowed origin". */
+const NO_ADDRESS =
+  'The browser sent no address for the page this chat is on, so the widget can’t check that it’s allowed there.';
+
+/** The embedding page's origin from the frame's `Referer`; '' when there is none, or only an opaque one ("null"). */
 function parentOrigin(referer: string | null): string {
   if (!referer) return '';
   try {
-    return new URL(referer).origin;
+    const origin = new URL(referer).origin;
+    return origin === 'null' ? '' : origin;
   } catch {
     return '';
   }
@@ -49,6 +57,12 @@ export default async function EmbedPage({ params }: PageProps) {
   const { key } = await params;
   const incoming = await headers();
   const origin = parentOrigin(incoming.get('referer'));
+
+  // No address at all: a browser that ignored the frame's own referrer policy, or this page opened by itself. The
+  // allow-list is never asked about an origin nobody named; the visitor is told what happened, in words (F1522).
+  if (!origin) {
+    return <EmbedRefusal detail={NO_ADDRESS} />;
+  }
 
   let session: {
     token?: string;
@@ -66,10 +80,9 @@ export default async function EmbedPage({ params }: PageProps) {
       headers: await sessionHeaders(),
       body: JSON.stringify({
         public_key: key,
-        // An empty origin — a direct visit with no referrer — is passed through
-        // as-is and refused by the allow-list, rather than being papered over
-        // with a default. "Opened outside a page" is not an origin.
-        origin: origin || 'null',
+        // Always an origin the browser named: a page that named none was refused
+        // above, never papered over with a default.
+        origin,
       }),
       cache: 'no-store',
     });

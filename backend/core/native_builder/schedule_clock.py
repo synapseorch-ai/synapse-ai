@@ -3,7 +3,7 @@
 A cron is read on its schedule's own clock (F948): the timezone the person named, else their own, which build_plan
 and the change route fill; none is UTC, as every schedule before F948 is. What a card, a change line, the build's
 summary and the schedules reader say about when a schedule runs is the cron read on that clock, in these words, never
-the planner's own: `cron_words` gives the app's words (`workflowList.ts` `cronWords`, the Schedules screen's), and
+the planner's own: `cron_words` gives the app's words (`workflowRows.ts` `cronWords`, the Schedules screen's), and
 `clash` finds a planner's words that name a time its cron does not run at.
 """
 from __future__ import annotations
@@ -39,7 +39,7 @@ def _day_list(dow: str) -> str | None:
 
 
 def _utc_words(expr: str) -> str:
-    """`workflowList.ts` `utcCronWords`, word for word: the words with " UTC" where a clock is said; anything it
+    """`workflowRows.ts` `utcCronWords`, word for word: the words with " UTC" where a clock is said; anything it
     can't say comes back as the expression itself."""
     raw = (expr or "").strip()
     parts = raw.split()

@@ -2144,6 +2144,11 @@ async def _check_change(args: dict, server_module: Any, events: list[dict]) -> d
         if item.get("status") != "resolved":
             continue
         op, target, fields = C.OPS[item["op"]], item["target"], item["fields"]
+        if op.name in ("widget_create", "widget_update") and "sites" in fields:
+            # Each site with the scheme the person typed for it (F1525): their words, not the model's retelling.
+            from core.native_builder.build_plan import _request_words, _state
+
+            fields = item["fields"] = {**fields, "sites": C.sites_as_typed(fields["sites"], _request_words(_state()))}
         if op.is_act:
             try:
                 card = await _offer(op.name, C.act_arguments(op, target["id"] if target.get("id") else

@@ -10,7 +10,8 @@
  * category; the groups come from the agent picker's own catalogue
  * (`useCapabilities`, `/api/tools/available`). A tool the catalogue does not
  * know goes under "Other". Every tool keeps its own checkbox, id and name
- * ("Visitors can use x") and its category badge, as before.
+ * ("Visitors can use x") and its category badge, as before. A tool the agent
+ * asks first about says so, and what that means here (F1524).
  */
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { useMemo, useState } from 'react';
@@ -22,7 +23,8 @@ import { humanizeToolName } from '@/lib/toolNames';
 
 import { useCapabilities } from './hooks/useCapabilities';
 
-export interface VisitorToolChoice { name: string; category: string }
+/** `asks_first` (F1524): the agent asks a person before it uses this tool, which a visitor can't answer. */
+export interface VisitorToolChoice { name: string; category: string; asks_first?: boolean }
 
 /** Said plainly, because the person ticking is deciding what a stranger may make
  *  their agent do. A read-only tool is a warning too: it reads *their* files. */
@@ -38,7 +40,7 @@ export const TOOL_CATEGORY: Record<string, { label: string; tone: BadgeTone }> =
 type Group = { id: string; label: string; description?: string; tools: (VisitorToolChoice & { description: string })[] };
 
 export function VisitorToolGroups({
-    tools, ticked, onChange, idPrefix, subject,
+    tools, ticked, onChange, idPrefix, subject, asked = 'refused',
 }: {
     tools: VisitorToolChoice[];
     ticked: string[];
@@ -47,6 +49,9 @@ export function VisitorToolGroups({
     idPrefix: string;
     /** "Visitors" / "Senders": each checkbox is named "{subject} can use {tool}". */
     subject: string;
+    /** What happens to a tool the agent asks first about (F1524): on a website or a chat a stranger can't approve, so
+     *  it is `refused`; a phone call's waits for someone here (`held`). */
+    asked?: 'refused' | 'held';
 }) {
     const { capabilities, loading } = useCapabilities();
     const [open, setOpen] = useState<Set<string>>(new Set());
@@ -85,6 +90,9 @@ export function VisitorToolGroups({
         return next;
     });
 
+    // One of them, for the asks-first line: "Visitors" → "visitor".
+    const one = subject.toLowerCase().replace(/s$/, '');
+
     const toolRow = (tool: Group['tools'][number]) => {
         const id = `${idPrefix}-${tool.name}`;
         const category = TOOL_CATEGORY[tool.category] ?? TOOL_CATEGORY.undeclared;
@@ -103,8 +111,18 @@ export function VisitorToolGroups({
                         <span className="ml-1.5 font-code text-2xs text-text-faint" translate="no">{tool.name}</span>
                     </span>
                     {tool.description && <span className="mt-0.5 line-clamp-2 text-xs leading-tight text-text-faint">{tool.description}</span>}
+                    {tool.asks_first && (
+                        <span className="mt-0.5 block text-xs leading-tight text-text-muted" data-asks-first>
+                            {asked === 'held'
+                                ? `This agent asks a person before it uses this, so a ${one}'s request waits until someone here approves it.`
+                                : `This agent asks a person before it uses this, and a ${one} can't approve, so it is refused here. Let it act without asking, or leave it off.`}
+                        </span>
+                    )}
                 </label>
-                <Badge tone={category.tone}>{category.label}</Badge>
+                <span className="flex shrink-0 flex-col items-end gap-1">
+                    <Badge tone={category.tone}>{category.label}</Badge>
+                    {tool.asks_first && <Badge tone={asked === 'held' ? 'warning' : 'danger'}>Asks first</Badge>}
+                </span>
             </li>
         );
     };

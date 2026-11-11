@@ -508,7 +508,20 @@ _ENGINE_MARKER = _re.compile(
     r"^[ \t]*(\[Turn \d+ — (?:Action|Observation|Partial)\]|<</?BROWSER_(?:HISTORY|STATE)>>)", _re.MULTILINE)
 
 
-def _reply_kept(action_text: str, offered, is_browser) -> tuple[str | None, list[dict], list[dict], str | None]:
+def _writes_its_calls(model) -> bool:
+    """Whether `model`'s calls reach the loop as the text it wrote (F1523): a CLI the agent's tools are not bridged to
+    (`cli.claude`, `cli.gemini`, `cli.copilot`). An API model's calls, the cloud gateway's and the bridged `cli.codex`'s
+    (F753) are its provider's own: the reply ends at them, and nothing is written after them."""
+    if not isinstance(model, str) or not model.lower().startswith("cli."):
+        return False
+    from core.providers.cli_invocation import BRIDGED_CLIS, CLI_BASES, split_cli_model
+
+    base, _variant = split_cli_model(model)
+    return base in CLI_BASES and base not in BRIDGED_CLIS
+
+
+def _reply_kept(action_text: str, offered, is_browser,
+                acts=None) -> tuple[str | None, list[dict], list[dict], str | None]:
     """What the loop acts on of a reply: the text it keeps (None when the reply is kept as it was), the calls it makes,
     the calls it does not make, and the engine's line it wrote, without its brackets, when that is where it ends.
 
@@ -519,6 +532,11 @@ def _reply_kept(action_text: str, offered, is_browser) -> tuple[str | None, list
     reply ends at whichever comes first: the words after it are not kept, and no call after it is made, a browser one
     or not. A reply with neither, and one that makes no call (the answer), is as it was. The cut is made in the text
     the calls were read from (`_scan_text`).
+
+    `acts`, given for a reply written as text (`_writes_its_calls`), says whether a call changes something outside this
+    workspace: the reply ends after the first that does, too, when anything comes after it (F1523; VID4's bookstore
+    takes: create_order, a result of its own, then the payment link on the id it had invented). A write with nothing
+    after it, and one straight before the engine's line (whose own sentence says more), is left to the rest.
     """
     ends: list[int] = []
     found = _scan_tool_calls(action_text, stop_on_non_tool_json=False, ends=ends)
@@ -531,7 +549,14 @@ def _reply_kept(action_text: str, offered, is_browser) -> tuple[str | None, list
     kept = sum(1 for _c, end in calls if end <= cut)
     first = next((i for i, (c, _end) in enumerate(calls[:kept])
                   if isinstance(name := _offered_name(c.get("tool", ""), offered), str) and is_browser(name)), None)
-    if first is not None and (first < len(calls) - 1 or text[calls[first][1]:].strip()):
+    acting = None if acts is None else next(
+        (i for i, (c, _end) in enumerate(calls[:kept])
+         if isinstance(name := _offered_name(c.get("tool", ""), offered), str) and acts(name)), None)
+    if acting is not None and not (acting < kept - 1 or text[calls[acting][1]:cut].strip()):
+        acting = None
+    if acting is not None and (first is None or acting < first):
+        cut, kept, forged = calls[acting][1], acting + 1, None
+    elif first is not None and (first < len(calls) - 1 or text[calls[first][1]:].strip()):
         cut, kept, forged = calls[first][1], first + 1, None
     elif forged is None:
         return None, [c for c, _end in calls], [], None
@@ -2444,6 +2469,28 @@ async def run_agent_step(
     def _is_browser_tool(name: str) -> bool:
         return name.startswith(BROWSER_TOOL_PREFIXES)
 
+    # A reply written as text ends after its first call whose tool declares that it changes something outside this
+    # workspace (F1523): the plan check's test (`builder_guard.acts`), on a tool that declares what it does (an HTTP
+    # tool by its method, F488; an MCP tool by its hints). A tool that declares nothing is left alone (eb 11-11): most
+    # MCP servers declare nothing, and their reads in one reply stay one turn. Never the engine's own bookkeeping, a
+    # step's finish, or the builder's own tools, which change this workspace or the run's own state.
+    _cut_at_acting = None
+    if _writes_its_calls(current_model):
+        from core import builder_access as _access
+        from core.builder_guard import acts as _acts
+        from core.tools import tool_hints as _hints
+
+        _inside = (frozenset(_visitor_mod.ENGINE_TOOLS) | frozenset(MEMORY_TOOL_NAMES) | frozenset(_kn_names)
+                   | frozenset(_board_names) | frozenset(_team_tool_names) | _access.READS | _access.CARDS
+                   | _access.WRITES | _access.ANYWHERE | _access.OWN_RUN_ONLY
+                   | {TASK_TOOL_NAME, LEGACY_TASK_TOOL_ALIAS, SKILL_TOOL_NAME, SPAWN_SUBTASK_TOOL_NAME,
+                      "delegate_to_agent", _step_refs.SUBMIT_OUTPUT, *_finish})
+
+        def _cut_at_acting(name: str) -> bool:
+            tool = _tool_by_name.get(name)
+            return (name not in _inside and tool is not None and _hints(tool).declared
+                    and _acts(name, tool))
+
     # ── Streaming the answer (U72) ───────────────────────────────────────────
     # Each model call gets a fresh filter; what it shows goes out as
     # `answer_delta`. A call that turns out not to be the answer (a tool call, a
@@ -2996,19 +3043,27 @@ async def run_agent_step(
             # Parse every tool call the LLM emitted in this response and execute
             # them sequentially before the next LLM turn.  This prevents partial
             # saves when a provider batches multiple calls into one response.
-            # Only as far as its first browser call (F1408), or the first line it wrote that is the engine's (F1409):
-            # what came after it is not kept, and its calls not made.
-            _kept_text, tool_calls, _not_made, _forged = _reply_kept(action_text, tool_schema_map, _is_browser_tool)
+            # Only as far as its first browser call (F1408), the first line it wrote that is the engine's (F1409), or,
+            # written as text, its first call that changes something outside (F1523): what came after it is not kept,
+            # and its calls not made.
+            _kept_text, tool_calls, _not_made, _forged = _reply_kept(action_text, tool_schema_map, _is_browser_tool,
+                                                                     _cut_at_acting)
             _cut_line = ""
             if _kept_text is not None:
                 action_text = _kept_text
                 _names = ", ".join(dict.fromkeys(str(_offered_name(c.get("tool", ""), tool_schema_map))
                                                  for c in _not_made))
-                _cut_line = ((f"\nSystem: that reply wrote `{_forged}` itself, which only Synapse writes, so nothing "
-                              "from there on was kept") if _forged else
-                             ("\nSystem: that reply went on after its first browser call, before that call's result "
-                              "was back, so nothing after it was kept")) \
-                    + (f" and these calls were not made: {_names}." if _names else ".") \
+                _last = str(_offered_name(tool_calls[-1].get("tool", ""), tool_schema_map)) if tool_calls else ""
+                if _forged:
+                    _cut_line = (f"\nSystem: that reply wrote `{_forged}` itself, which only Synapse writes, so "
+                                 "nothing from there on was kept")
+                elif _is_browser_tool(_last):
+                    _cut_line = ("\nSystem: that reply went on after its first browser call, before that call's "
+                                 "result was back, so nothing after it was kept")
+                else:
+                    _cut_line = (f"\nSystem: that reply went on after `{_last}`, which changes something outside "
+                                 "this workspace, before that call's result was back, so nothing after it was kept")
+                _cut_line += (f" and these calls were not made: {_names}." if _names else ".") \
                     + ("\n" if _forged else " Read what it returned, then go on.\n")
             if _answering_from is not None and _answering_from.get("no_tools") and tool_calls:
                 # Offered nothing and told so, it called again: its answer is a sentence in words (SAI2-P4).

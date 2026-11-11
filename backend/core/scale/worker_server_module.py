@@ -28,6 +28,7 @@ import sys
 import time
 from pathlib import Path
 
+from core.process_env import WINDOWS_START
 from core.tool_router import ToolRouter
 
 from core.log import get_logger
@@ -672,7 +673,7 @@ SHARED_TOOL_ENV_NAMES: frozenset[str] = frozenset({
     # What the shared tools' own modules read
     "EGRESS_ALLOW_HOSTS", "EGRESS_NAT64_PREFIXES", "SYNAPSE_HOME", "SYNAPSE_STATE_DIR",
     "SYNAPSE_LOG_LEVEL", "SYNAPSE_LOG_FORMAT",
-})
+}) | WINDOWS_START  # what Windows needs to start a process at all (core.process_env, F1533)
 #: Locale and desktop directories, and the browser the scraper drives.
 SHARED_TOOL_ENV_PREFIXES: tuple[str, ...] = ("LC_", "XDG_", "PLAYWRIGHT_")
 

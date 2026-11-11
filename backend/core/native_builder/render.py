@@ -57,7 +57,7 @@ def _bullets(items: list[str], *, code: bool = False) -> str:
 
 
 def zone_words(timezone: str | None) -> str:
-    """A schedule's clock in the card's words (F948): "New York time"; UTC for none. `workflowList.ts` `zoneWords`
+    """A schedule's clock in the card's words (F948): "New York time"; UTC for none. `workflowRows.ts` `zoneWords`
     says the same."""
     tz = (timezone or "").strip()
     if not tz or tz.upper() == "UTC":

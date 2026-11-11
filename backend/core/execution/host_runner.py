@@ -32,6 +32,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from core.process_env import WINDOWS_START
+
 from .types import ExecRequest, ExecResult
 
 #: 30 minutes, to bound a runaway load rather than to bound the work.
@@ -41,15 +43,12 @@ MAX_TIMEOUT = 1800
 #: `SYNAPSE_*`, no token, key, secret, password or URL, no AWS/S3/Redis settings, no PYTHONPATH.
 ENV_ALLOW = frozenset({
     "PATH", "HOME", "USER", "LOGNAME", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TEMP", "TMP",
-    # Windows needs these to start a process at all.
-    "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
-    "PROGRAMDATA", "PROGRAMFILES", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
     "PYTHONIOENCODING", "PYTHONUTF8", "PYTHONHASHSEED",
     # What the host runtime is for: models on this machine's GPU.
     "CUDA_VISIBLE_DEVICES", "CUDA_HOME", "LD_LIBRARY_PATH", "HF_HOME", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE",
     "TRANSFORMERS_CACHE", "TORCH_HOME", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
     "TORCH_NUM_THREADS",
-})
+}) | WINDOWS_START  # Windows needs these to start a process at all (core.process_env, F1533).
 ENV_ALLOW_PREFIXES = ("LC_", "NVIDIA_")
 
 

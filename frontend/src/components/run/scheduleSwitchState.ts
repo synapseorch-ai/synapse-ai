@@ -12,7 +12,7 @@
  * cron with croniter on the schedule's clock (F948), and a second cron reader here could disagree with it on the day
  * the clocks change. The exact time comes in the server's answer.
  */
-import { cronWords, type ScheduleLike } from './workflowList';
+import { cronWords, type ScheduleLike } from './workflowRows';
 
 /** What each row was asked to be, by schedule id, while its save is out. */
 export type EnabledAsks = Readonly<Record<string, boolean>>;
