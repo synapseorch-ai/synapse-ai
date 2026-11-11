@@ -45,11 +45,42 @@ def twins(paths: Iterable[str]) -> list[str]:
                    for (_kind, folder, _lowered), by_name in seen.items() if len(by_name) > 1})
 
 
+# Folders a walk of an unpacked tree skips: what .gitignore keeps out of the repo, so a walk sees what git would.
+_NOT_SOURCE = {".git", "node_modules", ".venv", "venv", "__pycache__", ".next", "dist", "build", ".pytest_cache",
+               ".mypy_cache", ".ruff_cache", "var", "data", "coverage", "out"}
+
+
 def _files() -> list[str]:
-    """The repo's files as git holds them, with the new ones it does not ignore yet."""
-    listed = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-                            capture_output=True, check=True).stdout.decode("utf-8", "surrogateescape")
-    return [path for path in listed.split("\0") if path and (ROOT / path).exists()]
+    """The repo's files as git holds them, with the new ones it does not ignore yet. A tree with no git (an
+    archive, an unpacked sdist, the private CI's checkout of one) is walked instead, minus what git ignores, so the
+    guard holds wherever the source is (F1532)."""
+    if (ROOT / ".git").exists():
+        listed = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z", "--cached", "--others",
+                                 "--exclude-standard"], capture_output=True, check=True)
+        names = listed.stdout.decode("utf-8", "surrogateescape").split("\0")
+        return [path for path in names if path and (ROOT / path).exists()]
+    found: list[str] = []
+    for path in ROOT.rglob("*"):
+        parts = path.relative_to(ROOT).parts
+        if any(part in _NOT_SOURCE for part in parts) or not path.is_file():
+            continue
+        found.append("/".join(parts))
+    return found
+
+
+def test_the_guard_reads_a_tree_with_no_git(tmp_path, monkeypatch):
+    """F1532: the full suite runs on an archive of the source, where `git ls-files` has no repo to read."""
+    (tmp_path / "frontend" / "run").mkdir(parents=True)
+    (tmp_path / "frontend" / "run" / "LogList.tsx").write_text("")
+    (tmp_path / "frontend" / "run" / "logList.ts").write_text("")
+    (tmp_path / "node_modules" / "x").mkdir(parents=True)
+    (tmp_path / "node_modules" / "x" / "A.js").write_text("")
+    (tmp_path / "node_modules" / "x" / "a.js").write_text("")
+    monkeypatch.setattr(__import__(__name__), "ROOT", tmp_path)
+    files = _files()
+    assert "frontend/run/LogList.tsx" in files and "frontend/run/logList.ts" in files
+    assert not any(f.startswith("node_modules/") for f in files)
+    assert twins(files) == ["frontend/run: LogList.tsx | logList.ts"]
 
 
 def test_no_two_names_in_one_folder_differ_only_by_case():
