@@ -671,20 +671,29 @@ _TASK_REF = _templating.REF
 
 
 def _fill_task_template(template: str, shared_state: dict, global_variables: dict, *,
-                        read_cap: int | None = None, as_values: bool = False) -> str:
-    """`{{ global.x }}` and `{{ state.x }}`, in one pass.
+                        read_cap: int | None = None, as_values: bool = False,
+                        unwritten_in_words: bool = False) -> str:
+    """`{{ global.x }}` and `{{ state.x }}`, in one pass: the one path a model's prompt is filled in by (an Agent's,
+    an LLM's, a Tool's, a Workflow's input and an Evaluator's prompt and route descriptions, F1536), and a Retrieve's
+    query and a Browser step's inputs (`as_values`).
 
     One pass, because two were a leak (F19): a pass that wrote a state value into the text before `templating.render`
     read it let a crawled page or a model answer holding `{{ global.KEY }}` reach the next step — and the run log —
     as the secret. A `re.sub` never scans what it inserted, so a value is a value: a state value holding
     `{{ global.KEY }}`, or a global value holding a reference, reaches the model as those words. An object renders
-    as JSON, and an unknown `{{ global.x }}` — or a wrong path inside a state key that is set — stays visible.
+    as JSON.
+
+    A model never reads a placeholder (F1536, Naveen 11-11): an unknown `{{ global.x }}`, or a wrong path inside a
+    state key that is set, is said in words (`_not_there`), where it was left as written and a model read it as text.
+    A bare `{{ x }}`, with no `state.` or `global.`, is left as written: a prompt may show a model a template. A value
+    (`as_values`) keeps the reference as written, as before: it is typed into a site or searched for, not read.
 
     A state key no step has written yet reads empty (U74): this is a model's prompt, and on a feedback loop's first
     pass the writer's `{{ state.feedback }}` reached the model as those words, which it echoed into its draft. A
     declared default already fills the key (`_init_state`). So a field of a key that holds only its empty default
     (`""`, `{}`, `[]`) reads empty too: nothing has written it either (SAI2-P2; the change planner's "what happened on
-    the first pass" read as template text on its first). A person's text — a Human or a Print step's — keeps the gap
+    the first pass" read as template text on its first). `unwritten_in_words` says so instead, for an Evaluator, which
+    judges on what it reads and writes no draft (F1536). A person's text — a Human or a Print step's — keeps the gap
     (`steps.render_state_refs`).
 
     A step output saved to the vault (`core.step_refs`, D339 P4) is inline when it fits `read_cap`, this step's read
@@ -692,7 +701,7 @@ def _fill_task_template(template: str, shared_state: dict, global_variables: dic
     read it; a field of one is its value. `as_values` fills in what a saved output holds, whatever its size: text
     typed into a site or searched for is a value, not a prompt.
     """
-    from core.step_refs import for_prompt, read_cap_now, resolved
+    from core.step_refs import for_prompt, is_ref, read_cap_now, resolved
     from core.vault import READ_CAP
 
     cap = read_cap or read_cap_now() or READ_CAP
@@ -706,14 +715,34 @@ def _fill_task_template(template: str, shared_state: dict, global_variables: dic
     context = {"global": global_variables, "state": shared_state}
 
     def _sub(match: re.Match) -> str:
-        parts = match.group(1).split(".")
+        reference = match.group(1)
+        parts = reference.split(".")
         if parts[0] == "state" and len(parts) > 1:
             top = shared_state.get(parts[1])
             if top is None or (len(parts) > 2 and top in ("", {}, [])):
-                return ""
-        return _templating.render(match.group(0), context, refs=_ref_text)
+                return f"(no value yet: no step has written state.{parts[1]})" if unwritten_in_words else ""
+        if as_values or parts[0] not in ("state", "global") or len(parts) < 2:
+            return _templating.render(match.group(0), context, refs=_ref_text)
+        found, value = _templating.lookup(reference, context, keep_ref=True)
+        if not found:
+            return _not_there(parts, context)
+        return _ref_text(value) if is_ref(value) else _templating._text(value)
 
     return _TASK_REF.sub(_sub, template)
+
+
+def _not_there(parts: list[str], context: dict) -> str:
+    """What a model reads for `{{ state.a.b }}` or `{{ global.x }}` that names nothing (F1536): where the path stops,
+    in words, never braces, so it is never read as a reference again and a model never takes it for a template."""
+    namespace, path = parts[0], parts[1:]
+    depth = len(path)
+    for depth in range(1, len(path) + 1):
+        found, _ = _templating._walk(context.get(namespace), path[:depth])
+        if not found:
+            break
+    if namespace == "global" and depth == 1:
+        return f"(no value: no variable named '{path[0]}')"
+    return f"(no value: {'.'.join([namespace, *path[:depth - 1]])} has no '{path[depth - 1]}')"
 
 
 def build_origin_aware_context(

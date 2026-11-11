@@ -10,7 +10,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { ExternalLink, Plus, Trash2 } from 'lucide-react';
 import { useHelpTopic } from '@/components/help';
-import { Button, Checkbox, CodeEditor, Combobox, Field, Input, MarkdownEditor, Segmented, Select, TemplateInput, Textarea, TextLink } from '@/components/ui';
+import { Button, Checkbox, CodeEditor, Combobox, Field, Input, MarkdownEditor, Segmented, Select, TemplateInput, TextLink } from '@/components/ui';
 import { SessionPicker, onSite, stepWords, type Recording } from '@/components/browser';
 import { vaultMentions } from '@/components/VaultMention';
 import { humanizeToolName } from '@/lib/toolNames';
@@ -225,9 +225,10 @@ function FinishTools({ step, update, agents, availableTools }: StepSectionProps)
 /* ── per-type sections ──────────────────────────────────────────────────── */
 
 /**
- * The hint under an agent, LLM or tool step's prompt. These three render
+ * The hint under an agent, LLM, tool or evaluator step's prompt. These render
  * `{{ state.key }}` and `{{ global.key }}`, and typing `{{` lists them (F1252:
- * one form for state; the engine writes an older `{state.key}` that way).
+ * one form for state; the engine writes an older `{state.key}` that way; F1536:
+ * the evaluator's too).
  */
 function PromptHint({ showVaultHints }: { showVaultHints?: boolean }) {
     return (
@@ -596,13 +597,21 @@ function WorkflowSection({ step, update, orchestration, workflows, showVaultHint
 function EvaluatorSection({ step, update, otherSteps, availableModels, modelHints }: StepSectionProps) {
     return (
         <div className="space-y-3">
-            <Field label="Evaluator prompt" hint="Instructions for the routing decision.">
-                <Textarea
-                    size="sm"
+            {/* Filled in as an LLM step's prompt is, and so are the routes' descriptions (F1536): it was sent as
+                typed, and a `{{ state.key }}` here reached the model as those words. */}
+            <Field
+                label="Evaluator prompt"
+                composite
+                hint={<>How to decide. <PromptHint /></>}
+            >
+                <MarkdownEditor
+                    key={step.id}
+                    compact
                     rows={3}
+                    profile="step-prompt"
                     value={step.evaluator_prompt || ''}
-                    onChange={(e) => update({ evaluator_prompt: e.target.value })}
-                    placeholder="e.g. If login is needed, route to human…"
+                    onChange={(evaluator_prompt) => update({ evaluator_prompt })}
+                    placeholder={'e.g. The person replied: {{ state.approval }}. Route to approved if they agreed.'}
                 />
             </Field>
             <Field label="Model override">

@@ -13,9 +13,10 @@ Inside a tool a bare name resolves against the tool's arguments, because that
 is what a person writing `{{body}}` means; everywhere else a bare name is left
 alone. An unknown reference is **left as written, never blanked** — a prompt
 that says `{{global.tone}}` before the variable exists should show the gap,
-not hide it. One exception, in a step's prompt only: a state key no step has
-written yet reads empty there (U74, `orchestration.context._fill_task_template`).
-Scalars render as text, objects and lists as JSON.
+not hide it. A workflow step's prompt, which a model reads, says the gap in
+words instead, and reads a state key no step has written yet as empty (U74,
+F1536: `orchestration.context._fill_task_template`); a Human or a Print step's
+text keeps it as written. Scalars render as text, objects and lists as JSON.
 
 The single-brace forms the engine already understood keep working: `{param}`
 and `{data.key}` in URLs, `{state.key}` in prompts. This module only adds the
