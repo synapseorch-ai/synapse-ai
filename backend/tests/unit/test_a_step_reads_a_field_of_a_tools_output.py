@@ -91,7 +91,7 @@ def test_a_model_s_prompt_reads_a_field_of_json_text_and_never_renders_it():
     assert _fill_task_template("{{ state.checked.say }} / {{ state.checked.count }}", state, {}) == (
         "Two cards are up. / 3")
     assert _fill_task_template("{{ state.trap.say }}", state, {"API_KEY": "s3cret"}) == "{{ global.API_KEY }}"
-    assert _fill_task_template("{{ state.plain.say }}", state, {}) == "{{ state.plain.say }}"
+    assert _fill_task_template("{{ state.plain.say }}", state, {}) == "(no value: state.plain has no 'say')"  # F1536
     assert _fill_task_template("{{ state.unset.say }}", state, {}) == ""
 
 
