@@ -144,9 +144,10 @@ class TestTheTemplateStillRenders:
         prompt = await _chain(fake_llm, logged, "the note", "Echo {{state.note}}")
         assert "Echo the note" in prompt and "{the note}" not in prompt
 
-    async def test_an_unknown_global_stays_visible(self, fake_llm, logged):
+    async def test_an_unknown_global_is_said(self, fake_llm, logged):
+        """F1536 (Naveen 11-11): a model never reads a placeholder; it read `{{ global.missing }}` as text."""
         prompt = await _chain(fake_llm, logged, "the note", "{{ global.missing }} after")
-        assert "{{ global.missing }} after" in prompt
+        assert "(no value: no variable named 'missing') after" in prompt and "{{ global.missing }}" not in prompt
 
     async def test_an_unset_state_key_reads_empty(self, fake_llm, logged):
         """U74 (D267): it used to stay as written, and a model echoed it."""
@@ -174,10 +175,10 @@ GLOBALS = {"KEY": SECRET, "OTHER": "{{ state.note }}"}
     ("{{ state.d }}", '{"a": 1}'),  # an object is JSON in the one form (F1252: the older form wrote str())
     ("{{ state.d }}", '{"a": 1}'),
     ("{{ state.nope }} {{ state.nope }} {{ global.nope }} {{ bare }}",
-     "  {{ global.nope }} {{ bare }}"),
+     "  (no value: no variable named 'nope') {{ bare }}"),  # F1536: the global is said; a bare name stays
     ("plain text", "plain text"),
 ], ids=["legacy", "spaced", "unspaced", "global", "global-holding-state-ref",
-        "once-the-older-form-a-dict-is-json-too", "double-brace-dict-is-json", "unset-state-empty-unknown-global-stays", "plain"])
+        "once-the-older-form-a-dict-is-json-too", "double-brace-dict-is-json", "unset-state-empty-unknown-global-said-bare-stays", "plain"])
 def test_fill_task_template_is_one_pass(template, expected):
     from core.orchestration.context import _fill_task_template
 
