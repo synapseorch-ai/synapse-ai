@@ -74,6 +74,8 @@ from core.routes.api_v1_knowledge import router as api_v1_knowledge_router
 from core.routes.api_v2 import router as api_v2_router
 from core.routes.scale import router as scale_router
 from core.routes.notifications import router as notifications_router
+from core.browser.client import BrowserUnavailable
+from core.browser.client import unavailable_response as browser_unavailable_response
 from core.routes.browser import router as browser_router
 from core.routes.site_sessions import router as site_sessions_router
 from core.routes.recordings import router as recordings_router
@@ -1162,6 +1164,8 @@ app.include_router(notifications_router)
 app.include_router(browser_router)  # the person's view of a browser session (BRW1, D328)
 app.include_router(site_sessions_router)  # the Sessions library (F1138; BRW2's Website logins, D330)
 app.include_router(recordings_router)  # recorded tasks (F1142)
+# A browser that could not start or open is 503 with its own words, never a bare 500 (F1533): every route that opens one.
+app.add_exception_handler(BrowserUnavailable, browser_unavailable_response)
 
 if __name__ == "__main__":
     import uvicorn

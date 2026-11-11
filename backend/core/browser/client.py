@@ -20,12 +20,14 @@ import logging
 import os
 import secrets
 import sys
+from collections import deque
 from pathlib import Path
 
 import aiohttp
 from mcp import types
 
 from core.browser import gate
+from core.process_env import WINDOWS_START
 
 _log = logging.getLogger(__name__)
 
@@ -51,6 +53,21 @@ WAIT_FOR_PERSON_S = 45
 
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
 _READY = "BROWSER_HOST_READY"
+#: How long the component has to say it is ready, and how many of its last lines are kept: when it stops, they are
+#: the reason (F1533). They went to DEVNULL, and the backend guessed at Chromium.
+_START_S = 60
+_SAID_LINES = 40
+
+
+class BrowserUnavailable(RuntimeError):
+    """Synapse's browser could not start, or could not open one: `str()` is the sentence for the person (F1533). The
+    app answers it 503 with those words in `detail` (`unavailable_response`), never a bare 500; an agent's call gets
+    them as its tool result."""
+
+
+async def unavailable_response(_request, exc: BrowserUnavailable):
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
 async def _own_words() -> list[str]:
@@ -71,19 +88,23 @@ class _Host:
     """The component process: started on first use, restarted if it died."""
 
     def __init__(self) -> None:
-        self.proc: asyncio.subprocess.Process | None = None
+        self.proc: asyncio.subprocess.Process | None = None  # set once it said it is ready, never before
         self.control = self.viewer_port = 0
         self.token = ""
         self._lock = asyncio.Lock()
+        self.said: deque[str] = deque(maxlen=_SAID_LINES)  # its stderr's last lines
+        self._listening: asyncio.Future | None = None
 
     @property
     def running(self) -> bool:
         return self.proc is not None and self.proc.returncode is None
 
     def _env(self) -> dict[str, str]:
-        keep = ("PATH", "HOME", "LANG", "TMPDIR", "PLAYWRIGHT_BROWSERS_PATH", "XDG_CACHE_HOME",
-                "EGRESS_ALLOW_HOSTS", "EGRESS_NAT64_PREFIXES", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY")
-        env = {k: os.environ[k] for k in keep if k in os.environ}
+        # What Windows needs to start a process, too (F1533): without SYSTEMROOT and the rest, Playwright's driver
+        # exited at once and the component never started there.
+        keep = {"PATH", "HOME", "LANG", "TMPDIR", "PLAYWRIGHT_BROWSERS_PATH", "XDG_CACHE_HOME",
+                "EGRESS_ALLOW_HOSTS", "EGRESS_NAT64_PREFIXES", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY"} | WINDOWS_START
+        env = {k: v for k, v in os.environ.items() if k in keep}
         try:
             from core.config import load_settings
             path = load_settings().get("playwright_browsers_path")
@@ -99,21 +120,61 @@ class _Host:
         async with self._lock:
             if self.running:
                 return
+            if self.proc is not None:
+                _log.warning("Synapse's browser stopped (exit code %s). Its last lines:\n%s",
+                             self.proc.returncode, "\n".join(self.said) or "(none)")
+                self.proc = None
             self.token = secrets.token_urlsafe(32)
-            self.proc = await asyncio.create_subprocess_exec(
+            self.said.clear()
+            proc = await asyncio.create_subprocess_exec(
                 sys.executable, "-m", "core.browser.host", cwd=str(_BACKEND_DIR), env=self._env(),
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
-            line = b""
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            self._listening = asyncio.ensure_future(self._listen(proc.stderr))
+            # Kept only once it is ready: a start cut short (the engine's 5 s ping, a cancelled request) leaves no
+            # process that `running` would take for a ready one with no ports (F1533).
             try:
-                line = await asyncio.wait_for(self.proc.stdout.readline(), timeout=60)
+                try:
+                    line = await asyncio.wait_for(proc.stdout.readline(), timeout=_START_S)
+                except asyncio.TimeoutError:
+                    raise BrowserUnavailable(self._words(f"It was not ready after {_START_S} s")) from None
+                parts = line.decode(errors="replace").split()
+                if len(parts) != 3 or parts[0] != _READY:
+                    raise BrowserUnavailable(await self._stopped(proc))
+            except BaseException:
+                _kill(proc)
+                raise
+            self.proc = proc
+            self.control, self.viewer_port = int(parts[1]), int(parts[2])
+
+    async def _listen(self, stream: asyncio.StreamReader) -> None:
+        """The component's stderr, kept: its last lines are the reason when it stops (F1533)."""
+        while raw := await stream.readline():
+            line = raw.decode(errors="replace").rstrip()
+            if line:
+                self.said.append(line)
+                _log.debug("browser component: %s", line)
+
+    async def _stopped(self, proc: asyncio.subprocess.Process) -> str:
+        """The words for a component that ended its output before it was ready, once it has said all it will."""
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            _kill(proc)
+        if self._listening is not None:
+            try:
+                await asyncio.wait_for(asyncio.shield(self._listening), timeout=2)
             except asyncio.TimeoutError:
                 pass
-            parts = line.decode(errors="replace").split()
-            if len(parts) != 3 or parts[0] != _READY:
-                self.proc.kill()
-                self.proc = None
-                raise RuntimeError("Synapse's browser did not start. Is Chromium installed (playwright install chromium)?")
-            self.control, self.viewer_port = int(parts[1]), int(parts[2])
+        code = proc.returncode
+        return self._words(f"It stopped (exit code {code})" if code is not None else "It stopped")
+
+    def _words(self, how: str) -> str:
+        """`how` it ended and its own last line, for the person; every line it said, for the log."""
+        _log.warning("Synapse's browser did not start. %s. Its last lines:\n%s", how, "\n".join(self.said) or "(none)")
+        last = next((line.strip() for line in reversed(self.said) if line.strip()), "")
+        if not last:
+            return f"Synapse's browser did not start. {how} and said nothing."
+        return f"Synapse's browser did not start. {how} and said: {last[:300]}"
 
     def _headers(self) -> dict[str, str]:
         return {"X-Browser-Token": self.token}
@@ -591,7 +652,7 @@ class BrowserTools:
         status, body = await host.call("POST", "/session", json={
             "owner": key, "mode": gate.CO_DRIVE, "person_only": True, "limits": {"actions": 1}})
         if status != 200 or not body.get("session_id"):
-            raise RuntimeError(body.get("error") or "the browser did not open")
+            raise BrowserUnavailable(_did_not_open(body))
         sid = body["session_id"]
         await self.store.set_owner(key, {"sid": sid, "parked": None, "expired": None, "sessions": list(sites)})
         self._events.setdefault(key, []).append({"type": "browser_session", "session_id": sid, "owner": key})
@@ -615,7 +676,7 @@ class BrowserTools:
         host = await self.hosts.host_for(key, opening=True)
         status, body = await host.call("POST", "/session", json=opening)
         if status != 200 or not body.get("session_id"):
-            raise RuntimeError(body.get("error") or "the browser did not open")
+            raise BrowserUnavailable(_did_not_open(body))
         sid = body["session_id"]
         await self.store.set_owner(key, {"sid": sid, "parked": None, "expired": None, "sessions": None})
         self._events.setdefault(key, []).append({"type": "browser_session", "session_id": sid, "owner": key,
@@ -667,7 +728,7 @@ class BrowserTools:
         host = await self.hosts.host_for(key, opening=True)
         status, body = await host.call("POST", "/session", json=opening)
         if status != 200 or not body.get("session_id"):
-            raise RuntimeError(body.get("error") or "the browser did not open")
+            raise BrowserUnavailable(_did_not_open(body))
         sid = body["session_id"]
         await self.store.set_owner(key, {
             "sid": sid, "parked": None, "sessions": None,
@@ -778,6 +839,21 @@ def _committed_tool_schemas() -> list[dict] | None:
 def _npx_hint() -> str:
     import shutil
     return "npx is not on this backend's PATH (Node is needed)" if shutil.which("npx") is None else "see the log"
+
+
+def _kill(proc: asyncio.subprocess.Process) -> None:
+    """Stopped, if it still runs. One that has exited but is not yet reaped raises ProcessLookupError, which was
+    what a component that stopped at once made `ensure` raise, in place of any words (F1533's red)."""
+    if proc.returncode is None:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+
+def _did_not_open(body: dict) -> str:
+    """The component's own reason a browser did not open (its 503: "the browser did not start: …"), as words (F1533)."""
+    return f"Synapse's browser did not open: {(body.get('error') or 'it gave no reason').rstrip('.')}."
 
 
 def _expired_words(site: str) -> str:

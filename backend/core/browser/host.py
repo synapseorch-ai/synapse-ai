@@ -36,6 +36,7 @@ from core import egress_proxy
 from core.browser import gate
 from core.browser import replay as replaying
 from core.browser.recording import TARGET_JS, Recorder, line_of, sensitive_kind
+from core.process_env import WINDOWS_START
 
 #: Playwright MCP, pinned: its tool names and output are part of the gate's contract.
 PLAYWRIGHT_MCP = "@playwright/mcp@0.0.83"
@@ -96,9 +97,9 @@ _SNAPSHOT_LINK = re.compile(r"- \[Snapshot\]\(([^)\s]+\.yml)\)")
 
 
 def _clean_env() -> dict[str, str]:
-    """What Chromium and Playwright MCP may see: no keys, no tokens."""
-    keep = ("PATH", "HOME", "LANG", "TMPDIR", "PLAYWRIGHT_BROWSERS_PATH", "XDG_CACHE_HOME")
-    return {k: os.environ[k] for k in keep if k in os.environ}
+    """What Chromium and Playwright MCP may see: no keys, no tokens; and what Windows needs to start them (F1533)."""
+    keep = {"PATH", "HOME", "LANG", "TMPDIR", "PLAYWRIGHT_BROWSERS_PATH", "XDG_CACHE_HOME"} | WINDOWS_START
+    return {k: v for k, v in os.environ.items() if k in keep}
 
 
 def _summary(name: str, args: dict) -> str:
