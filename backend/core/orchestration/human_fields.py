@@ -6,8 +6,10 @@ hand as `tel`, is a dropdown or a phone number in the form and here alike, and a
 spelling is read, never rewritten (F50, F75).
 
 **What is checked (Naveen, 2026-10-12): the new types only.** An answer to an email,
-date, phone or dropdown field must be one; text, long text, a number and yes/no are
-taken as they come, as they always were, so nothing answered before this is refused.
+date, phone or dropdown field must be one; text, long text and yes/no are taken as
+they come, as they always were. A number is taken as a number since F1562 (Naveen
+11-12): "3" sent through the API stayed text, and a later `> 2` failed its If/Else;
+an answer that is no number is refused, naming the field.
 A yes/no said in words is stored as the flag it says (F1434), a sign-off's approve or decline too (F1552); other words
 stay as they came.
 A field left blank is still an answer (F232's rule: it is what a form sends for a
@@ -21,6 +23,7 @@ through `answer_paused_run` (`core/orchestration/answers.py`).
 """
 from __future__ import annotations
 
+import math
 import re
 from datetime import date
 from typing import Any, Optional
@@ -147,11 +150,41 @@ def as_flag(value: Any) -> Any:
     return value
 
 
+#: A number as it is typed: a sign, digits, one decimal point, an exponent (F1562).
+_NUMBER = re.compile(r"^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$")
+#: Thousands grouped by commas: 1,200 and 12,345.5, never 1,2.
+_GROUPED = re.compile(r"^[+-]?\d{1,3}(?:,\d{3})+(?:\.\d+)?$")
+
+
+def as_number(field: dict[str, Any], value: Any) -> Any:
+    """A number field's answer as a number (F1562): "3" is 3, " 2.5 " is 2.5, "1,200" is 1200, a number as it came.
+    A blank is still an answer (F232), as it came; anything else — words, true or false, a list, a number too big to
+    hold — is `BadAnswer`, naming the field."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return value
+    label = str(field.get("label") or "").strip() or str(field.get("name") or "")
+    refused = BadAnswer(str(field.get("name") or ""), f"{label}: “{str(value).strip()[:60]}” is not a number.")
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise refused
+    if isinstance(value, str):
+        text = value.strip()
+        if _GROUPED.match(text):
+            text = text.replace(",", "")
+        if not _NUMBER.match(text):
+            raise refused
+        value = float(text) if any(c in text for c in ".eE") else int(text)
+    if isinstance(value, float) and not math.isfinite(value):
+        raise refused
+    return value
+
+
 def check_value(field: dict[str, Any], value: Any) -> Any:
     """One field's answer in its stored form, or `BadAnswer`."""
     kind = field_type(field.get("type"))
     if kind == "boolean":
         return as_flag(value)
+    if kind == "number":
+        return as_number(field, value)
     if kind not in CHECKED or value is None or (isinstance(value, str) and not value.strip()):
         return value
     name = str(field.get("name") or "")
@@ -191,7 +224,8 @@ def check_answer(fields: Any, response: Any, *, form: bool = False) -> Any:
 
     Text to a Human step's own form (`form`, F1561: the door says so, `answers.asks_a_form`) is read as its fields:
     a line each, `name: value` (`read_reply`). A form of two fields or more that the text names none of is refused,
-    saying how; a lone One of takes a plain reply that is one of its options. A lone text field keeps the words as
+    saying how; a lone One of takes a plain reply that is one of its options, a lone number one that is a number
+    (F1562). A lone text field keeps the words as
     they came — the AI builder's own questions are answered so — and so does what is no form (a tool's approval).
     """
     named_fields = [f for f in named(fields) if isinstance(f, dict) and _said(f.get("name"))] \
@@ -219,8 +253,9 @@ def check_answer(fields: Any, response: Any, *, form: bool = False) -> Any:
 
 # ── A form in words: a channel's question and its reply (F1561) ───────────────────────────────────────────────────────
 
-#: The lone fields a plain reply answers: one that says a yes or no (F1434), one of a One of's options.
-_PLAIN_REPLY = frozenset({"boolean", "choice"})
+#: The lone fields a plain reply answers: one that says a yes or no (F1434), one of a One of's options, a number
+#: (F1562).
+_PLAIN_REPLY = frozenset({"boolean", "choice", "number"})
 #: The fields a reply's lines run on into, after their own line: words.
 _RUNS_ON = frozenset({"string", "textarea"})
 #: `name: value`, `- Label = value`: a key of up to 120 characters before the first `:` or `=`.
@@ -251,7 +286,7 @@ def what_it_takes(field: dict[str, Any]) -> str:
 def asked_in_words(prompt: str, fields: Any) -> str:
     """A Human step's question with its fields, as a channel asks it (F1561): Markdown its formatter makes the
     platform's own. Each field's name, its label and what it takes, and how to answer (a line each, `name: value`);
-    a lone One of or Yes / No as one reply. A question with no typed field is its words alone, as before."""
+    a lone One of, Yes / No or number as one reply. A question with no typed field is its words alone, as before."""
     shown = [f for f in named(fields) if isinstance(f, dict) and _said(f.get("name"))] \
         if isinstance(fields, list) else []
     if not shown or _a_tools_approval(shown):
