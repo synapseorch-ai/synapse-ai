@@ -37,6 +37,8 @@ RUN pip install playwright && playwright install chromium --with-deps
 COPY backend/core ./core
 COPY backend/services ./services
 COPY backend/tools ./tools
+# The template packs (Workflows → Templates), read beside core/ (F1568).
+COPY backend/examples ./examples
 COPY backend/main.py .
 # The version the MCP endpoint reports, beside core/ (F1462, #378: it was the mcp SDK's).
 COPY pyproject.toml ./
