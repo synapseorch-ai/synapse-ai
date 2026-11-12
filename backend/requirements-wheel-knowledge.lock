@@ -1009,7 +1009,7 @@ uritemplate==4.2.0
     # via
     #   -c .knowledge-constraints.txt
     #   google-api-python-client
-urllib3==2.7.0
+urllib3==2.8.0
     # via
     #   -c .knowledge-constraints.txt
     #   -c requirements-knowledge.lock

@@ -155,7 +155,7 @@ typing-extensions==4.16.0
     #   aiosignal
     #   anyio
     #   azure-core
-urllib3==2.7.0
+urllib3==2.8.0
     # via
     #   -c requirements.lock
     #   botbuilder-schema

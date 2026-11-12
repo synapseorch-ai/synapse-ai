@@ -474,7 +474,7 @@ tzdata==2026.3 ; sys_platform == 'emscripten' or sys_platform == 'win32'
     #   psycopg
 uritemplate==4.2.0
     # via google-api-python-client
-urllib3==2.7.0
+urllib3==2.8.0
     # via
     #   botocore
     #   kubernetes

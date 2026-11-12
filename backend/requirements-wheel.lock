@@ -852,7 +852,7 @@ uritemplate==4.2.0
     #   -c requirements-worker.lock
     #   -c requirements.lock
     #   google-api-python-client
-urllib3==2.7.0
+urllib3==2.8.0
     # via
     #   -c requirements-messaging.lock
     #   -c requirements-telemetry.lock
