@@ -95,16 +95,26 @@ class TestAnnotationsComeFromTheFlags:
             "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False,
         }
 
-    def test_an_act_is_not_destructive_unless_irreversible(self):
-        assert _act().annotations()["destructiveHint"] is False
+    def test_an_act_is_destructive_unless_it_only_adds(self):
+        """F1548 (Naveen 11-12): an act that changes, replaces, stops or removes what is there is destructive, so a
+        client asks its person first; only one that says it adds alone is not. MCP's own default for a tool that
+        is not read-only, so a new act falls under the rule without anyone remembering it."""
+        assert _act().annotations()["destructiveHint"] is True
+        assert _act(additive=True).annotations()["destructiveHint"] is False
         assert _act(irreversible=True).annotations()["destructiveHint"] is True
         assert _act(idempotent=True).annotations()["idempotentHint"] is True
         assert _act(open_world=True).annotations()["openWorldHint"] is True
 
     def test_an_overwrite_or_a_stop_is_destructive_without_a_token(self):
-        tool = _act(destructive=True)
+        tool = _act()
         assert tool.annotations()["destructiveHint"] is True
         assert not tool.needs_token("irreversible")
+
+    def test_only_an_act_can_say_it_only_adds_and_a_delete_cannot(self):
+        with pytest.raises(ValueError, match="additive"):
+            _tool(additive=True)
+        with pytest.raises(ValueError, match="additive"):
+            _act(additive=True, irreversible=True)
 
 
 class TestEveryEntryHasATitle:

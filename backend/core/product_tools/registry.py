@@ -61,9 +61,12 @@ class ProductTool:
     scope: str = "read"
     #: It cannot be undone (a delete). Marked destructive; MCP confirms it with a token.
     irreversible: bool = False
-    #: It replaces or stops what is there (an overwrite, a cancel) without being a delete: marked destructive, so a
-    #: client asks its person, but no token.
-    destructive: bool = False
+    #: It only adds to what is there: something new, a step, a card, a note or a page, a run started or answered, work
+    #: done again that loses nothing; and a schedule paused, which loses nothing and is turned on again only by asking
+    #: (F1451). Marked not destructive. Every other act is destructive (F1548, Naveen 11-12), MCP's own default for a
+    #: tool that is not read-only: one that changes, replaces, stops or removes what is there is one a client asks its
+    #: person about first, though without a token, and a new act is marked so unless it says it only adds.
+    additive: bool = False
     #: Its person sees it before it is done, though it can be undone: previewed, then done with a token, as an
     #: irreversible act is (F1198: a Python tool, code that will run with the internet).
     confirmed: bool = False
@@ -104,8 +107,10 @@ class ProductTool:
         if self.kind == "read":
             if self.scope != "read":
                 raise ValueError(f"{self.name}: a read needs the read scope, nothing more")
-            if self.irreversible or self.destructive or self.confirmed:
-                raise ValueError(f"{self.name}: a read cannot be irreversible, destructive or confirmed")
+            if self.irreversible or self.additive or self.confirmed:
+                raise ValueError(f"{self.name}: a read cannot be irreversible, additive or confirmed")
+        if self.additive and self.irreversible:
+            raise ValueError(f"{self.name}: a delete is never additive")
         if self.kind == "act" and self.min_role > Role.BUILDER and not self.app_only:
             raise ValueError(
                 f"{self.name}: an act needing more than builder must be app_only (acts off the app are capped at "
@@ -125,7 +130,7 @@ class ProductTool:
         read = self.kind == "read"
         return hints_of({
             "read_only": read,
-            "destructive": self.irreversible or self.destructive,
+            "destructive": not read and not self.additive,
             "idempotent": read or self.idempotent,
             "open_world": self.open_world,
         }, explicit=True)

@@ -1871,7 +1871,8 @@ BUILDER_TOOL_SCHEMAS = [
         },
     },
     # F1451: on and off as two tools, since MCP marks a tool, not an argument: turning one on asks a client's person
-    # first (`product_tools.build.OVERWRITES`), pausing does not. `set_schedule_enabled` is the app's own card's.
+    # first (destructive, not in `product_tools.build.ADDITIVE`), pausing does not. `set_schedule_enabled` is the
+    # app's own card's.
     {
         "type": "function",
         "function": {

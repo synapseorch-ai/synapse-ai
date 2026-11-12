@@ -159,6 +159,9 @@ class TestTheToolList:
         by_name = {t.name: t for t in tools}
         assert by_name["list_agents"].title == "List agents"
         assert by_name["run_client_brief"].title == "Client brief"
+        # F1548: an edit says it is destructive, so the client asks first; a create does not.
+        assert by_name["update_agent"].annotations.destructiveHint is True
+        assert by_name["create_agent"].annotations.destructiveHint is False
 
     async def test_the_builders_own_orchestration_is_not_a_tool(self, mcp_app, api_key):
         from _fakes import seed

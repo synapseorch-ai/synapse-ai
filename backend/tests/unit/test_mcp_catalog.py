@@ -113,16 +113,45 @@ class TestAnnotations:
         for name in catalog.READ_TOOLS:
             assert marks[name].readOnlyHint and not marks[name].destructiveHint
 
-    @pytest.mark.parametrize("name", ["update_orchestration", "remove_step", "create_http_tool", "create_skill",
-                                      "update_http_tool", "update_python_tool"])
-    def test_overwriters_are_destructive(self, name):
-        mark = {t.name: t.annotations for t in catalog.builder_tools()}[name]
-        assert mark.destructiveHint and not mark.readOnlyHint
+    #: F1548 (Naveen 11-12): every tool that changes, replaces, stops or removes what is there. The edits were
+    #: marked not destructive (update_agent … give_board_access), so a client ran them without asking; import_openapi
+    #: replaces an HTTP tool of the same name, as create_http_tool does.
+    CHANGES_WHAT_IS_THERE = [
+        "update_agent", "update_step", "set_orchestration_meta", "update_skill", "attach_skills", "update_schedule",
+        "update_knowledge_base", "edit_knowledge_document", "edit_agent_memory_item", "update_board_card",
+        "attach_rubric", "save_rubric", "give_board_access", "import_openapi",
+        "update_orchestration", "remove_step", "create_http_tool", "create_skill", "create_python_tool",
+        "update_http_tool", "update_python_tool", "turn_on_schedule", "cancel_run", "cancel_eval_suite",
+        "delete_agent", "delete_orchestration", "delete_schedule", "delete_custom_tool", "delete_knowledge_base",
+        "delete_knowledge_document", "delete_board", "delete_recording", "delete_agent_memory_item",
+    ]
+    #: What only adds: something new, a step, a card, a note or a page, a run started or answered, work done again
+    #: that loses nothing. And a pause, which loses nothing and is turned on again only by asking (F1451).
+    ONLY_ADDS = [
+        "create_agent", "create_agents", "create_orchestration", "create_orchestration_skeleton", "add_steps",
+        "add_single_step", "add_multiple_steps", "deploy_orchestration", "test_python_tool", "create_schedule",
+        "pause_schedule", "run_orchestration", "answer_run", "chat_with_agent", "answer_tool_approval",
+        "trigger_schedule", "create_knowledge_base", "add_knowledge_file", "add_knowledge_pages", "add_knowledge_note",
+        "retry_knowledge_rebuild", "retry_knowledge_document", "add_board_card", "comment_on_card", "create_board",
+        "propose_eval_cases", "save_eval_cases", "start_eval_suite",
+    ]
 
-    def test_additive_builds_are_not_destructive(self):
-        marks = {t.name: t.annotations for t in catalog.builder_tools()}
-        for name in set(catalog.BUILD_TOOLS) - catalog.OVERWRITING_TOOLS:
-            assert marks[name].destructiveHint is False, name
+    @pytest.mark.parametrize("name", CHANGES_WHAT_IS_THERE)
+    def test_what_changes_or_removes_what_is_there_is_destructive(self, name):
+        mark = {t.name: t.annotations for t in server._fixed_tools()}[name]
+        assert mark.destructiveHint is True and mark.readOnlyHint is False
+
+    @pytest.mark.parametrize("name", ONLY_ADDS)
+    def test_what_only_adds_is_not(self, name):
+        mark = {t.name: t.annotations for t in server._fixed_tools()}[name]
+        assert mark.destructiveHint is False and mark.readOnlyHint is False
+
+    def test_every_served_tool_is_read_destructive_or_said_to_only_add(self):
+        """A new tool lands in one of the three by the registry's rule, and this list says which it is."""
+        served = {t.name: t.annotations for t in server._fixed_tools()}
+        reads = {n for n, m in served.items() if m.readOnlyHint}
+        assert set(served) == reads | set(self.CHANGES_WHAT_IS_THERE) | set(self.ONLY_ADDS), (
+            "a served tool is in neither list: say whether it only adds")
 
 
 

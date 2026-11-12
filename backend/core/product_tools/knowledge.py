@@ -398,7 +398,8 @@ def entries() -> list[ProductTool]:
                         "description": {"type": "string", "description": "What agents find in it."},
                         "folder": {"type": "string", "description": "A Vault folder; omit for knowledge/<name>."}},
                         "required": ["name"]},
-                    handler=_create_base, preview=_preview_create_base, audit_action="knowledge.base.created",
+                    handler=_create_base, preview=_preview_create_base, additive=True,
+                    audit_action="knowledge.base.created",
                     target=lambda a, r: ("knowledge_base", str((r or {}).get("id") or "")), **act),
         ProductTool(name="add_knowledge_file",
                     description="Add a file the person already has in the Vault to a knowledge base: copied into its "
@@ -407,7 +408,7 @@ def entries() -> list[ProductTool]:
                     input_schema={"type": "object", "properties": {
                         **_KB, "path": {"type": "string", "description": "The file's Vault path, e.g. 'reports/prices.csv'."}},
                         "required": ["knowledge_base", "path"]},
-                    handler=_add_file, preview=_preview_add_file, audit_action="knowledge.file.added",
+                    handler=_add_file, preview=_preview_add_file, additive=True, audit_action="knowledge.file.added",
                     target=lambda a, r: ("knowledge_base", str((r or {}).get("knowledge_base") or "")), **act),
         ProductTool(name="add_knowledge_pages",
                     description="Add public web pages to a knowledge base: a page, a sitemap's pages, or a site "
@@ -416,13 +417,13 @@ def entries() -> list[ProductTool]:
                         **_KB, "urls": {"type": "array", "items": {"type": "string"}},
                         "kind": {"type": "string", "enum": ["page", "sitemap", "site"]}},
                         "required": ["knowledge_base", "urls"]},
-                    handler=_add_pages, open_world=True, audit_action="knowledge.pages.added",
+                    handler=_add_pages, open_world=True, additive=True, audit_action="knowledge.pages.added",
                     target=lambda a, r: ("knowledge_base", str((r or {}).get("knowledge_base") or "")), **act),
         ProductTool(name="add_knowledge_note", description="Add a note (text) to a knowledge base.",
                     input_schema={"type": "object", "properties": {
                         **_KB, "title": {"type": "string"}, "text": {"type": "string"}},
                         "required": ["knowledge_base", "text"]},
-                    handler=_add_note, audit_action="knowledge.records.written",
+                    handler=_add_note, additive=True, audit_action="knowledge.records.written",
                     target=lambda a, r: ("knowledge_base", str((r or {}).get("knowledge_base") or "")), **act),
         ProductTool(name="list_knowledge_documents", kind="read", area="knowledge", offered=_on,
                     description="A knowledge base's documents: each file, where it stands (queued, indexed, failed) "
@@ -447,7 +448,7 @@ def entries() -> list[ProductTool]:
                     description="Start a knowledge base's rebuild again after it failed or was paused, as its "
                                 "screen's Retry does; nothing happens when its index is current.",
                     input_schema={"type": "object", "properties": dict(_KB), "required": ["knowledge_base"]},
-                    handler=_retry_rebuild, idempotent=True, audit_action="knowledge.base.rebuilt",
+                    handler=_retry_rebuild, idempotent=True, additive=True, audit_action="knowledge.base.rebuilt",
                     target=lambda a, r: ("knowledge_base", str((r or {}).get("knowledge_base") or "")), **act),
         ProductTool(name="delete_knowledge_base",
                     description="Delete a knowledge base: its index and documents go, its Vault folder and files stay. "
@@ -468,7 +469,7 @@ def entries() -> list[ProductTool]:
                     target=lambda a, r: ("knowledge_document", str(a.get("doc_id"))), **act),
         ProductTool(name="retry_knowledge_document", description="Index a document again after it failed.",
                     input_schema={"type": "object", "properties": dict(_DOC), "required": ["doc_id"]},
-                    handler=_retry, idempotent=True, audit_action="knowledge.document.retried",
+                    handler=_retry, idempotent=True, additive=True, audit_action="knowledge.document.retried",
                     target=lambda a, r: ("knowledge_document", str(a.get("doc_id"))), **act),
         ProductTool(name="delete_knowledge_document",
                     description="Delete a document from its knowledge base, with its Vault file.",

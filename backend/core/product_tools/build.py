@@ -79,18 +79,24 @@ ACTS: dict[str, str] = {
     "pause_schedule": "schedule.updated",
 }
 
-#: Acts that replace or remove what is already there: every step of an orchestration, one step, or a tool or skill
-#: of the same name; and turning a schedule on, which then starts runs by itself, unwatched (F1451, Naveen 11-07).
-#: Marked destructive, so a client asks its person first.
-OVERWRITES: frozenset[str] = frozenset({
-    "update_orchestration",
-    "remove_step",
-    "create_http_tool",
-    "update_http_tool",
-    "create_python_tool",
-    "update_python_tool",
-    "create_skill",
-    "turn_on_schedule",
+#: Acts that only add to what is there (`ProductTool.additive`): a new agent or workflow, steps appended, a deploy that
+#: answers the one already made, a Python tool's test run, a schedule made paused; and a pause, which loses nothing and
+#: is turned on again only by `turn_on_schedule`, which asks (F1451, Naveen 11-07). Every other act here changes,
+#: replaces or removes what is there (an agent's fields, a step, a skill or its list, a tool of the same name, a
+#: schedule's time, or turning one on, which then runs by itself), so it is marked destructive and a client asks its
+#: person first (F1548, Naveen 11-12).
+ADDITIVE: frozenset[str] = frozenset({
+    "create_agent",
+    "create_agents",
+    "create_orchestration",
+    "create_orchestration_skeleton",
+    "add_steps",
+    "add_single_step",
+    "add_multiple_steps",
+    "deploy_orchestration",
+    "test_python_tool",
+    "create_schedule",
+    "pause_schedule",
 })
 
 #: Acts that change nothing when made again with the same arguments: a schedule turned on or paused that already is.
@@ -335,7 +341,7 @@ def entries() -> list[ProductTool]:
     tools += [
         ProductTool(name=n, description=by_name[n].get("description", ""), input_schema=schema(n),
                     handler=_handler(n), kind="act", area="build", min_role=Role.BUILDER, scope="build",
-                    destructive=n in OVERWRITES, idempotent=n in IDEMPOTENT, open_world=n in OPEN_WORLD,
+                    additive=n in ADDITIVE, idempotent=n in IDEMPOTENT, open_world=n in OPEN_WORLD,
                     audit_action=action,
                     target=_target(action), offered=_offered(n), confirmed=n in CONFIRMED,
                     preview=_PREVIEWS.get(n), app_only=n in APP_ONLY, title=_TITLES.get(n, ""))

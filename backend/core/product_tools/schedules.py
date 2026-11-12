@@ -53,5 +53,6 @@ def entries() -> list[ProductTool]:
         input_schema={"type": "object", "properties": {"schedule_id": {"type": "string"}},
                       "required": ["schedule_id"]},
         handler=_run_now, kind="act", area="schedules", min_role=Role.BUILDER, scope="run", open_world=True,
+        additive=True,
         audit_action="schedule.run_now", target=lambda args, result: ("schedule", str(args.get("schedule_id"))),
     )]

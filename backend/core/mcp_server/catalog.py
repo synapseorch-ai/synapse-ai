@@ -45,9 +45,8 @@ READ_TOOLS: tuple[str, ...] = _build.READS
 #: Tools that add or edit.
 BUILD_TOOLS: tuple[str, ...] = tuple(_build.ACTS)
 
-#: Build tools that replace or remove what is already there: every step of an
-#: orchestration, one step, or a tool or skill of the same name.
-OVERWRITING_TOOLS: frozenset[str] = _build.OVERWRITES
+#: Build tools that only add to what is there; every other one is marked destructive (F1548).
+ADDITIVE_TOOLS: frozenset[str] = _build.ADDITIVE
 
 #: Deletes, irreversible: previewed, then done with a confirmation token (D292).
 DELETE_TOOLS: tuple[str, ...] = tuple(_build.DELETES)
