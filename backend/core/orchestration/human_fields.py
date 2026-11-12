@@ -86,6 +86,47 @@ def field_type(raw: Optional[str]) -> Optional[str]:
     return ALIASES.get(key)
 
 
+def _said(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def named(fields: Any) -> Any:
+    """`fields` with each one that has no name named by its `key` (F1557): how the shipped template packs spelt a
+    field's name until then, which nothing read, so every field there had none and the form made its boxes one answer.
+    A stored spelling is read, never rewritten: a field with a name keeps it, and the step as saved is unchanged."""
+    if not isinstance(fields, list):
+        return fields
+    return [{**f, "name": f["key"]} if isinstance(f, dict) and not _said(f.get("name")) and _said(f.get("key"))
+            else f for f in fields]
+
+
+_COUNTED = {2: "two", 3: "three", 4: "four"}
+
+
+def name_issues(step_id: str, key: str, fields: Any) -> list[str]:
+    """What is wrong with a Human step's field names (F1557), repair first: a field with no name, or a name another
+    field of the step has. The answer keeps one value per name, and the form one box's value per name, so a field
+    with no name of its own loses its answer. The editor says the same (`humanFields.humanFieldNameIssues`)."""
+    issues: list[str] = []
+    counts: dict[str, int] = {}
+    for i, field in enumerate(named(fields) if isinstance(fields, list) else [], 1):
+        if not isinstance(field, dict):
+            continue
+        name = field.get("name")
+        if not _said(name):
+            label = str(field.get("label") or "").strip()
+            labelled = f" ('{label}')" if label else ""
+            issues.append(f"Human step '{step_id}' field {i}{labelled} has no name: give it one — the answer keeps "
+                          f"each field under its name, and a later step reads it as state.{key}.<name>.")
+        else:
+            counts[name] = counts.get(name, 0) + 1
+    for name, count in counts.items():
+        if count > 1:
+            issues.append(f"Human step '{step_id}' has {_COUNTED.get(count, count)} fields named '{name}': give each "
+                          f"a name of its own — the answer keeps one value per name, so the others are lost.")
+    return issues
+
+
 def field_options(field: dict[str, Any]) -> list[str]:
     """A dropdown's options, as the step wrote them, blanks left out."""
     options = field.get("options")

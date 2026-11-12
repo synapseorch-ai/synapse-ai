@@ -145,6 +145,15 @@ class StepConfig(BaseModel):
 
         return one_form_step(data)
 
+    @field_validator("human_fields", mode="before")
+    @classmethod
+    def _each_field_by_its_name(cls, fields: Any) -> Any:
+        """A field the template packs named by `key` is read by it (F1557): the run asks, keeps and checks each field
+        by its name, and a field with none had made the form's boxes one answer."""
+        from core.orchestration.human_fields import named
+
+        return named(fields)
+
     @model_validator(mode="after")
     def _images_only_where_they_are_read(self):
         """`pass_images` is read by the agent executor and nowhere else.

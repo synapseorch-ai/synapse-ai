@@ -12,7 +12,7 @@
 import type { Orchestration, StepConfig, StepIssue } from '@/types/orchestration';
 import { BUILTIN_STATE_KEYS } from './graph';
 import { normalizeStateType } from './stateTypes';
-import { humanFieldOptions, humanFieldType } from './humanFields';
+import { humanFieldNameIssues, humanFieldOptions, humanFieldType } from './humanFields';
 import { fieldChecks } from './fieldChecks';
 
 export interface ValidationResult {
@@ -320,6 +320,10 @@ function checkOrchestration(orch: Orchestration, agents?: { id: string; type?: s
             if (f && humanFieldType(f.type) === 'choice' && humanFieldOptions(f).length === 0) {
                 add(s.id, error(`Field “${f.name}” is a dropdown with no options`));
             }
+        }
+        // A field with no name, or another's, loses its answer: the answer keeps one value per name (F1557).
+        for (const issue of humanFieldNameIssues(s.human_fields || [], s.output_key?.trim() || 'human_response')) {
+            add(s.id, error(issue.message));
         }
         const names = (s.human_fields || []).map((f) => f?.name).filter((n): n is string => !!n);
         if (!names.length) continue;

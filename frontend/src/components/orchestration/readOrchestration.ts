@@ -11,6 +11,8 @@
 
 import { STEP_TYPE_META, type Orchestration, type StepConfig } from '@/types/orchestration';
 
+import { namedHumanFields } from './humanFields';
+
 /** What was read differently, by step id; `''` is the workflow itself. */
 export type ShapeNotes = Record<string, string[]>;
 
@@ -59,7 +61,12 @@ function readList(field: string, v: unknown, say: (s: string) => void): unknown[
     if (field === 'human_fields') {
         const kept = list.filter(isObject);
         if (kept.length < list.length) say('A form field the editor could not read was left out. Save to drop it, or set it again.');
-        return kept;
+        // A field named by `key`, as the template packs wrote one, is named by it (F1557): the run reads it so too.
+        const named = namedHumanFields(kept);
+        if (named.some((f, i) => f !== kept[i])) {
+            say('Its form fields were named by “key”, as the template packs wrote them; each is shown by that name. Save to keep them so.');
+        }
+        return named;
     }
     if (field === 'parallel_branches') {
         return list.flatMap((b) => (Array.isArray(b) ? [b.filter((id) => typeof id === 'string')] : typeof b === 'string' ? [[b]] : []));

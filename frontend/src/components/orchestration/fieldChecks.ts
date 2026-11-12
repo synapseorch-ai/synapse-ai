@@ -28,9 +28,17 @@ const DECIDING = ['if_condition', 'switch_expression', 'loop_while_condition', '
 const RETRIEVE_FIELDS = ['context', 'chunks', 'citations', 'trace_id', 'snapshot_ids'];
 const INGEST_FIELDS = ['kb_id', 'documents'];
 
-const names = (fields: unknown): string[] =>
+/**
+ * Each field's name. A Human field the template packs named by `key` is named by its key (`keyed`, F1557), as
+ * `humanFields.namedHumanFields` and the server's `human_fields.named` read it.
+ */
+const names = (fields: unknown, keyed = false): string[] =>
     (Array.isArray(fields) ? fields : [])
-        .map((f) => (f && typeof f === 'object' ? String((f as { name?: unknown }).name ?? '').trim() : ''))
+        .map((f) => {
+            if (!f || typeof f !== 'object') return '';
+            const { name, key } = f as { name?: unknown; key?: unknown };
+            return String(name ?? '').trim() || (keyed && typeof key === 'string' ? key.trim() : '');
+        })
         .filter(Boolean);
 
 /** Every field the step's answer has; `[]` for an answer with none; `null` when the step does not say. */
@@ -43,7 +51,7 @@ export function answerFields(step: AnyStep, agents?: Agent[]): string[] | null {
         if (!agent || (step.finish_tools?.length ?? 0) > 0 || agent.type === 'orchestrator') return null;
         return [];
     }
-    if (step.type === 'human') return names(step.human_fields);
+    if (step.type === 'human') return names(step.human_fields, true);
     if (step.type === 'evaluator' || step.type === 'if_else') return [];
     if (step.type === 'retrieve') return RETRIEVE_FIELDS;
     if (step.type === 'ingest') return INGEST_FIELDS;

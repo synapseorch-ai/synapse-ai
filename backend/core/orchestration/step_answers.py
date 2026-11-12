@@ -29,14 +29,18 @@ HUMAN_RESPONSE = "human_response"
 
 
 def human_fields(step: dict[str, Any]) -> list[dict[str, Any]]:
-    """A Human step's fields, as stored or as the builder's tools send them (`human_fields_json`)."""
+    """A Human step's fields, as stored or as the builder's tools send them (`human_fields_json`); a field named by
+    `key`, as the template packs wrote one, by its key (F1557: `human_fields.named`)."""
+    from core.orchestration.human_fields import named
+
     fields = step.get("human_fields")
     if fields is None and isinstance(step.get("human_fields_json"), str):
         try:
             fields = json.loads(step["human_fields_json"] or "[]")
         except ValueError:
             fields = []
-    return [f for f in fields or [] if isinstance(f, dict) and isinstance(f.get("name"), str) and f["name"]]
+    fields = named(fields) if isinstance(fields, list) else []
+    return [f for f in fields if isinstance(f, dict) and isinstance(f.get("name"), str) and f["name"]]
 
 
 def declared_fields(step: dict[str, Any]) -> list[dict[str, Any]]:

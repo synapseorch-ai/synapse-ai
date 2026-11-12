@@ -98,7 +98,7 @@
                 "human_prompt": "The research agent needs more specific guidance. Please clarify: (1) What specific angle or subtopic should be focused on? (2) Who is the target audience? (3) Are there specific sources or data points you want included?",
                 "human_fields": [
                     {
-                    "key": "user_topic_refined",
+                    "name": "user_topic_refined",
                     "label": "Refined Topic / Additional Context",
                     "type": "textarea"
                     }

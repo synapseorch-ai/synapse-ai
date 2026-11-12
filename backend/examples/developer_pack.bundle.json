@@ -349,7 +349,7 @@
           "human_prompt": "The Jira ticket has ambiguities that must be resolved before coding can begin. The analyst identified the following gaps:\n\n{{ticket_brief}}\n\nPlease review and provide clarification so the implementation can proceed.",
           "human_fields": [
             {
-              "key": "clarification_notes",
+              "name": "clarification_notes",
               "label": "Your clarification / additional context",
               "type": "textarea"
             }
@@ -445,7 +445,7 @@
           "human_prompt": "The Software Engineer Agent has finished implementing the changes and opened a pull request.\n\n{{pr_result}}\n\nPlease review the PR. If you approve, the pipeline will merge it and trigger the deployment. If you request changes, the engineer agent will revise the code.",
           "human_fields": [
             {
-              "key": "pr_decision",
+              "name": "pr_decision",
               "label": "Decision",
               "type": "select",
               "options": [
@@ -454,7 +454,7 @@
               ]
             },
             {
-              "key": "pr_feedback",
+              "name": "pr_feedback",
               "label": "Feedback or change requests (optional)",
               "type": "textarea"
             }
@@ -978,7 +978,7 @@
           "human_prompt": "The automated review found minor suggestions but nothing blocking. Here is the full review:\n\n{{all_review_data}}\n\nDo you want to merge this PR or request changes from the author?",
           "human_fields": [
             {
-              "key": "human_decision",
+              "name": "human_decision",
               "label": "Your decision",
               "type": "select",
               "options": [
@@ -987,7 +987,7 @@
               ]
             },
             {
-              "key": "human_comments",
+              "name": "human_comments",
               "label": "Additional comments for the author (optional)",
               "type": "textarea"
             }

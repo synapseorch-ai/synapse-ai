@@ -22,7 +22,7 @@ import {
 import { ExpressionVocabulary } from './ExpressionVocabulary';
 import { PythonEditor } from './PythonEditor';
 import { agentEditHref, agentKind, agentOptions, KIND_WORD, memberNames, teamSettings, type KindAgent } from '../agentKind';
-import { HUMAN_FIELD_TYPES, humanFieldOptions, humanFieldType } from '../humanFields';
+import { HUMAN_FIELD_TYPES, humanFieldOptions, humanFieldType, nextHumanFieldName } from '../humanFields';
 import { ANSWER_FIELD_TYPES, answerFieldNameOk, answerFieldOptions, answerFieldType } from '../answerFields';
 import { argumentRows, withArgument, type ToolWithSchema } from '../toolArguments';
 import { toolsRestricted } from '../allowedTools';
@@ -394,7 +394,7 @@ function AnswerFields({ step, update }: Pick<StepSectionProps, 'step' | 'update'
             <Button
                 size="sm"
                 variant="secondary"
-                onClick={() => set([...fields, { name: `field_${fields.length + 1}`, type: 'boolean' }])}
+                onClick={() => set([...fields, { name: nextHumanFieldName(fields), type: 'boolean' }])}
             >
                 <Plus size={12} aria-hidden /> Add answer field
             </Button>
@@ -1121,7 +1121,8 @@ function HumanSection({ step, update }: StepSectionProps) {
                     size="sm"
                     variant="secondary"
                     onClick={() =>
-                        update({ human_fields: [...fields, { name: `field_${fields.length + 1}`, type: 'string', label: '' }] })
+                        // Past every name the step has (F1557): the count alone repeated one after a delete.
+                        update({ human_fields: [...fields, { name: nextHumanFieldName(fields), type: 'string', label: '' }] })
                     }
                 >
                     <Plus size={12} aria-hidden /> Add field

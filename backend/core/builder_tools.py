@@ -4984,12 +4984,18 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
         fields = s.get("human_fields")
         if fields is None and "human_fields_json" in s:
             fields = _parse_json_field(s.get("human_fields_json"), [])
+        from core.orchestration.human_fields import field_options, field_type, name_issues, named
+
+        # A field named by `key` (the template packs' spelling) is named by it; one with no name, or with another's,
+        # loses its answer (F1557).
+        fields = named(fields)
+        hid, key = s.get("id", "?"), s.get("output_key") or "human_response"
+        if isinstance(fields, list):
+            issues.extend(name_issues(hid, key, fields))
         names = [f["name"] for f in (fields or []) if isinstance(f, dict) and f.get("name")]
         if not names:
             continue
-        hid, key = s.get("id", "?"), s.get("output_key") or "human_response"
         # A dropdown with nothing to choose from cannot be answered (F455).
-        from core.orchestration.human_fields import field_options, field_type
         for f in fields or []:
             if isinstance(f, dict) and field_type(f.get("type")) == "choice" and not field_options(f):
                 issues.append(
