@@ -244,3 +244,79 @@ def missing(step_name: str, problems: list[str], answer: Any) -> str:
 def repaired(step_name: str, problems: list[str]) -> str:
     """The step's warning when the second ask gave the fields."""
     return f"'{step_name}' did not answer its answer fields at first ({'; '.join(problems)}); asked once more, it did."
+
+
+# ── A decision read out of a model's words (F1553's follow-up, Naveen's pick 1) ─────────────────────────────────────
+
+#: The methods only text has, as a condition calls them on a model's answer.
+_TEXT_METHODS = frozenset({"split", "rsplit", "strip", "lstrip", "rstrip", "lower", "upper", "casefold", "replace",
+                           "startswith", "endswith", "splitlines", "partition", "rpartition", "encode", "find", "rfind",
+                           "count", "index", "title", "capitalize"})
+#: The condition fields a decision is made in (a Loop's `loop_over` goes through a list; it decides nothing).
+DECIDING_FIELDS = ("if_condition", "switch_expression", "loop_while_condition", "loop_break_condition")
+
+
+def words_read(expr: Any, keys: set[str]) -> list[str]:
+    """The keys of `keys` a condition decides on as words: a text method called on the whole value (`.strip()`,
+    `.startswith(…)`), the value compared with a quoted word (`== 'URGENT'`), a quoted word `in` it, or it `in` a list
+    of words. A whole read for its length or its truth, and a field of it, are not words."""
+    import ast
+
+    from core.expressions import _unbraced
+
+    if not isinstance(expr, str) or not expr.strip():
+        return []
+    try:
+        tree = ast.parse(_unbraced(expr), mode="eval")
+    except SyntaxError:
+        return []
+
+    def whole(node: Any) -> str | None:
+        """The key a node is the whole text of: `state.k`, `state['k']`, `str(…)` of one, a text method's or a slice's
+        result on one."""
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "state":
+            return node.attr
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id == "state":
+            sl = node.slice
+            return sl.value if isinstance(sl, ast.Constant) and isinstance(sl.value, str) else None
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "str" and \
+                len(node.args) == 1:
+            return whole(node.args[0])
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in _TEXT_METHODS:
+            return whole(node.func.value)
+        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice):
+            return whole(node.value)
+        return None
+
+    def word(node: Any) -> bool:
+        return isinstance(node, ast.Constant) and isinstance(node.value, str)
+
+    def words(node: Any) -> bool:
+        return isinstance(node, (ast.List, ast.Tuple, ast.Set)) and bool(node.elts) and all(word(e) for e in node.elts)
+
+    found: list[str] = []
+    for node in ast.walk(tree):
+        hits: list[str | None] = []
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in _TEXT_METHODS:
+            hits.append(whole(node.func.value))
+        elif isinstance(node, ast.Compare):
+            operands = [node.left, *node.comparators]
+            for i, op in enumerate(node.ops):
+                left, right = operands[i], operands[i + 1]
+                if isinstance(op, (ast.Eq, ast.NotEq)):
+                    hits += [whole(left) if word(right) else None, whole(right) if word(left) else None]
+                elif isinstance(op, (ast.In, ast.NotIn)):
+                    hits += [whole(right) if word(left) else None, whole(left) if words(right) else None]
+        for key in hits:
+            if key in keys and key not in found:
+                found.append(key)
+    return found
+
+
+def words_said(reader: dict[str, Any], writer: dict[str, Any], key: str, expr: str) -> str:
+    """The warning for `reader` deciding on `writer`'s answer as words, and its fix."""
+    shown = " ".join(str(expr).split())
+    return (f"Step '{reader.get('id', '?')}' decides on {writer.get('type')} step '{writer.get('id', '?')}''s answer "
+            f"as text (`{shown}`): it reads the model's own words; declare an answer field — give "
+            f"'{writer.get('id', '?')}' output_fields (a choice with the words it picks from as options, or a boolean "
+            f"for a yes or no) and read state.{key}.<field>. It runs as it is today.")

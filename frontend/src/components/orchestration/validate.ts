@@ -13,6 +13,7 @@ import type { Orchestration, StepConfig, StepIssue } from '@/types/orchestration
 import { BUILTIN_STATE_KEYS } from './graph';
 import { normalizeStateType } from './stateTypes';
 import { humanFieldOptions, humanFieldType } from './humanFields';
+import { fieldChecks } from './fieldChecks';
 
 export interface ValidationResult {
     byStep: Record<string, StepIssue[]>;
@@ -346,6 +347,11 @@ function checkOrchestration(orch: Orchestration, agents?: { id: string; type?: s
             }
         }
     }
+
+    // --- What a step reads out of another's answer (F1549, F1553), said as the server says it ---
+    // A field its writer never writes, a field a model step does not declare, a decision on a model's own words.
+    // Warnings: the run goes on as it does today, and the server's check says the same (`fieldChecks.ts`).
+    for (const check of fieldChecks(orch.steps, agents)) add(check.stepId, warning(check.message));
 
     // --- Reachability from the entry point ---
     if (orch.entry_step_id && ids.has(orch.entry_step_id) && orch.steps.length > 1) {

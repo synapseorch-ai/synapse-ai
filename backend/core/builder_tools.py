@@ -4440,6 +4440,35 @@ def _fields_never_written(steps: list, agents: dict | None = None) -> list[str]:
     return issues
 
 
+def _decisions_on_words(steps: list, agents: dict | None = None) -> list[str]:
+    """A condition deciding on a model's own words (F1553's follow-up, Naveen's pick 1: warn and offer the fix, never
+    refuse): the key every writer of which is an llm step's text (or a plain agent's, agents known), read by a text
+    method, compared with a quoted word, or `in` (`output_fields.words_read`). A warning: it runs as it does today."""
+    from core.orchestration import output_fields as _answer
+    from core.orchestration import step_answers
+
+    writers: dict[str, list[dict]] = {}
+    for s in steps:
+        if isinstance(s, dict):
+            for key in step_answers.keys_written(s):
+                writers.setdefault(key, []).append(s)
+    texts = {key: ws for key, ws in writers.items()
+             if all(w.get("type") in ("llm", "agent") and step_answers.answer_fields(w, agents) == () for w in ws)}
+    if not texts:
+        return []
+    out: list[str] = []
+    for s in steps:
+        if not isinstance(s, dict):
+            continue
+        for field in _answer.DECIDING_FIELDS:
+            expr = s.get(field)
+            for key in _answer.words_read(expr, set(texts)):
+                said = _answer.words_said(s, texts[key][0], key, expr)
+                if said not in out:
+                    out.append(said)
+    return out
+
+
 def _answer_field_problems(steps: list, agents: dict | None = None) -> list[str]:
     """A model step's `output_fields` the run could not hold a model to (F1553): a name a condition cannot read, one
     twice, a type that is not one, a choice with no options; and fields on a step whose answer is not the model's
@@ -5028,7 +5057,8 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
 
     # A prompt that reads a key before any step writes it reads it empty there
     # (U74): said, never refused — a feedback loop's first pass is a real pattern.
-    return {"ok": not issues, "issues": issues, "warnings": unset_reads(orch)}
+    return {"ok": not issues, "issues": issues,
+            "warnings": [*unset_reads(orch), *_decisions_on_words(steps, agents)]}
 
 
 def _parse_json_field(value: Any, fallback: Any) -> Any:

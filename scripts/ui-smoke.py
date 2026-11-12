@@ -18270,6 +18270,57 @@ async def check_answerfields(browser) -> str:
     return "an LLM step's answer fields read as Yes / No and One of (good, poor), light and dark, wide and phone"
 
 
+@check
+async def check_wordswarning(browser) -> str:
+    """A condition deciding on a model's own words is warned on its step, with its fix, and a field a model step does
+    not declare too: the editor says what the server says (F1553's follow-ups, `fieldChecks.ts`). Warnings, never
+    errors: Run stays open. `SMOKE_SHOTS`, when set, keeps a shot of each panel, light and dark, wide and phone."""
+    oid = f"orch_uismoke_words_{int(time.time())}"
+    api("/api/orchestrations", "POST", {
+        "id": oid, "name": "UI smoke words", "entry_step_id": "classify", "steps": [
+            {"id": "classify", "name": "Classify", "type": "llm", "prompt_template": "Reply URGENT or NORMAL.",
+             "output_key": "classify", "next_step_id": "route", "position_x": 0, "position_y": 0},
+            {"id": "route", "name": "Urgent?", "type": "if_else",
+             "if_condition": "state.classify.strip().upper() == 'URGENT'", "if_true_step_id": "risky",
+             "if_false_step_id": "end", "position_x": 320, "position_y": 0},
+            {"id": "risky", "name": "Risky?", "type": "if_else", "if_condition": "state.classify.risky",
+             "if_true_step_id": "end", "if_false_step_id": "end", "position_x": 640, "position_y": 0},
+            {"id": "end", "name": "End", "type": "end", "position_x": 960, "position_y": 0},
+        ]})
+    problems: list[str] = []
+    shots = os.environ.get("SMOKE_SHOTS")
+    try:
+        for scheme in ("light", "dark"):
+            for width in (WIDE, PHONE):
+                ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]}, color_scheme=scheme)
+                page = await ctx.new_page()
+                try:
+                    for step, said in (("Urgent?", "reads the model's own words; declare an answer field"),
+                                       ("Risky?", "does not declare it in its answer fields")):
+                        await open_step(page, oid, step)
+                        note = page.get_by_text(said, exact=False).first
+                        if not await note.count():
+                            problems.append(f"{scheme} {width[0]}: “{step}” shows no “{said}”")
+                        elif shots:
+                            box = note.locator("xpath=ancestor::div[contains(@class,'space-y-1.5')][1]")
+                            target = box if await box.count() else note
+                            await target.screenshot(path=os.path.join(
+                                shots, f"wordswarning-{'words' if step == 'Urgent?' else 'field'}-{scheme}-{width[0]}.png"))
+                        await page.keyboard.press("Escape")
+                    if await page.get_by_role("button", name="Run now", exact=True).is_disabled():
+                        problems.append(f"{scheme} {width[0]}: a warning closed Run")
+                    if shots and width == WIDE:
+                        await open_step(page, oid, "Urgent?")
+                        await page.screenshot(path=os.path.join(shots, f"wordswarning-page-{scheme}-{width[0]}.png"))
+                finally:
+                    await ctx.close()
+    finally:
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "a decision on a model's words and an undeclared field are warned on their steps, Run open, light/dark"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
