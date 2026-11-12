@@ -108,7 +108,8 @@ def repair(step: dict[str, Any], key: str, field: str) -> str:
     if kind == "human" and not has:
         return (f"give '{sid}' a field named '{field}' in human_fields — "
                 f'{{"name": "{field}", "type": "boolean", "label": "…?"}} for a yes or no, which the run asks with '
-                f"Approve and Decline when it is the step's one yes/no; \"textarea\" for their words — or read what "
+                f"Approve and Decline when it is the step's one approval (a yes/no named like an approval, `approved`, "
+                f"or marked \"approval\": true); \"textarea\" for their words — or read what "
                 f"'{sid}' writes. With no fields, its answer is the person's words, which have no fields")
     if kind == "human":
         return f"read one of its fields ({_ticked(has)}), or add a field named '{field}' to its human_fields"

@@ -22,7 +22,7 @@ import {
 import { ExpressionVocabulary } from './ExpressionVocabulary';
 import { PythonEditor } from './PythonEditor';
 import { agentEditHref, agentKind, agentOptions, KIND_WORD, memberNames, teamSettings, type KindAgent } from '../agentKind';
-import { HUMAN_FIELD_TYPES, branchCondition, branchFields, branchPicked, humanFieldOptions, humanFieldType, nextHumanFieldName, type BranchField } from '../humanFields';
+import { HUMAN_FIELD_TYPES, branchCondition, branchFields, branchPicked, humanFieldOptions, humanFieldType, isApproval, nextHumanFieldName, type BranchField } from '../humanFields';
 import { ANSWER_FIELD_TYPES, answerFieldNameOk, answerFieldOptions, answerFieldType } from '../answerFields';
 import { nextFreeName } from '../nextName';
 import { argumentRows, withArgument, type ToolWithSchema } from '../toolArguments';
@@ -1104,6 +1104,25 @@ function HumanSection({ step, update }: StepSectionProps) {
                                 update({ human_fields: next });
                             }}
                         />
+                        {humanFieldType(field.type) === 'boolean' && (
+                            // The run asks an approval with Approve and Decline, any other Yes / No in the form (F1560):
+                            // named like one (approved) it is, unless its author says otherwise here.
+                            <div className="flex items-center gap-2">
+                                <Checkbox
+                                    id={`${step.id}-field-${idx}-approval`}
+                                    checked={isApproval(field)}
+                                    onChange={(checked) => {
+                                        const next = [...fields];
+                                        next[idx] = { ...field, approval: checked };
+                                        update({ human_fields: next });
+                                    }}
+                                    label={`Field ${idx + 1}: ask as Approve / Decline`}
+                                />
+                                <label htmlFor={`${step.id}-field-${idx}-approval`} className="cursor-pointer text-xs text-text-muted">
+                                    Ask as Approve / Decline
+                                </label>
+                            </div>
+                        )}
                         {humanFieldType(field.type) === 'choice' && (
                             // A dropdown's options, comma-separated; the person picks one (F455).
                             <LocalInput

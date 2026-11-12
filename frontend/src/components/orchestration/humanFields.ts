@@ -21,7 +21,11 @@ export type HumanFieldType = 'string' | 'textarea' | 'number' | 'boolean' | 'ema
  * `options` is a dropdown's (`choice`): one of them is picked (F455). `key` is how the template packs spelt a field's
  * name until F1557: read as its name (`namedHumanFields`), never written.
  */
-export type HumanField = { name: string; type?: string; label?: string; options?: string[]; key?: string };
+export type HumanField = {
+    name: string; type?: string; label?: string; options?: string[]; key?: string;
+    /** A Yes / No asked as the Approve and Decline buttons (F1560): `true` asks it so, `false` keeps it in the form. */
+    approval?: boolean;
+};
 
 /** What the step editor offers, in order. */
 export const HUMAN_FIELD_TYPES: { value: HumanFieldType; label: string }[] = [
@@ -133,6 +137,31 @@ export function humanFieldNameIssues(fields: HumanField[], key: string): HumanFi
         }
     }
     return issues;
+}
+
+/** A word of a name that makes a Yes / No an approval: approve(d), approval, accept(ed), confirm(ed), sign(ed) off. */
+const APPROVAL_WORDS = /^(?:approve|approved|approval|accept|accepted|confirm|confirmed)$/;
+
+/** A field's name in words: `plan_approved`, `approveDraft`, `sign-off` → plan approved, approve draft, sign off. */
+const nameWords = (name: string) => name.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+
+/** Whether a Yes / No is an approval: its author says so (`approval`), else its name does. */
+export function isApproval(field: HumanField): boolean {
+    if (humanFieldType(field.type) !== 'boolean') return false;
+    if (typeof field.approval === 'boolean') return field.approval;
+    const words = nameWords(String(field.name ?? ''));
+    return words.some((w) => APPROVAL_WORDS.test(w)) || words.join(' ').includes('sign off') || words.join(' ').includes('signed off');
+}
+
+/**
+ * The one approval a step asks, which the run's card asks with Approve and Decline (M2a, F1560), or `null`. It was the
+ * step's one Yes / No whatever it asked, so "Urgent?" beside a name and a priority became "Urgent" and "Decline" and
+ * the form lost it. Any other Yes / No is a field in the form; two approvals are neither.
+ */
+export function approvalField<F extends HumanField>(fields: F[]): F | null {
+    const named = namedHumanFields(fields);
+    const at = named.flatMap((f, i) => (!!f && typeof f === 'object' && isApproval(f) ? [i] : []));
+    return at.length === 1 ? fields[at[0]] : null;  // the step's own field, so the card leaves it out of the form
 }
 
 /** What a person is shown: the label, else the name. */

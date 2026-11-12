@@ -19,7 +19,7 @@
  */
 import { STEP_TYPE_META, type Orchestration, type StepConfig, type StepType } from '@/types/orchestration';
 
-import { humanFieldType } from '../orchestration/humanFields';
+import { approvalField, type HumanField } from '../orchestration/humanFields';
 
 /** What a run is named when its workflow has since been deleted: one set of words wherever a run is listed (F1337). */
 export const DELETED_WORKFLOW = 'Deleted workflow';
@@ -116,12 +116,12 @@ export type Task = { content: string; status: TaskStatus };
 export type { HumanField } from '../orchestration/humanFields';
 
 /**
- * The one Yes / No field that makes a human step an approval, or `null`: its flag is
- * answered with two buttons, the field's label and Decline (Naveen, M2a).
+ * The one approval a human step asks, or `null`: its flag is answered with two buttons, the
+ * field's label and Decline (Naveen, M2a). Only an approval (F1560: named like one, or marked so);
+ * any other Yes / No is asked in the form.
  */
-export function decisionField<F extends { name: string; type?: string }>(fields: F[]): F | null {
-    const flags = fields.filter((f) => humanFieldType(f.type) === 'boolean');
-    return flags.length === 1 ? flags[0] : null;
+export function decisionField<F extends HumanField>(fields: F[]): F | null {
+    return approvalField(fields);
 }
 
 /** One run, as the run page reads it. */
