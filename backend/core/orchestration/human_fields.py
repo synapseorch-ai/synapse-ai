@@ -8,7 +8,8 @@ spelling is read, never rewritten (F50, F75).
 **What is checked (Naveen, 2026-10-12): the new types only.** An answer to an email,
 date, phone or dropdown field must be one; text, long text, a number and yes/no are
 taken as they come, as they always were, so nothing answered before this is refused.
-A yes/no said in words is stored as the flag it says (F1434); other words stay as they came.
+A yes/no said in words is stored as the flag it says (F1434), a sign-off's approve or decline too (F1552); other words
+stay as they came.
 A field left blank is still an answer (F232's rule: it is what a form sends for a
 question nobody filled in). A text answer to a fielded question is not checked
 either; there is no field to check it against.
@@ -47,10 +48,12 @@ ALIASES = {
     "yes/no": "boolean",
 }
 
-#: A yes/no answered in words (F1434): stored as the flag it says, so a condition that reads true/false meets it. The
-#: yes words are ones a tool approval already takes as yes (`engine._approved`), so no answer newly allows a call.
-_YES = frozenset({"yes", "y", "true", "1"})
-_NO = frozenset({"no", "n", "false", "0"})
+#: A yes/no answered in words (F1434): stored as the flag it says, so a condition that reads true/false meets it. A
+#: sign-off's words count too (F1552, Naveen 11-12: "decline" sent through the API stayed text, and a plain
+#: `if state.review.approved` read it as true). Only a Human step's field reads these: a tool call's own approval is
+#: `engine._approved`'s, with its own words, unchanged.
+_YES = frozenset({"yes", "y", "true", "1", "approve", "approved", "accept", "accepted"})
+_NO = frozenset({"no", "n", "false", "0", "decline", "declined", "reject", "rejected"})
 
 #: The types an answer is checked against.
 CHECKED = frozenset({"email", "date", "phone", "choice"})
