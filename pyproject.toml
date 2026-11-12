@@ -67,7 +67,7 @@ dependencies = [
     "openpyxl>=3.1,<4",
     # Knowledge's parsers (A2, D162); see backend/requirements.txt.
     "pypdfium2>=4.30,<6",
-    "pillow>=10.0,<13",
+    "pillow>=13.0,<14",
     "psutil>=5.9,<8",
     "defusedxml>=0.7,<1",
     "olefile>=0.46,<1",
@@ -351,7 +351,7 @@ constraint-dependencies = [
     "pandas==3.0.5",
     "pdfminer-six==20260107",
     "pdfplumber==0.11.10",
-    "pillow==12.3.0",
+    "pillow==13.0.0",
     "pillow-heif==1.8.0",
     "playwright==1.62.0",
     "playwright-stealth==2.0.3",

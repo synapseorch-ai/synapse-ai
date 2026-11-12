@@ -506,7 +506,7 @@ pdfplumber==0.11.10
     #   -c requirements-worker.lock
     #   -c requirements.lock
     #   synapse-orch-ai (../pyproject.toml)
-pillow==12.3.0
+pillow==13.0.0
     # via
     #   -c requirements-worker.lock
     #   -c requirements.lock

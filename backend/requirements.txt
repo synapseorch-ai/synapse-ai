@@ -61,7 +61,7 @@ openpyxl>=3.1,<4
 # defusedxml reads Office XML safely, olefile reads Outlook .msg files. All but
 # olefile were already installed through pdfplumber and chromadb.
 pypdfium2>=4.30,<6
-pillow>=10.0,<13
+pillow>=13.0,<14
 psutil>=5.9,<8
 defusedxml>=0.7,<1
 olefile>=0.46,<1

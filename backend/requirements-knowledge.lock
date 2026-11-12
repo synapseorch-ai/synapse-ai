@@ -170,7 +170,7 @@ pandas==3.0.5
     # via
     #   -c .knowledge-constraints.txt
     #   docling-core
-pillow==12.3.0
+pillow==13.0.0
     # via
     #   -c .knowledge-constraints.txt
     #   docling-core
