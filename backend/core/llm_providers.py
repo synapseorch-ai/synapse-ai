@@ -431,6 +431,26 @@ def _content_of(chunk) -> str:
         return ""
 
 
+#: OpenRouter's app attribution (F1545): an app page and a place in its rankings for requests that carry these
+#: (https://openrouter.ai/docs/app-attribution; `X-Title` is the title's older spelling, which it still reads). The
+#: product's name and site, never anything of the person's.
+OPENROUTER_ATTRIBUTION = {"HTTP-Referer": "https://synapseorch.com", "X-OpenRouter-Title": "SynapseOrch",
+                          "X-Title": "SynapseOrch"}
+
+
+def _attributed(url: str, headers: dict) -> dict:
+    """`headers`, with OpenRouter's attribution when `url` is on OpenRouter's own host, and never otherwise (F1545).
+
+    Decided by where the request goes, so an `openrouter.` model and an OpenAI-compatible server set to OpenRouter's
+    address are told alike, and an address that only looks like it (`openrouter.ai.example.com`) is not."""
+    from urllib.parse import urlparse
+
+    host = (urlparse(str(url)).hostname or "").lower()
+    if host == "openrouter.ai" or host.endswith(".openrouter.ai"):
+        return {**headers, **OPENROUTER_ATTRIBUTION}
+    return headers
+
+
 async def _post_chat(client, url: str, *, headers: dict, payload: dict):
     """POST an OpenAI-shaped chat completion: streamed when the answer is (U72).
 
@@ -441,10 +461,12 @@ async def _post_chat(client, url: str, *, headers: dict, payload: dict):
     saw. A 400 that names streaming is asked once more without it: an endpoint
     that takes no stream still answers. A transport failure mid-stream raises
     as a non-streamed one would, into the caller's retry loop; the attempt that
-    follows says the text so far is void (`restart_stream`).
+    follows says the text so far is void (`restart_stream`). A request to
+    OpenRouter says which app sends it (`_attributed`, F1545).
     """
     from core.model_wait import emit_delta, restart_stream, streaming_wanted
 
+    headers = _attributed(url, headers)
     if not streaming_wanted():
         return await client.post(url, headers=headers, json=payload)
     restart_stream()
@@ -4565,6 +4587,7 @@ async def _embed_v1_compatible(texts: list[str], model: str, base_url: str, api_
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     endpoint = f"{_normalize_v1_base_url(base_url)}/v1/embeddings"
+    headers = _attributed(endpoint, headers)  # OpenRouter is told which app asks (F1545)
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(endpoint, headers=headers, json={"model": model, "input": texts})
@@ -4841,10 +4864,11 @@ def _embedding_refusal(resp, provider: str, label: str) -> EmbeddingFailed:
 
 async def _post_embeddings(url: str, headers: dict, body: dict, *, provider: str, label: str,
                            timeout: float) -> tuple[dict, dict]:
-    """POST one embeddings request; its JSON and headers, or `EmbeddingFailed`."""
+    """POST one embeddings request; its JSON and headers, or `EmbeddingFailed`. OpenRouter is told which app asks
+    (`_attributed`, F1545)."""
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(url, headers=headers, json=body)
+            resp = await client.post(url, headers=_attributed(url, headers), json=body)
     except httpx.HTTPError as e:
         raise EmbeddingFailed(f"{label} embedding failed: {type(e).__name__}: {e}", provider=provider,
                               code=PROVIDER_UNAVAILABLE) from e
