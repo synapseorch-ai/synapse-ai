@@ -465,11 +465,12 @@ openpyxl==3.1.5
     # via
     #   -c .knowledge-constraints.txt
     #   synapse-orch-ai (../pyproject.toml)
-opentelemetry-api==1.44.0
+opentelemetry-api==1.45.2
     # via
     #   -c .knowledge-constraints.txt
     #   synapse-orch-ai (../pyproject.toml)
     #   chromadb
+    #   opentelemetry-exporter-http-transport
     #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-exporter-otlp-proto-http
     #   opentelemetry-exporter-prometheus
@@ -480,62 +481,72 @@ opentelemetry-api==1.44.0
     #   opentelemetry-instrumentation-sqlalchemy
     #   opentelemetry-sdk
     #   opentelemetry-semantic-conventions
-opentelemetry-exporter-otlp-proto-common==1.44.0
+opentelemetry-exporter-http-transport==0.66b2
+    # via
+    #   -c .knowledge-constraints.txt
+    #   opentelemetry-exporter-otlp-proto-http
+opentelemetry-exporter-otlp-common==0.66b2
     # via
     #   -c .knowledge-constraints.txt
     #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-exporter-otlp-proto-http
-opentelemetry-exporter-otlp-proto-grpc==1.44.0
+opentelemetry-exporter-otlp-proto-common==1.45.2
+    # via
+    #   -c .knowledge-constraints.txt
+    #   opentelemetry-exporter-otlp-proto-grpc
+    #   opentelemetry-exporter-otlp-proto-http
+opentelemetry-exporter-otlp-proto-grpc==1.45.2
     # via
     #   -c .knowledge-constraints.txt
     #   synapse-orch-ai (../pyproject.toml)
     #   chromadb
-opentelemetry-exporter-otlp-proto-http==1.44.0
+opentelemetry-exporter-otlp-proto-http==1.45.2
     # via
     #   -c .knowledge-constraints.txt
     #   synapse-orch-ai (../pyproject.toml)
-opentelemetry-exporter-prometheus==0.65b0
+opentelemetry-exporter-prometheus==0.66b2
     # via
     #   -c .knowledge-constraints.txt
     #   synapse-orch-ai (../pyproject.toml)
-opentelemetry-instrumentation==0.65b0
+opentelemetry-instrumentation==0.66b2
     # via
     #   -c .knowledge-constraints.txt
     #   opentelemetry-instrumentation-asgi
     #   opentelemetry-instrumentation-httpx
     #   opentelemetry-instrumentation-redis
     #   opentelemetry-instrumentation-sqlalchemy
-opentelemetry-instrumentation-asgi==0.65b0
+opentelemetry-instrumentation-asgi==0.66b2
     # via
     #   -c .knowledge-constraints.txt
     #   synapse-orch-ai (../pyproject.toml)
-opentelemetry-instrumentation-httpx==0.65b0
+opentelemetry-instrumentation-httpx==0.66b2
     # via
     #   -c .knowledge-constraints.txt
     #   synapse-orch-ai (../pyproject.toml)
-opentelemetry-instrumentation-redis==0.65b0
+opentelemetry-instrumentation-redis==0.66b2
     # via
     #   -c .knowledge-constraints.txt
     #   synapse-orch-ai (../pyproject.toml)
-opentelemetry-instrumentation-sqlalchemy==0.65b0
+opentelemetry-instrumentation-sqlalchemy==0.66b2
     # via
     #   -c .knowledge-constraints.txt
     #   synapse-orch-ai (../pyproject.toml)
-opentelemetry-proto==1.44.0
+opentelemetry-proto==1.45.2
     # via
     #   -c .knowledge-constraints.txt
     #   opentelemetry-exporter-otlp-proto-common
     #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-exporter-otlp-proto-http
-opentelemetry-sdk==1.44.0
+opentelemetry-sdk==1.45.2
     # via
     #   -c .knowledge-constraints.txt
     #   synapse-orch-ai (../pyproject.toml)
     #   chromadb
+    #   opentelemetry-exporter-otlp-common
     #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-exporter-otlp-proto-http
     #   opentelemetry-exporter-prometheus
-opentelemetry-semantic-conventions==0.65b0
+opentelemetry-semantic-conventions==0.66b2
     # via
     #   -c .knowledge-constraints.txt
     #   opentelemetry-instrumentation
@@ -544,7 +555,7 @@ opentelemetry-semantic-conventions==0.65b0
     #   opentelemetry-instrumentation-redis
     #   opentelemetry-instrumentation-sqlalchemy
     #   opentelemetry-sdk
-opentelemetry-util-http==0.65b0
+opentelemetry-util-http==0.66b2
     # via
     #   -c .knowledge-constraints.txt
     #   opentelemetry-instrumentation-asgi
@@ -803,6 +814,7 @@ requests==2.34.2
     #   docling-slim
     #   google-api-core
     #   kubernetes
+    #   opentelemetry-exporter-http-transport
     #   opentelemetry-exporter-otlp-proto-http
     #   requests-oauthlib
 requests-oauthlib==2.0.0

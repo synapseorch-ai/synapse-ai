@@ -26,10 +26,11 @@ idna==3.18
     #   -c requirements-messaging.lock
     #   -c requirements.lock
     #   requests
-opentelemetry-api==1.44.0
+opentelemetry-api==1.45.2
     # via
     #   -c requirements.lock
     #   -r requirements-telemetry.txt
+    #   opentelemetry-exporter-http-transport
     #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-exporter-otlp-proto-http
     #   opentelemetry-exporter-prometheus
@@ -40,47 +41,55 @@ opentelemetry-api==1.44.0
     #   opentelemetry-instrumentation-sqlalchemy
     #   opentelemetry-sdk
     #   opentelemetry-semantic-conventions
-opentelemetry-exporter-otlp-proto-common==1.44.0
+opentelemetry-exporter-http-transport==0.66b2
+    # via opentelemetry-exporter-otlp-proto-http
+opentelemetry-exporter-otlp-common==0.66b2
     # via
     #   -c requirements.lock
     #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-exporter-otlp-proto-http
-opentelemetry-exporter-otlp-proto-grpc==1.44.0
+opentelemetry-exporter-otlp-proto-common==1.45.2
+    # via
+    #   -c requirements.lock
+    #   opentelemetry-exporter-otlp-proto-grpc
+    #   opentelemetry-exporter-otlp-proto-http
+opentelemetry-exporter-otlp-proto-grpc==1.45.2
     # via
     #   -c requirements.lock
     #   -r requirements-telemetry.txt
-opentelemetry-exporter-otlp-proto-http==1.44.0
+opentelemetry-exporter-otlp-proto-http==1.45.2
     # via -r requirements-telemetry.txt
-opentelemetry-exporter-prometheus==0.65b0
+opentelemetry-exporter-prometheus==0.66b2
     # via -r requirements-telemetry.txt
-opentelemetry-instrumentation==0.65b0
+opentelemetry-instrumentation==0.66b2
     # via
     #   opentelemetry-instrumentation-asgi
     #   opentelemetry-instrumentation-httpx
     #   opentelemetry-instrumentation-redis
     #   opentelemetry-instrumentation-sqlalchemy
-opentelemetry-instrumentation-asgi==0.65b0
+opentelemetry-instrumentation-asgi==0.66b2
     # via -r requirements-telemetry.txt
-opentelemetry-instrumentation-httpx==0.65b0
+opentelemetry-instrumentation-httpx==0.66b2
     # via -r requirements-telemetry.txt
-opentelemetry-instrumentation-redis==0.65b0
+opentelemetry-instrumentation-redis==0.66b2
     # via -r requirements-telemetry.txt
-opentelemetry-instrumentation-sqlalchemy==0.65b0
+opentelemetry-instrumentation-sqlalchemy==0.66b2
     # via -r requirements-telemetry.txt
-opentelemetry-proto==1.44.0
+opentelemetry-proto==1.45.2
     # via
     #   -c requirements.lock
     #   opentelemetry-exporter-otlp-proto-common
     #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-exporter-otlp-proto-http
-opentelemetry-sdk==1.44.0
+opentelemetry-sdk==1.45.2
     # via
     #   -c requirements.lock
     #   -r requirements-telemetry.txt
+    #   opentelemetry-exporter-otlp-common
     #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-exporter-otlp-proto-http
     #   opentelemetry-exporter-prometheus
-opentelemetry-semantic-conventions==0.65b0
+opentelemetry-semantic-conventions==0.66b2
     # via
     #   -c requirements.lock
     #   opentelemetry-instrumentation
@@ -89,7 +98,7 @@ opentelemetry-semantic-conventions==0.65b0
     #   opentelemetry-instrumentation-redis
     #   opentelemetry-instrumentation-sqlalchemy
     #   opentelemetry-sdk
-opentelemetry-util-http==0.65b0
+opentelemetry-util-http==0.66b2
     # via
     #   opentelemetry-instrumentation-asgi
     #   opentelemetry-instrumentation-httpx
@@ -111,6 +120,7 @@ requests==2.34.2
     # via
     #   -c requirements-messaging.lock
     #   -c requirements.lock
+    #   opentelemetry-exporter-http-transport
     #   opentelemetry-exporter-otlp-proto-http
 typing-extensions==4.16.0
     # via
