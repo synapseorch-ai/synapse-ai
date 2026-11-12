@@ -183,20 +183,112 @@ def check_value(field: dict[str, Any], value: Any) -> Any:
     raise BadAnswer(name, f"{label}: choose one of {', '.join(options)}.")
 
 
-def check_answer(fields: Any, response: Any) -> Any:
+def check_answer(fields: Any, response: Any, *, form: bool = False) -> Any:
     """`response` with each checked field's value in its stored form; `BadAnswer` if one is not.
 
     Plain text to a step whose one field is a yes/no (a channel's reply, F1434) answers that field when it says yes
     or no; any other text is the answer as it came.
+
+    Text to a Human step's own form (`form`, F1561: the door says so, `answers.asks_a_form`) is read as its fields:
+    a line each, `name: value` (`read_reply`). A form of two fields or more that the text names none of is refused,
+    saying how; a lone One of takes a plain reply that is one of its options. A lone text field keeps the words as
+    they came — the AI builder's own questions are answered so — and so does what is no form (a tool's approval).
     """
-    if isinstance(response, str) and isinstance(fields, list) and len(fields) == 1 and isinstance(fields[0], dict) \
-            and field_type(fields[0].get("type")) == "boolean" and fields[0].get("name"):
+    named_fields = [f for f in named(fields) if isinstance(f, dict) and _said(f.get("name"))] \
+        if isinstance(fields, list) else []
+    if isinstance(response, str) and form and named_fields and not _a_tools_approval(named_fields):
+        typed = len(named_fields) > 1 or field_type(named_fields[0].get("type")) in _PLAIN_REPLY
+        reply = read_reply(named_fields, response) if typed else None
+        if reply:
+            response = reply
+        elif len(named_fields) > 1:
+            raise BadAnswer("answer", how_to_answer(named_fields))
+        elif typed and field_type(named_fields[0].get("type")) != "boolean":
+            response = {named_fields[0]["name"]: response.strip()}
+    if isinstance(response, str) and len(named_fields) == 1 and field_type(named_fields[0].get("type")) == "boolean":
         flag = as_flag(response)
-        return {fields[0]["name"]: flag} if isinstance(flag, bool) else response
+        return {named_fields[0]["name"]: flag} if isinstance(flag, bool) else response
     if not isinstance(response, dict) or not isinstance(fields, list):
         return response
     checked = dict(response)
-    for field in fields:
-        if isinstance(field, dict) and field.get("name") in checked:
+    for field in named_fields:
+        if field["name"] in checked:
             checked[field["name"]] = check_value(field, checked[field["name"]])
     return checked
+
+
+# ── A form in words: a channel's question and its reply (F1561) ───────────────────────────────────────────────────────
+
+#: The lone fields a plain reply answers: one that says a yes or no (F1434), one of a One of's options.
+_PLAIN_REPLY = frozenset({"boolean", "choice"})
+#: The fields a reply's lines run on into, after their own line: words.
+_RUNS_ON = frozenset({"string", "textarea"})
+#: `name: value`, `- Label = value`: a key of up to 120 characters before the first `:` or `=`.
+_LINE = re.compile(r"^\s*(?:[-*•]\s*)?(?P<key>[^:=\n]{1,120}?)\s*[:=]\s*(?P<value>.*)$")
+
+
+def _a_tools_approval(fields: list[dict]) -> bool:
+    """A tool call's own approval asks `approve` and `reason` (`engine._approved` reads its "yes"): no Human form,
+    wherever it was asked (a nested run's comes up through its parent)."""
+    return [f.get("name") for f in fields] == ["approve", "reason"]
+
+
+def _key(text: str) -> str:
+    return " ".join(re.sub(r"[`*_\-]+", " ", str(text)).lower().rstrip("?").split())
+
+
+def what_it_takes(field: dict[str, Any]) -> str:
+    """A field's type in words: "yes or no", "one of: A, B", "a number", "text", …"""
+    kind = field_type(field.get("type"))
+    if kind == "boolean":
+        return "yes or no"
+    if kind == "choice":
+        return f"one of: {', '.join(field_options(field))}"
+    return {"number": "a number", "email": "an email address", "date": "a date, YYYY-MM-DD",
+            "phone": "a phone number"}.get(kind or "", "text")
+
+
+def asked_in_words(prompt: str, fields: Any) -> str:
+    """A Human step's question with its fields, as a channel asks it (F1561): Markdown its formatter makes the
+    platform's own. Each field's name, its label and what it takes, and how to answer (a line each, `name: value`);
+    a lone One of or Yes / No as one reply. A question with no typed field is its words alone, as before."""
+    shown = [f for f in named(fields) if isinstance(f, dict) and _said(f.get("name"))] \
+        if isinstance(fields, list) else []
+    if not shown or _a_tools_approval(shown):
+        return prompt
+    if len(shown) == 1:
+        field = shown[0]
+        if field_type(field.get("type")) not in _PLAIN_REPLY:
+            return prompt
+        label = str(field.get("label") or "").strip() or field["name"]
+        return f"{prompt}\n\nReply with {what_it_takes(field)} — {label}{'' if label[-1] in '?.!' else '.'}"
+    lines = [f"- `{f['name']}` — {str(f.get('label') or '').strip() or f['name']} ({what_it_takes(f)})" for f in shown]
+    return f"{prompt}\n\nAnswer each on its own line, as `name: value`:\n" + "\n".join(lines)
+
+
+def read_reply(fields: list[dict[str, Any]], text: str) -> dict[str, Any] | None:
+    """The fields a reply names, a line each (`name: value`, by name or label, `:` or `=`, a bullet before it), or
+    None when it names none. A text field runs on over the lines after it until the next field; lines before the first
+    field are not an answer (a greeting)."""
+    keys: dict[str, dict[str, Any]] = {}
+    for field in fields:
+        keys.setdefault(_key(field["name"]), field)
+        if _said(field.get("label")):
+            keys.setdefault(_key(field["label"]), field)
+    found: dict[str, Any] = {}
+    current: dict[str, Any] | None = None
+    for line in str(text).splitlines():
+        match = _LINE.match(line)
+        field = keys.get(_key(match["key"])) if match else None
+        if field is not None:
+            found[field["name"]] = match["value"].strip()
+            current = field
+        elif current is not None and field_type(current.get("type")) in _RUNS_ON:
+            found[current["name"]] = f"{found[current['name']]}\n{line}".strip()
+    return found or None
+
+
+def how_to_answer(fields: list[dict[str, Any]]) -> str:
+    """What a reply that names no field is told (F1561)."""
+    said = ", ".join(f"{f['name']} ({what_it_takes(f).replace('one of: ', 'one of ')})" for f in fields)
+    return (f"This question asks {len(fields)} things: answer each on its own line, as name: value — {said}.")

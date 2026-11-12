@@ -156,7 +156,9 @@ async def test_a_secret_reaches_no_place_the_question_goes(secret_variable, monk
                                    "has written state.score)?")
         assert [f["label"] for f in asked["fields"]] == ["Use (a secret is not shown here)?", "How"]
         assert asked["fields"][1]["options"] == ["warm", "(a secret is not shown here)"]
-        assert sent and sent[0]["prompt"] == asked["prompt"], "the channel is asked the same words"
+        # The same words, then its fields as F1561 asks them in a channel, the secret as its note there too.
+        assert sent and sent[0]["prompt"].startswith(asked["prompt"]), "the channel is asked the same words"
+        assert "`ok` — Use (a secret is not shown here)? (yes or no)" in sent[0]["prompt"], sent
 
         run = (await SharedState.restore("run_orch_f1556_secret")).run
         payload = (await read_run("run_orch_f1556_secret"))["human_input_required"]

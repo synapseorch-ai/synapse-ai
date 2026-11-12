@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Awaitable, Callable, Optional
 
 from core.messaging.markdown import format_for_platform
+from core.orchestration.human_fields import BadAnswer
 
 if TYPE_CHECKING:
     from core.messaging.manager import MessagingManager
@@ -303,6 +304,11 @@ class MessagingAdapter(ABC):
             # Past the step's window: refused in words, and the run keeps
             # waiting for the app — not handed to the agent as chat (F93).
             await send(chat_id, QUESTION_EXPIRED_MESSAGE)
+            return
+        except BadAnswer as refused:
+            # A reply the step's fields cannot take — none of them named, or a value one cannot hold — is said here,
+            # how to answer with it, and the run keeps waiting (F1561).
+            await send(chat_id, f"⚠️ {refused}")
             return
         if answered:
             await send(chat_id, "✅ Answer received — resuming the workflow.")

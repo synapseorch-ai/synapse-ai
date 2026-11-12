@@ -16,6 +16,7 @@ from core.config import ORCH_GLOBAL_TIMEOUT_MIN
 from core.models_orchestration import Orchestration, OrchestrationRun, StepConfig, StepType
 from core.state_types import matches_declared_type, normalize_state_type
 from .human_prompts import HUMAN_CHANNEL_KEY, announce as announce_human_prompt
+from .human_fields import asked_in_words
 from . import run_images
 from .run_error import failure_reason, model_failure_of, reason_of, set_run_error
 from .pauses import end_step, innermost_container, pause_chain, progress_key, record_pause, take_tasks
@@ -669,8 +670,10 @@ class OrchestrationEngine:
                                 # a parent forwarding a nested pause does not
                                 # ask again.
                                 if event.get("channel_id") and not event.get("nested_run_id"):
+                                    # With its fields and how to answer them, in the channel's words (F1561).
                                     await announce_human_prompt(
-                                        run.run_id, event["channel_id"], event.get("prompt") or "",
+                                        run.run_id, event["channel_id"],
+                                        asked_in_words(event.get("prompt") or "", event.get("fields") or []),
                                     )
                                 # Break exits the async-for and then the
                                 # fail_after scope cleanly in this task.

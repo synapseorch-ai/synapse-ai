@@ -58,6 +58,19 @@ def questions_asked(run: Any) -> list[dict]:
     return [dict(q) for q in pending.get("questions") or []]
 
 
+def asks_a_form(fields: Any, step_progress: Any, step_history: Any, current_step_id: str | None) -> bool:
+    """Whether the run waits on a Human step's own form (F1561), whose text an answer is read into field by field:
+    not a tool call's approval or a team's question (`pending_approval`) nor a browser turn, whose words are theirs
+    (a tool approval forwarded from a nested run is told by its own fields: `human_fields.check_answer`)."""
+    from core.orchestration.pauses import asking_step_id
+
+    if not isinstance(fields, list) or not fields:
+        return False
+    asker = asking_step_id(step_history or [], current_step_id)
+    pending = ((step_progress or {}).get(asker) or {}) if isinstance(step_progress, dict) else {}
+    return not (pending.get("pending_approval") or pending.get("pending_browser_turn"))
+
+
 def check_question(run: Any, question_id: str | None) -> None:
     """Raise `QuestionNotAsked` unless `question_id` is one `run` asks now (None names its only, or first, one)."""
     if not question_id:
@@ -342,7 +355,8 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any, *,
         response = _through_door(run_id, response, getattr(row, "human_prompt", None),
                                  getattr(row, "current_step_id", None), await _held_for(run_id, response),
                                  await _card_up(run_id))
-        response = check_answer(row.human_fields, response)
+        response = check_answer(row.human_fields, response, form=asks_a_form(
+            row.human_fields, row.step_progress, row.step_history, row.current_step_id))
         await refuse_card_for_browser(row, response)
         from core.orchestration.pauses import pause_ordinal
         from core.scale.config import QUEUE_NAME
@@ -389,7 +403,8 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any, *,
         check_question(run, question_id)
         response = _through_door(run_id, response, run.human_prompt, run.current_step_id,
                                  await _held_for(run_id, response), await _card_up(run_id, run.shared_state))
-        response = check_answer(run.human_fields, response)
+        response = check_answer(run.human_fields, response, form=asks_a_form(
+            run.human_fields, run.step_progress, run.step_history, run.current_step_id))
         await refuse_card_for_browser(run, response)
         response = _named(response, question_id)
 
