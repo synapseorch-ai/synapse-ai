@@ -1908,8 +1908,8 @@ BUILDER_TOOL_SCHEMAS = [
                 "Change a schedule in place: its time (cron_expression, or interval_value + interval_unit), the "
                 "message each run starts with (prompt), its name, or what it runs (target_type + target_id). Give "
                 "only what changes. It keeps its id, its history and whether it is on. Use this to move a "
-                "schedule's time — never delete it and create another. To pause or resume it, use "
-                "set_schedule_enabled."
+                "schedule's time — never delete it and create another. To pause it, use pause_schedule; to turn it "
+                "on again, turn_on_schedule."
             ),
             "parameters": {
                 "type": "object",

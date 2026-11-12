@@ -94,6 +94,20 @@ class TestAnnotations:
         assert titles["create_http_tool"] == "Create HTTP tool"
         assert titles["get_tools_detail"] == "Get tool details"
 
+    def test_a_description_sends_a_client_only_to_tools_it_is_offered(self):
+        """F1546 (DIR1): a directory's reviewer calls what a description names, and a description must say what the
+        server does. `update_schedule` told a client to pause or resume with `set_schedule_enabled`, the app's own
+        card's, which MCP never serves (F1451 gave it turn_on_schedule and pause_schedule)."""
+        import re
+
+        from core.product_tools import registry
+
+        known = BUILDER_TOOL_NAMES | {t.name for t in registry.all_tools()}
+        served = {t.name for t in server._fixed_tools()}
+        for tool in server._fixed_tools():
+            named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", tool.description)) & known
+            assert named <= served, f"{tool.name} names {sorted(named - served)}, which MCP does not serve"
+
     def test_reads_are_read_only(self):
         marks = {t.name: t.annotations for t in catalog.builder_tools()}
         for name in catalog.READ_TOOLS:
