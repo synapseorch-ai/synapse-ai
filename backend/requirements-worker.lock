@@ -321,7 +321,7 @@ markdown-it-py==4.2.0
     # via
     #   -c requirements.lock
     #   rich
-mcp==1.29.0
+mcp==1.30.0
     # via
     #   -c requirements.lock
     #   -r requirements.txt

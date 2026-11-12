@@ -381,7 +381,7 @@ markupsafe==3.0.3
     # via
     #   -c requirements-knowledge.lock
     #   jinja2
-mcp==1.29.0
+mcp==1.30.0
     # via
     #   -c .knowledge-constraints.txt
     #   synapse-orch-ai (../pyproject.toml)

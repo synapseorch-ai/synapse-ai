@@ -198,7 +198,7 @@ kubernetes==36.0.3
     # via chromadb
 markdown-it-py==4.2.0
     # via rich
-mcp==1.29.0
+mcp==1.30.0
     # via -r requirements.txt
 mdurl==0.1.2
     # via markdown-it-py
