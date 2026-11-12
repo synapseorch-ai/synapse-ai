@@ -58,3 +58,11 @@ def test_nothing_sends_a_person_to_claudes_connectors_under_settings():
                 if _OLD_PATH.search(line):
                     found.append(f"{path.relative_to(ROOT)}:{n}")
     assert found == []
+
+
+def test_claudes_button_opens_the_page_claudes_help_links():
+    """Naveen's pick (11-12): the button opens claude.ai/customize/connectors, the page Claude's help links, not the
+    older claude.ai/settings/connectors."""
+    clients = _read("clients.ts")
+    assert "export const CLAUDE_CONNECTORS = 'https://claude.ai/customize/connectors';" in clients
+    assert "claude.ai/settings/connectors" not in clients
