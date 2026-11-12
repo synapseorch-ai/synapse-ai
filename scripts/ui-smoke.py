@@ -2495,20 +2495,21 @@ async def check_fieldnames(browser) -> str:
 
 @check
 async def check_humanprompt(browser) -> str:
-    """A human step's prompt is edited like the engine fills it: `{{ state.key }}` only, never a global.
+    """A human step's prompt is edited like the engine fills it: `{{ state.key }}` and `{{ global.key }}`.
 
     It was a plain textarea while every other prompt was the markdown editor,
-    so it offered no keys at all. The engine fills a human prompt with the
-    run's state and never with a workspace variable — deliberately: the prompt
-    can be posted to a messaging channel, where one would leak (F5, D104).
+    so it offered no keys at all. The engine filled a human prompt with the
+    run's state and never with a workspace variable (F5, D104: the prompt can be
+    posted to a messaging channel); since F1556 (Naveen 11-12) it fills a plain
+    variable and never shows a secret one, so `{{` offers the run's state keys
+    and the workspace's variables, and the hint says a secret one is never shown.
     Since F1252 stage B (32a8bd5d) every renderer reads one form, `{{ state.x }}`,
-    so `{{` must offer the run's state keys and no `global.`, and the older
-    single brace offers nothing (F1422).
+    and the older single brace offers nothing (F1422).
     """
     oid = f"orch_uismoke_human_{int(time.time())}"
     api("/api/orchestrations", "POST", human_gate_orchestration(oid))
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
-    # A workspace variable to leak, so "no global" is asked of one that exists: a prompt's editor would offer it.
+    # A workspace variable, so the editor has one to offer (F1556: a plain one is filled in).
     await ctx.route("**/api/settings/variables", _answer({"values": {"glossary_url": "https://example.invalid"}}))
     page = await ctx.new_page()
     try:
@@ -2533,14 +2534,17 @@ async def check_humanprompt(browser) -> str:
         await page.keyboard.press("Backspace")
         await page.keyboard.type("gl")
         await asyncio.sleep(0.5)
-        leaked = [o for o in await page.get_by_role("listbox", name="Suggestions").get_by_role("option")
-                  .all_inner_texts() if "global." in o]
-        if leaked:
-            raise AssertionError(f"typing {{{{ gl offered {leaked!r} — a human prompt never fills a global")
+        variables = [o for o in await page.get_by_role("listbox", name="Suggestions").get_by_role("option")
+                     .all_inner_texts() if "global.glossary_url" in o]
+        if not variables:
+            raise AssertionError("typing {{ gl offered no workspace variable — a human prompt fills a plain one (F1556)")
+        hint = " ".join((await page.get_by_text("a secret one is never shown", exact=False).all_inner_texts()))
+        if not hint:
+            raise AssertionError("the human prompt's hint does not say a secret variable is never shown")
     finally:
         await ctx.close()
         drop_fixture(oid)
-    return f"{{{{ offers {len(offered)} state key(s) and no global; {{s offers nothing"
+    return f"{{{{ offers {len(offered)} state key(s) and the workspace's variables; {{s offers nothing"
 
 
 @check
@@ -7620,7 +7624,7 @@ async def check_humandictwarn(browser) -> str:
 
     A human step with fields stores the mapping it was answered with, so a key
     the schema types as `str` holds a dict, and a Print of `{state.key}` shows
-    a Python repr. The builder's validator catches both since B3; a flow made by
+    the whole mapping (as JSON since F1556). The builder's validator catches both since B3; a flow made by
     hand in the editor got no word of either.
     """
     oid = f"orch_uismoke_dict_{int(time.time())}"
@@ -7643,11 +7647,11 @@ async def check_humandictwarn(browser) -> str:
         ask, show = await said(f"{oid}_ask"), await said(f"{oid}_print")
         if "holds a mapping" not in ask:
             raise AssertionError("a fielded review step whose key is typed str gets no warning")
-        if "Python dict" not in show:
+        if "prints whole, as JSON" not in show:  # a person's text shows an object as JSON since F1556
             raise AssertionError("a Print of a fielded answer's whole key gets no warning")
         api("/api/orchestrations", "POST", review_dict_orchestration(oid, repaired=True))
         ask, show = await said(f"{oid}_ask"), await said(f"{oid}_print")
-        if "holds a mapping" in ask or "Python dict" in show:
+        if "holds a mapping" in ask or "prints whole, as JSON" in show:
             raise AssertionError("the repair the warnings name still warns")
         return "a fielded answer typed as text, or printed whole, is warned about, and its repair is not"
     finally:

@@ -1028,12 +1028,11 @@ function HumanSection({ step, update }: StepSectionProps) {
                 composite
                 hint={
                     <>
-                        {/* The engine fills a human prompt with state only, never a workspace
-                            variable — on purpose: the prompt can be posted to a messaging
-                            channel, where one would leak (D104). */}
-                        Use <span className="font-code">{'{{ state.key }}'}</span> for context —
-                        type <span className="font-code">{'{{'}</span> to pick a key. <span className="font-code">{'{{ global.… }}'}</span> is
-                        not filled in here.
+                        {/* The engine fills a human prompt with state and the workspace's variables, but
+                            never a secret one: the prompt can be posted to a messaging channel, an email and
+                            the API (D104; F1556, Naveen 11-12). A gap is said in words. */}
+                        Use <span className="font-code">{'{{ state.key }}'}</span> for context and <span className="font-code">{'{{ global.name }}'}</span> for
+                        a workspace variable (a secret one is never shown) — type <span className="font-code">{'{{'}</span> to pick one.
                     </>
                 }
             >
@@ -1041,7 +1040,7 @@ function HumanSection({ step, update }: StepSectionProps) {
                     key={step.id}
                     compact
                     rows={3}
-                    profile="state"
+                    profile="step-prompt"
                     value={step.human_prompt || ''}
                     onChange={(human_prompt) => update({ human_prompt })}
                     placeholder="What should the user decide?"
@@ -1229,12 +1228,11 @@ function PrintSection({ step, update }: StepSectionProps) {
                 composite
                 hint={
                     <>
-                        {/* Print fills in state only, never a workspace variable, so that is all it
-                            offers — and no `@`: a Print step is not a prompt, so nothing expands a
-                            vault mention in one. */}
-                        Use <span className="font-code">{'{{ state.key }}'}</span> or <span className="font-code">{'{{ state.key.nested }}'}</span> —
-                        type <span className="font-code">{'{{'}</span> to pick a key. <span className="font-code">{'{{ global.… }}'}</span> is
-                        not filled in here.
+                        {/* Print fills in state and the workspace's variables, never a secret one (F1556)
+                            — and no `@`: a Print step is not a prompt, so nothing expands a vault mention
+                            in one. */}
+                        Use <span className="font-code">{'{{ state.key }}'}</span>, <span className="font-code">{'{{ state.key.nested }}'}</span> or <span className="font-code">{'{{ global.name }}'}</span>
+                        (a secret one is never shown) — type <span className="font-code">{'{{'}</span> to pick one.
                     </>
                 }
             >
@@ -1242,7 +1240,7 @@ function PrintSection({ step, update }: StepSectionProps) {
                     key={step.id}
                     compact
                     rows={6}
-                    profile="state"
+                    profile="step-prompt"
                     value={step.print_content || ''}
                     onChange={(print_content) => update({ print_content })}
                     placeholder={'# Summary\n\nThe analysis result is: {{ state.analysis_result }}'}

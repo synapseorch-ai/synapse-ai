@@ -2822,43 +2822,72 @@ class LoopStepExecutor:
             _restore()
 
 
-def render_state_refs(text: str, state: dict) -> str:
-    """`{{ state.key }}` and `{{ state.key.nested.path }}` in text, from shared state: the one form (`STATE_REF`,
-    F1252), which a step's templates are written in as the step is read.
+#: What a person reads for a workspace variable stored as a secret (F1556, Naveen 11-12): never its value.
+SECRET_NOT_SHOWN = "(a secret is not shown here)"
 
-    A reference that resolves to nothing is left as written, so a typo shows
-    rather than vanishing. A human step's prompt, its fields' labels and options
-    (`shown_fields`, F1556) and a Print's content read through this one function;
-    the prompt used to read only top-level keys.
-    A step into a value held as JSON text reads the JSON (F801), as a set
-    argument's reference does: a builder tool's output is JSON text in state.
+
+def render_state_refs(text: str, state: dict, variables: dict | None = None, secrets: Any = ()) -> str:
+    """`{{ state.a.b }}` and `{{ global.x }}` in a person's text, from the run: a Human step's question, its fields'
+    labels and options (`shown_fields`) and a Print. The one form (`templating.REF`, F1252), spaced or not.
+
+    A value is shown as a person reads it: text as it is, an object or a list as JSON (as a model's prompt reads it,
+    non-ASCII as written), a step output saved to the vault as an excerpt and its file (D339 P4); a step into JSON
+    text reads the JSON (F801). What names nothing is said in F1536's words, the words a model's prompt says it in,
+    never left as braces (F1556, Naveen 11-12): a key no step has written yet "(no value yet: no step has written
+    state.x)" — as an Evaluator's prompt says it, for a reader who answers rather than drafts — a field a value
+    lacks "(no value: state.review has no 'score')", a variable there is none of "(no value: no variable named
+    'tone')". A bare `{{ x }}` and the older single-brace form are left as written.
+
+    A workspace variable (`variables`) is filled in, and one stored as a secret reads `SECRET_NOT_SHOWN` (Naveen
+    11-12, replacing D104's rule that none was): the question goes to a channel, an email and the API. A secret is
+    one named in `secrets` (`variables.secret_names`, the engine's `secret_variables`) or whose value this task holds
+    (`secret_scrub.held_secrets`: `variables.load` holds each a secret reference resolved to).
     """
-    from core.expressions import _json_object
-    from core.step_refs import MissingOutput, for_person, is_ref, resolved
+    from core import templating as _templating
+    from core.secret_scrub import held_secrets
+    from core.step_refs import MissingOutput, for_person, is_ref
+
+    from .context import _not_there
+
+    if not isinstance(text, str) or "{{" not in text:
+        return text
+    context = {"state": state, "global": variables or {}}
+    held: set[str] | None = None
 
     def _resolve(match: re.Match) -> str:
-        val = state
+        nonlocal held
+        parts = match.group(1).split(".")
+        if parts[0] not in ("state", "global") or len(parts) < 2:
+            return match.group(0)
+        if parts[0] == "state":
+            top = state.get(parts[1])
+            if top is None or (len(parts) > 2 and not is_ref(top) and top in ("", {}, [])):
+                return f"(no value yet: no step has written state.{parts[1]})"
         try:
-            for part in match.group(1).split("."):
-                if is_ref(val):
-                    val = resolved(val)  # a saved output, read as what it was (D339 P4)
-                if isinstance(val, str):
-                    val = _json_object(val)
-                val = val.get(part) if isinstance(val, dict) else None
-                if val is None:
-                    break
+            found, value = _templating.lookup(match.group(1), context, keep_ref=True)
         except MissingOutput as exc:
             return f"({exc})"
-        if is_ref(val):
-            return for_person(val)  # an excerpt and the file, never the whole of it
-        return str(val) if val is not None else match.group(0)
+        if not found:
+            return _not_there(parts, context)
+        if parts[0] == "global":
+            if held is None:
+                held = set(held_secrets().values())
+            stored = context["global"].get(parts[1])
+            if parts[1] in secrets or (isinstance(stored, str) and stored in held):
+                return SECRET_NOT_SHOWN
+        if is_ref(value):
+            return for_person(value)  # an excerpt and the file, never the whole of it
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False, default=str)
+        return "" if value is None else str(value)
 
-    return STATE_REF.sub(_resolve, text)
+    return _templating.REF.sub(_resolve, text)
 
 
-def shown_fields(fields: Any, state: dict) -> Any:
+def shown_fields(fields: Any, state: dict, variables: dict | None = None, secrets: Any = ()) -> Any:
     """A Human step's fields as the person is asked them (F1556): each label and each dropdown option filled in from
-    the run's state by the renderer its question takes (`render_state_refs`), every other key as the step wrote it.
+    the run by the renderer its question takes (`render_state_refs`, its variables and secrets alike), every other
+    key as the step wrote it.
 
     The run asks with these — its live event and its record, which the app's form, the API's and MCP's waiting
     payload and the bell read — so an answer is checked against an option as it was shown (`answers` reads
@@ -2866,15 +2895,18 @@ def shown_fields(fields: Any, state: dict) -> Any:
     """
     if not isinstance(fields, list):
         return fields or []
+
+    def fill(text: str) -> str:
+        return render_state_refs(text, state, variables, secrets)
+
     shown = []
     for field in fields:
         if isinstance(field, dict):
             field = dict(field)
             if isinstance(field.get("label"), str):
-                field["label"] = render_state_refs(field["label"], state)
+                field["label"] = fill(field["label"])
             if isinstance(field.get("options"), list):
-                field["options"] = [render_state_refs(o, state) if isinstance(o, str) else o
-                                    for o in field["options"]]
+                field["options"] = [fill(o) if isinstance(o, str) else o for o in field["options"]]
         shown.append(field)
     return shown
 
@@ -3158,10 +3190,13 @@ class HumanStepExecutor:
     async def execute(
         self, step: StepConfig, run: OrchestrationRun, engine: "OrchestrationEngine"
     ) -> AsyncGenerator[dict, None]:
+        # The workspace's variables, a secret never shown (F1556): the question goes to a channel, an email and the API.
+        variables = getattr(engine, "global_variables", None) or {}
+        secrets = getattr(engine, "secret_variables", None) or frozenset()
         prompt = render_state_refs(
-            step.human_prompt or "Please provide input to continue.", run.shared_state)
+            step.human_prompt or "Please provide input to continue.", run.shared_state, variables, secrets)
         # Its fields as the person reads them (F1556): every door reads these, and the answer is checked against them.
-        fields = shown_fields(step.human_fields, run.shared_state)
+        fields = shown_fields(step.human_fields, run.shared_state, variables, secrets)
 
         run.human_prompt = prompt
         run.human_fields = fields
@@ -3764,7 +3799,8 @@ class PrintStepExecutor:
                 run.shared_state[step.output_key] = ""
             return
 
-        rendered = render_state_refs(content, run.shared_state)
+        rendered = render_state_refs(content, run.shared_state, getattr(engine, "global_variables", None) or {},
+                                     getattr(engine, "secret_variables", None) or frozenset())
 
         yield {"type": "_log_prompt", "orch_step_id": step.id,
                "prompt": f"[Print] {rendered[:500]}"}

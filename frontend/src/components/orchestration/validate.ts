@@ -309,7 +309,7 @@ function checkOrchestration(orch: Orchestration, agents?: { id: string; type?: s
     // The builder's validator raises the same two. A human step with fields
     // stores the mapping {field: value} it was answered with under its key, so
     // a key the schema types as text or a number holds the wrong thing, and a
-    // Print that shows the key whole prints a Python dict. Warnings, not
+    // Print that shows the key whole prints the mapping, as JSON (F1556). Warnings, not
     // errors: the run works, it just says the wrong thing.
     const schema = orch.state_schema || {};
     const fielded = new Map<string, { stepName: string; field: string }>();
@@ -345,7 +345,7 @@ function checkOrchestration(orch: Orchestration, agents?: { id: string; type?: s
         for (const [key, { stepName, field }] of fielded) {
             if (shown.has(key)) {
                 add(s.id, warning(
-                    `Shows {{ state.${key} }}, “${stepName}”’s whole answer, which prints as a Python dict: ` +
+                    `Shows {{ state.${key} }}, “${stepName}”’s whole answer, which is a mapping and prints whole, as JSON: ` +
                     `show one field, {{ state.${key}.${field} }}`,
                 ));
             }

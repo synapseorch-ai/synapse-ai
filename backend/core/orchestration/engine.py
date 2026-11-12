@@ -241,6 +241,8 @@ class OrchestrationEngine:
         #: The tenant's `{{ global.* }}` values, loaded once per run/resume
         #: (core/variables.py); prompt templates render against it.
         self.global_variables: dict = {}
+        #: The names of those stored as secret references (F1556): a person's text never shows one.
+        self.secret_variables: frozenset[str] = frozenset()
         #: Attachments for this turn, given to steps that set `pass_images`.
         #: Declared here rather than set ad hoc by the caller so `resume` and
         #: the nested-run path have something real to carry, and so a step
@@ -302,7 +304,9 @@ class OrchestrationEngine:
         an error, and a store hiccup must not fail the run."""
         try:
             from core import variables
-            return await variables.load()
+            values = await variables.load()
+            self.secret_variables = variables.secret_names()  # read where they were set, this task (F1556)
+            return values
         except Exception:
             return {}
 

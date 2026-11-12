@@ -5022,7 +5022,7 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
             if key in shown:
                 issues.append(
                     f"Print step '{s.get('id', '?')}' shows {{{{ state.{key} }}}}, human step '{hid}'s whole "
-                    f"answer, which is a mapping and prints as a Python dict: show one field, "
+                    f"answer, which is a mapping and prints whole, as JSON: show one field, "
                     f"{{{{ state.{key}.{field} }}}}."
                 )
 
