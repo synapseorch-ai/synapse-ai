@@ -195,9 +195,10 @@ def _error(message: str) -> types.CallToolResult:
 
 
 def as_mcp_tool(tool: registry.ProductTool) -> types.Tool:
-    return types.Tool(name=tool.name, description=tool.description,
+    """A product tool as a client lists it: with its title, which Claude's directory requires of every tool (F1546)."""
+    return types.Tool(name=tool.name, title=tool.title, description=tool.description,
                       inputSchema=tool.schema(confirm_token=tool.needs_token("irreversible")),
-                      annotations=types.ToolAnnotations(**tool.annotations()))
+                      annotations=catalog.as_mcp_annotations(tool))
 
 
 #: The caller `_fixed_tools()` lists for when none is given: everything a self-hosted key may call.

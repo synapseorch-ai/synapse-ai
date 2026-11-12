@@ -107,6 +107,31 @@ class TestAnnotationsComeFromTheFlags:
         assert not tool.needs_token("irreversible")
 
 
+class TestEveryEntryHasATitle:
+    """F1546 (DIR1): Claude's Connectors Directory takes a server only when every tool has a `title` a person
+    reads (its listing, a client's permission prompt), and none had one. An entry says its title from its name
+    unless it states one, so a new entry can never be without one."""
+
+    def test_its_name_is_said_as_words(self):
+        assert _tool("list_agents").title == "List agents"
+        assert _act("chat_with_agent").title == "Chat with agent"
+
+    def test_a_word_is_spelled_as_its_owner_spells_it(self):
+        assert _act("create_http_tool").title == "Create HTTP tool"
+        assert _act("test_python_tool").title == "Test Python tool"
+        assert _act("import_openapi").title == "Import OpenAPI"
+        assert _tool("list_db_configs").title == "List database configs"
+
+    def test_a_stated_title_is_kept(self):
+        assert _tool("get_tools_detail", title="Get tool details").title == "Get tool details"
+
+    def test_a_host_that_rewraps_an_entry_keeps_its_title(self):
+        """Cloud re-registers some entries with `dataclasses.replace` (its audit, its evals host)."""
+        import dataclasses
+
+        assert dataclasses.replace(_act("create_http_tool"), self_audited=True).title == "Create HTTP tool"
+
+
 class TestWhoIsOfferedWhat:
     def test_a_viewer_sees_reads_only(self):
         registry.register(_tool())

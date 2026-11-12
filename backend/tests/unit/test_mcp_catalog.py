@@ -84,6 +84,16 @@ class TestAnnotations:
             assert tool.annotations.readOnlyHint is not None, tool.name
             assert tool.annotations.destructiveHint is not None, tool.name
 
+    def test_every_tool_has_a_title(self):
+        """F1546 (DIR1): Claude's directory flags a tool without one. Said twice, as the spec has it: the tool's own
+        `title` and its annotations' (a client reads one or the other)."""
+        for tool in [*server._fixed_tools(), *catalog.builder_tools()]:
+            assert tool.title and tool.title.strip(), tool.name
+            assert tool.annotations.title == tool.title, tool.name
+        titles = {t.name: t.title for t in server._fixed_tools()}
+        assert titles["create_http_tool"] == "Create HTTP tool"
+        assert titles["get_tools_detail"] == "Get tool details"
+
     def test_reads_are_read_only(self):
         marks = {t.name: t.annotations for t in catalog.builder_tools()}
         for name in catalog.READ_TOOLS:

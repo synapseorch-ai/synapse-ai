@@ -73,7 +73,8 @@ def _entry(name: str):
 
 
 def as_mcp_annotations(tool) -> types.ToolAnnotations:
-    return types.ToolAnnotations(**tool.annotations())
+    """The hints, and its title as well: a client reads the tool's own `title` or this one (F1546)."""
+    return types.ToolAnnotations(title=tool.title, **tool.annotations())
 
 
 def annotations_for(name: str) -> types.ToolAnnotations:
@@ -108,7 +109,7 @@ def builder_tools() -> list[types.Tool]:
         tool = registry.get(name)
         if tool.offered is not None and not tool.offered():
             continue
-        tools.append(types.Tool(name=name, description=tool.description,
+        tools.append(types.Tool(name=name, title=tool.title, description=tool.description,
                                 inputSchema=tool.schema(confirm_token=tool.needs_token("irreversible")),
                                 annotations=as_mcp_annotations(tool)))
     return tools

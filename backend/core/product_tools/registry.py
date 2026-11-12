@@ -36,6 +36,16 @@ KINDS = frozenset({"read", "act"})
 SCOPES = frozenset({"read", "run", "build"})
 #: MCP clients refuse other names (Claude: ^[a-zA-Z0-9_-]{1,64}$); ours are lower snake case.
 _NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+#: A name's words a title spells as their owners do, or says whole (F1546).
+_TITLE_WORDS = {"http": "HTTP", "python": "Python", "openapi": "OpenAPI", "db": "database"}
+
+
+def title_of(name: str) -> str:
+    """A tool's name said as words, for its title (F1546): `create_http_tool` is "Create HTTP tool"."""
+    words = [_TITLE_WORDS.get(w, w) for w in name.split("_") if w]
+    if not words:
+        return name
+    return " ".join([words[0][:1].upper() + words[0][1:], *words[1:]])
 
 
 @dataclass(frozen=True)
@@ -78,10 +88,14 @@ class ProductTool:
     #: a call by name still reaches the handler, which refuses with the feature's own words ("Knowledge is
     #: switched off in this workspace…") rather than "Unknown tool".
     offered: Callable[[], bool] | None = field(default=None, compare=False)
+    #: What a person reads for it: Claude's Connectors Directory, a client's permission prompt (F1546). Empty is its
+    #: name said as words (`title_of`), so no entry is ever without one.
+    title: str = ""
 
     def __post_init__(self) -> None:
         if not _NAME.match(self.name):
             raise ValueError(f"tool name {self.name!r} must be lower snake case, at most 64 characters")
+        object.__setattr__(self, "title", self.title.strip() or title_of(self.name))
         if self.kind not in KINDS:
             raise ValueError(f"{self.name}: kind must be one of {sorted(KINDS)}")
         if self.scope not in SCOPES:

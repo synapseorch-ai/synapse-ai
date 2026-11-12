@@ -294,6 +294,10 @@ _TOKEN_CONFIRM = ("Cannot be undone: the first call previews what goes (or says 
                   "confirm_token; call again with the same arguments and that token to delete.")
 
 
+#: Titles said better than the name's words (F1546); every other builder tool's is its name's.
+_TITLES = {"get_tools_detail": "Get tool details", "set_orchestration_meta": "Set orchestration details"}
+
+
 def _without_confirm(schema: dict) -> dict:
     """The builder's delete schema less its `confirm` flag: over MCP, the token confirms."""
     props = {k: v for k, v in (schema.get("properties") or {}).items() if k != "confirm"}
@@ -325,7 +329,7 @@ def entries() -> list[ProductTool]:
 
     tools = [
         ProductTool(name=n, description=by_name[n].get("description", ""), input_schema=schema(n),
-                    handler=_handler(n), kind="read", area="build", offered=_offered(n))
+                    handler=_handler(n), kind="read", area="build", offered=_offered(n), title=_TITLES.get(n, ""))
         for n in READS
     ]
     tools += [
@@ -334,7 +338,7 @@ def entries() -> list[ProductTool]:
                     destructive=n in OVERWRITES, idempotent=n in IDEMPOTENT, open_world=n in OPEN_WORLD,
                     audit_action=action,
                     target=_target(action), offered=_offered(n), confirmed=n in CONFIRMED,
-                    preview=_PREVIEWS.get(n), app_only=n in APP_ONLY)
+                    preview=_PREVIEWS.get(n), app_only=n in APP_ONLY, title=_TITLES.get(n, ""))
         for n, action in {**ACTS, **APP_ACTS}.items()
     ]
     tools += [
