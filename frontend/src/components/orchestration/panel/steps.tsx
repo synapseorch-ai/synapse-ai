@@ -24,6 +24,7 @@ import { PythonEditor } from './PythonEditor';
 import { agentEditHref, agentKind, agentOptions, KIND_WORD, memberNames, teamSettings, type KindAgent } from '../agentKind';
 import { HUMAN_FIELD_TYPES, branchCondition, branchFields, branchPicked, humanFieldOptions, humanFieldType, nextHumanFieldName, type BranchField } from '../humanFields';
 import { ANSWER_FIELD_TYPES, answerFieldNameOk, answerFieldOptions, answerFieldType } from '../answerFields';
+import { nextFreeName } from '../nextName';
 import { argumentRows, withArgument, type ToolWithSchema } from '../toolArguments';
 import { toolsRestricted } from '../allowedTools';
 
@@ -770,8 +771,10 @@ function EvaluatorSection({ step, update, otherSteps, availableModels, modelHint
                         size="sm"
                         variant="secondary"
                         onClick={() => {
-                            const existing = Object.keys(step.route_map || {});
-                            update({ route_map: { ...(step.route_map || {}), [`route_${existing.length + 1}`]: null } });
+                            // Past every route the step has (F1559): the count alone named one it still had after a
+                            // delete, and the add sent that route to End.
+                            const name = nextFreeName('route_', Object.keys(step.route_map || {}));
+                            update({ route_map: { ...(step.route_map || {}), [name]: null } });
                         }}
                     >
                         <Plus size={12} aria-hidden /> Add route
@@ -1409,8 +1412,9 @@ function SwitchSection({ step, update, otherSteps, stateKeys }: StepSectionProps
                     size="sm"
                     variant="secondary"
                     onClick={() => {
-                        const existing = Object.keys(step.switch_cases || {});
-                        update({ switch_cases: { ...(step.switch_cases || {}), [`case_${existing.length + 1}`]: null } });
+                        // Past every case the step has (F1559), as Add route.
+                        const name = nextFreeName('case_', Object.keys(step.switch_cases || {}));
+                        update({ switch_cases: { ...(step.switch_cases || {}), [name]: null } });
                     }}
                 >
                     <Plus size={12} aria-hidden /> Add case
