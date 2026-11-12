@@ -325,7 +325,7 @@ constraint-dependencies = [
     "networkx==3.6.1",
     "numpy==2.4.6 ; python_full_version < '3.12'",
     "numpy==2.5.2 ; python_full_version >= '3.12'",
-    "oauthlib==3.3.1",
+    "oauthlib==4.0.1",
     "olefile==0.47",
     "ollama==0.6.2",
     "onnxruntime==1.28.0",

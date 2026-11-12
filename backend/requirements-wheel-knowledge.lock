@@ -441,7 +441,7 @@ numpy==2.5.2 ; python_full_version >= '3.12'
     #   scipy
     #   torchvision
     #   transformers
-oauthlib==3.3.1
+oauthlib==4.0.1
     # via
     #   -c .knowledge-constraints.txt
     #   requests-oauthlib

@@ -109,7 +109,7 @@ multidict==6.9.1
     #   -c requirements.lock
     #   aiohttp
     #   yarl
-oauthlib==3.3.1
+oauthlib==4.0.1
     # via
     #   -c requirements.lock
     #   requests-oauthlib
