@@ -660,7 +660,7 @@ psycopg2-binary==2.9.12
     # via
     #   -c .knowledge-constraints.txt
     #   synapse-orch-ai (../pyproject.toml)
-pyasn1==0.6.4
+pyasn1==0.6.5
     # via
     #   -c .knowledge-constraints.txt
     #   pyasn1-modules

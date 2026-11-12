@@ -539,7 +539,7 @@ psycopg2-binary==2.9.12
     # via
     #   -c requirements.lock
     #   -r requirements.txt
-pyasn1==0.6.4
+pyasn1==0.6.5
     # via
     #   -c requirements.lock
     #   pyasn1-modules

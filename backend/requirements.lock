@@ -304,7 +304,7 @@ psycopg-pool==3.3.1
     # via -r requirements-coding.txt
 psycopg2-binary==2.9.12
     # via -r requirements.txt
-pyasn1==0.6.4
+pyasn1==0.6.5
     # via pyasn1-modules
 pyasn1-modules==0.4.2
     # via google-auth
