@@ -55,7 +55,7 @@ dependencies = [
     "aiosqlite>=0.19,<1",
     "psycopg2-binary>=2.9,<3",
     "pymysql>=1.1,<2",
-    "pypdf>=4.0,<7",
+    "pypdf>=6.21.4,<7",
     "pdfplumber>=0.10,<1",
     "pandas>=2.0,<4",
     # Knowledge's vector leg (core/knowledge/index_sql.py). Already resolved through
@@ -378,7 +378,7 @@ constraint-dependencies = [
     "pyjwt==2.15.1",
     "pymysql==1.2.0",
     "pyparsing==3.3.2",
-    "pypdf==6.19.0",
+    "pypdf==6.21.4",
     "pypdfium2==5.12.1",
     "pypika==0.51.1",
     "pyproject-hooks==1.2.0",

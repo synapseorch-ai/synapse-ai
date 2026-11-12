@@ -723,7 +723,7 @@ pyparsing==3.3.2
     # via
     #   -c .knowledge-constraints.txt
     #   httplib2
-pypdf==6.19.0
+pypdf==6.21.4
     # via
     #   -c .knowledge-constraints.txt
     #   synapse-orch-ai (../pyproject.toml)

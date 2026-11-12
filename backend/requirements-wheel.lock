@@ -638,7 +638,7 @@ pyparsing==3.3.2
     #   -c requirements-worker.lock
     #   -c requirements.lock
     #   httplib2
-pypdf==6.19.0
+pypdf==6.21.4
     # via synapse-orch-ai (../pyproject.toml)
 pypdfium2==5.12.1
     # via
