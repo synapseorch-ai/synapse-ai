@@ -11,6 +11,9 @@ import traceback
 from datetime import datetime
 from typing import Annotated, Any
 from core.config import load_settings, sanitize_db_url
+# cocoindex's engine sends usage tracking when it is imported, unless its switch is set first (F1567). Importing
+# `core` sets it (core/__init__.py); named here so this module never loads cocoindex ahead of it.
+from core import library_tracking  # noqa: F401
 
 COCOINDEX_AVAILABLE = False
 _coco_import_error: str | None = None

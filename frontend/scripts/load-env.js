@@ -39,6 +39,11 @@ if (!process.env.BACKEND_URL) {
   process.env.BACKEND_URL = `http://127.0.0.1:${backendPort}`;
 }
 
+// ── 2b. Next.js's own telemetry off (F1567): `next dev` sends it unless told not to.
+if (!process.env.NEXT_TELEMETRY_DISABLED) {
+  process.env.NEXT_TELEMETRY_DISABLED = "1";
+}
+
 // ── 3. Resolve frontend port ─────────────────────────────────────────────────
 const port = process.env.SYNAPSE_FRONTEND_PORT || "3000";
 
