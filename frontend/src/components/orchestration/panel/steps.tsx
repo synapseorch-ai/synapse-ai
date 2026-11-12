@@ -7,7 +7,7 @@
  * here, not another branch in a 400-line conditional.
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { ExternalLink, Plus, Trash2 } from 'lucide-react';
 import { useHelpTopic } from '@/components/help';
 import { Button, Checkbox, CodeEditor, Combobox, Field, Input, MarkdownEditor, Segmented, Select, TemplateInput, TextLink } from '@/components/ui';
@@ -22,7 +22,7 @@ import {
 import { ExpressionVocabulary } from './ExpressionVocabulary';
 import { PythonEditor } from './PythonEditor';
 import { agentEditHref, agentKind, agentOptions, KIND_WORD, memberNames, teamSettings, type KindAgent } from '../agentKind';
-import { HUMAN_FIELD_TYPES, humanFieldOptions, humanFieldType, nextHumanFieldName } from '../humanFields';
+import { HUMAN_FIELD_TYPES, branchCondition, branchFields, branchPicked, humanFieldOptions, humanFieldType, nextHumanFieldName, type BranchField } from '../humanFields';
 import { ANSWER_FIELD_TYPES, answerFieldNameOk, answerFieldOptions, answerFieldType } from '../answerFields';
 import { argumentRows, withArgument, type ToolWithSchema } from '../toolArguments';
 import { toolsRestricted } from '../allowedTools';
@@ -1252,7 +1252,7 @@ function PrintSection({ step, update }: StepSectionProps) {
     );
 }
 
-function IfElseSection({ step, update, otherSteps, stateKeys }: StepSectionProps) {
+function IfElseSection({ step, update, otherSteps, stateKeys, orchestration }: StepSectionProps) {
     return (
         <div className="space-y-3">
             <Note>
@@ -1268,6 +1268,12 @@ function IfElseSection({ step, update, otherSteps, stateKeys }: StepSectionProps
                     placeholder="state.result.flag == True"
                 />
             </Field>
+            <AnswerBranch
+                steps={orchestration?.steps ?? []}
+                selfId={step.id}
+                condition={step.if_condition || ''}
+                onPick={(if_condition) => update({ if_condition })}
+            />
             <ExpressionVocabulary />
             <StateKeyHelper stateKeys={stateKeys} onInsert={(token) => update({ if_condition: ((step.if_condition || '') + ' ' + token).trimStart() })} />
             <Field label="True path">
@@ -1287,6 +1293,60 @@ function IfElseSection({ step, update, otherSteps, stateKeys }: StepSectionProps
                 />
             </Field>
         </div>
+    );
+}
+
+const branchId = (c: BranchField) => `${c.key}.${c.field}`;
+
+/**
+ * "Branch on an answer" (F1558, Naveen 11-12): a Yes / No or One of a step asks (a Human step's field) or answers (a
+ * model step's answer field), and the value that takes the True path, written as the whole condition. A condition
+ * written so is read back into the two dropdowns; a field chosen with no value yet is held for the condition it was
+ * chosen under, so a condition typed since shows its own.
+ */
+function AnswerBranch({ steps, selfId, condition, onPick }: {
+    steps: StepConfig[];
+    selfId: string;
+    condition: string;
+    onPick: (condition: string) => void;
+}) {
+    const choices = useMemo(() => branchFields(steps, selfId), [steps, selfId]);
+    const picked = useMemo(() => branchPicked(condition, choices), [condition, choices]);
+    const [chosen, setChosen] = useState<{ id: string; under: string } | null>(null);
+    if (!choices.length) return null;
+    const fieldId = chosen && chosen.under === condition ? chosen.id : picked ? branchId(picked.field) : undefined;
+    const field = choices.find((c) => branchId(c) === fieldId);
+    return (
+        <Field
+            label="Branch on an answer"
+            hint="A Yes / No or One of a step asks or answers: pick it and the value that takes the True path. It writes the condition."
+        >
+            <div className="flex gap-1.5">
+                <Select
+                    size="sm"
+                    aria-label="Answer field"
+                    className="min-w-0 flex-1"
+                    placeholder="Choose a field…"
+                    value={fieldId}
+                    onChange={(id) => setChosen({ id, under: condition })}
+                    options={choices.map((c) => ({ value: branchId(c), label: c.label, hint: `state.${c.key}.${c.field}` }))}
+                />
+                <Select
+                    size="sm"
+                    aria-label="Answer value"
+                    className="w-32 shrink-0"
+                    placeholder="Value…"
+                    disabled={!field}
+                    value={picked && field && branchId(picked.field) === branchId(field) ? picked.literal : undefined}
+                    onChange={(value) => {
+                        if (!field) return;
+                        setChosen(null);
+                        onPick(branchCondition(field, value));
+                    }}
+                    options={field?.values ?? []}
+                />
+            </div>
+        </Field>
     );
 }
 

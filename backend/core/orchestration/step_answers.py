@@ -122,3 +122,162 @@ def repair(step: dict[str, Any], key: str, field: str) -> str:
 
 def kind_words(step: dict[str, Any]) -> str:
     return {"if_else": "if/else"}.get(step.get("type") or "", step.get("type") or "")
+
+
+# ── A decision on a typed answer that cannot follow it (F1558) ────────────────────────────────────────────────────────
+
+#: The conditions that decide on a value's truth, and every condition that reads one (a Switch's expression too).
+TRUTH_FIELDS = ("if_condition", "loop_while_condition", "loop_break_condition")
+CONDITION_FIELDS = (*TRUTH_FIELDS, "switch_expression")
+
+
+def _typed(step: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """The fields a step declares, each {name, kind, options}, or None when it declares none: a Human step's fields, a
+    model step's answer fields. `kind` is the field's type ('boolean', 'choice', …), None for one not known."""
+    from core.orchestration import human_fields as _human
+    from core.orchestration import output_fields as _answer
+
+    if step.get("type") == "human":
+        fields, kind_of = human_fields(step), _human.field_type
+    elif step.get("type") in ("llm", "agent"):
+        fields, kind_of = declared_fields(step), _answer.field_type
+    else:
+        return None
+    if not fields:
+        return None
+    return [{"name": f["name"].strip(), "kind": kind_of(f.get("type")), "options": _human.field_options(f)}
+            for f in fields]
+
+
+def fielded(steps: list) -> dict[str, tuple[dict[str, Any], dict[str, dict[str, Any]]]]:
+    """Each key every step writing which declares its fields: (its first writer, {field: {kind, options}}). A field's
+    kind is kept only where every writer that has the field gives it one (a choice's options are each one's)."""
+    writers: dict[str, list[dict]] = {}
+    for s in steps:
+        if isinstance(s, dict):
+            for key in keys_written(s):
+                writers.setdefault(key, []).append(s)
+    out: dict[str, tuple[dict[str, Any], dict[str, dict[str, Any]]]] = {}
+    for key, ws in writers.items():
+        typed = [_typed(w) for w in ws]
+        if any(t is None for t in typed):
+            continue
+        fields: dict[str, dict[str, Any]] = {}
+        for declared in typed:
+            for f in declared or []:
+                had = fields.setdefault(f["name"], {"kind": f["kind"], "options": []})
+                if had["kind"] != f["kind"]:
+                    had["kind"] = None
+                had["options"] += [o for o in f["options"] if o not in had["options"]]
+        out[key] = (ws[0], fields)
+    return out
+
+
+def _whole_key(node: Any) -> str | None:
+    """The key a node reads whole: `state.k`, `state['k']`."""
+    import ast
+
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "state":
+        return node.attr
+    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id == "state" \
+            and isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str):
+        return node.slice.value
+    return None
+
+
+def _field_read(node: Any) -> tuple[str, str] | None:
+    """(key, field) a node reads: `state.k.f`, `state.k['f']`, `state['k'].f`, `state['k']['f']`."""
+    import ast
+
+    if isinstance(node, ast.Attribute) and (key := _whole_key(node.value)):
+        return key, node.attr
+    if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str) \
+            and (key := _whole_key(node.value)):
+        return key, node.slice.value
+    return None
+
+
+def _quoted(words: Any) -> str:
+    return ", ".join(f"'{w}'" for w in words)
+
+
+_RUNS = " It runs as it is today."
+
+
+def _never_said(sid: str, tree: Any, known: dict, truth: bool) -> list[str]:
+    import ast
+
+    said: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare):
+            continue
+        operands = [node.left, *node.comparators]
+        for i, op in enumerate(node.ops):
+            if not isinstance(op, (ast.Eq, ast.NotEq)):
+                continue
+            for read, other in ((operands[i], operands[i + 1]), (operands[i + 1], operands[i])):
+                ref = _field_read(read)
+                if not ref or not (isinstance(other, ast.Constant) and isinstance(other.value, str)):
+                    continue
+                key, name = ref
+                field = (known.get(key) or (None, {}))[1].get(name)
+                word = other.value
+                if not field:
+                    continue
+                if field["kind"] == "boolean":
+                    said.append(f"Step '{sid}' compares state.{key}.{name}, a yes/no, with '{word}': it holds true or "
+                                f"false, so the comparison never follows the answer — compare it with True or False."
+                                + _RUNS)
+                elif field["kind"] == "choice" and field["options"] and word not in field["options"]:
+                    near = [o for o in field["options"] if o.strip().lower() == word.strip().lower()]
+                    fix = f"use '{near[0]}'" if near else "compare it with one of them"
+                    said.append(f"Step '{sid}' compares state.{key}.{name}, one of {_quoted(field['options'])}, with "
+                                f"'{word}': the answer is the option as written, so the comparison never follows it — "
+                                f"{fix}." + _RUNS)
+    if truth:
+        top = tree.body.operand if isinstance(tree.body, ast.UnaryOp) and isinstance(tree.body.op, ast.Not) \
+            else tree.body
+        key = _whole_key(top)
+        if key is None and isinstance(top, ast.Compare) and len(top.ops) == 1 \
+                and isinstance(top.ops[0], (ast.Eq, ast.NotEq, ast.Is, ast.IsNot)):
+            for read, other in ((top.left, top.comparators[0]), (top.comparators[0], top.left)):
+                if isinstance(other, ast.Constant) and isinstance(other.value, bool) and _whole_key(read):
+                    key = _whole_key(read)
+        if key in known:
+            writer, fields = known[key]
+            names = list(fields)
+            first = next((n for n in names if fields[n]["kind"] == "boolean"), names[0] if names else "<field>")
+            said.append(f"Step '{sid}' decides on state.{key} whole, {kind_words(writer)} step "
+                        f"'{writer.get('id', '?')}''s answer: a mapping of its fields, never empty and never True "
+                        f"itself, so this never follows it — read one of its fields, e.g. state.{key}.{first}." + _RUNS)
+    return said
+
+
+def never_followed(steps: list) -> list[str]:
+    """A condition on a typed answer that cannot follow it (F1558): a yes/no compared with a word (it holds true or
+    false, F1434), a choice compared with a word that is not one of its options (it holds the option as written, F455),
+    and, where a condition decides on a value's truth, the whole answer of fields (a mapping, never empty). Warnings,
+    the fix in each: the run is unchanged. The editor says the same (`humanFields.answerValueChecks`)."""
+    import ast
+
+    from core.expressions import _unbraced
+
+    known = fielded(steps)
+    if not known:
+        return []
+    out: list[str] = []
+    for s in steps:
+        if not isinstance(s, dict):
+            continue
+        for name in CONDITION_FIELDS:
+            expr = s.get(name)
+            if not isinstance(expr, str) or not expr.strip():
+                continue
+            try:
+                tree = ast.parse(_unbraced(expr), mode="eval")
+            except SyntaxError:
+                continue
+            for said in _never_said(s.get("id", "?"), tree, known, truth=name in TRUTH_FIELDS):
+                if said not in out:
+                    out.append(said)
+    return out

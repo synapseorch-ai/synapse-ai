@@ -12,7 +12,7 @@
 import type { Orchestration, StepConfig, StepIssue } from '@/types/orchestration';
 import { BUILTIN_STATE_KEYS } from './graph';
 import { normalizeStateType } from './stateTypes';
-import { humanFieldNameIssues, humanFieldOptions, humanFieldType } from './humanFields';
+import { answerValueChecks, humanFieldNameIssues, humanFieldOptions, humanFieldType } from './humanFields';
 import { fieldChecks } from './fieldChecks';
 
 export interface ValidationResult {
@@ -356,6 +356,8 @@ function checkOrchestration(orch: Orchestration, agents?: { id: string; type?: s
     // A field its writer never writes, a field a model step does not declare, a decision on a model's own words.
     // Warnings: the run goes on as it does today, and the server's check says the same (`fieldChecks.ts`).
     for (const check of fieldChecks(orch.steps, agents)) add(check.stepId, warning(check.message));
+    // A condition on a Yes / No or One of answer that cannot follow it (F1558): the server says the same.
+    for (const check of answerValueChecks(orch.steps)) add(check.stepId, warning(check.message));
 
     // --- Reachability from the entry point ---
     if (orch.entry_step_id && ids.has(orch.entry_step_id) && orch.steps.length > 1) {
