@@ -167,7 +167,7 @@ fastapi==0.141.1
     # via
     #   -c requirements.lock
     #   -r requirements.txt
-filelock==3.32.2
+filelock==4.2.9
     # via
     #   -c requirements.lock
     #   huggingface-hub

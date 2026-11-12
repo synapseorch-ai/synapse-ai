@@ -195,7 +195,7 @@ fastapi==0.141.1
     # via
     #   -c .knowledge-constraints.txt
     #   synapse-orch-ai (../pyproject.toml)
-filelock==3.32.2
+filelock==4.2.9
     # via
     #   -c .knowledge-constraints.txt
     #   -c requirements-knowledge.lock

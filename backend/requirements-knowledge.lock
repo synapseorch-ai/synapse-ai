@@ -58,7 +58,7 @@ docling-parse==7.24.2
     # via docling-slim
 docling-slim==2.148.0
     # via -r requirements-knowledge.txt
-filelock==3.32.2
+filelock==4.2.9
     # via
     #   -c .knowledge-constraints.txt
     #   huggingface-hub

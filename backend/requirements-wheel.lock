@@ -190,7 +190,7 @@ fastapi==0.141.1
     #   -c requirements-worker.lock
     #   -c requirements.lock
     #   synapse-orch-ai (../pyproject.toml)
-filelock==3.32.2
+filelock==4.2.9
     # via
     #   -c requirements-worker.lock
     #   -c requirements.lock
