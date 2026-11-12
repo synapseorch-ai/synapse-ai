@@ -188,7 +188,9 @@ from core.native_builder import prompt_lint, seed
 #: F1553 (BLD4): the planner's # Structure rule 2 and plan_steps.md's llm/agent/if_else bullets say a model step's
 #: answer is read by the fields its `config.output_fields` declares, which the run holds it to, never an extract_json
 #: step and never a decision read out of its words, 826eb2a5… (on 36c3e1ea).
-BUNDLE_SHA256 = "826eb2a57d11ffde4b4a08eaef5d9f613cd0574d6ea534318a96494608af1675"
+#: F1570 (FIX2): the planner's rule 13 puts in visitor_tools what the person named, a tool by its name or a knowledge
+#: base by its name when they let visitors search or read it, c81f207d… (on 2.0.8's 5a19900e).
+BUNDLE_SHA256 = "c81f207d4727228cd7439028bb1899099a04daadc4743632b9fa463312477d0e"
 
 
 def _sha(definitions) -> str:
