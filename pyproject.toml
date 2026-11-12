@@ -375,7 +375,7 @@ constraint-dependencies = [
     "pydantic-settings==2.15.0",
     "pyee==13.0.1",
     "pygments==2.20.0",
-    "pyjwt==2.13.0",
+    "pyjwt==2.15.1",
     "pymysql==1.2.0",
     "pyparsing==3.3.2",
     "pypdf==6.19.0",

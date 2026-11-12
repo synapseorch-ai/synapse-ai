@@ -122,7 +122,7 @@ pycparser==3.0 ; implementation_name != 'PyPy' and platform_python_implementatio
     # via
     #   -c requirements.lock
     #   cffi
-pyjwt==2.13.0
+pyjwt==2.15.1
     # via
     #   -c requirements.lock
     #   botframework-connector

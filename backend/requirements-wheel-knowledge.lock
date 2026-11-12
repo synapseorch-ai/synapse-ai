@@ -711,7 +711,7 @@ pygments==2.20.0
     #   -c .knowledge-constraints.txt
     #   -c requirements-knowledge.lock
     #   rich
-pyjwt==2.13.0
+pyjwt==2.15.1
     # via
     #   -c .knowledge-constraints.txt
     #   mcp

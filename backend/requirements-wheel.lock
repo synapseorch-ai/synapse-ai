@@ -622,7 +622,7 @@ pygments==2.20.0
     #   -c requirements-worker.lock
     #   -c requirements.lock
     #   rich
-pyjwt==2.13.0
+pyjwt==2.15.1
     # via
     #   -c requirements-messaging.lock
     #   -c requirements-worker.lock
