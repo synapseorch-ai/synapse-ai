@@ -57,16 +57,33 @@ def built_in_failure(text: str) -> str | None:
     return None
 
 
-def mcp_text(result) -> str:
-    """What an MCP tool's result says, as one text, the way every caller reads it (F1344, cap-03): no content is ""
-    (a tool that returned [] sends none), one part its text, several the list the tool returned when each part is
-    JSON (MCP sends a list's items as parts of their own), else their texts one per line. A part with no text (an
-    image, a resource) is left out; never an index or attribute error the agent would read as an answer."""
-    texts = [t for c in (getattr(result, "content", None) or []) if isinstance(t := getattr(c, "text", None), str)]
-    if len(texts) <= 1:
-        return texts[0] if texts else ""
-    try:
-        return json.dumps([json.loads(t) for t in texts], ensure_ascii=False)
-    except ValueError:
-        return "\n".join(texts)
+def _part_text(part) -> str:
+    """One part of a result as text: its own, an embedded resource's, else a line naming what the agent cannot read."""
+    if isinstance(text := getattr(part, "text", None), str):
+        return text
+    resource = getattr(part, "resource", None)
+    if isinstance(text := getattr(resource, "text", None), str):
+        return text
+    source = part if resource is None else resource
+    uri, mime = getattr(source, "uri", None), getattr(source, "mimeType", None)
+    what = [getattr(part, "type", None) or "part", uri, f"({mime})" if mime else None]
+    return f"[{' '.join(str(w) for w in what if w)} not shown]"
 
+
+def mcp_text(result) -> str:
+    """What an MCP tool's result says, as one text, the way every caller reads it (F1344, cap-03): one part its text,
+    several the list the tool returned when each part is JSON (MCP sends a list's items as parts of their own), else
+    their texts one per line. An embedded text resource reads as its text; a part with no text (an image, a binary
+    resource) is named, so the agent knows it was sent. No content is the structured content when there is some (a
+    tool typed `-> list[str]` sends its [] as only that), else "". Never an index or attribute error the agent would
+    read as an answer."""
+    parts = [_part_text(c) for c in (getattr(result, "content", None) or [])]
+    if not parts:
+        structured = getattr(result, "structuredContent", None)
+        return "" if structured is None else json.dumps(structured, ensure_ascii=False, default=str)
+    if len(parts) == 1:
+        return parts[0]
+    try:
+        return json.dumps([json.loads(t) for t in parts], ensure_ascii=False)
+    except ValueError:
+        return "\n".join(parts)

@@ -4224,7 +4224,7 @@ async def run_agent_step(
                         with _anyio.fail_after(_timeout.total_seconds() + 5):
                             result = await session.call_tool(actual_tool_name, tool_args, read_timeout_seconds=_timeout,
                                                              **_call_kwargs)
-                            raw_output = mcp_text(result)  # [] is an empty answer, a list whole (F1344)
+                            raw_output = mcp_text(result)  # a list whole, no content never an error (F1344)
                     finally:
                         if _owner_token is not None:
                             _browser_client.owner.reset(_owner_token)
