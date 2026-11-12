@@ -5,7 +5,8 @@ CAP3's pass 2 (prod-13): the Connect card failed, and the simulated person answe
 say "key", so the door let it through: it reached the run's row, its events file and its logs. prod-02: a key typed with
 U+2011 hyphens went past every pattern, and the planner wrote it back out in ASCII to its own log.
 
-So the door folds lookalike dashes and zero-width characters before it reads, and at a wait for a Connect card — the
+So the door folds lookalike dashes and zero-width characters while it reads (since F1551 it keeps the message as
+written, each key masked where it stands), and at a wait for a Connect card — the
 run's own state, never a guess from words — a lone key-like answer is masked as a key, and the person is told it goes on
 the card. Anywhere else a lone word is read as before ("gpt-4.1-mini" to "which model?" stays). The same in rc5.3's
 vendor: its door is this one.
@@ -77,8 +78,9 @@ class TestLookalikesAreFolded:
         said = CANARY.replace("-", "‑")
         assert door.check_answer({"feedback": said}, None, step="step_wait_connect") == ({"feedback": CREDENTIAL_MARK}, 1)
 
-    def test_folding_touches_only_the_lookalikes(self):
-        assert door.check("Ship it Monday – not Friday").text == "Ship it Monday - not Friday"
+    def test_folding_is_for_reading_and_the_message_is_kept_as_written(self):
+        """F1551 (Naveen 11-12): the door reads through the fold, and what runs is what the person wrote."""
+        assert door.check("Ship it Monday – not Friday").text == "Ship it Monday – not Friday"
 
 
 class TestTheResumeRoute:

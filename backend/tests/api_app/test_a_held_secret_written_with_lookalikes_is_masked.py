@@ -43,7 +43,8 @@ class TestAtTheDoor:
         held = await secret_scrub.held_in(text)
         assert held == [(pasted, "connection")], held
         checked = door.check(text, held)
-        assert checked.text == f"for the shop - {CREDENTIAL_MARK} - thanks" and checked.removed == 1, checked
+        # Read folded, kept as written (F1551): the em dashes around it stay.
+        assert checked.text == f"for the shop \u2014 {CREDENTIAL_MARK} \u2014 thanks" and checked.removed == 1, checked
 
     async def test_a_no_break_space_and_a_zero_width_character_hide_nothing(self, client, kept):
         for pasted in (PHRASE.replace(" ", "\u00a0"), REAL[:5] + "\u200b" + REAL[5:]):
@@ -57,8 +58,9 @@ class TestAtTheDoor:
         assert held == [(pasted, "connection")], held
 
     def test_the_door_folds_through_the_one_table(self):
+        """It reads through the one table and keeps the message as written (F1551)."""
         assert getattr(secret_scrub, "LOOKALIKES", None) is door._LOOKALIKES
-        assert door.check("Ship it\u00a0Monday \u2013 not Friday").text == "Ship it Monday - not Friday"
+        assert door.check("Ship it\u00a0Monday \u2013 not Friday").text == "Ship it\u00a0Monday \u2013 not Friday"
 
 
 class TestOnTheOutputSide:

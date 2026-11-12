@@ -157,17 +157,25 @@ def scrub_credentials(text: str) -> tuple[str, int]:
     lookalikes folded (F1386), and what it finds is masked as it was written: the rest of the text is kept as it is."""
     removed = 0
     for pattern in _parts_of(text):
-        folded, where = _fold_map(text)
-        spans: list[tuple[int, int]] = []
-        for match in pattern.finditer(folded):
-            start, end = match.span(len(match.groups())) if match.groups() else match.span()
-            if end <= start:
-                continue
-            spans.append((start, end) if where is None else (where[start], where[end - 1] + 1))
-        for start, end in reversed(spans):
-            text = f"{text[:start]}{CREDENTIAL_MARK}{text[end:]}"
-        removed += len(spans)
+        text, found = mask_as_written(pattern, text)
+        removed += found
     return text, removed
+
+
+def mask_as_written(pattern: re.Pattern[str], text: str) -> tuple[str, int]:
+    """`text` with what `pattern` finds in it, read with its lookalikes folded, replaced by `CREDENTIAL_MARK` where it
+    stands as written (its last group, or the whole match), and how many: the rest of `text` is kept as it is (F1386;
+    the builder's door reads every message this way, F1551)."""
+    folded, where = _fold_map(text)
+    spans: list[tuple[int, int]] = []
+    for match in pattern.finditer(folded):
+        start, end = match.span(len(match.groups())) if match.groups() else match.span()
+        if end <= start:
+            continue
+        spans.append((start, end) if where is None else (where[start], where[end - 1] + 1))
+    for start, end in reversed(spans):
+        text = f"{text[:start]}{CREDENTIAL_MARK}{text[end:]}"
+    return text, len(spans)
 
 
 def holds_credential(text: str) -> bool:

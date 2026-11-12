@@ -111,3 +111,21 @@ class TestEveryKeyIsStillMasked:
 
     def test_a_password_written_with_lookalikes_is_refused(self):
         assert door.check(f"my pass{chr(0x00AD)}word is Hunter{DASHES[1]}2x9").refused == "password"
+
+
+class TestAYesIsReadAsBefore:
+    """A bare yes said with a lookalike is kept as the builder's gates read it: they compare its words exactly
+    (`review.is_yes`, the plan's and a change's approval gates), as they did while the door folded every message."""
+
+    @pytest.mark.parametrize("said, read", [
+        (f"looks{NBSP}good", "looks good"), (f"approve{INVISIBLE[0]}", "approve"), (f"go{chr(0x202F)}ahead!", "go ahead!"),
+    ])
+    def test_as_a_message_and_as_an_answer(self, said, read):
+        from core.native_builder.review import is_yes
+
+        assert door.check(said).text == read and is_yes(read)
+        assert door.check_answer({"feedback": said}, "Approve or describe changes") == ({"feedback": read}, 0)
+
+    def test_anything_more_is_kept_as_written(self):
+        said = f"looks good {EM} but name it Orders{NBSP}2"
+        assert door.check(said).text == said
