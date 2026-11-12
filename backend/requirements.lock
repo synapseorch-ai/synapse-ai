@@ -2,7 +2,7 @@
 #    uv pip compile --no-config --universal --python-version 3.11 requirements.txt requirements-coding.txt -o requirements.lock
 aiohappyeyeballs==2.7.1
     # via aiohttp
-aiohttp==3.14.3
+aiohttp==3.14.5
     # via
     #   -r requirements.txt
     #   kubernetes
@@ -204,7 +204,7 @@ mdurl==0.1.2
     # via markdown-it-py
 mmh3==5.2.1
     # via chromadb
-multidict==6.7.1
+multidict==6.9.1
     # via
     #   aiohttp
     #   yarl
@@ -496,5 +496,5 @@ websockets==16.1.1
     # via
     #   google-genai
     #   uvicorn
-yarl==1.24.5
+yarl==1.25.1
     # via aiohttp

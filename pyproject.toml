@@ -48,7 +48,7 @@ dependencies = [
     "boto3>=1.34,<2",
     # The in-app browser's host and its client (core/browser). Already resolved through chromadb; named because
     # the engine imports it directly.
-    "aiohttp>=3.9,<4",
+    "aiohttp>=3.14.4,<4",
     # The engine's store. `pip install` gets SQLite and needs nothing running;
     # asyncpg is only reached when SYNAPSE_DB_URL points at Postgres.
     "sqlalchemy[asyncio]>=2.0,<3",
@@ -244,7 +244,7 @@ skips = []
 constraint-dependencies = [
     "accelerate==1.15.0",
     "aiohappyeyeballs==2.7.1",
-    "aiohttp==3.14.3",
+    "aiohttp==3.14.5",
     "aiosignal==1.4.0",
     "aiosqlite==0.22.1",
     "annotated-doc==0.0.5",
@@ -321,7 +321,7 @@ constraint-dependencies = [
     "mdurl==0.1.2",
     "mmh3==5.2.1",
     "mpmath==1.3.0",
-    "multidict==6.7.1",
+    "multidict==6.9.1",
     "networkx==3.6.1",
     "numpy==2.4.6 ; python_full_version < '3.12'",
     "numpy==2.5.2 ; python_full_version >= '3.12'",
@@ -431,7 +431,7 @@ constraint-dependencies = [
     "websocket-client==1.9.0",
     "websockets==16.1.1",
     "wrapt==2.5.1",
-    "yarl==1.24.5",
+    "yarl==1.25.1",
     "arq==0.28.0",
     "async-timeout==5.0.1",
     "asyncpg==0.31.0",
