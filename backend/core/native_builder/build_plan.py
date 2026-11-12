@@ -626,6 +626,38 @@ def _without(plan: O.Plan, tools: list[str], took_out: list[str] | None = None) 
     return out
 
 
+def _instructions_whole(plan: O.Plan, state: dict, notes: list[str]) -> tuple[O.Plan, list[str]]:
+    """The Plan with a pasted export's Agents' instructions whole in its steps' prompts (F1550, `verbatim.whole`): a
+    reference put there, a retyped copy made whole, said in `notes` for the card; the errors are references to an
+    Agent the code does not have. An ordinary build's Plan comes back as it was."""
+    from core.native_builder import verbatim
+
+    agents = verbatim.sources(state)
+    if not agents:
+        return plan, []
+    where: dict[str, tuple[int | None, int]] = {}
+    texts: dict[str, str] = {}
+    for i, s in enumerate(plan.steps):
+        if s.prompt:
+            where[f"step {s.id}"], texts[f"step {s.id}"] = (None, i), s.prompt
+    for w_i, w in enumerate(plan.inner_workflows):
+        for i, s in enumerate(w.steps):
+            if s.prompt:
+                label = f"step {s.id} of “{w.title}”"
+                where[label], texts[label] = (w_i, i), s.prompt
+    fixed, errors, said = verbatim.whole(texts, agents)
+    changed = {k for k in texts if fixed[k] != texts[k]}
+    if not changed:
+        return plan, errors
+    out = plan.model_copy(deep=True)
+    for label in changed:
+        w_i, i = where[label]
+        steps = out.steps if w_i is None else out.inner_workflows[w_i].steps
+        steps[i] = steps[i].model_copy(update={"prompt": fixed[label]})
+    notes += said
+    return out, errors
+
+
 async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, state: dict | None = None,
                   without: list[str] | None = None, alone: list[str] | None = None) -> Examined:
     """The planner's Plan held to every rule, as data: `errors` the planner can fix, `missing` the tools nothing here
@@ -660,6 +692,9 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
             plan.reuse_agents = list(dict.fromkeys([*edited.reuse_agents, *plan.reuse_agents]))
     took_out: list[str] = []
     plan = _without(plan, without or [], took_out)
+    # A pasted export's Agents' instructions, whole (F1550): put where the plan names them, and made whole where it
+    # retyped them. Before the key check, which reads what is saved.
+    plan, copy_errors = _instructions_whole(plan, state, took_out)
     from core.native_builder.change_tools import _holds_a_key
     from core.secret_scrub import holds_credential
 
@@ -681,7 +716,7 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         # A step no step leads to in the workflow as it is now is not this change's to fix (SAI2's review, 23).
         before, _ = O.check_structure(base, ws.inventory())
         errors = [e for e in errors if not ("no step leads to it" in e and e in before)]
-    errors += await _rules(plan, ws, state) + asked
+    errors += copy_errors + await _rules(plan, ws, state) + asked
     # A part of the ask the plan leaves out is said with why, never dropped (F1515, eb's QA B13).
     errors += [f"asked: '{a.part}' is not_done with no why_not: say why this plan does not do it, or plan it"
                for a in plan.asked if a.how == "not_done" and not (a.why_not or "").strip()]

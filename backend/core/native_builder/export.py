@@ -3,9 +3,11 @@
 OpenAI shuts Agent Builder down on 2026-11-30. Its only way out is the Code
 button: Python or TypeScript Agents SDK code — `Agent(...)` objects and a
 `run_workflow` whose branches, loops and approvals are plain code over a
-`state` dict. Nothing here parses that code, and nothing ever runs it. The
-builder's own models read it, the way they read any message, with a guide to
-what each construct becomes here.
+`state` dict. Nothing ever runs that code. The builder's own models read it,
+the way they read any message, with a guide to what each construct becomes
+here; one thing is read out of it by code, each Agent's instructions, exactly
+as written (`agent_instructions`, parsed and never run: F1550), so that what
+the build makes holds them whole (`verbatim`).
 
 What this module does is decide whether a message *is* such code, and take the
 credentials out of it first. An export can hold live ones — a hosted MCP
@@ -77,6 +79,188 @@ def export_state(message: str) -> dict[str, str]:
     }
 
 
+# ── Each Agent's instructions, as the code writes them (F1550) ─────────────────────────────────────────────────────
+
+#: What a step's prompt or a new agent's instructions holds to have an Agent's instructions put there by code.
+INSTRUCTIONS_OF = '‹instructions of "{name}"›'
+#: The reference, as a model writes it: the name in straight or curly quotes, or none.
+INSTRUCTIONS_REF = re.compile(r"‹\s*instructions\s+of\s+[\"“]?([^\"“”›]+?)[\"”]?\s*›")
+#: What a value the instructions read at run time becomes (the guide's rule 3), and a key taken out (its last line).
+GIVEN = "given in the message"
+KEY_HELD = "the key it held"
+
+
+def agent_instructions(text: str) -> dict[str, str]:
+    """Each Agent's instructions in pasted Agents SDK code, by the Agent's name, exactly as the code writes them (F1550:
+    the builder's model retyped them, and lost up to 70%). Python is parsed, never run: a literal, an f-string, a
+    concatenation, a name bound to one or the function that returns one (Agent Builder's dynamic instructions).
+    TypeScript's string and template literals are read the same ways. A value read at run time (an f-string's `{x}`, a
+    template's `${x}`) is the words `GIVEN`, and a key the door took out `KEY_HELD`. `text` may carry words around the
+    code; what does not read gives nothing, never an error."""
+    found = _python_instructions(text) if _PY_AGENT.search(text) else {}
+    if not found and _TS_AGENT.search(text):
+        found = _ts_instructions(text)
+    return {name: words.replace(CREDENTIAL_MARK, KEY_HELD) for name, words in found.items()}
+
+
+def _python_tree(text: str):
+    """The module the code is, from its first import to the last line that parses (words may follow it)."""
+    import ast
+
+    lines = text.splitlines()
+    start = next((i for i, line in enumerate(lines) if re.match(r"(?:from|import)\s", line)), None)
+    if start is None:
+        return None
+    end = len(lines)
+    for _ in range(8):
+        try:
+            return ast.parse("\n".join(lines[start:end]))
+        except SyntaxError as e:
+            if not e.lineno or e.lineno <= 1 or start + e.lineno - 1 >= end:
+                return None
+            end = start + e.lineno - 1
+        except (ValueError, RecursionError, MemoryError):
+            return None
+    return None
+
+
+def _python_instructions(text: str) -> dict[str, str]:
+    import ast
+
+    tree = _python_tree(text)
+    if tree is None:
+        return {}
+    funcs = {n.name: n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    bound = {t.id: n.value for n in tree.body if isinstance(n, ast.Assign) for t in n.targets if isinstance(t, ast.Name)}
+
+    def words(node, depth: int = 0) -> str | None:
+        if node is None or depth > 8:
+            return None
+        if isinstance(node, ast.Constant):
+            return node.value if isinstance(node.value, str) else None
+        if isinstance(node, ast.JoinedStr):
+            return "".join(str(p.value) if isinstance(p, ast.Constant) else GIVEN for p in node.values)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left, right = words(node.left, depth + 1), words(node.right, depth + 1)
+            return left + right if left is not None and right is not None else None
+        if isinstance(node, ast.Name) and node.id in funcs:
+            return next((w for r in ast.walk(funcs[node.id]) if isinstance(r, ast.Return)
+                         if (w := words(r.value, depth + 1)) is not None), None)
+        if isinstance(node, ast.Name) and node.id in bound:
+            return words(bound[node.id], depth + 1)
+        return None
+
+    out: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and (getattr(node.func, "id", None) or getattr(node.func, "attr", None)) == "Agent":
+            given = {k.arg: k.value for k in node.keywords if k.arg}
+            name, said = words(given.get("name")), words(given.get("instructions"))
+            if name and said is not None:
+                out.setdefault(name, said)
+    return out
+
+
+_JS_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f", "v": "\v", "0": "\0"}
+
+
+def _js_literal(src: str, i: int) -> tuple[str | None, int]:
+    """The JavaScript string or template literal opening at `src[i]`, as its value, and the index after it. A
+    template's `${…}` is `GIVEN`. (None, i) when there is none there."""
+    quote = src[i:i + 1]
+    if quote not in ("'", '"', "`"):
+        return None, i
+    out: list[str] = []
+    j = i + 1
+    while j < len(src):
+        c = src[j]
+        if c == "\\" and j + 1 < len(src):
+            n = src[j + 1]
+            try:
+                if n == "u" and src[j + 2:j + 3] == "{":
+                    end = src.index("}", j)
+                    out.append(chr(int(src[j + 3:end], 16)))
+                    j = end + 1
+                    continue
+                if n == "u":
+                    out.append(chr(int(src[j + 2:j + 6], 16)))
+                    j += 6
+                    continue
+                if n == "x":
+                    out.append(chr(int(src[j + 2:j + 4], 16)))
+                    j += 4
+                    continue
+            except ValueError:
+                return None, i
+            if n == "\r" and src[j + 2:j + 3] == "\n":
+                j += 3
+                continue
+            if n not in ("\n", "\r", " ", " "):
+                out.append(_JS_ESCAPES.get(n, n))
+            j += 2
+            continue
+        if c == quote:
+            return "".join(out), j + 1
+        if quote == "`" and src.startswith("${", j):
+            depth, j = 1, j + 2
+            while j < len(src) and depth:
+                if src[j] in "'\"`":
+                    _, after = _js_literal(src, j)
+                    j = after if after > j else j + 1
+                    continue
+                depth += {"{": 1, "}": -1}.get(src[j], 0)
+                j += 1
+            out.append(GIVEN)
+            continue
+        if quote != "`" and c == "\n":
+            return None, i
+        out.append(c)
+        j += 1
+    return None, i
+
+
+def _js_value(src: str, i: int, defs: dict[str, int], depth: int = 0) -> str | None:
+    """The text the expression at `src[i]` comes to: a literal, a name bound to one, or a function returning one."""
+    while i < len(src) and src[i].isspace():
+        i += 1
+    said, _ = _js_literal(src, i)
+    if said is not None or depth > 4:
+        return said
+    name = re.match(r"[A-Za-z_$][\w$]*", src[i:])
+    if name and name.group() not in ("function", "async") and \
+            not src[i + name.end():].lstrip().startswith(("(", "=>")):
+        at = defs.get(name.group())
+        return _js_value(src, at, defs, depth + 1) if at is not None else None
+    # A function: an arrow's literal body, or its body's first returned literal.
+    arrow = re.match(r"(?:async\s+)?(?:function\b[^{]*|\([^)]*\)\s*(?::[^=]+)?=>|[A-Za-z_$][\w$]*\s*=>)\s*", src[i:])
+    if not arrow:
+        return None
+    body = i + arrow.end()
+    said, _ = _js_literal(src, body)
+    if said is not None:
+        return said
+    ret = re.compile(r"\breturn\s*").search(src, body)
+    return _js_literal(src, ret.end())[0] if ret else None
+
+
+def _ts_instructions(text: str) -> dict[str, str]:
+    defs = {m.group(1): m.end() for m in re.finditer(
+        r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?=(?![=>])\s*", text)}
+    defs |= {m.group(1): m.start() for m in re.finditer(r"\bfunction\s+([A-Za-z_$][\w$]*)\s*\(", text)}
+    starts = [m.end() for m in _TS_AGENT.finditer(text)]
+    out: dict[str, str] = {}
+    for k, start in enumerate(starts):
+        block = text[start:starts[k + 1] if k + 1 < len(starts) else len(text)]
+        name = re.search(r"\bname\s*:\s*", block)
+        said = re.search(r"\binstructions\s*:\s*", block)
+        if not name or not said:
+            continue
+        agent, _ = _js_literal(block, name.end())
+        words = _js_value(text, start + said.end(), defs)
+        if agent and words is not None:
+            out.setdefault(agent, words)
+    return out
+
+
 # What the planner and the prompt writer see below the guide. The planner reads it for *what* to build; the prompt
 # writer copies each agent's instructions from it. The prompts put `{{ state.export_source }}` straight after their last
 # line, so it brings its own blank line and an ordinary build's prompt is unchanged.
@@ -87,8 +271,10 @@ _SOURCE_HEADING = """\
 Copy text from it, never code. Every new agent, llm step or evaluator step that stands for an Agent here (the same \
 name, or the plan says so) gets that Agent's instructions (or the string its instructions function returns) word for \
 word — as the new agent's instructions, or as the step's prompt — however long, and whatever the plan's purpose line \
-says. A value the instructions read at run time ({name} in a Python f-string, ${name} in TypeScript) becomes the \
-words "given in the message", and the step's prompt passes it as {{ state.<step id> }}. The tool names in the code \
+says. Never retype them: write ‹instructions of "<Agent name>"› (its name as the code writes it) where they go, and \
+code puts them there whole; write around it only what the step adds, such as the line passing what it reads. A value \
+the instructions read at run time ({name} in a Python f-string, ${name} in TypeScript) becomes the words "given in \
+the message", and the step's prompt passes it as {{ state.<step id> }}. The tool names in the code \
 (file_search, mcp, …) are its own variables, never tools here: give an agent only the tools the plan names. Never \
 copy code from here into a transform step, a tool or a skill, and never write a credential: ‹credential removed› \
 marks one that was taken out: where it stands in instructions you copy, write "the key it held" instead.
@@ -111,10 +297,11 @@ a tool name here, never a `tool` step's tool. If nothing fits, the agent gets no
 `not_carried_over`.
 2. **A condition reads JSON, never prose.** A model step whose answer a later `if_else`, `switch` or `loop` reads is \
 followed by an `extract_json` step, and the condition reads that step's output by its id (`state.<step id>.<field>`).
-3. **Instructions are copied word for word.** A new agent's `purpose` says it keeps the export's "<Agent name>" \
-instructions; they are written into it as they are, after the plan is checked. A `llm` or `evaluator` step that \
-replaces an Agent has those instructions as its `prompt`. A value the instructions read at run time ({name}, \
-${name}) becomes the words "given in the message", and the step's prompt passes it as {{ state.<step id> }}.
+3. **Instructions are copied word for word, by code.** A new agent's `purpose` says it keeps the export's \
+"<Agent name>" instructions; they are written into it as they are, after the plan is checked. A `llm` or `evaluator` \
+step that replaces an Agent has as its `prompt` ‹instructions of "<Agent name>"›, never the instructions retyped: \
+code puts them there whole, however long. A value the instructions read at run time ({name}, ${name}) becomes the \
+words "given in the message", and the step's prompt passes it as {{ state.<step id> }}, after the reference.
 4. **A new agent only for an Agent with tools that exist here.** An Agent without them is an `llm` step; a classifier \
 is the `evaluator` below. Handoffs are one `team` agent whose `members` are the agents it hands to — never a chain of \
 their steps.

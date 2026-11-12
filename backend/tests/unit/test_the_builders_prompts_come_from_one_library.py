@@ -183,7 +183,9 @@ from core.native_builder import prompt_lint, seed
 #: F1549 (BLD3): plan_steps.md's human bullet says what a Human step answers, its fields by name and with none the
 #: person's words (F1359's `{approved, feedback}` was never written), and a yes or no a branch reads is a yes/no field
 #: `approved`, ded07390… (on a02f291b).
-BUNDLE_SHA256 = "ded073900e339e1d0a4679b7c086ce37c21a6dacfcb2b54e0b9a1d61b4668672"
+#: F1550 (BLD3): the prompt writer writes ‹instructions of "<Agent name>"› for a pasted Agent, which code puts there
+#: whole, and its 250 words are never for copied instructions, f73c5110… (on F1549's a565ded3).
+BUNDLE_SHA256 = "f73c5110f7e48ae72115b0cbc5d290be305516c8345e9b527d803ce522005db5"
 
 
 def _sha(definitions) -> str:
