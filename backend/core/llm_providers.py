@@ -4101,6 +4101,108 @@ async def _ollama_post(client, url: str, body: dict, *, field: str):
     return _OllamaStreamed(data)
 
 
+# ── Ollama's context (F1569) ─────────────────────────────────────────────────
+# Synapse sent no `num_ctx`, so Ollama used its own default — 4,096 tokens on an 8 GB GPU — and cut a longer call
+# without a word: Synapse AI's ~27,500-token planner prompt reached qwen3 8B as 4,096 tokens, and the build failed
+# with a sentence about wording (SHN1, 11-13). A call that fits Ollama's smallest default with room for an answer is
+# still sent nothing; a longer one asks for a context that holds it, up to what the model reads.
+
+#: Ollama's smallest default context (0.6+; older ones had 2,048).
+_OLLAMA_SMALLEST_CONTEXT = 4096
+#: Room for the answer: what a call that fits is judged by, and the least a longer one is sized with.
+_OLLAMA_ANSWER_ROOM = 2048
+#: The most asked for when Ollama does not say how long the model reads.
+_OLLAMA_UNKNOWN_LONGEST = 32768
+#: (address, model) → (the model's own context length, its Modelfile's `num_ctx`), each None where Ollama does not
+#: say: `/api/show`, asked once per model in this process.
+_ollama_model_contexts: dict[tuple[str, str], tuple[int | None, int | None]] = {}
+
+
+def _ollama_estimate(call: ChatCall) -> int:
+    """The call's tokens by the engine's own estimate (four characters a token): the system prompt, the history,
+    the message and the tools, as Ollama is sent them."""
+    from core.context_budget import CHARS_PER_TOKEN
+
+    chars = len(call.system or "") + len(str(call.prompt or ""))
+    chars += sum(len(str(m.get("content") or "")) for m in (call.history or []) if isinstance(m, dict))
+    if call.tools:
+        chars += len(json.dumps(call.tools, default=str))
+    return -(-chars // CHARS_PER_TOKEN)
+
+
+async def _ollama_model_context(client, base: str, model: str) -> tuple[int | None, int | None]:
+    """How long `model` reads (`model_info`'s `<architecture>.context_length`) and its Modelfile's `num_ctx`, from
+    `/api/show`. (None, None) when Ollama cannot say; only an answer is remembered."""
+    key = (base, model)
+    if key in _ollama_model_contexts:
+        return _ollama_model_contexts[key]
+    try:
+        response = await client.post(f"{base}/api/show", json={"model": model, "name": model}, timeout=10.0)
+        if response.status_code != 200:
+            return None, None
+        data = response.json()
+    except Exception:
+        return None, None
+    if not isinstance(data, dict):
+        return None, None
+
+    def _positive(value) -> int | None:
+        return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0 else None
+
+    info = data.get("model_info") if isinstance(data.get("model_info"), dict) else {}
+    longest = next((_positive(v) for k, v in info.items()
+                    if str(k).endswith(".context_length") and _positive(v)), None)
+    if longest is None and isinstance(data.get("details"), dict):
+        longest = _positive(data["details"].get("context_length"))
+    found = re.search(r"^\s*num_ctx\s+(\d+)\s*$", str(data.get("parameters") or ""), re.M)
+    _ollama_model_contexts[key] = (longest, int(found.group(1)) if found else None)
+    return _ollama_model_contexts[key]
+
+
+async def _ollama_loaded_context(client, base: str, model: str) -> int | None:
+    """The context Ollama holds `model` with now (`/api/ps`), or None when it is not loaded or does not say."""
+    try:
+        response = await client.get(f"{base}/api/ps", timeout=5.0)
+        if response.status_code != 200:
+            return None
+        loaded = (response.json() or {}).get("models") or []
+    except Exception:
+        return None
+    names = {model} if ":" in model else {model, f"{model}:latest"}
+    for entry in loaded:
+        if isinstance(entry, dict) and (entry.get("name") in names or entry.get("model") in names):
+            size = entry.get("context_length")
+            return int(size) if isinstance(size, int) and size > 0 else None
+    return None
+
+
+async def _ollama_num_ctx(client, base: str, model: str, call: ChatCall) -> int | None:
+    """The `num_ctx` this call is sent, or None to send none (it fits Ollama's smallest default).
+
+    What it needs is the call's estimate and room for the answer (2,048, or the cap someone set where it is more:
+    a workspace's cap leaves a short call as it was), rounded up to a power of two so calls of a like size share one
+    loaded model — Ollama loads a model again for each new size — and never past what the model reads (else
+    32,768). A model already loaded with room keeps its size, and a Modelfile's own `num_ctx` is never cut down. A
+    call longer than the model reads is not sent: Ollama would cut it, so the person is told why instead."""
+    estimate = _ollama_estimate(call)
+    if estimate + _OLLAMA_ANSWER_ROOM <= _OLLAMA_SMALLEST_CONTEXT:
+        return None
+    need = estimate + max(call.sent_cap or 0, _OLLAMA_ANSWER_ROOM)
+    longest, modelfile = await _ollama_model_context(client, base, model)
+    if longest and estimate > longest:
+        raise LLMError(
+            f"Local Agent Error: the call is about {estimate:,} tokens, and {model} reads at most {longest:,} "
+            f"in Ollama.",
+            said=(f"This call to {model} is about {estimate:,} tokens, and the model reads at most {longest:,}: "
+                  f"Ollama would have cut it, so it was not sent. Choose a model that reads more, or send it less."),
+            provider="ollama", code=PROVIDER_REFUSED)
+    loaded = await _ollama_loaded_context(client, base, model)
+    if loaded and loaded >= need:
+        return loaded
+    size = max(1 << (need - 1).bit_length(), modelfile or 0)
+    return min(size, longest or max(_OLLAMA_UNKNOWN_LONGEST, modelfile or 0))
+
+
 async def _chat_ollama(call: ChatCall, spec) -> LLMResult:
     from core import usage_tracker
 
@@ -4115,6 +4217,11 @@ async def _chat_ollama(call: ChatCall, spec) -> LLMResult:
     _ollama_model = current_model[len("ollama."):] if current_model.startswith("ollama.") else current_model
     _ollama_base = _ollama_base_url(current_settings)
     async with httpx.AsyncClient() as client:
+        # The context the call needs (F1569), worked out before the call: one too long for the model is said as it is,
+        # not wrapped as a failed call below.
+        _num_ctx = await _ollama_num_ctx(client, _ollama_base, _ollama_model, call)
+        # A cap only when someone set one (F263): Ollama was never sent one.
+        _options = {**({"num_predict": _sent_cap} if _sent_cap else {}), **({"num_ctx": _num_ctx} if _num_ctx else {})}
         try:
             # Try specific Ollama Tool Call format if tools are provided
             if tools:
@@ -4141,9 +4248,8 @@ async def _chat_ollama(call: ChatCall, spec) -> LLMResult:
                     "tools": tools,
                     "stream": False,
                 }
-                if _sent_cap:
-                    # Only a cap someone set (F263); Ollama was never sent one.
-                    _chat_body["options"] = {"num_predict": _sent_cap}
+                if _options:
+                    _chat_body["options"] = _options
                 if _reasoning_plan is not None:
                     # Ollama 0.9+ takes a bare boolean here and answers in a
                     # `thinking` field. An older server ignores the key
@@ -4205,7 +4311,7 @@ async def _chat_ollama(call: ChatCall, spec) -> LLMResult:
                     "prompt": prompt_for_generate,
                     "system": augmented_system,
                     "stream": False,
-                    **({"options": {"num_predict": _sent_cap}} if _sent_cap else {}),
+                    **({"options": _options} if _options else {}),
                     # A step's declared answer (F1553): Ollama's structured output (0.5+), its JSON schema.
                     **({"format": call.response_schema} if call.response_schema else {}),
                 }
