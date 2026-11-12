@@ -30,6 +30,10 @@ classifiers = [
 # including what staying costs: MCP protocol 2026-07-28 is 2.x only (F175).
 dependencies = [
     "cffi>=2.0.0,<3",
+    # F1563: zoneinfo reads zones from this package where the computer has none (the python slim Docker images,
+    # Windows); without it every schedule in a place's local time was refused there.
+    # Its version is the data's year, not an API: the cap only keeps the house rule of an upper bound.
+    "tzdata>=2026.3,<2030",
     "fastapi>=0.110,<1",
     "uvicorn[standard]>=0.29,<1",
     "httpx>=0.27,<1",

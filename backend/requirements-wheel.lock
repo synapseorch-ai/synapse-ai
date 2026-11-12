@@ -848,10 +848,11 @@ typing-inspection==0.4.3
     #   mcp
     #   pydantic
     #   pydantic-settings
-tzdata==2026.3 ; sys_platform == 'emscripten' or sys_platform == 'win32'
+tzdata==2026.3
     # via
     #   -c requirements-worker.lock
     #   -c requirements.lock
+    #   synapse-orch-ai (../pyproject.toml)
     #   pandas
     #   psycopg
 uritemplate==4.2.0

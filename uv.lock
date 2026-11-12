@@ -4875,6 +4875,7 @@ dependencies = [
     { name = "rich" },
     { name = "slack-bolt" },
     { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "tzdata" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -4975,6 +4976,7 @@ requires-dist = [
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0,<3" },
     { name = "torch", marker = "extra == 'knowledge'", specifier = ">=2.2.2,<3", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torchvision", marker = "extra == 'knowledge'", specifier = ">=0.17,<1", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "tzdata", specifier = ">=2026.3,<2030" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.29,<1" },
 ]
 provides-extras = ["knowledge", "telemetry", "test"]
