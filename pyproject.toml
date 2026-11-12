@@ -126,8 +126,8 @@ include = [
 # photos for OCR. Same list as backend/requirements-knowledge.txt, whose header
 # says how to fetch Docling's models and which system packages it needs.
 knowledge = [
-    "docling-slim[format-pdf,models-local,convert-core,cli]>=2.131,<3",
-    "docling-core>=2.98,<3",
+    "docling-slim[format-pdf,models-local,convert-core,cli]>=2.142,<3",
+    "docling-core>=2.104,<3",
     "opencv-python-headless>=4.6,<5",
     "torch>=2.2.2,<3",
     "torchvision>=0.17,<1",
@@ -271,11 +271,11 @@ constraint-dependencies = [
     "defusedxml==0.7.1",
     "discord-py==2.7.1",
     "distro==1.9.0",
-    "doclang==0.7.3",
-    "docling-core==2.99.0",
-    "docling-ibm-models==4.0.3",
-    "docling-parse==7.22.1",
-    "docling-slim==2.131.0",
+    "doclang==0.9.0",
+    "docling-core==2.106.0",
+    "docling-ibm-models==4.0.4",
+    "docling-parse==7.24.2",
+    "docling-slim==2.148.0",
     "docstring-parser==0.18.0",
     "duckduckgo-search==8.1.1",
     "durationpy==0.10",
