@@ -13,8 +13,8 @@ path a model's prompt takes (`context._fill_task_template`). Naveen's picks:
 - A key a model step reads that is not there is said in words, never passed on as the literal: a wrong field in a key
   that is set, or an unknown `{{ global.x }}`, on every model step (Agent, LLM, Tool, Workflow, Evaluator); a key no
   step has written yet stays empty on the steps that write (U74), and is words in an Evaluator, which judges on it.
-- A Human or a Print step's text, which a person reads, keeps the gap; a value typed into a site or searched for
-  (Browser, Retrieve) is as before.
+- A Human or a Print step's text, which a person reads, kept the gap (until F1556, Naveen 11-12: it says it in
+  words, as an Evaluator's prompt does); a value typed into a site or searched for (Browser, Retrieve) is as before.
 - A bare `{{ x }}` is left as written everywhere: a prompt may show a model a template.
 
 `FIELDS` is every step type's row: what it fills in. A new step type, a new template field in `core.templating`, or a
@@ -273,9 +273,11 @@ async def test_a_writer_still_reads_a_key_no_step_has_written_as_empty(step_type
 
 
 @pytest.mark.parametrize("step_type", ("human", "print"))
-async def test_a_person_still_sees_the_gap(step_type, fake_llm, logged, monkeypatch):
+async def test_a_person_reads_the_gap_in_words(step_type, fake_llm, logged, monkeypatch):
+    """A person's text says the gap in an Evaluator's words, never braces (F1556, Naveen 11-12: it kept the gap)."""
     got = await CASES[step_type]("Reply: {{ state.never }}", fake_llm, logged, monkeypatch)
-    assert "Reply: {{ state.never }}" in got
+    assert "Reply: (no value yet: no step has written state.never)" in got
+    assert "{{ state.never }}" not in got
 
 
 async def test_a_bare_name_is_left_as_written(fake_llm, logged, monkeypatch):

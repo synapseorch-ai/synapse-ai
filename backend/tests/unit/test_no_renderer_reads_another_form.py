@@ -58,9 +58,26 @@ def test_no_renderer_reads_the_older_form_raw(render):
     assert render("{state.user_input}") == "{state.user_input}"
 
 
-def test_a_persons_text_never_fills_a_global():
-    """A Human prompt can go to a channel (D104): a workspace variable is never filled into a person's text."""
-    assert _person("Key: {{ global.API_KEY }}") == "Key: {{ global.API_KEY }}"
+def test_a_persons_text_fills_a_plain_global_never_a_secret():
+    """A Human prompt goes to a channel, an email and the API (D104). A plain workspace variable is filled into a
+    person's text; one the workspace holds as a secret never is, by its name or by its value (F1556, Naveen 11-12,
+    replacing D104's rule that no variable was)."""
+    import contextvars
+
+    from core.secret_scrub import hold_secrets
+
+    variables = {"tone": "warm", "API_KEY": "sk-not-real", "PIN": "4471"}
+
+    def said(text: str, secrets=()) -> str:
+        def run():
+            hold_secrets({"API_KEY": "sk-not-real"})  # as variables.load holds a secret reference's value
+            return render_state_refs(text, STATE, variables, secrets)
+        return contextvars.copy_context().run(run)
+
+    assert said("Tone: {{ global.tone }}.") == "Tone: warm."
+    assert said("Key: {{ global.API_KEY }}") == "Key: (a secret is not shown here)", "held: never shown"
+    assert said("Pin: {{ global.PIN }}", secrets={"PIN"}) == "Pin: (a secret is not shown here)", "too short to hold"
+    assert said("{{ global.nope }}") == "(no value: no variable named 'nope')"
     assert _prompt("Key: {{ global.API_KEY }}") == "Key: sk-not-real", "a model's prompt does"
 
 

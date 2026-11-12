@@ -54,4 +54,5 @@ async def test_a_question_reads_a_nested_key(driver):
     await S.seed_orchestrations([orch])
 
     assert await driver.start(orch, "run_nestedq", {"order": {"id": "A7", "city": "Pune"}}) == "paused"
-    assert (await _run("run_nestedq")).human_prompt == "Ship order A7 to Pune? ({{ state.order.none }})"
+    # A field the value lacks is said in words (F1556, Naveen 11-12: it was left as written).
+    assert (await _run("run_nestedq")).human_prompt == "Ship order A7 to Pune? ((no value: state.order has no 'none'))"

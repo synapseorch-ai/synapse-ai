@@ -64,21 +64,16 @@ def _llm(step_id, template, **extra):
             "output_key": f"{step_id}_out", "model": "claude-test", "next_step_id": None, **extra}
 
 
-def _set(step_id, content, key, next_step_id):
-    """A print step writes `content` into `shared_state[key]` — it renders
-    `{{ state.x }}` and nothing else, so `{{ … }}` arrives in state as written."""
-    return {"id": step_id, "name": step_id, "type": "print", "print_content": content,
-            "output_key": key, "next_step_id": next_step_id}
-
-
 def _orch(entry, steps):
     return S.make_orchestration(id=f"orch_v_{entry}", entry_step_id=entry, steps=steps)
 
 
 async def _chain(fake_llm, logged, note, template):
-    """`note` lands in state, then an llm step renders `template` over it."""
-    await _run(_orch("p1", [_set("p1", note, "note", "s1"), _llm("s1", template)]),
-               globals_={"KEY": SECRET, "OTHER": "other-VALUE"})
+    """`note` lands in state as written — a crawled page's or a model's words — then an llm step renders `template`
+    over it. Seeded as a schema default, which nothing renders: a Print fills a plain variable since F1556."""
+    orch = _orch("s1", [_llm("s1", template)])
+    orch["state_schema"] = {"note": {"type": "string", "default": note}}
+    await _run(orch, globals_={"KEY": SECRET, "OTHER": "other-VALUE"})
     return _prompt(logged, "s1")
 
 

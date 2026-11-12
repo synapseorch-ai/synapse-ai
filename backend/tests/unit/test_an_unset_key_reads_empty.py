@@ -7,7 +7,8 @@ model echoed it into its draft.
 
 Naveen's call (D267): in the prompts a model reads (Agent, LLM, Tool, Retrieve)
 an unset state key reads empty, in either form; a declared default already
-fills it. A Human or a Print step's text, which a person reads, keeps the gap.
+fills it. A Human or a Print step's text, which a person reads, says the gap in
+F1536's words (F1556, Naveen 11-12; it kept the gap as written until then).
 A `{{ global.x }}` that is not set, or a wrong path inside a key that is set,
 is said in words in a model's prompt, never left as the placeholder (F1536,
 Naveen 11-11). The builder's validator and the editor warn, without blocking,
@@ -50,10 +51,11 @@ class TestRendering:
         assert _fill(template, {"d": {"a": 1}, "none": None, "n": 0, "blank": "", "empty": {},
                                 "trap": {"say": "{{ global.KEY }}"}}) == expected
 
-    def test_a_print_keeps_the_gap(self):
-        """A person reads a Print or a Human step's text; the gap shows them."""
+    def test_a_print_says_the_gap(self):
+        """A person reads a Print or a Human step's text; the gap is said to them, in F1536's words, never braces
+        (F1556, Naveen 11-12: it was left as written)."""
         from core.orchestration.steps import render_state_refs
-        assert render_state_refs("Hello {{ state.name }}!", {}) == "Hello {{ state.name }}!"
+        assert render_state_refs("Hello {{ state.name }}!", {}) == "Hello (no value yet: no step has written state.name)!"
 
 
 def _orch(steps, entry="write", schema=None):
