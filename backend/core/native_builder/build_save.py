@@ -89,6 +89,15 @@ async def submit_prompts(args: dict, server_module: Any, events: list[dict]) -> 
     if unknown or empty:
         return {"error": "Write instructions for each of the plan's new agents, by its name: "
                          + ", ".join(f'"{n}"' for n in names) + "; and for no other."}
+    # A pasted export's Agent keeps its own instructions whole (F1550): a reference put there, a retyped copy made
+    # whole; the card shows what is saved.
+    from core.native_builder import verbatim
+
+    if pasted := verbatim.sources(_state()):
+        fixed, wrong, _ = verbatim.whole({f"agent {n}": t for n, t in given.items()}, pasted)
+        if wrong:
+            return {"error": "\n".join(wrong)}
+        given = {n: fixed[f"agent {n}"] for n in given}
     if _holds_a_key(given):  # a key, or the door's mark where one was (SAI2's review, 3)
         return {"error": "Instructions never hold a key, a token or a password: the agent's tools carry those."}
     if any(MADE in text for text in given.values()):

@@ -2495,20 +2495,21 @@ async def check_fieldnames(browser) -> str:
 
 @check
 async def check_humanprompt(browser) -> str:
-    """A human step's prompt is edited like the engine fills it: `{{ state.key }}` only, never a global.
+    """A human step's prompt is edited like the engine fills it: `{{ state.key }}` and `{{ global.key }}`.
 
     It was a plain textarea while every other prompt was the markdown editor,
-    so it offered no keys at all. The engine fills a human prompt with the
-    run's state and never with a workspace variable — deliberately: the prompt
-    can be posted to a messaging channel, where one would leak (F5, D104).
+    so it offered no keys at all. The engine filled a human prompt with the
+    run's state and never with a workspace variable (F5, D104: the prompt can be
+    posted to a messaging channel); since F1556 (Naveen 11-12) it fills a plain
+    variable and never shows a secret one, so `{{` offers the run's state keys
+    and the workspace's variables, and the hint says a secret one is never shown.
     Since F1252 stage B (32a8bd5d) every renderer reads one form, `{{ state.x }}`,
-    so `{{` must offer the run's state keys and no `global.`, and the older
-    single brace offers nothing (F1422).
+    and the older single brace offers nothing (F1422).
     """
     oid = f"orch_uismoke_human_{int(time.time())}"
     api("/api/orchestrations", "POST", human_gate_orchestration(oid))
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
-    # A workspace variable to leak, so "no global" is asked of one that exists: a prompt's editor would offer it.
+    # A workspace variable, so the editor has one to offer (F1556: a plain one is filled in).
     await ctx.route("**/api/settings/variables", _answer({"values": {"glossary_url": "https://example.invalid"}}))
     page = await ctx.new_page()
     try:
@@ -2533,14 +2534,17 @@ async def check_humanprompt(browser) -> str:
         await page.keyboard.press("Backspace")
         await page.keyboard.type("gl")
         await asyncio.sleep(0.5)
-        leaked = [o for o in await page.get_by_role("listbox", name="Suggestions").get_by_role("option")
-                  .all_inner_texts() if "global." in o]
-        if leaked:
-            raise AssertionError(f"typing {{{{ gl offered {leaked!r} — a human prompt never fills a global")
+        variables = [o for o in await page.get_by_role("listbox", name="Suggestions").get_by_role("option")
+                     .all_inner_texts() if "global.glossary_url" in o]
+        if not variables:
+            raise AssertionError("typing {{ gl offered no workspace variable — a human prompt fills a plain one (F1556)")
+        hint = " ".join((await page.get_by_text("a secret one is never shown", exact=False).all_inner_texts()))
+        if not hint:
+            raise AssertionError("the human prompt's hint does not say a secret variable is never shown")
     finally:
         await ctx.close()
         drop_fixture(oid)
-    return f"{{{{ offers {len(offered)} state key(s) and no global; {{s offers nothing"
+    return f"{{{{ offers {len(offered)} state key(s) and the workspace's variables; {{s offers nothing"
 
 
 @check
@@ -7620,7 +7624,7 @@ async def check_humandictwarn(browser) -> str:
 
     A human step with fields stores the mapping it was answered with, so a key
     the schema types as `str` holds a dict, and a Print of `{state.key}` shows
-    a Python repr. The builder's validator catches both since B3; a flow made by
+    the whole mapping (as JSON since F1556). The builder's validator catches both since B3; a flow made by
     hand in the editor got no word of either.
     """
     oid = f"orch_uismoke_dict_{int(time.time())}"
@@ -7643,11 +7647,11 @@ async def check_humandictwarn(browser) -> str:
         ask, show = await said(f"{oid}_ask"), await said(f"{oid}_print")
         if "holds a mapping" not in ask:
             raise AssertionError("a fielded review step whose key is typed str gets no warning")
-        if "Python dict" not in show:
+        if "prints whole, as JSON" not in show:  # a person's text shows an object as JSON since F1556
             raise AssertionError("a Print of a fielded answer's whole key gets no warning")
         api("/api/orchestrations", "POST", review_dict_orchestration(oid, repaired=True))
         ask, show = await said(f"{oid}_ask"), await said(f"{oid}_print")
-        if "holds a mapping" in ask or "Python dict" in show:
+        if "holds a mapping" in ask or "prints whole, as JSON" in show:
             raise AssertionError("the repair the warnings name still warns")
         return "a fielded answer typed as text, or printed whole, is warned about, and its repair is not"
     finally:
@@ -18209,6 +18213,352 @@ async def check_brwstep(browser) -> str:
             "when switched on, a changed page pauses or lets a Browser agent find the way, and Record a new one keeps it "
             "as the workflow's")
 
+
+@check
+async def check_answerfields(browser) -> str:
+    """A model step's answer fields read back as their types on the LLM panel, and Extract JSON says it fails on text
+    with no JSON (F1553).
+
+    An LLM or Agent step declares the fields a later step reads (`output_fields`): the run asks the model for them and
+    holds it to them. The editor shows each by its name and its type in words (a yes/no, one of a few words with its
+    options), never a blank picker, at wide and phone widths in light and dark; `SMOKE_SHOTS`, when set, keeps a shot
+    of each. The Extract JSON panel says text with no JSON fails it and points to the answer fields instead.
+    """
+    oid = f"orch_uismoke_answer_{int(time.time())}"
+    fields = [{"name": "risky", "type": "boolean", "description": "Whether the change is risky"},
+              {"name": "fit", "type": "choice", "options": ["good", "poor"]}]
+    api("/api/orchestrations", "POST", {
+        "id": oid, "name": "UI smoke answer fields", "entry_step_id": "analyze", "steps": [
+            {"id": "analyze", "name": "Analyze Diff", "type": "llm", "prompt_template": "Is this diff risky?",
+             "output_key": "analyze", "output_fields": fields, "next_step_id": "parse_old",
+             "position_x": 0, "position_y": 0},
+            {"id": "parse_old", "name": "Parse Old", "type": "extract_json", "input_keys": ["analyze"],
+             "output_key": "parse_old", "next_step_id": "route", "position_x": 320, "position_y": 0},
+            {"id": "route", "name": "Risky?", "type": "if_else", "if_condition": "state.analyze.risky",
+             "if_true_step_id": "end", "if_false_step_id": "end", "position_x": 640, "position_y": 0},
+            {"id": "end", "name": "End", "type": "end", "position_x": 960, "position_y": 0},
+        ]})
+    problems: list[str] = []
+    shots = os.environ.get("SMOKE_SHOTS")
+    try:
+        for scheme in ("light", "dark"):
+            for width in (WIDE, PHONE):
+                ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]}, color_scheme=scheme)
+                page = await ctx.new_page()
+                try:
+                    await open_step(page, oid, "Analyze Diff")
+                    panel = page.get_by_test_id("answer-fields")
+                    await panel.scroll_into_view_if_needed()
+                    said = [(await page.get_by_role("combobox", name=f"Answer field {i} type").inner_text()).strip()
+                            for i in (1, 2)]
+                    if said != ["Yes / No", "One of"]:
+                        problems.append(f"{scheme} {width[0]}: the types read {said}, not Yes / No and One of")
+                    options = await page.get_by_role("textbox", name="Answer field 2 options").input_value()
+                    if options != "good, poor":
+                        problems.append(f"{scheme} {width[0]}: the choice's options read {options!r}")
+                    if shots:
+                        await panel.screenshot(path=os.path.join(shots, f"answerfields-llm-{scheme}-{width[0]}.png"))
+                    await page.keyboard.press("Escape")
+                    await open_step(page, oid, "Parse Old")
+                    note = " ".join((await page.locator("aside, [role=dialog], main").last.inner_text()).split())
+                    if "fails the step" not in note or "Answer fields" not in note:
+                        problems.append(f"{scheme} {width[0]}: the Extract JSON panel does not say it fails on no JSON")
+                    if shots and width == WIDE:
+                        await page.screenshot(path=os.path.join(shots, f"answerfields-extract-{scheme}-{width[0]}.png"))
+                finally:
+                    await ctx.close()
+    finally:
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "an LLM step's answer fields read as Yes / No and One of (good, poor), light and dark, wide and phone"
+
+
+@check
+async def check_wordswarning(browser) -> str:
+    """A condition deciding on a model's own words is warned on its step, with its fix, and a field a model step does
+    not declare too: the editor says what the server says (F1553's follow-ups, `fieldChecks.ts`). Warnings, never
+    errors: Run stays open. `SMOKE_SHOTS`, when set, keeps a shot of each panel, light and dark, wide and phone."""
+    oid = f"orch_uismoke_words_{int(time.time())}"
+    api("/api/orchestrations", "POST", {
+        "id": oid, "name": "UI smoke words", "entry_step_id": "classify", "steps": [
+            {"id": "classify", "name": "Classify", "type": "llm", "prompt_template": "Reply URGENT or NORMAL.",
+             "output_key": "classify", "next_step_id": "route", "position_x": 0, "position_y": 0},
+            {"id": "route", "name": "Urgent?", "type": "if_else",
+             "if_condition": "state.classify.strip().upper() == 'URGENT'", "if_true_step_id": "risky",
+             "if_false_step_id": "end", "position_x": 320, "position_y": 0},
+            {"id": "risky", "name": "Risky?", "type": "if_else", "if_condition": "state.classify.risky",
+             "if_true_step_id": "end", "if_false_step_id": "end", "position_x": 640, "position_y": 0},
+            {"id": "end", "name": "End", "type": "end", "position_x": 960, "position_y": 0},
+        ]})
+    problems: list[str] = []
+    shots = os.environ.get("SMOKE_SHOTS")
+    try:
+        for scheme in ("light", "dark"):
+            for width in (WIDE, PHONE):
+                ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]}, color_scheme=scheme)
+                page = await ctx.new_page()
+                try:
+                    for step, said in (("Urgent?", "reads the model's own words; declare an answer field"),
+                                       ("Risky?", "does not declare it in its answer fields")):
+                        await open_step(page, oid, step)
+                        note = page.get_by_text(said, exact=False).first
+                        if not await note.count():
+                            problems.append(f"{scheme} {width[0]}: “{step}” shows no “{said}”")
+                        elif shots:
+                            box = note.locator("xpath=ancestor::div[contains(@class,'space-y-1.5')][1]")
+                            target = box if await box.count() else note
+                            await target.screenshot(path=os.path.join(
+                                shots, f"wordswarning-{'words' if step == 'Urgent?' else 'field'}-{scheme}-{width[0]}.png"))
+                        await page.keyboard.press("Escape")
+                    if await page.get_by_role("button", name="Run now", exact=True).is_disabled():
+                        problems.append(f"{scheme} {width[0]}: a warning closed Run")
+                    if shots and width == WIDE:
+                        await open_step(page, oid, "Urgent?")
+                        await page.screenshot(path=os.path.join(shots, f"wordswarning-page-{scheme}-{width[0]}.png"))
+                finally:
+                    await ctx.close()
+    finally:
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "a decision on a model's words and an undeclared field are warned on their steps, Run open, light/dark"
+
+
+
+@check
+async def check_humanfieldnames(browser) -> str:
+    """Each of a Human step's fields keeps its own answer in the editor (F1557): a field the template packs named by
+    `key` shows by that name (the server reads it so: the step as served carries the name), Add field never repeats a
+    name, and two fields of one name are an error on their step, light and dark, wide and phone. `SMOKE_SHOTS`, when
+    set, keeps a shot of each panel."""
+    oid = f"orch_uismoke_fieldnames_{int(time.time())}"
+    api("/api/orchestrations", "POST", {
+        "id": oid, "name": "UI smoke field names", "entry_step_id": "packed", "steps": [
+            {"id": "packed", "name": "PR Review", "type": "human", "human_prompt": "Review the PR",
+             "output_key": "pr_approval", "human_fields": [
+                 {"key": "pr_decision", "label": "Decision", "type": "select",
+                  "options": ["approve", "request_changes"]},
+                 {"key": "pr_feedback", "label": "Feedback", "type": "textarea"}],
+             "next_step_id": "twice", "position_x": 0, "position_y": 0},
+            {"id": "twice", "name": "Sign Off", "type": "human", "human_prompt": "Sign off",
+             "output_key": "sign_off", "human_fields": [{"name": "field_2", "type": "string", "label": "Comment"},
+                                                        {"name": "field_2", "type": "boolean", "label": "Urgent?"}],
+             "next_step_id": "end", "position_x": 320, "position_y": 0},
+            {"id": "end", "name": "End", "type": "end", "position_x": 640, "position_y": 0},
+        ]})
+    problems: list[str] = []
+    shots = os.environ.get("SMOKE_SHOTS")
+    try:
+        for scheme in ("light", "dark"):
+            for width in (WIDE, PHONE):
+                ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]}, color_scheme=scheme)
+                page = await ctx.new_page()
+                where = f"{scheme} {width[0]}"
+                try:
+                    await open_step(page, oid, "PR Review")
+                    names = [await page.get_by_role("textbox", name=f"Field {i} name").input_value() for i in (1, 2)]
+                    if names != ["pr_decision", "pr_feedback"]:
+                        problems.append(f"{where}: the pack's fields read {names}, not their keys")
+                    if await page.get_by_text("has no name", exact=False).count():
+                        problems.append(f"{where}: the pack's fields are said to have no name")
+                    await page.get_by_role("button", name="Add field").click()
+                    await asyncio.sleep(0.5)
+                    added = await page.get_by_role("textbox", name="Field 3 name").input_value()
+                    if added in ("pr_decision", "pr_feedback") or not added:
+                        problems.append(f"{where}: Add field named the new field {added!r}")
+                    if shots:
+                        await page.screenshot(path=os.path.join(shots, f"humanfieldnames-pack-{scheme}-{width[0]}.png"))
+                    await page.keyboard.press("Escape")
+                    await open_step(page, oid, "Sign Off")
+                    said = page.get_by_text("Two fields are named “field_2”", exact=False).first
+                    if not await said.count():
+                        problems.append(f"{where}: two fields named field_2 are not said on their step")
+                    if shots:
+                        await page.screenshot(path=os.path.join(shots, f"humanfieldnames-twice-{scheme}-{width[0]}.png"))
+                finally:
+                    await ctx.close()
+    finally:
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return ("a pack's `key` fields show by name, Add field takes a new name, two fields of one name are an error, "
+            "light/dark, wide/phone")
+
+
+@check
+async def check_answerbranch(browser) -> str:
+    """An If/Else branches on a Human step's Yes / No or One of from two dropdowns (F1558): "Branch on an answer"
+    offers each with its values, picking both writes the condition, and the warning on a condition that reads the whole
+    answer goes once it reads a field. `SMOKE_SHOTS`, when set, keeps a shot before and after, light and dark, wide and
+    phone."""
+    oid = f"orch_uismoke_branch_{int(time.time())}"
+    api("/api/orchestrations", "POST", {
+        "id": oid, "name": "UI smoke answer branch", "entry_step_id": "review", "steps": [
+            {"id": "review", "name": "Review", "type": "human", "human_prompt": "Review the plan",
+             "output_key": "review", "human_fields": [
+                 {"name": "approved", "type": "boolean", "label": "Approve the plan?"},
+                 {"name": "decision", "type": "choice", "label": "Decision", "options": ["Yes", "No", "Later"]}],
+             "next_step_id": "gate", "position_x": 0, "position_y": 0},
+            {"id": "gate", "name": "Approved?", "type": "if_else", "if_condition": "state.review",
+             "if_true_step_id": "end", "if_false_step_id": "end", "position_x": 320, "position_y": 0},
+            {"id": "end", "name": "End", "type": "end", "position_x": 640, "position_y": 0},
+        ]})
+    problems: list[str] = []
+    shots = os.environ.get("SMOKE_SHOTS")
+    whole = "Decides on state.review whole"
+    try:
+        for scheme in ("light", "dark"):
+            for width in (WIDE, PHONE):
+                ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]}, color_scheme=scheme)
+                page = await ctx.new_page()
+                where = f"{scheme} {width[0]}"
+                try:
+                    await open_step(page, oid, "Approved?")
+                    condition = page.get_by_placeholder("state.result.flag == True")
+                    if not await page.get_by_text(whole, exact=False).count():
+                        problems.append(f"{where}: the whole answer read as a condition is not warned")
+                    if shots:
+                        await page.screenshot(path=os.path.join(shots, f"answerbranch-before-{scheme}-{width[0]}.png"))
+                    for field, value, want in (("Approve the plan?", "Yes", "state.review.approved == True"),
+                                               ("Decision", "Later", 'state.review.decision == "Later"')):
+                        await page.get_by_role("combobox", name="Answer field").click()
+                        offered = [" ".join((await o.inner_text()).split()) for o in await page.get_by_role("option").all()]
+                        if len(offered) != 2 or not all(o.startswith("Review › ") for o in offered):
+                            problems.append(f"{where}: the fields offered are {offered}")
+                        await page.get_by_role("option", name=re.compile(r"^Review › " + re.escape(field))).click()
+                        await page.get_by_role("combobox", name="Answer value").click()
+                        await page.get_by_role("option", name=value, exact=True).click()
+                        await asyncio.sleep(0.4)
+                        got = await condition.input_value()
+                        if got != want:
+                            problems.append(f"{where}: picking {field} = {value} wrote {got!r}, not {want!r}")
+                    if await page.get_by_text(whole, exact=False).count():
+                        problems.append(f"{where}: the warning stayed once the condition read a field")
+                    if shots:
+                        await page.screenshot(path=os.path.join(shots, f"answerbranch-after-{scheme}-{width[0]}.png"))
+                finally:
+                    await ctx.close()
+    finally:
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return ("an If/Else offers a Human step's Yes / No and One of with their values and writes the condition; the "
+            "whole-answer warning goes once it reads a field, light/dark, wide/phone")
+
+@check
+async def check_addroute(browser) -> str:
+    """Add route and Add case take a name the step does not have (F1559): after a delete, `route_<n + 1>` was one it
+    still had, and the add sent that route — the one the person had wired — to End. Light and dark, wide and phone;
+    `SMOKE_SHOTS`, when set, keeps a shot of each panel after the add."""
+    oid = f"orch_uismoke_addroute_{int(time.time())}"
+    api("/api/orchestrations", "POST", {
+        "id": oid, "name": "UI smoke add route", "entry_step_id": "judge", "steps": [
+            {"id": "judge", "name": "Judge", "type": "evaluator", "evaluator_prompt": "Pick one",
+             "route_map": {"route_2": "kept"}, "next_step_id": None, "position_x": 0, "position_y": 0},
+            {"id": "sw", "name": "Pick Case", "type": "switch", "switch_expression": "state.user_input",
+             "switch_cases": {"case_2": "kept"}, "switch_default_step_id": "kept", "position_x": 0, "position_y": 220},
+            {"id": "kept", "name": "Kept Target", "type": "print", "print_content": "kept", "output_key": "o",
+             "next_step_id": None, "position_x": 320, "position_y": 0},
+        ]})
+    problems: list[str] = []
+    shots = os.environ.get("SMOKE_SHOTS")
+    try:
+        for scheme in ("light", "dark"):
+            for width in (WIDE, PHONE):
+                ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]}, color_scheme=scheme)
+                page = await ctx.new_page()
+                where = f"{scheme} {width[0]}"
+                try:
+                    for step, add, label, kept in (("Judge", "Add route", "Route label", "Target for route route_2"),
+                                                   ("Pick Case", "Add case", None, "Target for case case_2")):
+                        await open_step(page, oid, step)
+                        await page.get_by_role("button", name=add, exact=True).click()
+                        await asyncio.sleep(0.5)
+                        if label:
+                            names = [await b.input_value() for b in await page.get_by_role("textbox", name=label).all()]
+                        else:
+                            names = [await b.input_value() for b in
+                                     await page.get_by_role("textbox", name=re.compile(r"^Case value ")).all()]
+                        want = ["route_2", "route_3"] if label else ["case_2", "case_3"]
+                        if names != want:
+                            problems.append(f"{where}: {add} left {names}, not {want}")
+                        target = " ".join((await page.get_by_role("button", name=kept, exact=True).inner_text()).split())
+                        if "Kept Target" not in target:
+                            problems.append(f"{where}: {add} sent the wired one to {target!r}")
+                        if shots:
+                            await page.screenshot(path=os.path.join(
+                                shots, f"addroute-{'route' if label else 'case'}-{scheme}-{width[0]}.png"))
+                        await page.keyboard.press("Escape")
+                finally:
+                    await ctx.close()
+    finally:
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "Add route and Add case after a delete take a new name and keep the wired one, light/dark, wide/phone"
+
+
+@check
+async def check_approvalcard(browser) -> str:
+    """Only an approval becomes the Approve and Decline buttons (F1560): a step asking a name, "Urgent?" and a
+    priority shows all three in its form with Send answer, and no Decline; a sign-off (`approved`) keeps the two
+    buttons. On the run page, light and dark, wide and phone; `SMOKE_SHOTS`, when set, keeps a shot of each card."""
+    stamp = int(time.time())
+    form, sign = f"orch_uismoke_card_form_{stamp}", f"orch_uismoke_card_sign_{stamp}"
+    for oid, fields in ((form, [{"name": "name", "type": "string", "label": "Customer name"},
+                                {"name": "urgent", "type": "boolean", "label": "Urgent?"},
+                                {"name": "priority", "type": "choice", "label": "Priority",
+                                 "options": ["High", "Low"]}]),
+                        (sign, [{"name": "approved", "type": "boolean", "label": "Approve the plan?"},
+                                {"name": "comment", "type": "textarea", "label": "Comment"}])):
+        api("/api/orchestrations", "POST", {
+            "id": oid, "name": f"UI smoke card {oid[-4:]}", "entry_step_id": "ask", "steps": [
+                {"id": "ask", "name": "Ask", "type": "human", "human_prompt": "Please answer",
+                 "output_key": "ask", "human_fields": fields, "next_step_id": None,
+                 "position_x": 0, "position_y": 0}]})
+    runs = {oid: _start_real_run(oid) for oid in (form, sign)}
+    await asyncio.sleep(1.5)
+    problems: list[str] = []
+    shots = os.environ.get("SMOKE_SHOTS")
+    try:
+        for scheme in ("light", "dark"):
+            for width in (WIDE, PHONE):
+                ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]}, color_scheme=scheme)
+                page = await ctx.new_page()
+                where = f"{scheme} {width[0]}"
+                try:
+                    for oid, run_id in runs.items():
+                        await page.goto(f"{APP}/runs/{quote(run_id)}", wait_until="domcontentloaded")
+                        card = page.get_by_role("region", name="Waiting for a person")
+                        await card.wait_for(timeout=30_000)
+                        await asyncio.sleep(SETTLE)
+                        text = " ".join((await card.inner_text()).split())
+                        decline = await card.get_by_role("button", name="Decline").count()
+                        send = await card.get_by_role("button", name="Send answer").count()
+                        if oid == form:
+                            if decline or not send or "Urgent?" not in text or "Customer name" not in text:
+                                problems.append(f"{where}: the form card reads {text[:160]!r} (Decline {decline}, "
+                                                f"Send answer {send})")
+                            if not await card.get_by_role("checkbox", name="Urgent?").count():
+                                problems.append(f"{where}: Urgent? is no Yes / No in the form")
+                        elif not decline or send or not await card.get_by_role("button", name="Approve the plan").count():
+                            problems.append(f"{where}: the sign-off card lost its Approve / Decline ({text[:120]!r})")
+                        if shots:
+                            await card.screenshot(path=os.path.join(
+                                shots, f"approvalcard-{'form' if oid == form else 'signoff'}-{scheme}-{width[0]}.png"))
+                finally:
+                    await ctx.close()
+    finally:
+        for run_id in runs.values():
+            try:
+                api(f"/api/orchestrations/runs/{run_id}/cancel", "POST", {})
+            except Exception:  # noqa: BLE001 — a fixture's run, cleaned up best effort
+                pass
+        drop_fixtures([form, sign])
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "a step's Urgent? stays in its form with Send answer; a sign-off keeps Approve / Decline, light/dark, wide/phone"
 
 async def main() -> int:
     global APP, API

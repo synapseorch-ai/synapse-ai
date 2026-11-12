@@ -15,13 +15,13 @@ from core.product_tools.roles import Role
 
 #: name → (kind, least role, flags)
 _SHAPE: dict[str, tuple[str, Role, dict[str, bool]]] = {
-    "run_orchestration": ("act", Role.BUILDER, {"open_world": True}),
+    "run_orchestration": ("act", Role.BUILDER, {"open_world": True, "additive": True}),
     "get_run": ("read", Role.VIEWER, {}),
-    "answer_run": ("act", Role.APPROVER, {"open_world": True}),
-    "cancel_run": ("act", Role.BUILDER, {"destructive": True}),
+    "answer_run": ("act", Role.APPROVER, {"open_world": True, "additive": True}),
+    "cancel_run": ("act", Role.BUILDER, {}),
     "list_runs": ("read", Role.VIEWER, {}),
-    "chat_with_agent": ("act", Role.BUILDER, {"open_world": True}),
-    "answer_tool_approval": ("act", Role.APPROVER, {"open_world": True}),
+    "chat_with_agent": ("act", Role.BUILDER, {"open_world": True, "additive": True}),
+    "answer_tool_approval": ("act", Role.APPROVER, {"open_world": True, "additive": True}),
 }
 
 

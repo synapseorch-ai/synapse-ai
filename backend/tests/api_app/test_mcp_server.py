@@ -142,6 +142,27 @@ class TestTheToolList:
         assert tools["run_client_brief"].description.startswith("Drafts a brief.")
         assert tools["update_orchestration"].annotations.destructiveHint is True
 
+    async def test_every_tool_listed_has_what_claudes_directory_asks(self, mcp_app, api_key, seed_orchestration):
+        """F1546 (DIR1): the Connectors Directory reads the list a client gets and flags any tool without a `title`
+        or without `readOnlyHint` or `destructiveHint` (claude.com/docs/connectors/building/submission). Every
+        product tool lacked a title; a workflow's own tool had one."""
+        await seed_orchestration(id="orch_brief", name="Client brief", description="Drafts a brief.",
+                                 offer_to_mcp=True)
+        async with mcp_session(mcp_app, api_key) as s:
+            tools = (await s.list_tools()).tools
+        assert len(tools) > 40
+        for t in tools:
+            assert t.title and t.title.strip(), t.name
+            assert t.annotations is not None and t.annotations.title == t.title, t.name
+            assert t.annotations.readOnlyHint is not None and t.annotations.destructiveHint is not None, t.name
+            assert len(t.name) <= 64, t.name
+        by_name = {t.name: t for t in tools}
+        assert by_name["list_agents"].title == "List agents"
+        assert by_name["run_client_brief"].title == "Client brief"
+        # F1548: an edit says it is destructive, so the client asks first; a create does not.
+        assert by_name["update_agent"].annotations.destructiveHint is True
+        assert by_name["create_agent"].annotations.destructiveHint is False
+
     async def test_the_builders_own_orchestration_is_not_a_tool(self, mcp_app, api_key):
         from _fakes import seed
         await seed.seed_orchestrations([

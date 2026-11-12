@@ -60,9 +60,13 @@ class TestTheCheck:
         """What a form sends for a field nobody filled in (F232's rule)."""
         assert check_answer([EMAIL, PICK], {"email": "", "pick": None}) == {"email": "", "pick": None}
 
-    def test_the_old_types_are_not_checked(self):
-        """Nothing answered today is refused: a number field given words passes as before."""
-        assert check_answer([COUNT], {"count": "abc"}) == {"count": "abc"}
+    def test_text_and_a_yes_no_pass_as_they_came_a_number_is_one(self):
+        """Text and a Yes / No's other words pass as before. A number field given words is refused since F1562
+        (Naveen 11-12): it passed as text, and a later `> 2` failed its If/Else."""
+        assert check_answer([{"name": "note", "type": "string"}], {"note": "abc"}) == {"note": "abc"}
+        assert check_answer([{"name": "ok", "type": "boolean"}], {"ok": "abc"}) == {"ok": "abc"}
+        with pytest.raises(BadAnswer, match="How many: “abc” is not a number"):
+            check_answer([COUNT], {"count": "abc"})
 
     def test_a_text_answer_is_not_checked(self):
         assert check_answer([EMAIL], "approve it") == "approve it"

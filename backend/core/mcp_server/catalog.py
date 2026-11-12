@@ -45,9 +45,8 @@ READ_TOOLS: tuple[str, ...] = _build.READS
 #: Tools that add or edit.
 BUILD_TOOLS: tuple[str, ...] = tuple(_build.ACTS)
 
-#: Build tools that replace or remove what is already there: every step of an
-#: orchestration, one step, or a tool or skill of the same name.
-OVERWRITING_TOOLS: frozenset[str] = _build.OVERWRITES
+#: Build tools that only add to what is there; every other one is marked destructive (F1548).
+ADDITIVE_TOOLS: frozenset[str] = _build.ADDITIVE
 
 #: Deletes, irreversible: previewed, then done with a confirmation token (D292).
 DELETE_TOOLS: tuple[str, ...] = tuple(_build.DELETES)
@@ -73,7 +72,8 @@ def _entry(name: str):
 
 
 def as_mcp_annotations(tool) -> types.ToolAnnotations:
-    return types.ToolAnnotations(**tool.annotations())
+    """The hints, and its title as well: a client reads the tool's own `title` or this one (F1546)."""
+    return types.ToolAnnotations(title=tool.title, **tool.annotations())
 
 
 def annotations_for(name: str) -> types.ToolAnnotations:
@@ -108,7 +108,7 @@ def builder_tools() -> list[types.Tool]:
         tool = registry.get(name)
         if tool.offered is not None and not tool.offered():
             continue
-        tools.append(types.Tool(name=name, description=tool.description,
+        tools.append(types.Tool(name=name, title=tool.title, description=tool.description,
                                 inputSchema=tool.schema(confirm_token=tool.needs_token("irreversible")),
                                 annotations=as_mcp_annotations(tool)))
     return tools

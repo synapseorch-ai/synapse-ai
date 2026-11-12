@@ -14,6 +14,7 @@ chat call; the document is small and the read is one row.
 """
 from __future__ import annotations
 
+from contextvars import ContextVar
 from typing import Any
 
 COLLECTION = "global_variables"
@@ -40,8 +41,20 @@ async def load() -> dict[str, Any]:
     document = await collections._resolved(stored)
     values = _values(document)
     raw = _values(stored)
-    hold_secrets({k: v for k, v in values.items() if k in raw and raw[k] != v})
+    secrets = {k: v for k, v in values.items() if k in raw and raw[k] != v}
+    hold_secrets(secrets)
+    _SECRET_NAMES.set(frozenset(secrets))
     return values
+
+
+#: The variables the last `load` in this task found stored as secret references (F1556): every one, however short its
+#: value (`hold_secrets` holds only the long), so a person's text never shows one.
+_SECRET_NAMES: ContextVar[frozenset[str]] = ContextVar("secret_variable_names", default=frozenset())
+
+
+def secret_names() -> frozenset[str]:
+    """The names of the variables the last `load` in this task found to be secrets."""
+    return _SECRET_NAMES.get()
 
 
 def named(values: dict[str, Any]) -> list[dict[str, str]]:

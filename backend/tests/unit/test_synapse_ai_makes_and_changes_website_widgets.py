@@ -264,7 +264,8 @@ def test_the_widget_tools_are_the_app_s_own_and_a_builder_s():
     for name in ("create_widget", "update_widget", "delete_widget", "rotate_widget_key", "set_widget_logo"):
         tool = registry.get(name)
         assert tool.app_only and tool.min_role == Role.BUILDER and tool.kind == "act", name
-    assert registry.get("delete_widget").irreversible and registry.get("rotate_widget_key").destructive
+    assert registry.get("delete_widget").irreversible
+    assert registry.get("rotate_widget_key").annotations()["destructiveHint"]  # F1548: an act is, unless it only adds
 
 
 @pytest.mark.parametrize("op,fields,words", [

@@ -12,7 +12,8 @@
 import type { Orchestration, StepConfig, StepIssue } from '@/types/orchestration';
 import { BUILTIN_STATE_KEYS } from './graph';
 import { normalizeStateType } from './stateTypes';
-import { humanFieldOptions, humanFieldType } from './humanFields';
+import { answerValueChecks, humanFieldNameIssues, humanFieldOptions, humanFieldType } from './humanFields';
+import { fieldChecks } from './fieldChecks';
 
 export interface ValidationResult {
     byStep: Record<string, StepIssue[]>;
@@ -308,7 +309,7 @@ function checkOrchestration(orch: Orchestration, agents?: { id: string; type?: s
     // The builder's validator raises the same two. A human step with fields
     // stores the mapping {field: value} it was answered with under its key, so
     // a key the schema types as text or a number holds the wrong thing, and a
-    // Print that shows the key whole prints a Python dict. Warnings, not
+    // Print that shows the key whole prints the mapping, as JSON (F1556). Warnings, not
     // errors: the run works, it just says the wrong thing.
     const schema = orch.state_schema || {};
     const fielded = new Map<string, { stepName: string; field: string }>();
@@ -319,6 +320,10 @@ function checkOrchestration(orch: Orchestration, agents?: { id: string; type?: s
             if (f && humanFieldType(f.type) === 'choice' && humanFieldOptions(f).length === 0) {
                 add(s.id, error(`Field “${f.name}” is a dropdown with no options`));
             }
+        }
+        // A field with no name, or another's, loses its answer: the answer keeps one value per name (F1557).
+        for (const issue of humanFieldNameIssues(s.human_fields || [], s.output_key?.trim() || 'human_response')) {
+            add(s.id, error(issue.message));
         }
         const names = (s.human_fields || []).map((f) => f?.name).filter((n): n is string => !!n);
         if (!names.length) continue;
@@ -340,12 +345,19 @@ function checkOrchestration(orch: Orchestration, agents?: { id: string; type?: s
         for (const [key, { stepName, field }] of fielded) {
             if (shown.has(key)) {
                 add(s.id, warning(
-                    `Shows {{ state.${key} }}, “${stepName}”’s whole answer, which prints as a Python dict: ` +
+                    `Shows {{ state.${key} }}, “${stepName}”’s whole answer, which is a mapping and prints whole, as JSON: ` +
                     `show one field, {{ state.${key}.${field} }}`,
                 ));
             }
         }
     }
+
+    // --- What a step reads out of another's answer (F1549, F1553), said as the server says it ---
+    // A field its writer never writes, a field a model step does not declare, a decision on a model's own words.
+    // Warnings: the run goes on as it does today, and the server's check says the same (`fieldChecks.ts`).
+    for (const check of fieldChecks(orch.steps, agents)) add(check.stepId, warning(check.message));
+    // A condition on a Yes / No or One of answer that cannot follow it (F1558): the server says the same.
+    for (const check of answerValueChecks(orch.steps)) add(check.stepId, warning(check.message));
 
     // --- Reachability from the entry point ---
     if (orch.entry_step_id && ids.has(orch.entry_step_id) && orch.steps.length > 1) {

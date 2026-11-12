@@ -61,9 +61,11 @@ def test_a_prompt_and_a_print_read_a_field_of_json_text():
     assert render_state_refs("{{ state.checked.inner.ok }}", STATE) == "True"
 
 
-def test_a_reference_into_text_that_is_not_json_is_left_as_written():
-    assert render_state_refs("{{ state.plain.say }}", STATE) == "{{ state.plain.say }}"
-    assert render_state_refs("{{ state.checked.nothing }}", STATE) == "{{ state.checked.nothing }}"
+def test_a_reference_into_text_that_is_not_json_is_said_in_words():
+    """A person's text says a field a value does not have in F1536's words (F1556, Naveen 11-12: it was left as
+    written)."""
+    assert render_state_refs("{{ state.plain.say }}", STATE) == "(no value: state.plain has no 'say')"
+    assert render_state_refs("{{ state.checked.nothing }}", STATE) == "(no value: state.checked has no 'nothing')"
     assert render_state_refs("{{ state.checked }}", STATE) == OUT
 
 
@@ -103,7 +105,7 @@ def test_text_nested_too_deep_to_read_has_no_fields_and_fails_nothing():
     deep = '{"a": ' * 100_000 + "1" + "}" * 100_000
     state = {"deep": deep}
     assert evaluate_expression("state.deep.a", state, "fallback").value == "fallback"
-    assert render_state_refs("{{ state.deep.a }}", state) == "{{ state.deep.a }}"
+    assert render_state_refs("{{ state.deep.a }}", state) == "(no value: state.deep has no 'a')"  # F1556
     assert _fill_task_template("{{ state.deep.a }}", state, {}) == "(no value: state.deep has no 'a')"  # F1536
     assert _fill_task_template("{{ state.deep.a }}", state, {}) == "(no value: state.deep has no 'a')"
 
@@ -135,7 +137,7 @@ def test_json_text_is_read_to_a_counted_depth_whatever_the_stack():
     assert render_tool_arguments({"x": "{{ state.deep.a }}"}, at)["x"]
 
     assert evaluate_expression("state.deep.a", over, "fallback").value == "fallback"
-    assert render_state_refs("{{ state.deep.a }}", over) == "{{ state.deep.a }}"
+    assert render_state_refs("{{ state.deep.a }}", over) == "(no value: state.deep has no 'a')"  # F1556
     assert _fill_task_template("{{ state.deep.a }}", over, {}) == "(no value: state.deep has no 'a')"  # F1536
     with pytest.raises(MissingStateRef):
         render_tool_arguments({"x": "{{ state.deep.a }}"}, over)

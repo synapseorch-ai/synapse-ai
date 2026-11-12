@@ -30,8 +30,8 @@
 # pillow-heif bundles libheif and libde265 (LGPL-3.0), dynamically linked.
 #
 # Upper bounds are mandatory here too — see the header of requirements.txt.
-docling-slim[format-pdf,models-local,convert-core,cli]>=2.131,<3
-docling-core>=2.98,<3
+docling-slim[format-pdf,models-local,convert-core,cli]>=2.142,<3
+docling-core>=2.104,<3
 # TableFormer imports cv2; docling-ibm-models leaves OpenCV to an extra, which full
 # `docling` reaches only through RapidOCR (left out here). Headless: no GUI libraries.
 opencv-python-headless>=4.6,<5

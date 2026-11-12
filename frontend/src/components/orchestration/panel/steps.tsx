@@ -7,7 +7,7 @@
  * here, not another branch in a 400-line conditional.
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { ExternalLink, Plus, Trash2 } from 'lucide-react';
 import { useHelpTopic } from '@/components/help';
 import { Button, Checkbox, CodeEditor, Combobox, Field, Input, MarkdownEditor, Segmented, Select, TemplateInput, TextLink } from '@/components/ui';
@@ -22,7 +22,9 @@ import {
 import { ExpressionVocabulary } from './ExpressionVocabulary';
 import { PythonEditor } from './PythonEditor';
 import { agentEditHref, agentKind, agentOptions, KIND_WORD, memberNames, teamSettings, type KindAgent } from '../agentKind';
-import { HUMAN_FIELD_TYPES, humanFieldOptions, humanFieldType } from '../humanFields';
+import { HUMAN_FIELD_TYPES, branchCondition, branchFields, branchPicked, humanFieldOptions, humanFieldType, isApproval, nextHumanFieldName, type BranchField } from '../humanFields';
+import { ANSWER_FIELD_TYPES, answerFieldNameOk, answerFieldOptions, answerFieldType } from '../answerFields';
+import { nextFreeName } from '../nextName';
 import { argumentRows, withArgument, type ToolWithSchema } from '../toolArguments';
 import { toolsRestricted } from '../allowedTools';
 
@@ -312,6 +314,95 @@ function OpenPicked({ agent }: { agent?: KindAgent }) {
     );
 }
 
+/**
+ * A model step's answer fields (F1553): the one object an LLM or Agent step answers when a later step reads its
+ * fields. The run asks the model for it and holds the model to it — asked once more, then the step fails — so a
+ * condition never branches on a guess. Optional: a step without them answers its text, as before.
+ */
+function AnswerFields({ step, update }: Pick<StepSectionProps, 'step' | 'update'>) {
+    const fields = step.output_fields || [];
+    const key = step.output_key || step.id;
+    const set = (next: typeof fields) => update({ output_fields: next.length ? next : undefined });
+    return (
+        <div className="space-y-1.5" data-testid="answer-fields">
+            <span className="block text-sm font-medium text-text">
+                Answer fields <span className="text-xs font-normal text-text-faint">(optional)</span>
+            </span>
+            <p className="text-[11px] text-text-faint">
+                When a later step decides on this answer, name what it reads here. The run asks the model for these
+                and holds it to them — asked once more, then the step fails rather than guess. Read one as{' '}
+                <span className="font-code">{`{{ state.${key}.${fields[0]?.name || 'name'} }}`}</span>.
+            </p>
+            {fields.map((field, idx) => {
+                const type = answerFieldType(field.type);
+                const change = (patch: Partial<typeof field>) => {
+                    const next = [...fields];
+                    next[idx] = { ...field, ...patch };
+                    set(next);
+                };
+                return (
+                    <div key={idx} className="space-y-1.5 rounded-md border border-border bg-surface-2/40 p-2">
+                        <div className="flex gap-1.5">
+                            <LocalInput
+                                className="font-code"
+                                value={field.name}
+                                aria-label={`Answer field ${idx + 1} name`}
+                                placeholder="field_name"
+                                onCommit={(name) => change({ name })}
+                            />
+                            <Select
+                                size="sm"
+                                aria-label={`Answer field ${idx + 1} type`}
+                                className="w-28 shrink-0"
+                                // A stored spelling it knows reads as its type without being rewritten; one it does
+                                // not is shown as itself, never blank (F75's rule).
+                                value={type ?? field.type ?? 'string'}
+                                onChange={(next) => change({ type: next })}
+                                options={type === null && field.type
+                                    ? [...ANSWER_FIELD_TYPES, { value: field.type, label: `unknown type “${field.type}”`, disabled: true }]
+                                    : ANSWER_FIELD_TYPES}
+                            />
+                            <button
+                                type="button"
+                                aria-label={`Remove answer field ${idx + 1}`}
+                                onClick={() => set(fields.filter((_, i) => i !== idx))}
+                                className="shrink-0 text-text-faint transition-colors hover:text-danger"
+                            >
+                                <Trash2 size={12} aria-hidden />
+                            </button>
+                        </div>
+                        {field.name && !answerFieldNameOk(field.name) && (
+                            <p className="text-[11px] text-danger">Letters, digits and _ only, so a later step can read it.</p>
+                        )}
+                        {type === 'choice' && (
+                            // The words it picks one of, comma-separated.
+                            <LocalInput
+                                value={answerFieldOptions(field).join(', ')}
+                                aria-label={`Answer field ${idx + 1} options`}
+                                placeholder="Options, comma-separated: urgent, normal"
+                                onCommit={(text) => change({ options: text.split(',').map((o) => o.trim()).filter(Boolean) })}
+                            />
+                        )}
+                        <LocalInput
+                            value={field.description ?? ''}
+                            aria-label={`Answer field ${idx + 1} description`}
+                            placeholder="What it holds — the model reads this"
+                            onCommit={(description) => change({ description: description || undefined })}
+                        />
+                    </div>
+                );
+            })}
+            <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => set([...fields, { name: nextHumanFieldName(fields), type: 'boolean' }])}
+            >
+                <Plus size={12} aria-hidden /> Add answer field
+            </Button>
+        </div>
+    );
+}
+
 function AgentSection(props: StepSectionProps) {
     const { step, update, agents, orchestration, showVaultHints } = props;
     return (
@@ -359,6 +450,10 @@ function AgentSection(props: StepSectionProps) {
             </Field>
             <AllowedTools {...props} />
             <FinishTools {...props} />
+            {/* A step that finishes with a tool answers that tool's result; one that runs a workflow, its steps'. */}
+            {!(step.finish_tools?.length) && agents.find((a: KindAgent) => a.id === step.agent_id)?.type !== 'orchestrator' && (
+                <AnswerFields step={step} update={update} />
+            )}
             <HistoryToggle step={step} update={update} />
             <SeesAttachmentsToggle step={step} update={update}
                 runsWorkflow={agents.find((a: any) => a.id === step.agent_id)?.type === 'orchestrator'} />
@@ -385,6 +480,7 @@ function LlmSection({ step, update, availableModels, modelHints, showVaultHints 
                     placeholder={'Summarize the following in 3 bullet points:\n\n{{ state.analysis_result }}'}
                 />
             </Field>
+            <AnswerFields step={step} update={update} />
             <Field label="Model override">
                 <ModelSelect value={step.model} onChange={(model) => update({ model })} availableModels={availableModels} hints={modelHints} />
             </Field>
@@ -675,8 +771,10 @@ function EvaluatorSection({ step, update, otherSteps, availableModels, modelHint
                         size="sm"
                         variant="secondary"
                         onClick={() => {
-                            const existing = Object.keys(step.route_map || {});
-                            update({ route_map: { ...(step.route_map || {}), [`route_${existing.length + 1}`]: null } });
+                            // Past every route the step has (F1559): the count alone named one it still had after a
+                            // delete, and the add sent that route to End.
+                            const name = nextFreeName('route_', Object.keys(step.route_map || {}));
+                            update({ route_map: { ...(step.route_map || {}), [name]: null } });
                         }}
                     >
                         <Plus size={12} aria-hidden /> Add route
@@ -933,12 +1031,11 @@ function HumanSection({ step, update }: StepSectionProps) {
                 composite
                 hint={
                     <>
-                        {/* The engine fills a human prompt with state only, never a workspace
-                            variable — on purpose: the prompt can be posted to a messaging
-                            channel, where one would leak (D104). */}
-                        Use <span className="font-code">{'{{ state.key }}'}</span> for context —
-                        type <span className="font-code">{'{{'}</span> to pick a key. <span className="font-code">{'{{ global.… }}'}</span> is
-                        not filled in here.
+                        {/* The engine fills a human prompt with state and the workspace's variables, but
+                            never a secret one: the prompt can be posted to a messaging channel, an email and
+                            the API (D104; F1556, Naveen 11-12). A gap is said in words. */}
+                        Use <span className="font-code">{'{{ state.key }}'}</span> for context and <span className="font-code">{'{{ global.name }}'}</span> for
+                        a workspace variable (a secret one is never shown) — type <span className="font-code">{'{{'}</span> to pick one.
                     </>
                 }
             >
@@ -946,7 +1043,7 @@ function HumanSection({ step, update }: StepSectionProps) {
                     key={step.id}
                     compact
                     rows={3}
-                    profile="state"
+                    profile="step-prompt"
                     value={step.human_prompt || ''}
                     onChange={(human_prompt) => update({ human_prompt })}
                     placeholder="What should the user decide?"
@@ -1007,6 +1104,25 @@ function HumanSection({ step, update }: StepSectionProps) {
                                 update({ human_fields: next });
                             }}
                         />
+                        {humanFieldType(field.type) === 'boolean' && (
+                            // The run asks an approval with Approve and Decline, any other Yes / No in the form (F1560):
+                            // named like one (approved) it is, unless its author says otherwise here.
+                            <div className="flex items-center gap-2">
+                                <Checkbox
+                                    id={`${step.id}-field-${idx}-approval`}
+                                    checked={isApproval(field)}
+                                    onChange={(checked) => {
+                                        const next = [...fields];
+                                        next[idx] = { ...field, approval: checked };
+                                        update({ human_fields: next });
+                                    }}
+                                    label={`Field ${idx + 1}: ask as Approve / Decline`}
+                                />
+                                <label htmlFor={`${step.id}-field-${idx}-approval`} className="cursor-pointer text-xs text-text-muted">
+                                    Ask as Approve / Decline
+                                </label>
+                            </div>
+                        )}
                         {humanFieldType(field.type) === 'choice' && (
                             // A dropdown's options, comma-separated; the person picks one (F455).
                             <LocalInput
@@ -1026,7 +1142,8 @@ function HumanSection({ step, update }: StepSectionProps) {
                     size="sm"
                     variant="secondary"
                     onClick={() =>
-                        update({ human_fields: [...fields, { name: `field_${fields.length + 1}`, type: 'string', label: '' }] })
+                        // Past every name the step has (F1557): the count alone repeated one after a delete.
+                        update({ human_fields: [...fields, { name: nextHumanFieldName(fields), type: 'string', label: '' }] })
                     }
                 >
                     <Plus size={12} aria-hidden /> Add field
@@ -1076,11 +1193,13 @@ function TransformSection({ step, update, codeRunnerNote, readOnly }: StepSectio
                 <code className="font-code">state.key</code> or <code className="font-code">state[&quot;key&quot;]</code>, and
                 assign to <code className="font-code">result</code> to write the output key.
             </Note>
-            {/* What a code step receives (F1359): the run's own message, and which steps answer an object. */}
+            {/* What a code step receives (F1359): the run's own message, and which steps answer an object. A human step
+                with no fields answers the words typed (F1549). */}
             <p className="text-[11px] text-text-faint">
                 The run&apos;s own message is <code className="font-code">state.user_input</code>. A human step&apos;s
-                answer is an object (<code className="font-code">{'{approved, feedback}'}</code>, or its fields by name):
-                read a field, as <code className="font-code">state.review.feedback</code>. A tool step&apos;s answer is an
+                answer is an object of its fields by name: read a field, as{' '}
+                <code className="font-code">state.review.feedback</code>; with no fields, it is {"the person's words"}.
+                A tool step&apos;s answer is an
                 object or a list when the workflow&apos;s state schema declares its key one (the AI builder declares it when
                 a later step reads its fields), otherwise the tool&apos;s text:{' '}
                 <code className="font-code">v if isinstance(v, (dict, list)) else json.loads(v)</code> reads either.
@@ -1105,8 +1224,13 @@ function ExtractJsonSection() {
             <Note>
                 <strong>Extract JSON</strong> — parses JSON from input text. Handles markdown fences
                 (<code className="font-code">```json</code>), raw JSON, and multiple objects. A single object is
-                stored directly; multiple objects are stored as an array.
+                stored directly; multiple objects are stored as an array. Text that holds no JSON fails the step,
+                so nothing after it branches on an empty result.
             </Note>
+            <p className="text-[11px] text-text-faint">
+                For a model&apos;s answer, give its LLM or Agent step <em>Answer fields</em> instead: the run asks
+                the model for them and holds it to them, with no step in between.
+            </p>
             <p className="text-[11px] text-text-faint">
                 Set <em>Input keys</em> below to say which shared-state values to scan; the result lands in the <em>Output key</em>.
             </p>
@@ -1126,12 +1250,11 @@ function PrintSection({ step, update }: StepSectionProps) {
                 composite
                 hint={
                     <>
-                        {/* Print fills in state only, never a workspace variable, so that is all it
-                            offers — and no `@`: a Print step is not a prompt, so nothing expands a
-                            vault mention in one. */}
-                        Use <span className="font-code">{'{{ state.key }}'}</span> or <span className="font-code">{'{{ state.key.nested }}'}</span> —
-                        type <span className="font-code">{'{{'}</span> to pick a key. <span className="font-code">{'{{ global.… }}'}</span> is
-                        not filled in here.
+                        {/* Print fills in state and the workspace's variables, never a secret one (F1556)
+                            — and no `@`: a Print step is not a prompt, so nothing expands a vault mention
+                            in one. */}
+                        Use <span className="font-code">{'{{ state.key }}'}</span>, <span className="font-code">{'{{ state.key.nested }}'}</span> or <span className="font-code">{'{{ global.name }}'}</span>
+                        (a secret one is never shown) — type <span className="font-code">{'{{'}</span> to pick one.
                     </>
                 }
             >
@@ -1139,7 +1262,7 @@ function PrintSection({ step, update }: StepSectionProps) {
                     key={step.id}
                     compact
                     rows={6}
-                    profile="state"
+                    profile="step-prompt"
                     value={step.print_content || ''}
                     onChange={(print_content) => update({ print_content })}
                     placeholder={'# Summary\n\nThe analysis result is: {{ state.analysis_result }}'}
@@ -1149,7 +1272,7 @@ function PrintSection({ step, update }: StepSectionProps) {
     );
 }
 
-function IfElseSection({ step, update, otherSteps, stateKeys }: StepSectionProps) {
+function IfElseSection({ step, update, otherSteps, stateKeys, orchestration }: StepSectionProps) {
     return (
         <div className="space-y-3">
             <Note>
@@ -1165,6 +1288,12 @@ function IfElseSection({ step, update, otherSteps, stateKeys }: StepSectionProps
                     placeholder="state.result.flag == True"
                 />
             </Field>
+            <AnswerBranch
+                steps={orchestration?.steps ?? []}
+                selfId={step.id}
+                condition={step.if_condition || ''}
+                onPick={(if_condition) => update({ if_condition })}
+            />
             <ExpressionVocabulary />
             <StateKeyHelper stateKeys={stateKeys} onInsert={(token) => update({ if_condition: ((step.if_condition || '') + ' ' + token).trimStart() })} />
             <Field label="True path">
@@ -1184,6 +1313,60 @@ function IfElseSection({ step, update, otherSteps, stateKeys }: StepSectionProps
                 />
             </Field>
         </div>
+    );
+}
+
+const branchId = (c: BranchField) => `${c.key}.${c.field}`;
+
+/**
+ * "Branch on an answer" (F1558, Naveen 11-12): a Yes / No or One of a step asks (a Human step's field) or answers (a
+ * model step's answer field), and the value that takes the True path, written as the whole condition. A condition
+ * written so is read back into the two dropdowns; a field chosen with no value yet is held for the condition it was
+ * chosen under, so a condition typed since shows its own.
+ */
+function AnswerBranch({ steps, selfId, condition, onPick }: {
+    steps: StepConfig[];
+    selfId: string;
+    condition: string;
+    onPick: (condition: string) => void;
+}) {
+    const choices = useMemo(() => branchFields(steps, selfId), [steps, selfId]);
+    const picked = useMemo(() => branchPicked(condition, choices), [condition, choices]);
+    const [chosen, setChosen] = useState<{ id: string; under: string } | null>(null);
+    if (!choices.length) return null;
+    const fieldId = chosen && chosen.under === condition ? chosen.id : picked ? branchId(picked.field) : undefined;
+    const field = choices.find((c) => branchId(c) === fieldId);
+    return (
+        <Field
+            label="Branch on an answer"
+            hint="A Yes / No or One of a step asks or answers: pick it and the value that takes the True path. It writes the condition."
+        >
+            <div className="flex gap-1.5">
+                <Select
+                    size="sm"
+                    aria-label="Answer field"
+                    className="min-w-0 flex-1"
+                    placeholder="Choose a field…"
+                    value={fieldId}
+                    onChange={(id) => setChosen({ id, under: condition })}
+                    options={choices.map((c) => ({ value: branchId(c), label: c.label, hint: `state.${c.key}.${c.field}` }))}
+                />
+                <Select
+                    size="sm"
+                    aria-label="Answer value"
+                    className="w-32 shrink-0"
+                    placeholder="Value…"
+                    disabled={!field}
+                    value={picked && field && branchId(picked.field) === branchId(field) ? picked.literal : undefined}
+                    onChange={(value) => {
+                        if (!field) return;
+                        setChosen(null);
+                        onPick(branchCondition(field, value));
+                    }}
+                    options={field?.values ?? []}
+                />
+            </div>
+        </Field>
     );
 }
 
@@ -1248,8 +1431,9 @@ function SwitchSection({ step, update, otherSteps, stateKeys }: StepSectionProps
                     size="sm"
                     variant="secondary"
                     onClick={() => {
-                        const existing = Object.keys(step.switch_cases || {});
-                        update({ switch_cases: { ...(step.switch_cases || {}), [`case_${existing.length + 1}`]: null } });
+                        // Past every case the step has (F1559), as Add route.
+                        const name = nextFreeName('case_', Object.keys(step.switch_cases || {}));
+                        update({ switch_cases: { ...(step.switch_cases || {}), [name]: null } });
                     }}
                 >
                     <Plus size={12} aria-hidden /> Add case

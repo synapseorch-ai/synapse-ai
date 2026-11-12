@@ -157,14 +157,15 @@ class TestWhatIsLeftAlone:
 
 class TestReachingTheNextStep:
     async def test_the_typed_value_is_what_a_later_step_reads(self):
-        # The point of the whole thing: the next step sees a list, not text.
+        # The point of the whole thing: the next step sees a list, not text. A person's text shows a list as JSON
+        # since F1556 (it was Python's repr), as the text was written, so its second item tells the list from text.
         events = await _run(_writes(
             '["a", "b"]',
             extra_steps=[{"id": "s2", "name": "Reader", "type": "print",
-                          "print_content": "count={state.rows}", "output_key": "seen",
+                          "print_content": "count={state.rows} second={state.rows.1}", "output_key": "seen",
                           "next_step_id": None}],
         ))
-        assert _final_state(events)["seen"] == "count=['a', 'b']"
+        assert _final_state(events)["seen"] == 'count=["a", "b"] second=b'
 
     async def test_parallel_branch_outputs_are_typed(self):
         # `output_key` alone would miss these — the parallel container's own

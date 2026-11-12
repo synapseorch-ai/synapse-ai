@@ -73,8 +73,9 @@ def tools() -> list[types.Tool]:
 
     if not knowledge_enabled():
         return []
-    return [types.Tool(name=NAME, description=DESCRIPTION, inputSchema=SEARCH_SCHEMA,
-                       annotations=catalog.annotations_for(NAME))]
+    annotations = catalog.annotations_for(NAME)
+    return [types.Tool(name=NAME, title=annotations.title, description=DESCRIPTION, inputSchema=SEARCH_SCHEMA,
+                       annotations=annotations)]
 
 
 def key_id(principal: Any) -> str | None:

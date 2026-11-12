@@ -537,6 +537,47 @@ _CMPOPS = {
 }
 
 
+_OP_WORDS = {ast.Lt: '<', ast.LtE: '<=', ast.Gt: '>', ast.GtE: '>=', ast.In: 'in', ast.NotIn: 'not in'}
+
+
+def _kind(value: Any) -> str:
+    """A value's kind as a person says it."""
+    if isinstance(value, bool):
+        return 'true/false'
+    if isinstance(value, (int, float)):
+        return 'a number'
+    if isinstance(value, str):
+        return 'text'
+    if isinstance(value, (list, tuple)):
+        return 'a list'
+    if isinstance(value, dict):
+        return 'an object'
+    return type(value).__name__
+
+
+def _shown(value: Any, limit: int = 40) -> str:
+    text = repr(_raw(value))
+    return text if len(text) <= limit else text[:limit - 1] + '…'
+
+
+def _mismatch(exc: TypeError, op: ast.cmpop, left_node: ast.AST, left: Any, right_node: ast.AST,
+              right: Any) -> TypeError:
+    """A comparison of values that cannot be compared, in words (F1562): what each side is and what the operator
+    takes, where Python said "'>' not supported between instances of 'str' and 'int'". A None the run has not written
+    keeps Python's words, which say it is one (F1433 reads them as data)."""
+    words = _OP_WORDS.get(type(op))
+    if words is None or _raw(left) is None or _raw(right) is None:
+        return exc
+    def said(node: ast.AST, value: Any) -> str:  # a literal is its own words; anything else says what it held
+        held = '' if isinstance(node, ast.Constant) else f' ({_shown(value)})'
+        return f'`{ast.unparse(node)}` is {_kind(value)}{held}'
+
+    if type(op) in (ast.In, ast.NotIn):
+        return TypeError(f'{said(right_node, right)}: `{words}` looks inside text, a list or an object')
+    return TypeError(f'{said(left_node, left)} and {said(right_node, right)}: `{words}` compares a number with a '
+                     f'number, or text with text — make them one kind (int(…), float(…) or str(…))')
+
+
 class _Walk:
     __slots__ = ('state', 'work', 'unwritten', 'missed')
 
@@ -720,14 +761,18 @@ class _Walk:
         return _BINOPS[kind](left, right)
 
     def _compare(self, node):
-        left = self._eval(node.left)
+        left, left_node = self._eval(node.left), node.left
         for op, comparator in zip(node.ops, node.comparators):
             right = self._eval(comparator)
             if type(op) in (ast.In, ast.NotIn):
                 self._spend(_size(right))  # a scan of what it looks in (F965)
-            if not _CMPOPS[type(op)](left, right):
+            try:
+                holds = _CMPOPS[type(op)](left, right)
+            except TypeError as exc:
+                raise _mismatch(exc, op, left_node, left, comparator, right) from None
+            if not holds:
                 return False
-            left = right
+            left, left_node = right, comparator
         return True
 
     def _ifexp(self, node):

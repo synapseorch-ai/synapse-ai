@@ -25,6 +25,8 @@ NOT_EVENTS = frozenset({
     "array", "boolean", "integer", "number", "object", "string", "function",
     # Model request parts and options.
     "text", "image", "image_url", "base64", "adaptive", "enabled", "ephemeral", "default",
+    # OpenAI's structured answer (`response_format`), asked of an llm step that declares its answer fields (F1553).
+    "json_schema",
     # Agent, tool and vault kinds; a native-builder step; voice relay frames; ASGI messages; a header name.
     "builder", "conversational", "orchestrator", "mcp_native", "file", "folder", "end",
     "http.response.start", "http.response.body", "SHARED_KEY",

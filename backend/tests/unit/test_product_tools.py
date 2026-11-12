@@ -95,16 +95,51 @@ class TestAnnotationsComeFromTheFlags:
             "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False,
         }
 
-    def test_an_act_is_not_destructive_unless_irreversible(self):
-        assert _act().annotations()["destructiveHint"] is False
+    def test_an_act_is_destructive_unless_it_only_adds(self):
+        """F1548 (Naveen 11-12): an act that changes, replaces, stops or removes what is there is destructive, so a
+        client asks its person first; only one that says it adds alone is not. MCP's own default for a tool that
+        is not read-only, so a new act falls under the rule without anyone remembering it."""
+        assert _act().annotations()["destructiveHint"] is True
+        assert _act(additive=True).annotations()["destructiveHint"] is False
         assert _act(irreversible=True).annotations()["destructiveHint"] is True
         assert _act(idempotent=True).annotations()["idempotentHint"] is True
         assert _act(open_world=True).annotations()["openWorldHint"] is True
 
     def test_an_overwrite_or_a_stop_is_destructive_without_a_token(self):
-        tool = _act(destructive=True)
+        tool = _act()
         assert tool.annotations()["destructiveHint"] is True
         assert not tool.needs_token("irreversible")
+
+    def test_only_an_act_can_say_it_only_adds_and_a_delete_cannot(self):
+        with pytest.raises(ValueError, match="additive"):
+            _tool(additive=True)
+        with pytest.raises(ValueError, match="additive"):
+            _act(additive=True, irreversible=True)
+
+
+class TestEveryEntryHasATitle:
+    """F1546 (DIR1): Claude's Connectors Directory takes a server only when every tool has a `title` a person
+    reads (its listing, a client's permission prompt), and none had one. An entry says its title from its name
+    unless it states one, so a new entry can never be without one."""
+
+    def test_its_name_is_said_as_words(self):
+        assert _tool("list_agents").title == "List agents"
+        assert _act("chat_with_agent").title == "Chat with agent"
+
+    def test_a_word_is_spelled_as_its_owner_spells_it(self):
+        assert _act("create_http_tool").title == "Create HTTP tool"
+        assert _act("test_python_tool").title == "Test Python tool"
+        assert _act("import_openapi").title == "Import OpenAPI"
+        assert _tool("list_db_configs").title == "List database configs"
+
+    def test_a_stated_title_is_kept(self):
+        assert _tool("get_tools_detail", title="Get tool details").title == "Get tool details"
+
+    def test_a_host_that_rewraps_an_entry_keeps_its_title(self):
+        """Cloud re-registers some entries with `dataclasses.replace` (its audit, its evals host)."""
+        import dataclasses
+
+        assert dataclasses.replace(_act("create_http_tool"), self_audited=True).title == "Create HTTP tool"
 
 
 class TestWhoIsOfferedWhat:

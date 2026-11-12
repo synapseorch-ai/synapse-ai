@@ -288,7 +288,7 @@ def entries() -> list[ProductTool]:
         ProductTool(name="add_board_card", description="Add a card to a board, as the person.",
                     input_schema={"type": "object", "properties": {
                         **_BOARD, "title": {"type": "string"}, "body": {"type": "string"}}, "required": ["board", "title"]},
-                    handler=_add_card, audit_action="board.card.added",
+                    handler=_add_card, additive=True, audit_action="board.card.added",
                     target=lambda a, r: ("board_card", str(((r or {}).get("card") or {}).get("id") or "")), **act),
         ProductTool(name="update_board_card",
                     description="Close a card (done or failed, with its result), reopen it, or change its title or text.",
@@ -302,12 +302,12 @@ def entries() -> list[ProductTool]:
         ProductTool(name="comment_on_card", description="Comment on a card, as the person.",
                     input_schema={"type": "object", "properties": {**_CARD, "text": {"type": "string"}},
                                   "required": ["card_id", "text"]},
-                    handler=_comment, audit_action="board.card.commented",
+                    handler=_comment, additive=True, audit_action="board.card.commented",
                     target=lambda a, r: ("board_card", str(a.get("card_id"))), **act),
         ProductTool(name="create_board", description="Make a shared board.",
                     input_schema={"type": "object", "properties": {
                         "name": {"type": "string"}, "description": {"type": "string"}}, "required": ["name"]},
-                    handler=_create, audit_action="board.created",
+                    handler=_create, additive=True, audit_action="board.created",
                     target=lambda a, r: ("board", str((r or {}).get("id") or "")), **act),
         ProductTool(name="give_board_access",
                     description="Let an agent, a workflow or a schedule add cards to a shared board ('add') or work "

@@ -254,6 +254,37 @@ def _no_answer_reason(step_name: str, no_answer: dict) -> str:
             "step's turn limit (Max turns, in its settings) if it needs more.")
 
 
+def _answer_repair(step: StepConfig, run: OrchestrationRun, fields: list[dict], prompt: str, said: Any,
+                   problems: list[str], agent: dict | None):
+    """The one more ask an Agent step's answer gets when it misses its `output_fields` (F1553): to the agent's own
+    model (the step's, else the agent's, else the run's), with its task and its answer and no tools. Returned as the
+    call, for the step to hand to `ModelWait`."""
+    from core.config import load_settings
+    from core.llm_providers import detect_mode_from_model, generate_response as llm_generate
+
+    from . import output_fields as _answer
+
+    settings = load_settings()
+
+    def picked(model: Any) -> str | None:
+        return model if isinstance(model, str) and model.strip() and model.strip().lower() != "default" else None
+
+    model = picked(step.model) or picked((agent or {}).get("model")) or settings.get("model", "mistral")
+    return llm_generate(
+        prompt_msg=_answer.repair_prompt(prompt, said, problems, fields),
+        sys_prompt=str((agent or {}).get("system_prompt") or "You are a helpful assistant."),
+        mode=detect_mode_from_model(model),
+        current_model=model,
+        current_settings=settings,
+        reasoning_effort=settings.get("reasoning_effort"),
+        session_id=run.session_id,
+        agent_id=step.agent_id or "agent_step",
+        source="orchestration",
+        run_id=run.run_id,
+        response_schema=_answer.json_schema(fields),
+    )
+
+
 class AgentStepExecutor:
     """Run a sub-agent's ReAct loop. Reuses the existing engine.
 
@@ -282,6 +313,12 @@ class AgentStepExecutor:
         # orchestrator agent needs no tools, so it is resolved without them.
         resolved = await resolve_for_run(engine, step.agent_id, tools=False)
         target_agent = resolved.agent if resolved else None
+        if target_agent and target_agent.get("type") == "orchestrator" and step.output_fields:
+            # A workflow's result is its own steps' (F1553): the validator refuses answer fields here, and a step
+            # saved with them anyway stops rather than run with fields nothing holds it to.
+            raise RuntimeError(
+                f"Agent step '{step.name}' runs a workflow, whose result is what its own steps make, so it takes no "
+                "answer fields: take them off the step, or declare them on the workflow's own model step.")
         if target_agent and target_agent.get("type") == "orchestrator":
             # The child is handed this step's task, not the prompt an agent here
             # would get (F252): that prompt — this workflow's role, goal and
@@ -305,6 +342,12 @@ class AgentStepExecutor:
                 step, run, engine, transition
             )
         inputs_snapshot = snapshot_inputs(step, run, engine)
+        # Its answer's fields (F1553): asked for in its task; its final answer is read for them below.
+        from . import output_fields as _answer
+
+        fields = _answer.normalised(step.output_fields)
+        if fields:
+            prompt = f"{prompt}\n\n{_answer.instruction(fields)}"
 
         # Emit prompt for the orchestration logger (filtered out before SSE)
         yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": prompt,
@@ -432,7 +475,8 @@ class AgentStepExecutor:
                 finish_tools=list(step.finish_tools) or None,
                 # With none, it may save files and finish with one (D339 P4): the output is then the file's reference.
                 # Not in the native builder's own run, whose steps' tools are its bundle's (and E's to measure).
-                output_step=None if step.finish_tools or _is_native_builder(engine) else step.id,
+                # Not for a step that answers its declared fields (F1553): its answer is that object, never a file.
+                output_step=None if step.finish_tools or fields or _is_native_builder(engine) else step.id,
             ):
                 if event.get("type") == "human_input_required":
                     parked = True
@@ -586,6 +630,25 @@ class AgentStepExecutor:
             raise RuntimeError(_no_answer_reason(step.name, no_answer))
         if final_response is None:
             raise RuntimeError(f"Agent step '{step.name}' ended without producing a final response")
+
+        if fields and not isinstance(final_response, dict):
+            # The object it declared, typed; a miss is asked once more of its own model, with its task and its answer,
+            # then the step fails (F1553): never a branch on a guess.
+            answer, problems = _answer.read(fields, final_response)
+            if problems:
+                from core.model_wait import ModelWait
+
+                _rwait = ModelWait(_answer_repair(step, run, fields, prompt, final_response, problems, target_agent),
+                                   label=f"Agent step '{step.name}'",
+                                   extra={"orch_step_id": step.id, "step_name": step.name})
+                async for _wait_event in _rwait.events():
+                    yield _wait_event
+                again = _rwait.result
+                answer, still = _answer.read(fields, again)
+                if still:
+                    raise RuntimeError(_answer.missing(step.name, still, again))
+                yield {"type": "step_warning", "orch_step_id": step.id, "message": _answer.repaired(step.name, problems)}
+            final_response = answer
 
         # Clean completion leaves no transcript residue (deliberate
         # re-invocations — loops, evaluator retries — rely on _exec_memory,
@@ -2759,37 +2822,93 @@ class LoopStepExecutor:
             _restore()
 
 
-def render_state_refs(text: str, state: dict) -> str:
-    """`{{ state.key }}` and `{{ state.key.nested.path }}` in text, from shared state: the one form (`STATE_REF`,
-    F1252), which a step's templates are written in as the step is read.
+#: What a person reads for a workspace variable stored as a secret (F1556, Naveen 11-12): never its value.
+SECRET_NOT_SHOWN = "(a secret is not shown here)"
 
-    A reference that resolves to nothing is left as written, so a typo shows
-    rather than vanishing. A human step's prompt and a Print's content read
-    through this one function; the prompt used to read only top-level keys.
-    A step into a value held as JSON text reads the JSON (F801), as a set
-    argument's reference does: a builder tool's output is JSON text in state.
+
+def render_state_refs(text: str, state: dict, variables: dict | None = None, secrets: Any = ()) -> str:
+    """`{{ state.a.b }}` and `{{ global.x }}` in a person's text, from the run: a Human step's question, its fields'
+    labels and options (`shown_fields`) and a Print. The one form (`templating.REF`, F1252), spaced or not.
+
+    A value is shown as a person reads it: text as it is, an object or a list as JSON (as a model's prompt reads it,
+    non-ASCII as written), a step output saved to the vault as an excerpt and its file (D339 P4); a step into JSON
+    text reads the JSON (F801). What names nothing is said in F1536's words, the words a model's prompt says it in,
+    never left as braces (F1556, Naveen 11-12): a key no step has written yet "(no value yet: no step has written
+    state.x)" — as an Evaluator's prompt says it, for a reader who answers rather than drafts — a field a value
+    lacks "(no value: state.review has no 'score')", a variable there is none of "(no value: no variable named
+    'tone')". A bare `{{ x }}` and the older single-brace form are left as written.
+
+    A workspace variable (`variables`) is filled in, and one stored as a secret reads `SECRET_NOT_SHOWN` (Naveen
+    11-12, replacing D104's rule that none was): the question goes to a channel, an email and the API. A secret is
+    one named in `secrets` (`variables.secret_names`, the engine's `secret_variables`) or whose value this task holds
+    (`secret_scrub.held_secrets`: `variables.load` holds each a secret reference resolved to).
     """
-    from core.expressions import _json_object
-    from core.step_refs import MissingOutput, for_person, is_ref, resolved
+    from core import templating as _templating
+    from core.secret_scrub import held_secrets
+    from core.step_refs import MissingOutput, for_person, is_ref
+
+    from .context import _not_there
+
+    if not isinstance(text, str) or "{{" not in text:
+        return text
+    context = {"state": state, "global": variables or {}}
+    held: set[str] | None = None
 
     def _resolve(match: re.Match) -> str:
-        val = state
+        nonlocal held
+        parts = match.group(1).split(".")
+        if parts[0] not in ("state", "global") or len(parts) < 2:
+            return match.group(0)
+        if parts[0] == "state":
+            top = state.get(parts[1])
+            if top is None or (len(parts) > 2 and not is_ref(top) and top in ("", {}, [])):
+                return f"(no value yet: no step has written state.{parts[1]})"
         try:
-            for part in match.group(1).split("."):
-                if is_ref(val):
-                    val = resolved(val)  # a saved output, read as what it was (D339 P4)
-                if isinstance(val, str):
-                    val = _json_object(val)
-                val = val.get(part) if isinstance(val, dict) else None
-                if val is None:
-                    break
+            found, value = _templating.lookup(match.group(1), context, keep_ref=True)
         except MissingOutput as exc:
             return f"({exc})"
-        if is_ref(val):
-            return for_person(val)  # an excerpt and the file, never the whole of it
-        return str(val) if val is not None else match.group(0)
+        if not found:
+            return _not_there(parts, context)
+        if parts[0] == "global":
+            if held is None:
+                held = set(held_secrets().values())
+            stored = context["global"].get(parts[1])
+            if parts[1] in secrets or (isinstance(stored, str) and stored in held):
+                return SECRET_NOT_SHOWN
+        if is_ref(value):
+            return for_person(value)  # an excerpt and the file, never the whole of it
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False, default=str)
+        return "" if value is None else str(value)
 
-    return STATE_REF.sub(_resolve, text)
+    return _templating.REF.sub(_resolve, text)
+
+
+def shown_fields(fields: Any, state: dict, variables: dict | None = None, secrets: Any = ()) -> Any:
+    """A Human step's fields as the person is asked them (F1556): each label and each dropdown option filled in from
+    the run by the renderer its question takes (`render_state_refs`, its variables and secrets alike), every other
+    key as the step wrote it.
+
+    The run asks with these — its live event and its record, which the app's form, the API's and MCP's waiting
+    payload and the bell read — so an answer is checked against an option as it was shown (`answers` reads
+    `run.human_fields`). The step as saved keeps its templates. What is not a list of fields comes back as it came.
+    """
+    if not isinstance(fields, list):
+        return fields or []
+
+    def fill(text: str) -> str:
+        return render_state_refs(text, state, variables, secrets)
+
+    shown = []
+    for field in fields:
+        if isinstance(field, dict):
+            field = dict(field)
+            if isinstance(field.get("label"), str):
+                field["label"] = fill(field["label"])
+            if isinstance(field.get("options"), list):
+                field["options"] = [fill(o) if isinstance(o, str) else o for o in field["options"]]
+        shown.append(field)
+    return shown
 
 
 class MissingStateRef(ValueError):
@@ -3071,11 +3190,16 @@ class HumanStepExecutor:
     async def execute(
         self, step: StepConfig, run: OrchestrationRun, engine: "OrchestrationEngine"
     ) -> AsyncGenerator[dict, None]:
+        # The workspace's variables, a secret never shown (F1556): the question goes to a channel, an email and the API.
+        variables = getattr(engine, "global_variables", None) or {}
+        secrets = getattr(engine, "secret_variables", None) or frozenset()
         prompt = render_state_refs(
-            step.human_prompt or "Please provide input to continue.", run.shared_state)
+            step.human_prompt or "Please provide input to continue.", run.shared_state, variables, secrets)
+        # Its fields as the person reads them (F1556): every door reads these, and the answer is checked against them.
+        fields = shown_fields(step.human_fields, run.shared_state, variables, secrets)
 
         run.human_prompt = prompt
-        run.human_fields = step.human_fields
+        run.human_fields = fields
 
         agent_context, context_key, typed = asked_context(step.input_keys, run.shared_state, run.step_history)
         channel_id = step.human_channel_id
@@ -3084,7 +3208,7 @@ class HumanStepExecutor:
             "type": "human_input_required",
             "orch_step_id": step.id,
             "prompt": prompt,
-            "fields": step.human_fields,
+            "fields": fields,
             "run_id": run.run_id,
             "agent_context": agent_context,
             "context_key": context_key,
@@ -3253,11 +3377,18 @@ class LLMStepExecutor:
         if transition is None:
             from .context import TransitionContext
             transition = TransitionContext(origin_type="entry", execution_number=1)
+        from . import output_fields as _answer
+
         with _reading_for(step.model, run):
             prompt, system_prompt_extra, system_prompt_prefix, mentions = await build_step_prompt(
                 step, run, engine, transition
             )
         inputs_snapshot = snapshot_inputs(step, run, engine)
+        # Its answer's fields (F1553): asked for in the prompt, and of a provider that has a JSON schema mode.
+        fields = _answer.normalised(step.output_fields)
+        if fields:
+            prompt = f"{prompt}\n\n{_answer.instruction(fields)}"
+        shaped = {"response_schema": _answer.json_schema(fields)} if fields else {}
 
         yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": prompt,
                "system_prompt_extra": system_prompt_extra,
@@ -3305,6 +3436,7 @@ class LLMStepExecutor:
                 cache_response_ttl=step.cache_response_ttl_seconds,
                 cache_response_step_id=step.id,
                 cache_response_threshold=step.cache_response_threshold,
+                **shaped,
             ), model, role_fallback(step, run, model), _used),
                 label=f"LLM step '{step.name}'", extra={"orch_step_id": step.id, "step_name": step.name})
             async for _wait_event in _wait.events():
@@ -3318,8 +3450,40 @@ class LLMStepExecutor:
                 raise
             raise RuntimeError(f"LLM step '{step.name}' failed: {e}") from e
 
+        output = response
+        if fields:
+            # The object it declared, typed; a miss is asked once more of the model that answered, with its own
+            # prompt and answer, then the step fails (F1553): never a branch on a guess.
+            answered = _used[0] if _used else model
+            output, problems = _answer.read(fields, response)
+            if problems:
+                from core.model_wait import ModelWait
+
+                _rwait = ModelWait(llm_generate(
+                    prompt_msg=_answer.repair_prompt(prompt, response, problems, fields),
+                    sys_prompt=sys_prompt,
+                    mode=detect_mode_from_model(answered),
+                    current_model=answered,
+                    current_settings=settings,
+                    reasoning_effort=settings.get("reasoning_effort"),
+                    session_id=run.session_id,
+                    agent_id=step.agent_id or "llm_step",
+                    source="orchestration",
+                    run_id=run.run_id,
+                    **shaped,
+                ), label=f"LLM step '{step.name}'", extra={"orch_step_id": step.id, "step_name": step.name})
+                async for _wait_event in _rwait.events():
+                    yield _wait_event
+                response = _rwait.result
+                output, again = _answer.read(fields, response)
+                if again:
+                    raise RuntimeError(_answer.missing(step.name, again, response))
+                yield {"type": "step_warning", "orch_step_id": step.id,
+                       "message": _answer.repaired(step.name, problems)}
+            response = json.dumps(output, ensure_ascii=False)
+
         if step.output_key:
-            run.shared_state[step.output_key] = response
+            run.shared_state[step.output_key] = output
 
         # Record execution memory so re-invocations can see prior turn's output.
         from .context import build_execution_trace, store_execution_memory
@@ -3350,7 +3514,10 @@ class ExtractJsonStepExecutor:
         for key in (step.input_keys or []):
             val = run.shared_state.get(key)
             if val is not None:
-                parts.append(str(val))
+                # An object or a list in state is already data: read as its JSON, never as Python's repr, which holds
+                # no JSON and would now fail the step (F1553).
+                parts.append(json.dumps(val, ensure_ascii=False, default=str) if isinstance(val, (dict, list))
+                             else str(val))
 
         text = "\n\n".join(parts) if parts else ""
         if not text.strip():
@@ -3366,10 +3533,11 @@ class ExtractJsonStepExecutor:
         extracted = extract_all_json(text)
 
         if not extracted:
-            result = None
-            yield {"type": "step_warning", "orch_step_id": step.id,
-                   "message": "No valid JSON found in input"}
-        elif len(extracted) == 1:
+            # Text that holds no JSON fails the step (F1553, Naveen 11-12): it stored None with a warning, and a
+            # condition on a field of it took its documented False (F1433) with the run Completed. Empty input is
+            # unchanged above: nothing written is still read as unwritten.
+            raise RuntimeError(_no_json_found(step, engine, text))
+        if len(extracted) == 1:
             result = extracted[0]
         else:
             result = extracted
@@ -3383,6 +3551,20 @@ class ExtractJsonStepExecutor:
             "step_name": step.name,
             "response": json.dumps(result, default=str) if result is not None else "null",
         }
+
+
+def _no_json_found(step: StepConfig, engine: Any, text: str) -> str:
+    """Why an Extract JSON step stops (F1553): whose text held no JSON, what it said, and the repair."""
+    keys = list(step.input_keys or [])
+    writers = [s.name for s in (getattr(engine, "step_map", None) or {}).values()
+               if getattr(s, "output_key", None) in keys and getattr(s, "name", None)]
+    whose = f"what '{writers[0]}' wrote" if len(writers) == 1 else \
+        ("what " + ", ".join(f"'{k}'" for k in keys) + " held" if keys else "its input")
+    said = " ".join(text.split())
+    said = said if len(said) <= 300 else said[:300] + "…"
+    return (f"Extract JSON step '{step.name}' found no JSON in {whose}: “{said}”. The step stops here rather than "
+            "store nothing for a later step to branch on. Ask that step to answer in JSON, or give it answer fields "
+            "(an LLM or Agent step's output_fields, which the run holds its model to), then Replay.")
 
 
 def extract_all_json(text: str) -> list:
@@ -3617,7 +3799,8 @@ class PrintStepExecutor:
                 run.shared_state[step.output_key] = ""
             return
 
-        rendered = render_state_refs(content, run.shared_state)
+        rendered = render_state_refs(content, run.shared_state, getattr(engine, "global_variables", None) or {},
+                                     getattr(engine, "secret_variables", None) or frozenset())
 
         yield {"type": "_log_prompt", "orch_step_id": step.id,
                "prompt": f"[Print] {rendered[:500]}"}

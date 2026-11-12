@@ -503,6 +503,16 @@ _HINTS = (
     ("transform_code", "A transform step needs its Python in `config.transform_code`; to reshape data without "
                        "code, use an `llm` step."),
     ("is not set up", "A Retrieve or Ingest step names its knowledge bases by an id from `knowledge_bases`."),
+    # F1553: a read of a field a model step does not declare, in the plan's own words.
+    ("does not declare in its output_fields", "A model step's answer has the fields in its `config.output_fields`, "
+                                              'e.g. `[{"name": "risky", "type": "boolean", "description": "…"}]`: a '
+                                              "yes or no is boolean, one of a few words a choice with `options`, and "
+                                              "number, list and text; the run holds the model to them, and a later "
+                                              "step reads one as `state.<step id>.<field>`. Never an extract_json step."),
+    # F1549: the validator's read of a field no step writing the key writes, in the plan's own words.
+    ("never write", "A human step's fields are its `config.human_fields`: a yes or no a later step branches on is "
+                    '`[{"name": "approved", "type": "boolean", "label": "Approve?"}]`, read as '
+                    "`state.<step id>.approved`. An `evaluator` writes its branch's label, an `if_else` true or false."),
 )
 
 
@@ -622,6 +632,38 @@ def _without(plan: O.Plan, tools: list[str], took_out: list[str] | None = None) 
     return out
 
 
+def _instructions_whole(plan: O.Plan, state: dict, notes: list[str]) -> tuple[O.Plan, list[str]]:
+    """The Plan with a pasted export's Agents' instructions whole in its steps' prompts (F1550, `verbatim.whole`): a
+    reference put there, a retyped copy made whole, said in `notes` for the card; the errors are references to an
+    Agent the code does not have. An ordinary build's Plan comes back as it was."""
+    from core.native_builder import verbatim
+
+    agents = verbatim.sources(state)
+    if not agents:
+        return plan, []
+    where: dict[str, tuple[int | None, int]] = {}
+    texts: dict[str, str] = {}
+    for i, s in enumerate(plan.steps):
+        if s.prompt:
+            where[f"step {s.id}"], texts[f"step {s.id}"] = (None, i), s.prompt
+    for w_i, w in enumerate(plan.inner_workflows):
+        for i, s in enumerate(w.steps):
+            if s.prompt:
+                label = f"step {s.id} of “{w.title}”"
+                where[label], texts[label] = (w_i, i), s.prompt
+    fixed, errors, said = verbatim.whole(texts, agents)
+    changed = {k for k in texts if fixed[k] != texts[k]}
+    if not changed:
+        return plan, errors
+    out = plan.model_copy(deep=True)
+    for label in changed:
+        w_i, i = where[label]
+        steps = out.steps if w_i is None else out.inner_workflows[w_i].steps
+        steps[i] = steps[i].model_copy(update={"prompt": fixed[label]})
+    notes += said
+    return out, errors
+
+
 async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, state: dict | None = None,
                   without: list[str] | None = None, alone: list[str] | None = None) -> Examined:
     """The planner's Plan held to every rule, as data: `errors` the planner can fix, `missing` the tools nothing here
@@ -656,6 +698,9 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
             plan.reuse_agents = list(dict.fromkeys([*edited.reuse_agents, *plan.reuse_agents]))
     took_out: list[str] = []
     plan = _without(plan, without or [], took_out)
+    # A pasted export's Agents' instructions, whole (F1550): put where the plan names them, and made whole where it
+    # retyped them. Before the key check, which reads what is saved.
+    plan, copy_errors = _instructions_whole(plan, state, took_out)
     from core.native_builder.change_tools import _holds_a_key
     from core.secret_scrub import holds_credential
 
@@ -677,7 +722,7 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         # A step no step leads to in the workflow as it is now is not this change's to fix (SAI2's review, 23).
         before, _ = O.check_structure(base, ws.inventory())
         errors = [e for e in errors if not ("no step leads to it" in e and e in before)]
-    errors += await _rules(plan, ws, state) + asked
+    errors += copy_errors + await _rules(plan, ws, state) + asked
     # A part of the ask the plan leaves out is said with why, never dropped (F1515, eb's QA B13).
     errors += [f"asked: '{a.part}' is not_done with no why_not: say why this plan does not do it, or plan it"
                for a in plan.asked if a.how == "not_done" and not (a.why_not or "").strip()]
@@ -1081,21 +1126,30 @@ def _without_secret_asks(plan: O.Plan, base: O.Plan | None) -> tuple[O.Plan, lis
 
 
 def _objects_read_as_text(s: O.Step, plan: O.Plan) -> list[str]:
-    """A code step reading an object as text (F1359: cap-05's Transform ran `re.search` on a Human step's answer). A
-    Human step answers an object (`{approved, feedback}`, or its `human_fields` by name) and an Extract JSON step the
-    JSON it pulled out, so text read out of either is a field of it. A Tool step's answer is F1358's (parsed for a code
-    step that reads its fields), so it is not held here."""
+    """A code step reading an object as text (F1359: cap-05's Transform ran `re.search` on a Human step's answer). Text
+    from a person is a field of a Human step (its `human_fields` by name; with none, its answer is the person's words,
+    F1549) and an Extract JSON step answers the JSON it pulled out, so text read out of either is a field of it. A Tool
+    step's answer is F1358's (parsed for a code step that reads its fields), so it is not held here."""
     from core.native_builder.compile import text_reads
+    from core.orchestration.step_answers import human_fields
 
     steps = [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)]
-    objects = {x.id: x.type for x in steps if x.type in ("human", "extract_json")}
+    objects = {x.id: x for x in steps if x.type in ("human", "extract_json")}
     out = []
     for key in sorted(text_reads((s.config or {}).get("transform_code") or "", set(objects))):
-        what = ("a person's answer, an object: `{approved, feedback}`, or its `human_fields` by name"
-                if objects[key] == "human" else "the JSON it pulled out, an object or a list")
-        out.append(f"step {s.id}: its code reads `state.{key}` as text, but step {key} is {what}: read a field of it "
-                   f"(`state.{key}.feedback`, `state.{key}['name']`). The run's own message is `state.user_input`: "
-                   "read it there, never ask a person for it again")
+        if objects[key].type != "human":
+            what, then = "the JSON it pulled out, an object or a list", "read a field of it"
+            read = f"`state.{key}.feedback`, `state.{key}['name']`"
+        elif names := [f["name"] for f in human_fields(objects[key].config or {})]:
+            what = f"a person's answer, an object of its `human_fields` by name ({', '.join(f'`{n}`' for n in names)})"
+            then, read = "read a field of it", f"`state.{key}.{names[0]}`, `state.{key}['{names[0]}']`"
+        else:
+            what = "a person's answer, an object only once it has `human_fields`"
+            then = ('give it a field in `config.human_fields`, e.g. `{"name": "request", "type": "textarea", '
+                    '"label": "The request"}`, and read that')
+            read = f"`state.{key}.request`"
+        out.append(f"step {s.id}: its code reads `state.{key}` as text, but step {key} is {what}: {then} ({read}). "
+                   "The run's own message is `state.user_input`: read it there, never ask a person for it again")
     return out
 
 
@@ -1261,6 +1315,12 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
                           "nothing here provides is looked up, or built without); code works on the run's own data")
         if s.type == "transform":
             errors += _objects_read_as_text(s, plan)
+        if s.type == "extract_json" and s.id not in kept:
+            # Retired for new steps (F1553, Naveen 11-12): it found JSON only when the model wrote some, and a miss
+            # branched on nothing. A model's answer declares its fields; an existing Extract JSON step still runs.
+            errors.append(f"step {s.id}: Extract JSON is retired for new steps: give the step whose answer it reads "
+                          "`config.output_fields` (e.g. `[{\"name\": \"risky\", \"type\": \"boolean\"}]`, which the "
+                          "run holds its model to) and read `state.<that step's id>.<field>`; take this step out")
     if not state.get(_ANSWER_FIELDS_SAID) and (lacks := [line for s in [*written, *(
             x for w in plan.inner_workflows for x in w.steps)] for line in _fields_its_answer_lacks(s, plan, ws)]):
         state[_ANSWER_FIELDS_SAID] = True

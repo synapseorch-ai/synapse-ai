@@ -180,7 +180,15 @@ from core.native_builder import prompt_lint, seed
 #: 093684ec).
 #: F1515 (BRW4): the planner's # Finishing says, at `submit_plan`, that its `asked` lists every part of the ask (plan,
 #: run_once with its message, not_done with why_not), b99eeb85… (on F1495's a8a36701).
-BUNDLE_SHA256 = "b99eeb8567c02207de6d57f8c34b3271f8d7c6a4227ad63ddf9f243550341424"
+#: F1549 (BLD3): plan_steps.md's human bullet says what a Human step answers, its fields by name and with none the
+#: person's words (F1359's `{approved, feedback}` was never written), and a yes or no a branch reads is a yes/no field
+#: `approved`, ded07390… (on a02f291b).
+#: F1550 (BLD3): the prompt writer writes ‹instructions of "<Agent name>"› for a pasted Agent, which code puts there
+#: whole, and its 250 words are never for copied instructions, f73c5110… (on F1549's a565ded3).
+#: F1553 (BLD4): the planner's # Structure rule 2 and plan_steps.md's llm/agent/if_else bullets say a model step's
+#: answer is read by the fields its `config.output_fields` declares, which the run holds it to, never an extract_json
+#: step and never a decision read out of its words, 826eb2a5… (on 36c3e1ea).
+BUNDLE_SHA256 = "826eb2a57d11ffde4b4a08eaef5d9f613cd0574d6ea534318a96494608af1675"
 
 
 def _sha(definitions) -> str:

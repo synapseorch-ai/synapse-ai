@@ -75,7 +75,7 @@ def entries() -> list[ProductTool]:
                     self_audited=True, offered=available, input_schema=dict(_JOB),
                     description="Retry a job the fleet gave up on: its run goes on from where it stopped."),
         ProductTool(name="discard_dead_job", handler=_not_here_jobs, kind="act", area="operations", app_only=True,
-                    min_role=Role.BUILDER, scope="run", destructive=True, confirmed=True, preview=_preview_job,
+                    min_role=Role.BUILDER, scope="run", confirmed=True, preview=_preview_job,
                     self_audited=True, offered=available, input_schema=dict(_JOB),
                     description="Take a job the fleet gave up on off the list; its run stays as it ended."),
         ProductTool(name="file_support_request", handler=_not_here_support, kind="act", area="operations",

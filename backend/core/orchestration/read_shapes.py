@@ -32,6 +32,7 @@ _ONLY_ON = (
     ("finish_tools", lambda s: s.get("type") == "agent"),
     ("finish_fallback", lambda s: bool(s.get("finish_tools"))),
     ("tool_arguments", lambda s: s.get("type") == "tool"),
+    ("output_fields", lambda s: s.get("type") in ("llm", "agent") and not s.get("finish_tools")),
 )
 
 

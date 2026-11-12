@@ -21,6 +21,10 @@
 # every lowlevel `Server` (backend/tools/*, core/mcp_server/server.py).
 
 cffi>=2.0.0,<3
+# F1563: zoneinfo reads zones from this package where the computer has none (the python slim Docker images,
+# Windows); without it every schedule in a place's local time was refused there.
+# Its version is the data's year, not an API: the cap only keeps the house rule of an upper bound.
+tzdata>=2026.3,<2030
 fastapi>=0.110,<1
 uvicorn>=0.29,<1
 httpx>=0.27,<1
@@ -40,7 +44,7 @@ html-to-markdown>=3.19,<4
 boto3>=1.34,<2
 # The in-app browser's host and its client (core/browser). Already resolved
 # through chromadb; named because the engine imports it directly.
-aiohttp>=3.9,<4
+aiohttp>=3.14.4,<4
 sqlalchemy>=2.0,<3
 sqlalchemy[asyncio]>=2.0,<3
 # The default store. A plain install runs on SQLite and needs nothing else
@@ -61,7 +65,7 @@ openpyxl>=3.1,<4
 # defusedxml reads Office XML safely, olefile reads Outlook .msg files. All but
 # olefile were already installed through pdfplumber and chromadb.
 pypdfium2>=4.30,<6
-pillow>=10.0,<13
+pillow>=13.0,<14
 psutil>=5.9,<8
 defusedxml>=0.7,<1
 olefile>=0.46,<1

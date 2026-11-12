@@ -123,7 +123,7 @@ def entries() -> list[ProductTool]:
         ProductTool(name="rotate_widget_key", description="Give a website widget a new key: the old snippet stops "
                     "working at once, and the new one must go on the site.",
                     input_schema={"type": "object", "properties": dict(_WIDGET), "required": ["widget_id"]},
-                    handler=_rotate, destructive=True, audit_action="widget.key.rotated", **by_id, **act),
+                    handler=_rotate, audit_action="widget.key.rotated", **by_id, **act),
         ProductTool(name="set_widget_logo", description="Set a website widget's logo from an image in the Vault, or "
                     "take it off.",
                     input_schema={"type": "object", "properties": {

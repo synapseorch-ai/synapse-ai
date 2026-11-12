@@ -108,6 +108,8 @@ async def issues(plan: O.Plan, ws: Workspace, asked: dict | None = None) -> list
     steps = [s for s in (*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)) if s.type != "end"]
     # A plan of Tool steps alone can read a signed-in site too (F1300), so this comes before the agents' findings.
     out = await _kept_session_reads(plan, ws, steps, custom)
+    # A decision on a model's own words (F1553's follow-up): a new plan, or a change to a workflow that has one.
+    out += _decided_on_words(plan, ws, steps)
     if not plan.agents:
         return out
     for a in plan.agents:
@@ -268,6 +270,40 @@ def _a_team(plan: O.Plan, ws: Workspace, steps: list[O.Step]) -> str | None:
                         "and its members (type team, members: the agents it hands to), and one agent step for it in "
                         "place of theirs")
     return None
+
+
+def _decided_on_words(plan: O.Plan, ws: Workspace, steps: list[O.Step]) -> list[str]:
+    """Each condition that decides on a model step's answer as words (F1553's follow-up, Naveen's pick 1): its fix,
+    an answer field on that step and the condition rewritten to read it, offered (sent back once, then on the card),
+    never a block. The step's own words in the plan's terms; the run is unchanged either way."""
+    from core.orchestration import output_fields as _answer
+
+    kinds = {a.name: a.type for a in plan.agents}
+    model: dict[str, O.Step] = {}
+    for s in steps:
+        config = s.config or {}
+        if s.type not in ("llm", "agent") or config.get("output_fields") or config.get("finish_tools"):
+            continue
+        if s.type == "agent" and "orchestrator" in (kinds.get(s.agent or ""),
+                                                    (ws.agents.get(s.agent or "") or {}).get("type")):
+            continue  # a workflow's result is its own steps', not a model's words
+        model[str(config.get("output_key") or s.id)] = s
+    if not model:
+        return []
+    out: list[str] = []
+    for s in steps:
+        config = s.config or {}
+        for expr in (s.condition if s.type in ("if_else", "switch") else None,
+                     *(config.get(f) for f in _answer.DECIDING_FIELDS)):
+            for key in _answer.words_read(expr, set(model)):
+                said = (f"structure: step {s.id} decides on step {model[key].id}'s answer as text "
+                        f"(`{' '.join(str(expr).split())}`): it reads the model's own words; declare an answer field — "
+                        f"give {model[key].id} `config.output_fields` (a `choice` with the words it picks from as "
+                        f"`options`, or a `boolean` for a yes or no) and rewrite the condition to read "
+                        f"`state.{key}.<field>`")
+                if said not in out:
+                    out.append(said)
+    return out
 
 
 def as_notes(found: list[str]) -> list[str]:

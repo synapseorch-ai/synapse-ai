@@ -693,8 +693,8 @@ def _fill_task_template(template: str, shared_state: dict, global_variables: dic
     declared default already fills the key (`_init_state`). So a field of a key that holds only its empty default
     (`""`, `{}`, `[]`) reads empty too: nothing has written it either (SAI2-P2; the change planner's "what happened on
     the first pass" read as template text on its first). `unwritten_in_words` says so instead, for an Evaluator, which
-    judges on what it reads and writes no draft (F1536). A person's text — a Human or a Print step's — keeps the gap
-    (`steps.render_state_refs`).
+    judges on what it reads and writes no draft (F1536). A person's text — a Human or a Print step's — says it so too
+    (`steps.render_state_refs`, F1556).
 
     A step output saved to the vault (`core.step_refs`, D339 P4) is inline when it fits `read_cap`, this step's read
     share (`context_budget`; by default the one its step set, `step_refs.reading`), and otherwise the file and how to

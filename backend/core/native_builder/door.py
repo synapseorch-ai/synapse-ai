@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from core.native_builder.export import CREDENTIAL_MARK, scrub_credentials
-from core.secret_scrub import LOOKALIKES
+from core.secret_scrub import LOOKALIKES, mask_as_written
 
 Refusal = Literal["card", "password"]
 
@@ -176,9 +176,10 @@ def has_password(text: str) -> bool:
 
 # ── the door ─────────────────────────────────────────────────────────────────
 
-#: Characters that look like a dash, a space or like nothing, folded before the door reads a message (F1280: a key
+#: Characters that look like a dash, a space or like nothing, folded wherever the door reads a message (F1280: a key
 #: pasted with U+2011 hyphens went past every pattern, and the planner wrote it back out in ASCII to its logs): the one
-#: table held values are matched through too (`secret_scrub.LOOKALIKES`, F1339).
+#: table held values are matched through too (`secret_scrub.LOOKALIKES`, F1339). Read, never kept (F1551): the message
+#: runs as it was written, each key masked where it stands (`secret_scrub.mask_as_written`, F1386's way).
 _LOOKALIKES = LOOKALIKES
 
 
@@ -199,21 +200,32 @@ def check(text: str, held: Any = (), *, card_up: bool = False) -> Checked:
     secrets the workspace holds that occur in it (`secret_scrub.held_in`), taken out by exact value first (F1307),
     before the lookalikes are folded, so a held value is matched as it was saved. `card_up`: the conversation's latest
     turn put up a Connect card (`turn_facts.card_up_before`), so a message that is one secret-looking word alone is the
-    card's key, masked as one (F1345)."""
+    card's key, masked as one (F1345). Every rule reads the message with its lookalikes folded (F1280); what runs is
+    the message as written, each key masked where it stands (F1551: a pasted prompt keeps its dashes and spaces)."""
     text, from_held, kinds = _without_held(text or "", held)
-    text = text.translate(_LOOKALIKES)
-    if has_card(text):
+    seen = text.translate(_LOOKALIKES)
+    if has_card(seen):
         return Checked(text="", refused="card")
-    if has_password(text):
+    if has_password(seen):
         return Checked(text="", refused="password")
-    masked, removed = scrub_credentials(text)
-    lone = _LONE_WORD.match(masked) if card_up and CREDENTIAL_MARK not in masked else None
+    masked, removed = scrub_credentials(text)  # each shape reads it folded and masks as written (F1386)
+    lone = _LONE_WORD.match(masked.translate(_LOOKALIKES)) if card_up and CREDENTIAL_MARK not in masked else None
     if lone and _secret_looking(lone.group("value")):
         masked, removed = CREDENTIAL_MARK, removed + 1
     # The held notice only when what came out is the workspace's own secret alone: a connection's, or a key by its
     # shape, gets the key's notice (connect it on its card).
     reason = "held" if from_held and not removed and kinds <= {"workspace"} else "masked"
-    return Checked(text=masked, removed=removed + from_held, reason=reason)
+    return Checked(text=_as_read(masked), removed=removed + from_held, reason=reason)
+
+
+def _as_read(text: str) -> str:
+    """`text` as written, but an approval said with lookalikes ("looks good" with a no-break space) as its gates read it
+    (F1551): a bare yes carries no typography worth keeping, and the builder's gates and `review.is_yes` compare its
+    words exactly, as they read every message before the door kept them as written."""
+    from core.native_builder.review import is_yes
+
+    folded = text.translate(_LOOKALIKES)
+    return folded if folded != text and is_yes(folded) and not is_yes(text) else text
 
 
 #: A question that asks the person for a secret. Its answer is read in that light: a lone secret-looking word in
@@ -225,7 +237,7 @@ _LONE_WORD = re.compile(r"^\s*[\"'`]?(?P<value>[^\s\"'`]{6,200})[\"'`]?\s*[.!]?\
 #: A value after a bare "key" in an answer while a key is asked for (F1387): 12+ characters mixing letters and digits.
 #: "the key user_id1" is a sentence; a model's name, with no "key" before it, is not a key.
 _BARE_KEY = re.compile(r"(?i)(\bkey\s+)(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])"
-                       r"[A-Za-z0-9][A-Za-z0-9_-]{10,}[A-Za-z0-9](?![A-Za-z0-9_-])")
+                       r"([A-Za-z0-9][A-Za-z0-9_-]{10,}[A-Za-z0-9])(?![A-Za-z0-9_-])")
 
 
 def _secret_looking(value: str) -> bool:
@@ -287,17 +299,18 @@ def check_answer(response: Any, question: str | None = None, *, step: str | None
             removed += checked.removed
             text = checked.text
             if asks_key:
-                # While a key is asked for, a value after a bare "key" is that key (F1387).
-                text, bare = _BARE_KEY.subn(lambda m: f"{m.group(1)}{CREDENTIAL_MARK}", text)
+                # While a key is asked for, a value after a bare "key" is that key (F1387), read folded and masked as
+                # written (F1551).
+                text, bare = mask_as_written(_BARE_KEY, text)
                 removed += bare
-            lone = _LONE_WORD.match(text)
+            lone = _LONE_WORD.match(text.translate(_LOOKALIKES))
             if lone and (asks_password or asks_key) and CREDENTIAL_MARK not in text \
                     and _secret_looking(lone.group("value")):
                 if asks_password:
                     raise Refused("password")
                 removed += 1
                 return CREDENTIAL_MARK
-            return text
+            return _as_read(text)
         if isinstance(value, dict):
             return {k: walk(v) for k, v in value.items()}
         if isinstance(value, list):

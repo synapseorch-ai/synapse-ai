@@ -19,7 +19,7 @@ attrs==26.1.0
     #   -c .knowledge-constraints.txt
     #   jsonschema
     #   referencing
-certifi==2026.7.22
+certifi==2026.10.23
     # via
     #   -c .knowledge-constraints.txt
     #   docling-slim
@@ -45,20 +45,20 @@ defusedxml==0.7.1
     #   -c .knowledge-constraints.txt
     #   docling-core
     #   docling-slim
-doclang==0.7.3
+doclang==0.9.0
     # via docling-core
-docling-core==2.99.0
+docling-core==2.106.0
     # via
     #   -r requirements-knowledge.txt
     #   docling-parse
     #   docling-slim
-docling-ibm-models==4.0.3
+docling-ibm-models==4.0.4
     # via docling-slim
-docling-parse==7.22.1
+docling-parse==7.24.2
     # via docling-slim
-docling-slim==2.131.0
+docling-slim==2.148.0
     # via -r requirements-knowledge.txt
-filelock==3.32.2
+filelock==4.2.9
     # via
     #   -c .knowledge-constraints.txt
     #   huggingface-hub
@@ -170,7 +170,7 @@ pandas==3.0.5
     # via
     #   -c .knowledge-constraints.txt
     #   docling-core
-pillow==12.3.0
+pillow==13.0.0
     # via
     #   -c .knowledge-constraints.txt
     #   docling-core
@@ -264,7 +264,7 @@ scipy==1.17.1 ; python_full_version < '3.12'
     # via docling-slim
 scipy==1.18.0 ; python_full_version >= '3.12'
     # via docling-slim
-setuptools==84.0.0
+setuptools==84.2.1
     # via torch
 shellingham==1.5.4
     # via
@@ -342,7 +342,7 @@ tzdata==2026.3 ; sys_platform == 'emscripten' or sys_platform == 'win32'
     # via
     #   -c .knowledge-constraints.txt
     #   pandas
-urllib3==2.7.0
+urllib3==2.8.0
     # via
     #   -c .knowledge-constraints.txt
     #   requests
