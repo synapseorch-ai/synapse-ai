@@ -399,7 +399,7 @@ constraint-dependencies = [
     "safetensors==0.8.0",
     "scipy==1.17.1 ; python_full_version < '3.12'",
     "scipy==1.18.0 ; python_full_version >= '3.12'",
-    "setuptools==84.0.0",
+    "setuptools==84.2.1",
     "shellingham==1.5.4",
     "six==1.17.0",
     "slack-bolt==1.30.0",

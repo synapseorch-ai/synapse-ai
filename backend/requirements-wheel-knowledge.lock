@@ -847,7 +847,7 @@ scipy==1.18.0 ; python_full_version >= '3.12'
     # via
     #   -c requirements-knowledge.lock
     #   docling-slim
-setuptools==84.0.0
+setuptools==84.2.1
     # via
     #   -c requirements-knowledge.lock
     #   torch

@@ -264,7 +264,7 @@ scipy==1.17.1 ; python_full_version < '3.12'
     # via docling-slim
 scipy==1.18.0 ; python_full_version >= '3.12'
     # via docling-slim
-setuptools==84.0.0
+setuptools==84.2.1
     # via torch
 shellingham==1.5.4
     # via
