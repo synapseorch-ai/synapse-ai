@@ -2827,8 +2827,9 @@ def render_state_refs(text: str, state: dict) -> str:
     F1252), which a step's templates are written in as the step is read.
 
     A reference that resolves to nothing is left as written, so a typo shows
-    rather than vanishing. A human step's prompt and a Print's content read
-    through this one function; the prompt used to read only top-level keys.
+    rather than vanishing. A human step's prompt, its fields' labels and options
+    (`shown_fields`, F1556) and a Print's content read through this one function;
+    the prompt used to read only top-level keys.
     A step into a value held as JSON text reads the JSON (F801), as a set
     argument's reference does: a builder tool's output is JSON text in state.
     """
@@ -2853,6 +2854,29 @@ def render_state_refs(text: str, state: dict) -> str:
         return str(val) if val is not None else match.group(0)
 
     return STATE_REF.sub(_resolve, text)
+
+
+def shown_fields(fields: Any, state: dict) -> Any:
+    """A Human step's fields as the person is asked them (F1556): each label and each dropdown option filled in from
+    the run's state by the renderer its question takes (`render_state_refs`), every other key as the step wrote it.
+
+    The run asks with these — its live event and its record, which the app's form, the API's and MCP's waiting
+    payload and the bell read — so an answer is checked against an option as it was shown (`answers` reads
+    `run.human_fields`). The step as saved keeps its templates. What is not a list of fields comes back as it came.
+    """
+    if not isinstance(fields, list):
+        return fields or []
+    shown = []
+    for field in fields:
+        if isinstance(field, dict):
+            field = dict(field)
+            if isinstance(field.get("label"), str):
+                field["label"] = render_state_refs(field["label"], state)
+            if isinstance(field.get("options"), list):
+                field["options"] = [render_state_refs(o, state) if isinstance(o, str) else o
+                                    for o in field["options"]]
+        shown.append(field)
+    return shown
 
 
 class MissingStateRef(ValueError):
@@ -3136,9 +3160,11 @@ class HumanStepExecutor:
     ) -> AsyncGenerator[dict, None]:
         prompt = render_state_refs(
             step.human_prompt or "Please provide input to continue.", run.shared_state)
+        # Its fields as the person reads them (F1556): every door reads these, and the answer is checked against them.
+        fields = shown_fields(step.human_fields, run.shared_state)
 
         run.human_prompt = prompt
-        run.human_fields = step.human_fields
+        run.human_fields = fields
 
         agent_context, context_key, typed = asked_context(step.input_keys, run.shared_state, run.step_history)
         channel_id = step.human_channel_id
@@ -3147,7 +3173,7 @@ class HumanStepExecutor:
             "type": "human_input_required",
             "orch_step_id": step.id,
             "prompt": prompt,
-            "fields": step.human_fields,
+            "fields": fields,
             "run_id": run.run_id,
             "agent_context": agent_context,
             "context_key": context_key,
