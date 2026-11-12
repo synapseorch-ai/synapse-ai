@@ -213,8 +213,10 @@ class TestLeftAlone:
         assert _never(_orch(step, _gate("state.make.approved"), RESEARCH)) == []
 
     def test_a_key_another_kind_of_step_writes_too(self):
-        """A key written by a Human step and by a model step may hold either: not known."""
-        draft = {"id": "draft", "name": "Draft", "type": "llm", "prompt_template": "x", "output_key": "approve_keywords"}
+        """A key written by a Human step and by a Tool step may hold either: not known. (A model step's answer is
+        known since F1553: its declared fields, and none for an llm step without, so it is no longer the example.)"""
+        draft = {"id": "draft", "name": "Draft", "type": "tool", "forced_tool": "get_weather",
+                 "output_key": "approve_keywords"}
         assert _never(_orch(draft, _ask(), _gate("state.approve_keywords.approved"), RESEARCH)) == []
 
     def test_a_key_no_step_writes_is_another_rule(self):

@@ -97,8 +97,10 @@ class TestThePlanIsHeldToIt:
         assert "order_number" in error and "user_input" in error, out
 
     async def test_an_earlier_step_s_output_is_taken_by_a_path_too(self, world):
+        # A field of a model's answer is one it declares (F1553), which the run holds it to.
         ask = {"id": "pick", "type": "llm", "name": "Pick the order", "does": "Picks the order number",
-               "prompt": "The order number in the message."}
+               "prompt": "The order number in the message.",
+               "config": {"output_fields": [{"name": "order", "type": "text"}]}}
         out = await _submit(_plan(ask, _browser(world, "{{ state.pick.order }}")))
         assert out.get("finish") == "submit_plan", out
 

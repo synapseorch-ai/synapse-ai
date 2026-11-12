@@ -295,8 +295,10 @@ FileSearchTool(...), HostedMCPTool(...)) are not tool names here. An agent's `to
 workspace has. Functions the code defines as tools (@function_tool, function_tool(...), tool({...})) are code: never \
 a tool name here, never a `tool` step's tool. If nothing fits, the agent gets no tools and the tool goes in \
 `not_carried_over`.
-2. **A condition reads JSON, never prose.** A model step whose answer a later `if_else`, `switch` or `loop` reads is \
-followed by an `extract_json` step, and the condition reads that step's output by its id (`state.<step id>.<field>`).
+2. **A condition reads declared fields, never prose.** A model step whose answer a later `if_else`, `switch` or \
+`loop` reads declares that answer's fields in its `config.output_fields` (`[{"name": "category", "type": "choice", \
+"options": [...]}]`; types boolean, choice, number, list, text), which the run holds the model to, and the condition \
+reads one by the step's id (`state.<step id>.<field>`). Never an `extract_json` step.
 3. **Instructions are copied word for word, by code.** A new agent's `purpose` says it keeps the export's \
 "<Agent name>" instructions; they are written into it as they are, after the plan is checked. A `llm` or `evaluator` \
 step that replaces an Agent has as its `prompt` ‹instructions of "<Agent name>"›, never the instructions retyped: \
@@ -319,11 +321,13 @@ goes to the step that branch ran. No classifier agent, no llm step and no if_els
 Conditions use this product's syntax: `state.<step id>.field == "x"`, and / or / not, len(...), in. Not CEL, not \
 JavaScript: && is and, === is ==.
 - while → one `loop` step whose `body` is the steps inside the while, in order, and whose `next` is what runs after \
-it. `loop_over` names the step whose output is the list it walks (an `extract_json` step's id). After the loop, each \
+it. `loop_over` names the list it walks: a `list` field of a model step's `config.output_fields` \
+(`state.<step id>.<field>`). After the loop, each \
 body step's output holds a list of every iteration's result.
 - state = {...} and set-state → what steps write, by their ids. A `transform` step only if nothing else can, and \
 never with code copied from the export.
-- output_type (a Pydantic or zod schema) → the step answers as JSON with those fields, then `extract_json` (rule 2).
+- output_type (a Pydantic or zod schema) → the step's `config.output_fields`, one per schema field with its type \
+(rule 2).
 - User approval (approval_request(...) / approvalRequest(...), usually a stub that returns true) → a `human` step \
 whose `prompt` is its message and whose `config.human_fields` is one yes/no field, \
 `[{"name": "approved", "type": "boolean", "label": "Approve?"}]` (the run asks it with Approve and Decline), then an \

@@ -559,7 +559,8 @@ def _planner() -> str:
 class TestTheBuilderIsTold:
     def test_structure_rule_2_declares_fields_on_the_model_step(self):
         text = _planner()
-        rule = text[text.index("# Structure"):text.index("# Changing")]
+        start = text.index("# Structure")
+        rule = text[start:text.index("# Changing", start)]
         assert "`config.output_fields`" in rule, rule
         assert "is an `extract_json` step right after it" not in rule
 
@@ -587,7 +588,7 @@ class TestTheBuilderIsTold:
         flat = " ".join(AGENTS_SDK_GUIDE.replace("\\\n", "").split())
         rule = flat[flat.index("2. **"):flat.index("3. **")]
         assert "`config.output_fields`" in rule, rule
-        line = next(ln for ln in AGENTS_SDK_GUIDE.replace("\\\n", "").splitlines() if "output_type" in ln)
+        line = next(ln for ln in AGENTS_SDK_GUIDE.replace("\\\n", "").splitlines() if ln.startswith("- output_type"))
         assert "output_fields" in line, line
 
 

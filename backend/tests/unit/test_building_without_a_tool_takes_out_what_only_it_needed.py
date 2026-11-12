@@ -34,8 +34,11 @@ REVIEW = {"id": "review", "type": "human", "name": "Review Tweets", "does": "Ask
           "config": {"human_fields": [{"name": "approved", "type": "yes_no", "label": "Post these tweets?"}]}}
 APPROVED = {"id": "check_approved", "type": "if_else", "name": "Approved?", "does": "Posts if approved",
             "condition": "state.review.approved == True", "branches": {"true": "extract_tweets", "false": "declined"}}
-EXTRACT = {"id": "extract_tweets", "type": "extract_json", "name": "Extract Tweet List", "does": "Parses the tweets",
-           "prompt": "Extract the tweets as {\"tweets\": [...]}\n\n{{state.draft_tweets}}"}
+# Naveen's plan had an `extract_json` step here; a new one is refused since F1553 (BLD4), and the list is the
+# model step's own declared field, which the run holds it to. Still a feeder (`_FEEDERS`: an llm step).
+EXTRACT = {"id": "extract_tweets", "type": "llm", "name": "Extract Tweet List", "does": "Lists the tweets",
+           "prompt": "List the tweets.\n\n{{state.draft_tweets}}",
+           "config": {"output_fields": [{"name": "tweets", "type": "list", "description": "Each tweet"}]}}
 ARRAY = {"id": "tweets_array", "type": "transform", "name": "Get Tweets Array", "does": "Pulls out the list",
          "config": {"transform_code": "result = state['extract_tweets']['tweets']"}}
 LOOP = {"id": "post_loop", "type": "loop", "name": "Post Each Tweet", "does": "Posts each tweet",

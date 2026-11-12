@@ -169,6 +169,21 @@ class StepConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _answer_fields_only_on_a_model_step(self):
+        """`output_fields` is read by the LLM and Agent steps and nowhere else (F1553): refused elsewhere, as
+        `pass_images` is; and never beside `finish_tools`, whose step answers its finish tool's result."""
+        if self.output_fields and self.type not in (StepType.LLM, StepType.AGENT):
+            raise ValueError(
+                f"output_fields are only read by llm and agent steps; step '{self.id}' is '{self.type.value}'."
+            )
+        if self.output_fields and self.finish_tools:
+            raise ValueError(
+                f"output_fields and finish_tools: step '{self.id}' answers its finish tool's result, so it takes no "
+                "output_fields."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _a_fallback_only_with_finish_tools(self):
         """`finish_fallback` is what a step that finishes with a tool ends with otherwise (F958): nothing without
         them."""
@@ -187,6 +202,11 @@ class StepConfig(BaseModel):
 
     input_keys: list[str] = []    # Keys to pull from shared state as context
     output_key: str | None = None  # Key to write result into shared state
+    #: LLM / AGENT -- the fields its answer has (F1553): [{name, type, description?, options?}], the Human step's
+    #: types and `list`. Declared, the step answers that one object, which the run holds the model to (asked once
+    #: more of the same model, then the step fails); a later step reads one as `state.<output_key>.<name>`.
+    #: `core/orchestration/output_fields.py`. Empty, the default, is a model step as before: its text.
+    output_fields: list[dict[str, Any]] = []
 
     #: AGENT -- the tools the step finishes with (E2, SAI2-P1): its loop ends when one of them is called and
     #: succeeds, and the step's output is that call's result as an object, not the agent's prose. Each must be among

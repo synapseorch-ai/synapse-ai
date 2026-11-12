@@ -503,6 +503,12 @@ _HINTS = (
     ("transform_code", "A transform step needs its Python in `config.transform_code`; to reshape data without "
                        "code, use an `llm` step."),
     ("is not set up", "A Retrieve or Ingest step names its knowledge bases by an id from `knowledge_bases`."),
+    # F1553: a read of a field a model step does not declare, in the plan's own words.
+    ("does not declare in its output_fields", "A model step's answer has the fields in its `config.output_fields`, "
+                                              'e.g. `[{"name": "risky", "type": "boolean", "description": "…"}]`: a '
+                                              "yes or no is boolean, one of a few words a choice with `options`, and "
+                                              "number, list and text; the run holds the model to them, and a later "
+                                              "step reads one as `state.<step id>.<field>`. Never an extract_json step."),
     # F1549: the validator's read of a field no step writing the key writes, in the plan's own words.
     ("never write", "A human step's fields are its `config.human_fields`: a yes or no a later step branches on is "
                     '`[{"name": "approved", "type": "boolean", "label": "Approve?"}]`, read as '
@@ -1309,6 +1315,12 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
                           "nothing here provides is looked up, or built without); code works on the run's own data")
         if s.type == "transform":
             errors += _objects_read_as_text(s, plan)
+        if s.type == "extract_json" and s.id not in kept:
+            # Retired for new steps (F1553, Naveen 11-12): it found JSON only when the model wrote some, and a miss
+            # branched on nothing. A model's answer declares its fields; an existing Extract JSON step still runs.
+            errors.append(f"step {s.id}: Extract JSON is retired for new steps: give the step whose answer it reads "
+                          "`config.output_fields` (e.g. `[{\"name\": \"risky\", \"type\": \"boolean\"}]`, which the "
+                          "run holds its model to) and read `state.<that step's id>.<field>`; take this step out")
     if not state.get(_ANSWER_FIELDS_SAID) and (lacks := [line for s in [*written, *(
             x for w in plan.inner_workflows for x in w.steps)] for line in _fields_its_answer_lacks(s, plan, ws)]):
         state[_ANSWER_FIELDS_SAID] = True

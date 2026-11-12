@@ -23,6 +23,7 @@ import { ExpressionVocabulary } from './ExpressionVocabulary';
 import { PythonEditor } from './PythonEditor';
 import { agentEditHref, agentKind, agentOptions, KIND_WORD, memberNames, teamSettings, type KindAgent } from '../agentKind';
 import { HUMAN_FIELD_TYPES, humanFieldOptions, humanFieldType } from '../humanFields';
+import { ANSWER_FIELD_TYPES, answerFieldNameOk, answerFieldOptions, answerFieldType } from '../answerFields';
 import { argumentRows, withArgument, type ToolWithSchema } from '../toolArguments';
 import { toolsRestricted } from '../allowedTools';
 
@@ -312,6 +313,95 @@ function OpenPicked({ agent }: { agent?: KindAgent }) {
     );
 }
 
+/**
+ * A model step's answer fields (F1553): the one object an LLM or Agent step answers when a later step reads its
+ * fields. The run asks the model for it and holds the model to it — asked once more, then the step fails — so a
+ * condition never branches on a guess. Optional: a step without them answers its text, as before.
+ */
+function AnswerFields({ step, update }: Pick<StepSectionProps, 'step' | 'update'>) {
+    const fields = step.output_fields || [];
+    const key = step.output_key || step.id;
+    const set = (next: typeof fields) => update({ output_fields: next.length ? next : undefined });
+    return (
+        <div className="space-y-1.5" data-testid="answer-fields">
+            <span className="block text-sm font-medium text-text">
+                Answer fields <span className="text-xs font-normal text-text-faint">(optional)</span>
+            </span>
+            <p className="text-[11px] text-text-faint">
+                When a later step decides on this answer, name what it reads here. The run asks the model for these
+                and holds it to them — asked once more, then the step fails rather than guess. Read one as{' '}
+                <span className="font-code">{`{{ state.${key}.${fields[0]?.name || 'name'} }}`}</span>.
+            </p>
+            {fields.map((field, idx) => {
+                const type = answerFieldType(field.type);
+                const change = (patch: Partial<typeof field>) => {
+                    const next = [...fields];
+                    next[idx] = { ...field, ...patch };
+                    set(next);
+                };
+                return (
+                    <div key={idx} className="space-y-1.5 rounded-md border border-border bg-surface-2/40 p-2">
+                        <div className="flex gap-1.5">
+                            <LocalInput
+                                className="font-code"
+                                value={field.name}
+                                aria-label={`Answer field ${idx + 1} name`}
+                                placeholder="field_name"
+                                onCommit={(name) => change({ name })}
+                            />
+                            <Select
+                                size="sm"
+                                aria-label={`Answer field ${idx + 1} type`}
+                                className="w-28 shrink-0"
+                                // A stored spelling it knows reads as its type without being rewritten; one it does
+                                // not is shown as itself, never blank (F75's rule).
+                                value={type ?? field.type ?? 'string'}
+                                onChange={(next) => change({ type: next })}
+                                options={type === null && field.type
+                                    ? [...ANSWER_FIELD_TYPES, { value: field.type, label: `unknown type “${field.type}”`, disabled: true }]
+                                    : ANSWER_FIELD_TYPES}
+                            />
+                            <button
+                                type="button"
+                                aria-label={`Remove answer field ${idx + 1}`}
+                                onClick={() => set(fields.filter((_, i) => i !== idx))}
+                                className="shrink-0 text-text-faint transition-colors hover:text-danger"
+                            >
+                                <Trash2 size={12} aria-hidden />
+                            </button>
+                        </div>
+                        {field.name && !answerFieldNameOk(field.name) && (
+                            <p className="text-[11px] text-danger">Letters, digits and _ only, so a later step can read it.</p>
+                        )}
+                        {type === 'choice' && (
+                            // The words it picks one of, comma-separated.
+                            <LocalInput
+                                value={answerFieldOptions(field).join(', ')}
+                                aria-label={`Answer field ${idx + 1} options`}
+                                placeholder="Options, comma-separated: urgent, normal"
+                                onCommit={(text) => change({ options: text.split(',').map((o) => o.trim()).filter(Boolean) })}
+                            />
+                        )}
+                        <LocalInput
+                            value={field.description ?? ''}
+                            aria-label={`Answer field ${idx + 1} description`}
+                            placeholder="What it holds — the model reads this"
+                            onCommit={(description) => change({ description: description || undefined })}
+                        />
+                    </div>
+                );
+            })}
+            <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => set([...fields, { name: `field_${fields.length + 1}`, type: 'boolean' }])}
+            >
+                <Plus size={12} aria-hidden /> Add answer field
+            </Button>
+        </div>
+    );
+}
+
 function AgentSection(props: StepSectionProps) {
     const { step, update, agents, orchestration, showVaultHints } = props;
     return (
@@ -359,6 +449,10 @@ function AgentSection(props: StepSectionProps) {
             </Field>
             <AllowedTools {...props} />
             <FinishTools {...props} />
+            {/* A step that finishes with a tool answers that tool's result; one that runs a workflow, its steps'. */}
+            {!(step.finish_tools?.length) && agents.find((a: KindAgent) => a.id === step.agent_id)?.type !== 'orchestrator' && (
+                <AnswerFields step={step} update={update} />
+            )}
             <HistoryToggle step={step} update={update} />
             <SeesAttachmentsToggle step={step} update={update}
                 runsWorkflow={agents.find((a: any) => a.id === step.agent_id)?.type === 'orchestrator'} />
@@ -385,6 +479,7 @@ function LlmSection({ step, update, availableModels, modelHints, showVaultHints 
                     placeholder={'Summarize the following in 3 bullet points:\n\n{{ state.analysis_result }}'}
                 />
             </Field>
+            <AnswerFields step={step} update={update} />
             <Field label="Model override">
                 <ModelSelect value={step.model} onChange={(model) => update({ model })} availableModels={availableModels} hints={modelHints} />
             </Field>
@@ -1107,8 +1202,13 @@ function ExtractJsonSection() {
             <Note>
                 <strong>Extract JSON</strong> — parses JSON from input text. Handles markdown fences
                 (<code className="font-code">```json</code>), raw JSON, and multiple objects. A single object is
-                stored directly; multiple objects are stored as an array.
+                stored directly; multiple objects are stored as an array. Text that holds no JSON fails the step,
+                so nothing after it branches on an empty result.
             </Note>
+            <p className="text-[11px] text-text-faint">
+                For a model&apos;s answer, give its LLM or Agent step <em>Answer fields</em> instead: the run asks
+                the model for them and holds it to them, with no step in between.
+            </p>
             <p className="text-[11px] text-text-faint">
                 Set <em>Input keys</em> below to say which shared-state values to scan; the result lands in the <em>Output key</em>.
             </p>

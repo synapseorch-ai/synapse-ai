@@ -279,6 +279,33 @@ def _retry_without_reasoning(payload: dict, resp) -> bool:
     return True
 
 
+def _retry_without_response_format(payload: dict, resp) -> bool:
+    """Drop a JSON schema answer format after a 400 that complained about it (F1553).
+
+    A step that declares its answer's fields asks the provider for that shape where it has a JSON schema mode, but
+    the contract never rests on it: the shape is in the prompt too, and the engine reads and repairs the answer
+    (`orchestration.output_fields`). So a model that refuses the mode (an older OpenAI model) is asked once more
+    without it, as `_retry_without_reasoning` does for its knob. Narrow on purpose: only a 400, only when we sent
+    the field, and only when the body names it.
+    """
+    if "response_format" not in payload:
+        return False
+    try:
+        body = (resp.text or "").lower()
+    except Exception:  # noqa: BLE001 — a body we cannot read is not a verdict
+        return False
+    if "response_format" not in body and "json_schema" not in body:
+        return False
+    payload.pop("response_format", None)
+    _log.debug("provider refused response_format — retrying without it")
+    return True
+
+
+def json_schema_format(schema: dict) -> dict:
+    """OpenAI's structured-output `response_format` for `schema` (F1553): strict, so every field comes back."""
+    return {"type": "json_schema", "json_schema": {"name": "answer", "schema": schema, "strict": True}}
+
+
 def _retry_without_fields(payload: dict, resp, fields: dict | None) -> bool:
     """`_retry_without_reasoning` for a hosted API's own thinking fields (PROV1).
 
@@ -1435,7 +1462,7 @@ def _read_cli_answer(base: str, cli_model: str, returncode: int | None, stdout: 
 # ────────────────────────────────────────────────────────────────────────────────
 
 async def call_openai(model, messages, api_key, tools=None, images=None, prompt_cache: bool = True,
-                      reasoning=None, max_tokens: int | None = None):
+                      reasoning=None, max_tokens: int | None = None, response_schema: dict | None = None):
     """Call OpenAI with 5-attempt exponential backoff retry loop.
 
     OpenAI prompt caching is automatic for stable prefixes ≥1024 tokens; we
@@ -1471,6 +1498,9 @@ async def call_openai(model, messages, api_key, tools=None, images=None, prompt_
         # OpenAI uses the same format as our internal Ollama tool spec
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
+    elif response_schema:
+        # A step's declared answer (F1553): OpenAI's structured output, dropped if this model refuses it.
+        payload["response_format"] = json_schema_format(response_schema)
 
     last_error = None
     response = None
@@ -1493,6 +1523,8 @@ async def call_openai(model, messages, api_key, tools=None, images=None, prompt_
                     await asyncio.sleep(backoff)
                     continue
             if resp.status_code == 400 and _retry_without_reasoning(payload, resp):
+                continue
+            if resp.status_code == 400 and _retry_without_response_format(payload, resp):
                 continue
             resp.raise_for_status()
             _log.debug(f"✅ OpenAI call complete (attempt {attempt})")
@@ -2423,8 +2455,16 @@ def _gemini_client_for(api_key: str | None, *, timeout_ms: int, base_url: str | 
         return client
 
 
+def _gemini_schema(schema: dict | None) -> dict | None:
+    """A declared answer's schema as Gemini takes it (F1553): its properties and required fields, without OpenAI's
+    `additionalProperties`, which Gemini's schema subset may not read."""
+    if not isinstance(schema, dict):
+        return None
+    return {k: v for k, v in schema.items() if k != "additionalProperties"}
+
+
 async def call_gemini(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True,
-                     max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS, reasoning=None):
+                     max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS, reasoning=None, response_schema: dict | None = None):
     """Call Gemini using the google-genai SDK with native function calling.
 
     Gemini implicit caching (Gemini 2.5 and newer) auto-applies on the server
@@ -2465,9 +2505,14 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
         cap and a thinking budget on it, a retry that drops them is a different
         call answering a different question.
         """
+        # A step's declared answer (F1553): Gemini's JSON answer with its schema, only where no tools are offered,
+        # and dropped once if Gemini refuses it (`shaped` below).
+        shape = ({"response_mime_type": "application/json", "response_json_schema": _gemini_schema(response_schema)}
+                 if response_schema and shaped and not (with_tools and gemini_tools) else {})
         cfg = types.GenerateContentConfig(
             system_instruction=system,
             max_output_tokens=max_tokens,
+            **shape,
         )
         if with_tools and gemini_tools:
             cfg.tools = gemini_tools
@@ -2481,6 +2526,7 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
             cfg.thinking_config = types.ThinkingConfig(include_thoughts=True, **knob)
         return cfg
 
+    shaped = True
     config = _build_config(with_tools=True)
 
     async def _call(cfg, attempt_label=""):
@@ -2534,6 +2580,12 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
             # Anything that is not an API answer at all (a dropped connection)
             # still does.
             code = getattr(e, "code", None) if isinstance(e, _genai_errors.APIError) else None
+            if code == 400 and shaped and response_schema and "schema" in str(e).lower():
+                # The JSON schema answer refused (F1553): asked once more without it; the prompt and the engine's
+                # read of the answer hold the step to its fields either way.
+                shaped = False
+                config = _build_config(with_tools=True)
+                continue
             # Out of credit (a 402, or a 429 naming its prepayment) never clears
             # on a retry either (F275).
             if isinstance(code, int) and (is_quota_refusal(code, str(e))
@@ -3774,6 +3826,9 @@ class ChatCall(NamedTuple):
     prompt_blocks: list[str] | None
     volatile_tail: str | None
     reasoning_effort: str | None
+    #: The JSON schema a step's declared answer is (F1553), for an adapter whose provider has a schema mode (OpenAI,
+    #: Gemini, Ollama); None for every other call.
+    response_schema: dict | None = None
 
     def messages(self) -> list[dict]:
         """The history and this turn's message — a new list for each call."""
@@ -3800,6 +3855,7 @@ async def _chat_openai(call: ChatCall, spec) -> LLMResult:
         prompt_cache=call.prompt_cache,
         reasoning=call.reasoning,
         **call.cap_kwargs(),
+        **({"response_schema": call.response_schema} if call.response_schema else {}),
     )
 
 
@@ -3830,6 +3886,7 @@ async def _chat_gemini(call: ChatCall, spec) -> LLMResult:
         prompt_cache=call.prompt_cache,
         reasoning=call.reasoning,
         max_tokens=call.max_out,
+        **({"response_schema": call.response_schema} if call.response_schema else {}),
     )
 
 
@@ -4143,13 +4200,24 @@ async def _chat_ollama(call: ChatCall, spec) -> LLMResult:
                     if prior:
                         prompt_for_generate = f"Conversation so far:\n{prior}\n\nUser: {prompt_msg}".strip()
 
-                response = await _ollama_post(client, f"{_ollama_base}/api/generate", {
+                _generate_body = {
                     "model": _ollama_model,
                     "prompt": prompt_for_generate,
                     "system": augmented_system,
                     "stream": False,
                     **({"options": {"num_predict": _sent_cap}} if _sent_cap else {}),
-                }, field="response")
+                    # A step's declared answer (F1553): Ollama's structured output (0.5+), its JSON schema.
+                    **({"format": call.response_schema} if call.response_schema else {}),
+                }
+                response = await _ollama_post(client, f"{_ollama_base}/api/generate", _generate_body,
+                                              field="response")
+                if (call.response_schema and getattr(response, "status_code", 200) != 200
+                        and "format" in str(getattr(response, "text", "") or "").lower()):
+                    # An Ollama too old for a schema: asked once more without it; the prompt and the engine's read
+                    # of the answer hold the step to its fields either way.
+                    _generate_body.pop("format", None)
+                    response = await _ollama_post(client, f"{_ollama_base}/api/generate", _generate_body,
+                                                  field="response")
                 if (refused := _ollama_refusal(response, _ollama_base)) is not None:
                     raise refused
                 data = response.json()
@@ -4253,6 +4321,9 @@ async def _generate_response_once(
     # This call's own response cap — an agent's `max_output_tokens` (F263). None
     # takes the workspace's, and with neither each provider keeps its default.
     max_output_tokens: int | None = None,
+    # The JSON schema of a step's declared answer (F1553): sent to a provider with a schema mode; every provider
+    # gets the shape in the prompt, and the engine reads and repairs the answer either way.
+    response_schema: dict | None = None,
 ):
     """
     Unified LLM dispatch. Routes to the provider for `mode`/`current_model`,
@@ -4363,6 +4434,7 @@ async def _generate_response_once(
         settings=current_settings, tools=tools, images=images, prompt_cache=_prompt_cache,
         reasoning=_reasoning_plan, max_out=_max_out, sent_cap=_sent_cap, agent_cap=max_output_tokens,
         prompt_blocks=prompt_blocks, volatile_tail=volatile_tail, reasoning_effort=reasoning_effort,
+        response_schema=response_schema if isinstance(response_schema, dict) else None,
     )
     spec = _providers.branch_for(mode, current_model)
     if spec is None:

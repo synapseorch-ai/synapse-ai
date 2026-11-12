@@ -185,7 +185,10 @@ from core.native_builder import prompt_lint, seed
 #: `approved`, ded07390… (on a02f291b).
 #: F1550 (BLD3): the prompt writer writes ‹instructions of "<Agent name>"› for a pasted Agent, which code puts there
 #: whole, and its 250 words are never for copied instructions, f73c5110… (on F1549's a565ded3).
-BUNDLE_SHA256 = "f73c5110f7e48ae72115b0cbc5d290be305516c8345e9b527d803ce522005db5"
+#: F1553 (BLD4): the planner's # Structure rule 2 and plan_steps.md's llm/agent/if_else bullets say a model step's
+#: answer is read by the fields its `config.output_fields` declares, which the run holds it to, never an extract_json
+#: step and never a decision read out of its words, 826eb2a5… (on 36c3e1ea).
+BUNDLE_SHA256 = "826eb2a57d11ffde4b4a08eaef5d9f613cd0574d6ea534318a96494608af1675"
 
 
 def _sha(definitions) -> str:

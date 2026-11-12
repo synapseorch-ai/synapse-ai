@@ -438,7 +438,9 @@ def _typed_reads(orch: dict[str, Any], issues: list[str]) -> None:
     from core.state_types import normalize_state_type
 
     steps = orch.get("steps") or []
-    writers = {s["output_key"]: s["id"] for s in steps if s.get("type") in _TEXT_WRITERS and s.get("output_key")}
+    # A model step that declares its answer's fields answers that object already (F1553): nothing to declare for it.
+    writers = {s["output_key"]: s["id"] for s in steps if s.get("type") in _TEXT_WRITERS and s.get("output_key")
+               and not s.get("output_fields")}
     if not writers:
         return
     wanted: dict[str, tuple[str, str]] = {}

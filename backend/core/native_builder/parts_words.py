@@ -267,9 +267,19 @@ _STEP: dict[str, Callable[[Step, _Ctx], str]] = {
 }
 
 
+def _answer_words(s: Step) -> str:
+    """What a model step answers when it declares its fields (F1553), as the card says it: each by name and type."""
+    from core.orchestration import output_fields as _answer
+
+    fields = _answer.normalised((s.config or {}).get("output_fields")) if s.type in ("llm", "agent") else []
+    if not fields:
+        return ""
+    return "; it answers " + ", ".join(f"`{f['name'].strip()}` ({_answer.type_words(f)})" for f in fields)
+
+
 def _step_words(s: Step, ctx: _Ctx) -> str:
     row = _STEP.get(s.type)
-    return row(s, ctx) if row else f"a {s.type.replace('_', ' ')} step"
+    return (row(s, ctx) if row else f"a {s.type.replace('_', ' ')} step") + _answer_words(s)
 
 
 # ── the plan's own parts ─────────────────────────────────────────────────────────────────────────────────────────

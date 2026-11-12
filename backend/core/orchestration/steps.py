@@ -254,6 +254,37 @@ def _no_answer_reason(step_name: str, no_answer: dict) -> str:
             "step's turn limit (Max turns, in its settings) if it needs more.")
 
 
+def _answer_repair(step: StepConfig, run: OrchestrationRun, fields: list[dict], prompt: str, said: Any,
+                   problems: list[str], agent: dict | None):
+    """The one more ask an Agent step's answer gets when it misses its `output_fields` (F1553): to the agent's own
+    model (the step's, else the agent's, else the run's), with its task and its answer and no tools. Returned as the
+    call, for the step to hand to `ModelWait`."""
+    from core.config import load_settings
+    from core.llm_providers import detect_mode_from_model, generate_response as llm_generate
+
+    from . import output_fields as _answer
+
+    settings = load_settings()
+
+    def picked(model: Any) -> str | None:
+        return model if isinstance(model, str) and model.strip() and model.strip().lower() != "default" else None
+
+    model = picked(step.model) or picked((agent or {}).get("model")) or settings.get("model", "mistral")
+    return llm_generate(
+        prompt_msg=_answer.repair_prompt(prompt, said, problems, fields),
+        sys_prompt=str((agent or {}).get("system_prompt") or "You are a helpful assistant."),
+        mode=detect_mode_from_model(model),
+        current_model=model,
+        current_settings=settings,
+        reasoning_effort=settings.get("reasoning_effort"),
+        session_id=run.session_id,
+        agent_id=step.agent_id or "agent_step",
+        source="orchestration",
+        run_id=run.run_id,
+        response_schema=_answer.json_schema(fields),
+    )
+
+
 class AgentStepExecutor:
     """Run a sub-agent's ReAct loop. Reuses the existing engine.
 
@@ -282,6 +313,12 @@ class AgentStepExecutor:
         # orchestrator agent needs no tools, so it is resolved without them.
         resolved = await resolve_for_run(engine, step.agent_id, tools=False)
         target_agent = resolved.agent if resolved else None
+        if target_agent and target_agent.get("type") == "orchestrator" and step.output_fields:
+            # A workflow's result is its own steps' (F1553): the validator refuses answer fields here, and a step
+            # saved with them anyway stops rather than run with fields nothing holds it to.
+            raise RuntimeError(
+                f"Agent step '{step.name}' runs a workflow, whose result is what its own steps make, so it takes no "
+                "answer fields: take them off the step, or declare them on the workflow's own model step.")
         if target_agent and target_agent.get("type") == "orchestrator":
             # The child is handed this step's task, not the prompt an agent here
             # would get (F252): that prompt — this workflow's role, goal and
@@ -305,6 +342,12 @@ class AgentStepExecutor:
                 step, run, engine, transition
             )
         inputs_snapshot = snapshot_inputs(step, run, engine)
+        # Its answer's fields (F1553): asked for in its task; its final answer is read for them below.
+        from . import output_fields as _answer
+
+        fields = _answer.normalised(step.output_fields)
+        if fields:
+            prompt = f"{prompt}\n\n{_answer.instruction(fields)}"
 
         # Emit prompt for the orchestration logger (filtered out before SSE)
         yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": prompt,
@@ -432,7 +475,8 @@ class AgentStepExecutor:
                 finish_tools=list(step.finish_tools) or None,
                 # With none, it may save files and finish with one (D339 P4): the output is then the file's reference.
                 # Not in the native builder's own run, whose steps' tools are its bundle's (and E's to measure).
-                output_step=None if step.finish_tools or _is_native_builder(engine) else step.id,
+                # Not for a step that answers its declared fields (F1553): its answer is that object, never a file.
+                output_step=None if step.finish_tools or fields or _is_native_builder(engine) else step.id,
             ):
                 if event.get("type") == "human_input_required":
                     parked = True
@@ -586,6 +630,25 @@ class AgentStepExecutor:
             raise RuntimeError(_no_answer_reason(step.name, no_answer))
         if final_response is None:
             raise RuntimeError(f"Agent step '{step.name}' ended without producing a final response")
+
+        if fields and not isinstance(final_response, dict):
+            # The object it declared, typed; a miss is asked once more of its own model, with its task and its answer,
+            # then the step fails (F1553): never a branch on a guess.
+            answer, problems = _answer.read(fields, final_response)
+            if problems:
+                from core.model_wait import ModelWait
+
+                _rwait = ModelWait(_answer_repair(step, run, fields, prompt, final_response, problems, target_agent),
+                                   label=f"Agent step '{step.name}'",
+                                   extra={"orch_step_id": step.id, "step_name": step.name})
+                async for _wait_event in _rwait.events():
+                    yield _wait_event
+                again = _rwait.result
+                answer, still = _answer.read(fields, again)
+                if still:
+                    raise RuntimeError(_answer.missing(step.name, still, again))
+                yield {"type": "step_warning", "orch_step_id": step.id, "message": _answer.repaired(step.name, problems)}
+            final_response = answer
 
         # Clean completion leaves no transcript residue (deliberate
         # re-invocations — loops, evaluator retries — rely on _exec_memory,
@@ -3253,11 +3316,18 @@ class LLMStepExecutor:
         if transition is None:
             from .context import TransitionContext
             transition = TransitionContext(origin_type="entry", execution_number=1)
+        from . import output_fields as _answer
+
         with _reading_for(step.model, run):
             prompt, system_prompt_extra, system_prompt_prefix, mentions = await build_step_prompt(
                 step, run, engine, transition
             )
         inputs_snapshot = snapshot_inputs(step, run, engine)
+        # Its answer's fields (F1553): asked for in the prompt, and of a provider that has a JSON schema mode.
+        fields = _answer.normalised(step.output_fields)
+        if fields:
+            prompt = f"{prompt}\n\n{_answer.instruction(fields)}"
+        shaped = {"response_schema": _answer.json_schema(fields)} if fields else {}
 
         yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": prompt,
                "system_prompt_extra": system_prompt_extra,
@@ -3305,6 +3375,7 @@ class LLMStepExecutor:
                 cache_response_ttl=step.cache_response_ttl_seconds,
                 cache_response_step_id=step.id,
                 cache_response_threshold=step.cache_response_threshold,
+                **shaped,
             ), model, role_fallback(step, run, model), _used),
                 label=f"LLM step '{step.name}'", extra={"orch_step_id": step.id, "step_name": step.name})
             async for _wait_event in _wait.events():
@@ -3318,8 +3389,40 @@ class LLMStepExecutor:
                 raise
             raise RuntimeError(f"LLM step '{step.name}' failed: {e}") from e
 
+        output = response
+        if fields:
+            # The object it declared, typed; a miss is asked once more of the model that answered, with its own
+            # prompt and answer, then the step fails (F1553): never a branch on a guess.
+            answered = _used[0] if _used else model
+            output, problems = _answer.read(fields, response)
+            if problems:
+                from core.model_wait import ModelWait
+
+                _rwait = ModelWait(llm_generate(
+                    prompt_msg=_answer.repair_prompt(prompt, response, problems, fields),
+                    sys_prompt=sys_prompt,
+                    mode=detect_mode_from_model(answered),
+                    current_model=answered,
+                    current_settings=settings,
+                    reasoning_effort=settings.get("reasoning_effort"),
+                    session_id=run.session_id,
+                    agent_id=step.agent_id or "llm_step",
+                    source="orchestration",
+                    run_id=run.run_id,
+                    **shaped,
+                ), label=f"LLM step '{step.name}'", extra={"orch_step_id": step.id, "step_name": step.name})
+                async for _wait_event in _rwait.events():
+                    yield _wait_event
+                response = _rwait.result
+                output, again = _answer.read(fields, response)
+                if again:
+                    raise RuntimeError(_answer.missing(step.name, again, response))
+                yield {"type": "step_warning", "orch_step_id": step.id,
+                       "message": _answer.repaired(step.name, problems)}
+            response = json.dumps(output, ensure_ascii=False)
+
         if step.output_key:
-            run.shared_state[step.output_key] = response
+            run.shared_state[step.output_key] = output
 
         # Record execution memory so re-invocations can see prior turn's output.
         from .context import build_execution_trace, store_execution_memory
@@ -3350,7 +3453,10 @@ class ExtractJsonStepExecutor:
         for key in (step.input_keys or []):
             val = run.shared_state.get(key)
             if val is not None:
-                parts.append(str(val))
+                # An object or a list in state is already data: read as its JSON, never as Python's repr, which holds
+                # no JSON and would now fail the step (F1553).
+                parts.append(json.dumps(val, ensure_ascii=False, default=str) if isinstance(val, (dict, list))
+                             else str(val))
 
         text = "\n\n".join(parts) if parts else ""
         if not text.strip():
@@ -3366,10 +3472,11 @@ class ExtractJsonStepExecutor:
         extracted = extract_all_json(text)
 
         if not extracted:
-            result = None
-            yield {"type": "step_warning", "orch_step_id": step.id,
-                   "message": "No valid JSON found in input"}
-        elif len(extracted) == 1:
+            # Text that holds no JSON fails the step (F1553, Naveen 11-12): it stored None with a warning, and a
+            # condition on a field of it took its documented False (F1433) with the run Completed. Empty input is
+            # unchanged above: nothing written is still read as unwritten.
+            raise RuntimeError(_no_json_found(step, engine, text))
+        if len(extracted) == 1:
             result = extracted[0]
         else:
             result = extracted
@@ -3383,6 +3490,20 @@ class ExtractJsonStepExecutor:
             "step_name": step.name,
             "response": json.dumps(result, default=str) if result is not None else "null",
         }
+
+
+def _no_json_found(step: StepConfig, engine: Any, text: str) -> str:
+    """Why an Extract JSON step stops (F1553): whose text held no JSON, what it said, and the repair."""
+    keys = list(step.input_keys or [])
+    writers = [s.name for s in (getattr(engine, "step_map", None) or {}).values()
+               if getattr(s, "output_key", None) in keys and getattr(s, "name", None)]
+    whose = f"what '{writers[0]}' wrote" if len(writers) == 1 else \
+        ("what " + ", ".join(f"'{k}'" for k in keys) + " held" if keys else "its input")
+    said = " ".join(text.split())
+    said = said if len(said) <= 300 else said[:300] + "…"
+    return (f"Extract JSON step '{step.name}' found no JSON in {whose}: “{said}”. The step stops here rather than "
+            "store nothing for a later step to branch on. Ask that step to answer in JSON, or give it answer fields "
+            "(an LLM or Agent step's output_fields, which the run holds its model to), then Replay.")
 
 
 def extract_all_json(text: str) -> list:

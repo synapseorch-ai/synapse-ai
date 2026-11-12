@@ -553,7 +553,8 @@ STEPS_JSON_DESCRIPTION = (
     "lean — include only fields that differ from zero-defaults.\n"
     "Sub-structures MUST be JSON strings inside each step: route_map_json, "
     "route_descriptions_json, parallel_branches_json, human_fields_json, "
-    "switch_cases_json. Retrieve and ingest steps take add_single_step's flat "
+    "switch_cases_json, output_fields_json (an llm or agent step's answer fields, F1553). Retrieve and ingest "
+    "steps take add_single_step's flat "
     "retrieve_* / ingest_* fields. An agent step that should read the images "
     "a person attaches in chat sets \"pass_images\": true.\n"
     "Minimal example (2 agent steps):\n"
@@ -568,7 +569,7 @@ PATCH_JSON_DESCRIPTION = (
     "JSON-encoded object with the step fields you want to change. Omit any "
     "field you don't want touched. Use *_json string keys for sub-structures "
     "(route_map_json, parallel_branches_json, human_fields_json, "
-    "route_descriptions_json); a retrieve or ingest step's flat retrieve_* / ingest_* "
+    "route_descriptions_json, output_fields_json); a retrieve or ingest step's flat retrieve_* / ingest_* "
     "fields change only those settings; pass_images (agent steps) turns Sees attachments on or off; a browser "
     "step's recording_inputs_json, may_send_steps, on_miss and browser_sessions as add_single_step takes them. "
     "Example: '{\"prompt_template\":\"New prompt\",\"next_step_id\":\"step_xyz7890\"}'"
@@ -1336,6 +1337,10 @@ BUILDER_TOOL_SCHEMAS = [
                         "type": "string",
                         "description": "JSON string of field definitions. The answer is stored under output_key as a mapping {field name: value}: name the output_key for the step (e.g. `review`), not after a field, type it dict, and read one field as `{{ state.review.feedback }}`. Types: string, textarea, number, boolean, email, date, phone, choice (a dropdown; give it \"options\": [..], one is picked). Example: '[{\"name\":\"feedback\",\"type\":\"textarea\",\"label\":\"Your feedback\"},{\"name\":\"decision\",\"type\":\"choice\",\"label\":\"Decision\",\"options\":[\"Approve\",\"Later\"]}]'",
                     },
+                    "output_fields_json": {
+                        "type": "string",
+                        "description": "JSON string of the fields an llm or agent step answers (F1553): the step answers that one object, which the run holds its model to (asked once more, then the step fails), and a later step reads one as `state.<output_key>.<name>`. Types: text, number, boolean (a yes or no), choice (give it \"options\": [..]), list (of text). Example: '[{\"name\":\"risky\",\"type\":\"boolean\",\"description\":\"Whether the change is risky\"},{\"name\":\"fit\",\"type\":\"choice\",\"options\":[\"good\",\"poor\"]}]'",
+                    },
                     "forced_tool": {"type": "string", "description": "Tool name for tool steps"},
                     "workflow_id": {"type": "string", "description": "The id of the workflow a workflow step runs, as a nested run (workflow steps)"},
                     "merge_strategy": {
@@ -1478,6 +1483,7 @@ BUILDER_TOOL_SCHEMAS = [
                                 "parallel_branches_json": {"type": "string", "description": "JSON string: '[[\"step_a\"],[\"step_b\"]]'"},
                                 "human_prompt": {"type": "string"},
                                 "human_fields_json": {"type": "string"},
+                                "output_fields_json": {"type": "string", "description": "llm/agent steps: JSON string of the fields its answer has, [{name, type, description?, options?}] (F1553)"},
                                 "forced_tool": {"type": "string"},
                                 "workflow_id": {"type": "string", "description": "The id of the workflow a workflow step runs (workflow steps)"},
                                 "merge_strategy": {"type": "string", "enum": ["concat", "list", "dict"]},
@@ -4346,7 +4352,7 @@ def step_successors(s: dict, by_id: dict) -> list[str]:
 _EXPRESSION_FIELDS = ("if_condition", "switch_expression", "loop_while_condition", "loop_break_condition", "loop_over")
 
 
-def _fields_never_written(steps: list) -> list[str]:
+def _fields_never_written(steps: list, agents: dict | None = None) -> list[str]:
     """A read of a field that the steps writing its key never write (F1549, MIG1's bug A: a Human step with no fields,
     then an If/Else on `state.<its id>.approved`, routed every approval "no").
 
@@ -4365,7 +4371,8 @@ def _fields_never_written(steps: list) -> list[str]:
         if isinstance(s, dict):
             for key in step_answers.keys_written(s):
                 writers.setdefault(key, []).append(s)
-    known = {key: ws for key, ws in writers.items() if all(step_answers.answer_fields(w) is not None for w in ws)}
+    known = {key: ws for key, ws in writers.items()
+             if all(step_answers.answer_fields(w, agents) is not None for w in ws)}
     if not known:
         return []
 
@@ -4403,9 +4410,16 @@ def _fields_never_written(steps: list) -> list[str]:
         sid = s.get("id", "?")
         for key, fields in reads.items():
             ws = known[key]
-            has = {f for w in ws for f in step_answers.answer_fields(w) or ()}
+            has = {f for w in ws for f in step_answers.answer_fields(w, agents) or ()}
             for field in fields:
                 if field in has:
+                    continue
+                if len(ws) == 1 and ws[0].get("type") in ("llm", "agent"):
+                    # A model's answer has the fields it declares, held to them (F1553); its text has none.
+                    w = ws[0]
+                    issues.append(f"Step '{sid}' reads `{field}` from state.{key}, which {w.get('type')} step "
+                                  f"'{w.get('id', '?')}' does not declare in its output_fields: "
+                                  f"{step_answers.declare(w, field)}.")
                     continue
                 if len(ws) == 1:
                     w = ws[0]
@@ -4419,8 +4433,39 @@ def _fields_never_written(steps: list) -> list[str]:
                 bare = [w for w in ws if w.get("type") == "human" and not step_answers.answer_fields(w)]
                 also = (f", or give each a field named '{field}' in human_fields (with no fields, a human step's "
                         "answer is the person's words, which have no fields)") if bare else ""
+                if any(w.get("type") in ("llm", "agent") for w in ws):
+                    also += f", or declare `{field}` in the model steps' output_fields (F1553)"
                 issues.append(f"Step '{sid}' reads `{field}` from state.{key}, which the steps that write it "
                               f"({names}) never write: {instead}{also}.")
+    return issues
+
+
+def _answer_field_problems(steps: list, agents: dict | None = None) -> list[str]:
+    """A model step's `output_fields` the run could not hold a model to (F1553): a name a condition cannot read, one
+    twice, a type that is not one, a choice with no options; and fields on a step whose answer is not the model's
+    (a workflow agent's, whose result is its own steps')."""
+    from core.orchestration import output_fields as _answer
+
+    issues: list[str] = []
+    for s in steps:
+        if not isinstance(s, dict) or s.get("type") not in ("llm", "agent"):
+            continue
+        fields = s.get("output_fields")
+        if fields is None and isinstance(s.get("output_fields_json"), str):
+            fields = _parse_json_field(s["output_fields_json"], [])
+        if not fields:
+            continue
+        sid = s.get("id", "?")
+        if not isinstance(fields, list):
+            issues.append(f"Step '{sid}' has output_fields that are not a list of fields: give "
+                          '[{"name": "…", "type": "…"}, …].')
+            continue
+        for problem in _answer.declaration_problems(fields):
+            issues.append(f"Step '{sid}' output_fields: {problem}.")
+        agent = (agents or {}).get(s.get("agent_id")) if s.get("type") == "agent" else None
+        if agent is not None and agent.get("type") == "orchestrator":
+            issues.append(f"Agent step '{sid}' runs a workflow, whose result is what its own steps make, so it takes "
+                          "no output_fields: declare them on that workflow's own model step, or take them off.")
     return issues
 
 
@@ -4569,7 +4614,9 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
       - a field read out of a key is one the steps writing it write, where each
         says its answer: a human step's fields, none for one without; an
         evaluator's label; an if/else's true or false; a retrieve's or an
-        ingest's contract (F1549)
+        ingest's contract (F1549); a model step's declared output_fields, none
+        for an llm step (or a plain agent's, agents known) without (F1553)
+      - a model step's output_fields can be held to (F1553)
       - a retrieve or ingest step's settings hold to the contract, the
         knowledge bases it names exist (`kbs`, when given) and are active, an
         ingest step reads a key something writes or the schema declares, and
@@ -4841,7 +4888,9 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
                 )
     # And a field of a key: one the steps writing it never write is always missing, so a condition on it always takes
     # its documented default (F1549: every approval routed "no").
-    issues += _fields_never_written(steps)
+    issues += _fields_never_written(steps, agents)
+    # A model step's declared answer (F1553): fields the run can hold a model to, and only where they are read.
+    issues += _answer_field_problems(steps, agents)
     # What a run makes (F249): a result_key no step writes is never the result.
     result_key = orch.get("result_key") or ""
     if result_key and result_key not in writable:
@@ -5030,6 +5079,8 @@ def _normalize_step_inputs(step: dict) -> dict:
         s["parallel_branches"] = _parse_json_field(s.pop("parallel_branches_json"), [])
     if "human_fields_json" in s:
         s["human_fields"] = _parse_json_field(s.pop("human_fields_json"), [])
+    if "output_fields_json" in s:
+        s["output_fields"] = _parse_json_field(s.pop("output_fields_json"), [])
     if "switch_cases_json" in s:
         s["switch_cases"] = _parse_json_field(s.pop("switch_cases_json"), {})
     if "recording_inputs_json" in s:

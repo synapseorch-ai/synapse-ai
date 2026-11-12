@@ -121,6 +121,9 @@ export interface StepConfig {
     // I/O mapping
     input_keys?: string[];
     output_key?: string;
+    // LLM / AGENT — the fields its answer has (F1553): the step answers that one object, which the run holds the
+    // model to; a later step reads one as {{ state.<output_key>.<name> }}. `answerFields.ts`.
+    output_fields?: { name: string; type?: string; description?: string; options?: string[] }[];
 
     // Per-step guardrails
     max_turns?: number;

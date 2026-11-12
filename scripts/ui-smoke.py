@@ -18210,6 +18210,66 @@ async def check_brwstep(browser) -> str:
             "as the workflow's")
 
 
+@check
+async def check_answerfields(browser) -> str:
+    """A model step's answer fields read back as their types on the LLM panel, and Extract JSON says it fails on text
+    with no JSON (F1553).
+
+    An LLM or Agent step declares the fields a later step reads (`output_fields`): the run asks the model for them and
+    holds it to them. The editor shows each by its name and its type in words (a yes/no, one of a few words with its
+    options), never a blank picker, at wide and phone widths in light and dark; `SMOKE_SHOTS`, when set, keeps a shot
+    of each. The Extract JSON panel says text with no JSON fails it and points to the answer fields instead.
+    """
+    oid = f"orch_uismoke_answer_{int(time.time())}"
+    fields = [{"name": "risky", "type": "boolean", "description": "Whether the change is risky"},
+              {"name": "fit", "type": "choice", "options": ["good", "poor"]}]
+    api("/api/orchestrations", "POST", {
+        "id": oid, "name": "UI smoke answer fields", "entry_step_id": "analyze", "steps": [
+            {"id": "analyze", "name": "Analyze Diff", "type": "llm", "prompt_template": "Is this diff risky?",
+             "output_key": "analyze", "output_fields": fields, "next_step_id": "parse_old",
+             "position_x": 0, "position_y": 0},
+            {"id": "parse_old", "name": "Parse Old", "type": "extract_json", "input_keys": ["analyze"],
+             "output_key": "parse_old", "next_step_id": "route", "position_x": 320, "position_y": 0},
+            {"id": "route", "name": "Risky?", "type": "if_else", "if_condition": "state.analyze.risky",
+             "if_true_step_id": "end", "if_false_step_id": "end", "position_x": 640, "position_y": 0},
+            {"id": "end", "name": "End", "type": "end", "position_x": 960, "position_y": 0},
+        ]})
+    problems: list[str] = []
+    shots = os.environ.get("SMOKE_SHOTS")
+    try:
+        for scheme in ("light", "dark"):
+            for width in (WIDE, PHONE):
+                ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]}, color_scheme=scheme)
+                page = await ctx.new_page()
+                try:
+                    await open_step(page, oid, "Analyze Diff")
+                    panel = page.get_by_test_id("answer-fields")
+                    await panel.scroll_into_view_if_needed()
+                    said = [(await page.get_by_role("combobox", name=f"Answer field {i} type").inner_text()).strip()
+                            for i in (1, 2)]
+                    if said != ["Yes / No", "One of"]:
+                        problems.append(f"{scheme} {width[0]}: the types read {said}, not Yes / No and One of")
+                    options = await page.get_by_role("textbox", name="Answer field 2 options").input_value()
+                    if options != "good, poor":
+                        problems.append(f"{scheme} {width[0]}: the choice's options read {options!r}")
+                    if shots:
+                        await panel.screenshot(path=os.path.join(shots, f"answerfields-llm-{scheme}-{width[0]}.png"))
+                    await page.keyboard.press("Escape")
+                    await open_step(page, oid, "Parse Old")
+                    note = " ".join((await page.locator("aside, [role=dialog], main").last.inner_text()).split())
+                    if "fails the step" not in note or "Answer fields" not in note:
+                        problems.append(f"{scheme} {width[0]}: the Extract JSON panel does not say it fails on no JSON")
+                    if shots and width == WIDE:
+                        await page.screenshot(path=os.path.join(shots, f"answerfields-extract-{scheme}-{width[0]}.png"))
+                finally:
+                    await ctx.close()
+    finally:
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "an LLM step's answer fields read as Yes / No and One of (good, poor), light and dark, wide and phone"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
