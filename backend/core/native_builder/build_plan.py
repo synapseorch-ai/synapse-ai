@@ -503,6 +503,10 @@ _HINTS = (
     ("transform_code", "A transform step needs its Python in `config.transform_code`; to reshape data without "
                        "code, use an `llm` step."),
     ("is not set up", "A Retrieve or Ingest step names its knowledge bases by an id from `knowledge_bases`."),
+    # F1549: the validator's read of a field no step writing the key writes, in the plan's own words.
+    ("never write", "A human step's fields are its `config.human_fields`: a yes or no a later step branches on is "
+                    '`[{"name": "approved", "type": "boolean", "label": "Approve?"}]`, read as '
+                    "`state.<step id>.approved`. An `evaluator` writes its branch's label, an `if_else` true or false."),
 )
 
 
@@ -1081,21 +1085,30 @@ def _without_secret_asks(plan: O.Plan, base: O.Plan | None) -> tuple[O.Plan, lis
 
 
 def _objects_read_as_text(s: O.Step, plan: O.Plan) -> list[str]:
-    """A code step reading an object as text (F1359: cap-05's Transform ran `re.search` on a Human step's answer). A
-    Human step answers an object (`{approved, feedback}`, or its `human_fields` by name) and an Extract JSON step the
-    JSON it pulled out, so text read out of either is a field of it. A Tool step's answer is F1358's (parsed for a code
-    step that reads its fields), so it is not held here."""
+    """A code step reading an object as text (F1359: cap-05's Transform ran `re.search` on a Human step's answer). Text
+    from a person is a field of a Human step (its `human_fields` by name; with none, its answer is the person's words,
+    F1549) and an Extract JSON step answers the JSON it pulled out, so text read out of either is a field of it. A Tool
+    step's answer is F1358's (parsed for a code step that reads its fields), so it is not held here."""
     from core.native_builder.compile import text_reads
+    from core.orchestration.step_answers import human_fields
 
     steps = [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)]
-    objects = {x.id: x.type for x in steps if x.type in ("human", "extract_json")}
+    objects = {x.id: x for x in steps if x.type in ("human", "extract_json")}
     out = []
     for key in sorted(text_reads((s.config or {}).get("transform_code") or "", set(objects))):
-        what = ("a person's answer, an object: `{approved, feedback}`, or its `human_fields` by name"
-                if objects[key] == "human" else "the JSON it pulled out, an object or a list")
-        out.append(f"step {s.id}: its code reads `state.{key}` as text, but step {key} is {what}: read a field of it "
-                   f"(`state.{key}.feedback`, `state.{key}['name']`). The run's own message is `state.user_input`: "
-                   "read it there, never ask a person for it again")
+        if objects[key].type != "human":
+            what, then = "the JSON it pulled out, an object or a list", "read a field of it"
+            read = f"`state.{key}.feedback`, `state.{key}['name']`"
+        elif names := [f["name"] for f in human_fields(objects[key].config or {})]:
+            what = f"a person's answer, an object of its `human_fields` by name ({', '.join(f'`{n}`' for n in names)})"
+            then, read = "read a field of it", f"`state.{key}.{names[0]}`, `state.{key}['{names[0]}']`"
+        else:
+            what = "a person's answer, an object only once it has `human_fields`"
+            then = ('give it a field in `config.human_fields`, e.g. `{"name": "request", "type": "textarea", '
+                    '"label": "The request"}`, and read that')
+            read = f"`state.{key}.request`"
+        out.append(f"step {s.id}: its code reads `state.{key}` as text, but step {key} is {what}: {then} ({read}). "
+                   "The run's own message is `state.user_input`: read it there, never ask a person for it again")
     return out
 
 

@@ -1076,11 +1076,13 @@ function TransformSection({ step, update, codeRunnerNote, readOnly }: StepSectio
                 <code className="font-code">state.key</code> or <code className="font-code">state[&quot;key&quot;]</code>, and
                 assign to <code className="font-code">result</code> to write the output key.
             </Note>
-            {/* What a code step receives (F1359): the run's own message, and which steps answer an object. */}
+            {/* What a code step receives (F1359): the run's own message, and which steps answer an object. A human step
+                with no fields answers the words typed (F1549). */}
             <p className="text-[11px] text-text-faint">
                 The run&apos;s own message is <code className="font-code">state.user_input</code>. A human step&apos;s
-                answer is an object (<code className="font-code">{'{approved, feedback}'}</code>, or its fields by name):
-                read a field, as <code className="font-code">state.review.feedback</code>. A tool step&apos;s answer is an
+                answer is an object of its fields by name: read a field, as{' '}
+                <code className="font-code">state.review.feedback</code>; with no fields, it is {"the person's words"}.
+                A tool step&apos;s answer is an
                 object or a list when the workflow&apos;s state schema declares its key one (the AI builder declares it when
                 a later step reads its fields), otherwise the tool&apos;s text:{' '}
                 <code className="font-code">v if isinstance(v, (dict, list)) else json.loads(v)</code> reads either.

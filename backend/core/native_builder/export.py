@@ -138,7 +138,9 @@ body step's output holds a list of every iteration's result.
 never with code copied from the export.
 - output_type (a Pydantic or zod schema) → the step answers as JSON with those fields, then `extract_json` (rule 2).
 - User approval (approval_request(...) / approvalRequest(...), usually a stub that returns true) → a `human` step \
-whose `prompt` is its message, then an `if_else` on the answer.
+whose `prompt` is its message and whose `config.human_fields` is one yes/no field, \
+`[{"name": "approved", "type": "boolean", "label": "Approve?"}]` (the run asks it with Approve and Decline), then an \
+`if_else` on `state.<its id>.approved`. A human step with no fields answers the person's words, which have no fields.
 - Guardrails (guardrails_config, run_guardrails, input_guardrails=, a tripwire) are kept: an `evaluator` step before \
 what they guard, whose prompt asks the checks the code names, with branches pass and blocked; blocked goes to a \
 `print` step (its `prompt`: the export's failure output, as text), then `end`. Name the checks (Moderation, \

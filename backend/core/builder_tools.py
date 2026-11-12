@@ -4342,6 +4342,88 @@ def step_successors(s: dict, by_id: dict) -> list[str]:
     return successors
 
 
+#: A step's fields that are expressions over state (`core.expressions`), never templates.
+_EXPRESSION_FIELDS = ("if_condition", "switch_expression", "loop_while_condition", "loop_break_condition", "loop_over")
+
+
+def _fields_never_written(steps: list) -> list[str]:
+    """A read of a field that the steps writing its key never write (F1549, MIG1's bug A: a Human step with no fields,
+    then an If/Else on `state.<its id>.approved`, routed every approval "no").
+
+    Checked where every step writing the key says its answer (`step_answers.answer_fields`: a Human step, an
+    Evaluator, an If/Else, a Retrieve or an Ingest step): a key another kind of step writes too may hold anything.
+    Read in a condition (`compile.field_reads`, F1394's reader, on the braced form's inside too, F1433), a template
+    anywhere in a step (`{{ state.k.f }}`, or the older single brace) and a Transform's code. A whole read, a text
+    method and an index are no field. Each issue leads with its repair, as every message here does."""
+    from core.expressions import _unbraced
+    from core.native_builder.compile import TEXT_METHODS, field_reads
+    from core.orchestration import step_answers
+    from core.templating import _OLD_STATE_REF, STATE_REF
+
+    writers: dict[str, list[dict]] = {}
+    for s in steps:
+        if isinstance(s, dict):
+            for key in step_answers.keys_written(s):
+                writers.setdefault(key, []).append(s)
+    known = {key: ws for key, ws in writers.items() if all(step_answers.answer_fields(w) is not None for w in ws)}
+    if not known:
+        return []
+
+    issues: list[str] = []
+    for s in steps:
+        if not isinstance(s, dict):
+            continue
+        reads: dict[str, list[str]] = {}
+
+        def add(key: str, field: str) -> None:
+            if key in known and field not in reads.setdefault(key, []):
+                reads[key].append(field)
+
+        for code in [*(_unbraced(s[f]) for f in _EXPRESSION_FIELDS if isinstance(s.get(f), str)),
+                     *([s["transform_code"]] if isinstance(s.get("transform_code"), str) else [])]:
+            for key, fields in field_reads(code, set(known)).items():
+                for field in fields:
+                    add(key, field)
+
+        def walk(value: Any) -> None:
+            if isinstance(value, dict):
+                for v in value.values():
+                    walk(v)
+            elif isinstance(value, list):
+                for v in value:
+                    walk(v)
+            elif isinstance(value, str) and "state." in value:
+                for ref in [*STATE_REF.findall(value), *_OLD_STATE_REF.findall(value)]:
+                    head, _, rest = ref.partition(".")
+                    field = rest.split(".", 1)[0]
+                    if field and not field.lstrip("-").isdigit() and field not in TEXT_METHODS:
+                        add(head, field)
+
+        walk({k: v for k, v in s.items() if k != "transform_code" and k not in _EXPRESSION_FIELDS})
+        sid = s.get("id", "?")
+        for key, fields in reads.items():
+            ws = known[key]
+            has = {f for w in ws for f in step_answers.answer_fields(w) or ()}
+            for field in fields:
+                if field in has:
+                    continue
+                if len(ws) == 1:
+                    w = ws[0]
+                    issues.append(f"Step '{sid}' reads `{field}` from state.{key}, which "
+                                  f"{step_answers.kind_words(w)} step '{w.get('id', '?')}' never writes: "
+                                  f"{step_answers.repair(w, key, field)}.")
+                    continue
+                names = ", ".join(f"'{w.get('id', '?')}'" for w in ws)
+                instead = f"read one they write ({', '.join(f'`{f}`' for f in sorted(has))})" if has else \
+                    f"read state.{key} itself"
+                bare = [w for w in ws if w.get("type") == "human" and not step_answers.answer_fields(w)]
+                also = (f", or give each a field named '{field}' in human_fields (with no fields, a human step's "
+                        "answer is the person's words, which have no fields)") if bare else ""
+                issues.append(f"Step '{sid}' reads `{field}` from state.{key}, which the steps that write it "
+                              f"({names}) never write: {instead}{also}.")
+    return issues
+
+
 #: Tools that read a file's whole content into state (their bare names).
 _FILE_READERS = frozenset({"vault_read", "read_file", "read_text_file", "read_multiple_files"})
 
@@ -4484,6 +4566,10 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
         is of that type
       - a human step with fields writes a mapping, so its key is not declared
         as text or a number, and no Print shows that mapping whole (F189)
+      - a field read out of a key is one the steps writing it write, where each
+        says its answer: a human step's fields, none for one without; an
+        evaluator's label; an if/else's true or false; a retrieve's or an
+        ingest's contract (F1549)
       - a retrieve or ingest step's settings hold to the contract, the
         knowledge bases it names exist (`kbs`, when given) and are active, an
         ingest step reads a key something writes or the schema declares, and
@@ -4753,6 +4839,9 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
                     f"Ingest step '{sid}' reads its records from '{source}', which nothing writes — give the "
                     f"step that makes them '{source}' as its output_key, or declare it in the state schema."
                 )
+    # And a field of a key: one the steps writing it never write is always missing, so a condition on it always takes
+    # its documented default (F1549: every approval routed "no").
+    issues += _fields_never_written(steps)
     # What a run makes (F249): a result_key no step writes is never the result.
     result_key = orch.get("result_key") or ""
     if result_key and result_key not in writable:
