@@ -1,5 +1,9 @@
 # Stage 1: Build Next.js frontend
-FROM node:20-alpine AS frontend-builder
+# On the builder's own platform, once for every target (F1572): the build is JavaScript, the same for amd64 and arm64,
+# and under QEMU arm64's `npm ci` alone outlasted the release job's 90 minutes (2.0.8). The one native module its
+# output carries is sharp, for Next's image optimizer, which the app's pages never use; on an arm64 image it loads its
+# WebAssembly build (@img/sharp-wasm32). Stage 2 stays the target's own.
+FROM --platform=$BUILDPLATFORM node:20-alpine AS frontend-builder
 ARG BACKEND_URL=http://localhost:8765
 ENV BACKEND_URL=$BACKEND_URL
 WORKDIR /app
