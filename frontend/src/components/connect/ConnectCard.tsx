@@ -114,7 +114,7 @@ export function ConnectCard({
             // No clipboard: the address is shown below with its own Copy.
         }
         setDone({
-            said: 'In Claude, choose “Add custom connector”, paste this address, and sign in.',
+            said: 'In Claude, choose “+ Add”, then “Add custom connector”, paste this address, and sign in.',
             text: host.mcpUrl,
             link: { href: CLAUDE_CONNECTORS, label: 'Open Claude’s connectors' },
         });

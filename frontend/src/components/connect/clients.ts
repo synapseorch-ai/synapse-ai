@@ -167,7 +167,9 @@ export function unusedHomeKeys(keys: { id: string; name: string; last_used_at: s
 
 /**
  * Where Claude (the app and claude.ai share them) adds a custom connector. Claude has no link that fills the form in,
- * so its button copies the address and opens this page: one paste, then Claude signs in with OAuth.
+ * so its button copies the address and opens this page: one paste, then Claude signs in with OAuth. Claude's own
+ * steps are Customize → Connectors, + Add, Add custom connector (F1565); its help page now links
+ * claude.ai/customize/connectors, and this link stays until someone signed in confirms which one lands there.
  */
 export const CLAUDE_CONNECTORS = 'https://claude.ai/settings/connectors';
 

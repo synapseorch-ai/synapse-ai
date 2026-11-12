@@ -178,8 +178,9 @@ export function ConnectAiTools({ host }: { host: ConnectHost }) {
                 {client.id === 'claude_desktop' && host.desktop === 'oauth' ? (
                     <>
                         <p className="text-sm text-text-muted">
-                            In Claude Desktop or claude.ai: Settings → Connectors → Add custom connector, and paste
-                            this address. Claude asks you to sign in and pick this workspace.
+                            In Claude Desktop or claude.ai: open Customize → Connectors, choose + Add, then
+                            Add custom connector, and paste this address. Claude asks you to sign in and pick
+                            this workspace.
                         </p>
                         <Snippet text={host.mcpUrl} />
                     </>
