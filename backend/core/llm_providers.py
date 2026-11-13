@@ -2872,7 +2872,9 @@ def _normalize_v1_base_url(base_url: str) -> str:
 
 async def call_v1_compatible(model, messages, system, base_url, api_key, tools=None, images=None, prompt_cache: bool = True,
                              reasoning=None, max_tokens: int | None = None, *, chat_url: str | None = None,
-                             label: str = "V1-compatible", reasoning_body: dict | None = None):
+                             label: str = "V1-compatible", reasoning_body: dict | None = None,
+                             prompt_blocks: list[str] | None = None, volatile_tail: str | None = None,
+                             cache_markers: bool = False):
     """Call any OpenAI v1-compatible endpoint with 5-attempt exponential backoff.
 
     Used for both cloud OpenAI-compatible providers (OpenRouter, Together, etc.)
@@ -2894,6 +2896,11 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
         label: Who is named in retry notices and errors ("Groq answered 429").
         reasoning_body: Fields that ask a hosted API to think, in its own spelling
             (`thinking`, `enable_thinking`), sent in place of `reasoning_effort`.
+        prompt_blocks, volatile_tail, cache_markers: An agent turn's transcript, one block
+            per turn, and its per-turn tail; with `cache_markers` (an endpoint that caches only
+            what is marked: our gateway, OpenRouter's Claude, an opted-in proxy, F1588) the
+            prompt is sent as marked parts (`prompt_cache.openai_marked_messages`), the same
+            text. Without them, every call is sent exactly as before.
 
     Returns:
         (response_text, input_tokens, output_tokens)
@@ -2910,14 +2917,25 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
     if system and str(system).strip():
         full_messages.append({"role": "system", "content": str(system).strip()})
     full_messages.extend(messages or [])
+    if cache_markers and prompt_blocks:
+        from core.cache.prompt_cache import openai_marked_messages
+
+        # The whole prefix before the last marker, as `call_anthropic` counts it.
+        prefix_chars = len(str(system or "")) + (len(str(tools)) if tools else 0) + sum(len(b) for b in prompt_blocks)
+        full_messages = openai_marked_messages(full_messages, prompt_blocks, volatile_tail,
+                                               prefix_chars=prefix_chars) or full_messages
 
     if images:
         for i in range(len(full_messages) - 1, -1, -1):
             if full_messages[i].get("role") == "user":
                 full_messages[i] = dict(full_messages[i])
-                full_messages[i]["content"] = _build_openai_image_content(
-                    str(full_messages[i].get("content", "")), images
-                )
+                content = full_messages[i].get("content", "")
+                if isinstance(content, list):
+                    # Marked parts (F1588): the images follow the text, as they do a string's.
+                    full_messages[i]["content"] = content + [
+                        part for part in _build_openai_image_content("", images) if part.get("type") == "image_url"]
+                else:
+                    full_messages[i]["content"] = _build_openai_image_content(str(content), images)
                 break
 
     payload: dict = {"model": model, "messages": full_messages}
@@ -3027,7 +3045,8 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
 
 
 async def call_model_gateway(model, messages, system, settings, tools=None, images=None, prompt_cache: bool = True,
-                             reasoning=None, max_tokens: int | None = None):
+                             reasoning=None, max_tokens: int | None = None, *, prompt_blocks: list[str] | None = None,
+                             volatile_tail: str | None = None):
     """Call the configured model gateway (synapse.* models).
 
     A first-class provider like `call_openai`, except the endpoint belongs to
@@ -3041,6 +3060,10 @@ async def call_model_gateway(model, messages, system, settings, tools=None, imag
     refusing over quota or balance) is re-raised carrying the gateway's own
     sentence, which is where the figures are. A refusal with no number in it
     is unanswerable from a run log.
+
+    An agent turn (`prompt_blocks`, `volatile_tail`) is sent with its prompt
+    marked (F1588): the gateway caches Claude only what its caller marks (D191),
+    and decides per model whether to cache at all.
     """
     real_model = model[len("synapse."):] if model.startswith("synapse.") else model
     try:
@@ -3057,6 +3080,8 @@ async def call_model_gateway(model, messages, system, settings, tools=None, imag
             prompt_cache=True,
             reasoning=reasoning,
             max_tokens=max_tokens,
+            **({"prompt_blocks": prompt_blocks, "volatile_tail": volatile_tail, "cache_markers": True}
+               if prompt_blocks else {}),
         )
     except LLMError as e:
         # Any refusal the gateway made itself (a 4xx) says why in a sentence:
@@ -3945,7 +3970,19 @@ async def _chat_deepseek(call: ChatCall, spec) -> LLMResult:
     )
 
 
+def _marked(call: ChatCall, spec) -> dict:
+    """An agent turn's transcript and tail, for an endpoint that caches only what is marked (F1588); nothing for any
+    other call, so it is sent exactly as before. On a person's own key, their prompt-caching setting is kept."""
+    from core.cache.prompt_cache import wants_markers
+
+    if not call.prompt_blocks or not call.prompt_cache or not wants_markers(spec.id, spec.bare(call.model),
+                                                                            call.settings):
+        return {}
+    return {"prompt_blocks": call.prompt_blocks, "volatile_tail": call.volatile_tail, "cache_markers": True}
+
+
 async def _chat_model_gateway(call: ChatCall, spec) -> LLMResult:
+    # Every agent turn, whatever the workspace's own setting: the gateway decides per model (F349, F1588).
     return await call_model_gateway(
         call.model,
         call.messages(),
@@ -3956,6 +3993,7 @@ async def _chat_model_gateway(call: ChatCall, spec) -> LLMResult:
         prompt_cache=call.prompt_cache,
         reasoning=call.reasoning,
         **call.cap_kwargs(),
+        **({"prompt_blocks": call.prompt_blocks, "volatile_tail": call.volatile_tail} if call.prompt_blocks else {}),
     )
 
 
@@ -3972,6 +4010,7 @@ async def _chat_v1_compatible(call: ChatCall, spec) -> LLMResult:
         prompt_cache=call.prompt_cache,
         reasoning=call.reasoning,
         **call.cap_kwargs(),
+        **_marked(call, spec),
     )
 
 
@@ -4003,6 +4042,7 @@ async def _chat_hosted_v1(call: ChatCall, spec) -> LLMResult:
         chat_url=f"{spec.base_url}/chat/completions",
         label=spec.label,
         reasoning_body=_policy.hosted_fields(call.model, call.reasoning),
+        **_marked(call, spec),
     )
 
 
@@ -4416,7 +4456,9 @@ async def _generate_response_once(
     # Prompt-cache layout — see core.cache.prompt_cache. Additive: `prompt_msg`
     # remains the full text every provider, the char counter and the response
     # cache see; these are the same text structured for a provider that can
-    # mark a breakpoint inside the conversation. Only Anthropic reads them.
+    # mark a breakpoint inside the conversation: Anthropic, our model gateway,
+    # OpenRouter's Claude and listed Qwen models, and an OpenAI-compatible server
+    # with `openai_compatible_cache_markers` (F1588). Only the agent loop sends them.
     prompt_blocks: list[str] | None = None,
     volatile_tail: str | None = None,
     # Reasoning effort — "off" | "low" | "medium" | "high", or None to take the

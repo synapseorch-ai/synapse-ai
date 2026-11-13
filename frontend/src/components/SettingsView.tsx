@@ -104,6 +104,8 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
     const [openaiCompatibleBaseUrl, setOpenaiCompatibleBaseUrl] = useState('');
     const [openaiCompatibleModels, setOpenaiCompatibleModels] = useState('');
     const [openaiCompatibleEmbedModels, setOpenaiCompatibleEmbedModels] = useState('');
+    // The server passes Anthropic-style cache markers on (a LiteLLM in front of Claude): agent turns go marked (F1588).
+    const [openaiCompatibleCacheMarkers, setOpenaiCompatibleCacheMarkers] = useState(false);
     const [localCompatibleBaseUrl, setLocalCompatibleBaseUrl] = useState('');
     const [localCompatibleKey, setLocalCompatibleKey] = useState('');
     const [localCompatibleModels, setLocalCompatibleModels] = useState('');
@@ -252,6 +254,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
             openai_compatible_base_url: openaiCompatibleBaseUrl,
             openai_compatible_models: openaiCompatibleModels,
             openai_compatible_embed_models: openaiCompatibleEmbedModels,
+            openai_compatible_cache_markers: openaiCompatibleCacheMarkers,
             local_compatible_base_url: localCompatibleBaseUrl,
             local_compatible_key: localCompatibleKey,
             local_compatible_models: localCompatibleModels,
@@ -491,6 +494,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                 setOpenaiCompatibleBaseUrl(data.openai_compatible_base_url || '');
                 setOpenaiCompatibleModels(data.openai_compatible_models || '');
                 setOpenaiCompatibleEmbedModels(data.openai_compatible_embed_models || '');
+                setOpenaiCompatibleCacheMarkers(data.openai_compatible_cache_markers === true);
                 setLocalCompatibleBaseUrl(data.local_compatible_base_url || '');
                 setLocalCompatibleKey(data.local_compatible_key || '');
                 setLocalCompatibleModels(data.local_compatible_models || '');
@@ -727,6 +731,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         openaiCompatibleBaseUrl={openaiCompatibleBaseUrl} setOpenaiCompatibleBaseUrl={setOpenaiCompatibleBaseUrl}
                         openaiCompatibleModels={openaiCompatibleModels} setOpenaiCompatibleModels={setOpenaiCompatibleModels}
                         openaiCompatibleEmbedModels={openaiCompatibleEmbedModels} setOpenaiCompatibleEmbedModels={setOpenaiCompatibleEmbedModels}
+                        openaiCompatibleCacheMarkers={openaiCompatibleCacheMarkers} setOpenaiCompatibleCacheMarkers={setOpenaiCompatibleCacheMarkers}
                         localCompatibleBaseUrl={localCompatibleBaseUrl} setLocalCompatibleBaseUrl={setLocalCompatibleBaseUrl}
                         localCompatibleModels={localCompatibleModels} setLocalCompatibleModels={setLocalCompatibleModels}
                         localCompatibleEmbedModels={localCompatibleEmbedModels} setLocalCompatibleEmbedModels={setLocalCompatibleEmbedModels}

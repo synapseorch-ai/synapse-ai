@@ -99,6 +99,68 @@ def build_anthropic_user_content(
     return content
 
 
+# ── OpenAI-shaped marked parts (F1588): the endpoints that cache only what a request marks ───────────────────────
+
+#: OpenRouter models that cache only when the request marks them (OpenRouter's prompt-caching page, read
+#: 2026-11-14): Anthropic's, and the Alibaba models it lists for explicit caching. Its snapshot endpoints do not cache
+#: this way, and every other model there caches by itself (or not at all), so they are sent as before.
+MARKED_OPENROUTER_PREFIXES = ("anthropic/",)
+MARKED_OPENROUTER_MODELS = frozenset({
+    "qwen/qwen3-max", "qwen/qwen-plus", "qwen/qwen3.6-plus", "qwen/qwen3-coder-plus", "qwen/qwen3-coder-flash",
+})
+#: The setting that says an OpenAI-compatible server passes Anthropic-style markers on (LiteLLM in front of Claude).
+#: Off by default: a server is not asked to take content parts it may refuse.
+OAIC_MARKERS_SETTING = "openai_compatible_cache_markers"
+
+
+def wants_markers(provider_id: str, bare_model: str, settings: dict | None) -> bool:
+    """Whether an agent turn to this provider and model is sent with marked parts (F1588).
+
+    Our model gateway: always (D191: it caches Claude only when the caller marks the prompt, and decides per model
+    whether to cache at all). OpenRouter: its Claude and listed Qwen models. An OpenAI-compatible server: only with
+    `openai_compatible_cache_markers`. Every other provider, a local v1 server included, caches by itself or not at
+    all, and is sent plain strings as before."""
+    if provider_id == "model_gateway":
+        return True
+    if provider_id == "openrouter":
+        model = (bare_model or "").strip().lower()
+        return model.startswith(MARKED_OPENROUTER_PREFIXES) or model in MARKED_OPENROUTER_MODELS
+    if provider_id == "openai_compatible":
+        return bool((settings or {}).get(OAIC_MARKERS_SETTING))
+    return False
+
+
+def openai_marked_messages(messages: list[dict], prompt_blocks: list[str] | None, volatile_tail: str | None,
+                           *, prefix_chars: int) -> list[dict] | None:
+    """`messages` (the system prompt first, this turn's message last) with the prompt marked for a prefix cache, as
+    OpenAI-style content parts; None to send them as they are.
+
+    The system prompt becomes one text part with `cache_control`; this turn's message a text part per transcript
+    turn, the last one marked, then the per-turn tail unmarked, with the "\\n\\n" the engine joins it by at its head
+    (react_engine.py: transcript, "\\n\\n", tail), so the marked part is byte-identical on the next turn. History in
+    between is untouched. The joined text is exactly what was there: None unless this turn's message is the blocks and
+    the tail, and unless the prefix (`prefix_chars`: system, tools and the transcript) reaches the floor the Anthropic
+    path uses. No `ttl`: the 5-minute default (a 1-hour write costs 2x, and Nova refuses the field)."""
+    if not prompt_blocks or not messages or messages[-1].get("role") != "user":
+        return None
+    blocks = [b for b in prompt_blocks if b]
+    tail = f"\n\n{volatile_tail}" if volatile_tail else ""
+    if not blocks or messages[-1].get("content") != "".join(blocks) + tail or not is_cacheable_prefix(prefix_chars):
+        return None
+    marked: list[dict] = []
+    for message in messages[:-1]:
+        content = message.get("content")
+        if message.get("role") == "system" and isinstance(content, str) and content:
+            message = {**message, "content": [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]}
+        marked.append(message)
+    parts: list[dict] = [{"type": "text", "text": b} for b in blocks]
+    parts[-1]["cache_control"] = {"type": "ephemeral"}
+    if tail:
+        parts.append({"type": "text", "text": tail})
+    marked.append({**messages[-1], "content": parts})
+    return marked
+
+
 def extract_anthropic_cache_tokens(response) -> tuple[int, int]:
     """Return (cache_read_tokens, cache_write_tokens) from an Anthropic SDK response."""
     usage = getattr(response, "usage", None)

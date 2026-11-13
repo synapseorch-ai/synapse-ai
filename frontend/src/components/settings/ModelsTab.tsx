@@ -1,5 +1,5 @@
 import { ExternalLink, RefreshCw } from 'lucide-react';
-import { Button, Combobox, Field, Input, Section, Textarea } from '@/components/ui';
+import { Button, Checkbox, Combobox, Field, Input, Section, Textarea } from '@/components/ui';
 import { ProviderCard } from '@/components/providers/ProviderCard';
 import { FORM } from './form';
 import { modelOptions as buildModelOptions, providerLabel, withUnreachable } from '@/lib/models';
@@ -34,6 +34,8 @@ interface ModelsTabProps {
     openaiCompatibleBaseUrl: string; setOpenaiCompatibleBaseUrl: (v: string) => void;
     openaiCompatibleModels: string; setOpenaiCompatibleModels: (v: string) => void;
     openaiCompatibleEmbedModels: string; setOpenaiCompatibleEmbedModels: (v: string) => void;
+    /** The server passes Anthropic-style cache markers on: agent turns are sent to it marked (F1588). */
+    openaiCompatibleCacheMarkers: boolean; setOpenaiCompatibleCacheMarkers: (v: boolean) => void;
     localCompatibleBaseUrl: string; setLocalCompatibleBaseUrl: (v: string) => void;
     localCompatibleModels: string; setLocalCompatibleModels: (v: string) => void;
     localCompatibleEmbedModels: string; setLocalCompatibleEmbedModels: (v: string) => void;
@@ -84,6 +86,7 @@ export const ModelsTab = ({
     openaiCompatibleBaseUrl, setOpenaiCompatibleBaseUrl,
     openaiCompatibleModels, setOpenaiCompatibleModels,
     openaiCompatibleEmbedModels, setOpenaiCompatibleEmbedModels,
+    openaiCompatibleCacheMarkers, setOpenaiCompatibleCacheMarkers,
     localCompatibleBaseUrl, setLocalCompatibleBaseUrl,
     localCompatibleModels, setLocalCompatibleModels,
     localCompatibleEmbedModels, setLocalCompatibleEmbedModels,
@@ -184,6 +187,20 @@ export const ModelsTab = ({
                             onChange={e => (local ? setLocalCompatibleEmbedModels : setOpenaiCompatibleEmbedModels)(e.target.value)}
                             placeholder={local ? 'e.g. bge-m3' : 'e.g. hf:nomic-ai/nomic-embed-text-v1.5'} />
                     </Field>
+                    {!local && (
+                        <div className="flex items-start gap-2">
+                            <Checkbox id="openaicompatiblecachemarkers" checked={openaiCompatibleCacheMarkers}
+                                onChange={setOpenaiCompatibleCacheMarkers} label="Send prompt cache markers" />
+                            <div className="grid gap-0.5">
+                                <label htmlFor="openaicompatiblecachemarkers" className="text-sm text-text">Send prompt cache markers</label>
+                                <span className="text-xs text-text-muted">
+                                    For a server that passes Anthropic-style cache markers on, such as LiteLLM in front of
+                                    Claude: an agent&rsquo;s turns are marked so they cost less. Leave off unless the server
+                                    takes them.
+                                </span>
+                            </div>
+                        </div>
+                    )}
                     {saveHere}
                 </div>
             );
