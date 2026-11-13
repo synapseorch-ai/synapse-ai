@@ -1,12 +1,12 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
+import { Suspense, useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
 import { Bot, User, Plus, Server, ChevronDown, ChevronRight, GitBranch, AlertCircle, History, RefreshCw, Clock, Trash2, X, Pin, Paperclip, Cpu, Wrench, Network, CalendarClock, Sparkles, Copy, Check, Brain, Pencil, RotateCcw, Search, Square, Users, Globe, MessageSquare } from 'lucide-react';
 import * as RPopover from '@radix-ui/react-popover';
 import { Command } from 'cmdk';
 
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { putAgentDraft } from '@/lib/agentDraft';
 import { CollectDataForm } from '@/components/CollectDataForm';
 import { HumanStepAnswer } from '@/components/HumanStepAnswer';
@@ -14,7 +14,7 @@ import { ActiveRunsBanner } from '@/components/ActiveRunsBanner';
 import { AttachButton, AttachmentChips, AttachmentError, useImageAttachments } from '@/components/app/ImageAttachments';
 import { ImageThumbnails } from '@/components/app/ImageThumbnails';
 import { BuilderConversation } from '@/components/app/BuilderPanel';
-import { useBuilderChat } from '@/components/app/BuilderProvider';
+import { useBuilder, useBuilderChat } from '@/components/app/BuilderProvider';
 import { Button, IconButton, Mark, Markdown, PageHeaderSlot, showWhileScrolling, Spinner, useOwnScroll, usePersisted } from '@/components/ui';
 import { useIsPhone } from '@/components/app/PhoneBar';
 import {
@@ -3632,6 +3632,21 @@ function pickableAgents(status: SystemStatus | null): PickableAgent[] {
 
 const onPhone = () => window.matchMedia('(max-width: 767px)').matches;
 
+/**
+ * Chat with an agent, asked by the address (`/?agent=<id>`, F1577): where what Synapse AI made takes the person, from
+ * any page or from this one, so it is read live. A conversation's own link (`?session=` with `?agent=`) is the page's
+ * other link, read once on arrival.
+ */
+function AgentLink({ onAgent }: { onAgent: (agentId: string) => void }) {
+  const params = useSearchParams();
+  const agent = params.get('agent');
+  const session = params.get('session');
+  useEffect(() => {
+    if (agent && !session) onAgent(agent);
+  }, [agent, session, onAgent]);
+  return null;
+}
+
 /** A tab's browser (BRW2): the session its agent opened, what it did there, and whether the pane is showing. */
 type TabBrowser = {
   sessionId: string;
@@ -3735,7 +3750,9 @@ export default function Home() {
       // baseline found the empty strip). The workspace's active agent is no kept tab, and seeds none.
       const pickable = pickableAgents(status);
       const oldTabAgent = oldAgent || pickable.find(a => !a.assistant)?.id || '';
-      const newTabAgent = keptAgent || pickable[0]?.id || '';
+      // A browser that kept nothing, sent to Chat with an agent (`?agent=`, F1577), opens on that agent alone.
+      const linkedAgent = session ? null : asked.get('agent');
+      const newTabAgent = linkedAgent || keptAgent || pickable[0]?.id || '';
       await start(kept => {
         let next = kept;
         if (next.tabs.length === 0 && oldSession) next = openTab(next, make(oldSession, oldTabAgent)).state;
@@ -3755,6 +3772,43 @@ export default function Home() {
     tabs.openConversation(asked.sessionId, asked.agentId);
     router.replace('/', { scroll: false });
   }, [ready, state.tabs.length, statusLoaded, tabs, router]);
+
+  // Chat with an agent the address asks for (F1577), once the tabs are read: in a tab of its own, unless it is the one
+  // in front; the address loses it, so a reload keeps the tab and opens no other. An agent made a moment ago is not in
+  // what this page read, so it is read again first: its tab says its name, never "Deleted agent" (F1129).
+  const askedAgent = useRef<string | null>(null);
+  const [agentAsked, setAgentAsked] = useState(0);
+  const onAgentLink = useCallback((agentId: string) => {
+    askedAgent.current = agentId;
+    setAgentAsked(n => n + 1);
+  }, []);
+  const statusRef = useRef(systemStatus);
+  useEffect(() => { statusRef.current = systemStatus; }, [systemStatus]);
+  const frontAgentRef = useRef<string | null>(null);
+  useEffect(() => { frontAgentRef.current = front?.agentId ?? null; }, [front]);
+  useEffect(() => {
+    const agentId = askedAgent.current;
+    if (!ready || !agentId) return;
+    if (state.tabs.length >= MAX_TABS && !statusLoaded) return;
+    askedAgent.current = null;
+    router.replace('/', { scroll: false });
+    void (async () => {
+      if (typeof statusRef.current?.agents?.[agentId] !== 'object') {
+        const read: SystemStatus | null = await fetch('/api/status').then(r => (r.ok ? r.json() : null)).catch(() => null);
+        if (read) setSystemStatus(read);
+      }
+      if (frontAgentRef.current !== agentId) tabs.openAgent(agentId);
+    })();
+  }, [ready, agentAsked, state.tabs.length, statusLoaded, tabs, router]);
+
+  // The agent in front, for a build that changes it while the person talks to it: they stay (F1577). Synapse AI's own
+  // tab shows no agent a build makes.
+  const { setCurrentAgent } = useBuilder();
+  const frontAgent = front && !isBuilder(front.agentId) ? front.agentId : null;
+  useEffect(() => {
+    setCurrentAgent(frontAgent);
+    return () => setCurrentAgent(null);
+  }, [frontAgent, setCurrentAgent]);
 
   // The new Synapse AI chat a link asked for, once the tabs are read: its words in the composer, unsent, said to be a
   // suggestion; the address loses the parameters, so a reload does not open another. With no Synapse AI the words
@@ -3857,6 +3911,7 @@ export default function Home() {
       <div className="relative flex min-w-0 flex-1 flex-col">
         {/* The page's title, for a screen reader's jump to it (F1421): the tabs are the title a person sees. */}
         <h1 className="sr-only">Chat</h1>
+        <Suspense fallback={null}><AgentLink onAgent={onAgentLink} /></Suspense>
         {/* The strip where the page's title was: the tabs are the page's title now. */}
         <div data-tour="chat-tabs" className="hidden shrink-0 items-end gap-2 border-b border-border px-4 pt-3 md:flex md:px-6">
           {ready && (
