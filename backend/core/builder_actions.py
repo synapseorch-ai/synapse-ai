@@ -77,7 +77,8 @@ ACTIONS: dict[str, str] = {
     "recording_rename": "rename a recording (`recording`, `name`)",
     "recording_delete": "delete a recording and its pictures (`recording`)",
     "widget_create": "make a website widget (`name`; `agent`: the agent that answers; `sites`: the sites it may sit on, "
-                     "as https://example.com; `visitor_tools`: tools a visitor may use, only those the person named; "
+                     "as https://example.com; `visitor_tools`: what a visitor may use, only what the person named: a "
+                     "tool by its name, or a knowledge base by its name to let visitors search it; "
                      "`greeting`, `title`, `accent`, `theme`, `position`, `launcher_label`, `font`, `header_style`, "
                      "`launcher`, `daily_cap`: messages a day)",
     "widget_update": "change a website widget (`widget`; any of `agent`, `sites`, `visitor_tools`, `greeting`, `title`, "
@@ -157,7 +158,9 @@ SCHEMA = {
                 "sites": {"type": "array", "items": {"type": "string"},
                           "description": "widget_*: every site it may sit on, as https://example.com."},
                 "visitor_tools": {"type": "array", "items": {"type": "string"},
-                                  "description": "widget_*: the tools a visitor may use; leave it out unless named."},
+                                  "description": "widget_*: what a visitor may use, only what the person named: "
+                                                 "tools by name, a knowledge base by its name to let visitors "
+                                                 "search it."},
                 "greeting": {"type": "string"},
                 "accent": {"type": "string", "description": "A colour, as #4f46e5."},
                 "theme": {"type": "string", "enum": ["auto", "light", "dark"]},
@@ -1001,9 +1004,12 @@ async def _widget(action: str, args: dict) -> dict:
             raise _NotOffered("Say which agent answers on it.")
         agent = await _widget_agent(str(args["agent"]))
         settings = {**_widget_changes(args), "name": name, "agent_id": agent["id"]}
-        # None unless the person named them: never the agent's whole list (TRI1, F1262).
+        # None unless the person named them: never the agent's whole list (TRI1, F1262). A knowledge base named is its
+        # search (F1570).
         tools = await reached(agent["id"], list(settings.get("visitor_tools") or []))
         settings["visitor_tools"] = [t["name"] for t in tools]
+        # An agent answering from knowledge its visitors can't search is said, not left for a visitor to find (F1570).
+        unread = await service.knowledge_out_of_reach(agent["id"], settings["visitor_tools"], "on your site")
         try:
             service.body(settings)
         except service.WidgetRefused as exc:
@@ -1016,7 +1022,8 @@ async def _widget(action: str, args: dict) -> dict:
             rows.append({"label": "Sites", "before": None, "after": "none yet",
                          "note": "It shows on no site until one is added."})
         return _card(f'Make a website widget "{name}"', rows=rows,
-                     detail="\n".join(_visitor_lines(tools) + ["Its snippet is here once it is made."]),
+                     detail="\n".join(_visitor_lines(tools) + ([unread] if unread else [])
+                                      + ["Its snippet is here once it is made."]),
                      buttons=[await _button("Make it", "create_widget", settings)])
 
     widget = _pick(await host.load(), str(args.get("widget") or ""), "widget", "Topic `widgets` lists them.")
@@ -1029,10 +1036,12 @@ async def _widget(action: str, args: dict) -> dict:
             raise _NotOffered("Say what to change on it.")
         agent_id = str(changes.get("agent_id") or widget.get("agent_id") or "")
         tools: list[dict] | None = None
+        unread = None
         if "visitor_tools" in changes or "agent_id" in changes:
             # A new agent keeps the list only if its visitor turn reaches every tool on it.
             tools = await reached(agent_id, list(changes.get("visitor_tools", widget.get("visitor_tools")) or []))
             changes["visitor_tools"] = [t["name"] for t in tools]
+            unread = await service.knowledge_out_of_reach(agent_id, changes["visitor_tools"], "on your site")
         after = {**widget, **changes}
         try:
             service.body({k: after.get(k) for k in service.FIELDS if after.get(k) is not None})
@@ -1043,7 +1052,7 @@ async def _widget(action: str, args: dict) -> dict:
         if not rows:
             raise _NotOffered(f'"{name}" is already set that way.')
         return _card(f'Change the website widget "{name}"', rows=rows,
-                     detail="\n".join(_visitor_lines(tools or [])),
+                     detail="\n".join(_visitor_lines(tools or []) + ([unread] if unread else [])),
                      buttons=[await _button("Save", "update_widget", {"widget_id": widget["id"], **changes})])
     if action == "widget_delete":
         sites = ", ".join(widget.get("allowed_origins") or []) or "no site yet"
@@ -1137,7 +1146,16 @@ async def _channel(action: str, args: dict) -> dict:
         rows = R.changed(before, after, {"agents": "Answered by", "first": "Answers first"})
         if not rows:
             raise _NotOffered(f'"{name}" is already answered that way.')
-        return _card(f'Change who answers on the {platform} channel "{name}"', rows=rows,
+        unread = []
+        if channel.get("senders_are_members") is False:
+            # Its senders are visitors (F282): an agent answering from knowledge they can't search is said (F1570).
+            from core.chat_widgets import service as widgets
+
+            for agent_id in ids:
+                if line := await widgets.knowledge_out_of_reach(agent_id, list(channel.get("visitor_tools") or []),
+                                                                "on this channel"):
+                    unread.append(line)
+        return _card(f'Change who answers on the {platform} channel "{name}"', rows=rows, detail="\n".join(unread),
                      buttons=[await _button("Save", "set_channel_agents",
                                             {"channel_id": channel["id"], "agent_ids": ids, "default_agent_id": first})])
     if action in ("channel_run_notifications", "channel_run_notifications_off"):

@@ -198,6 +198,8 @@ export const OSS_PHONE_HOST: PhoneHost = {
     canEdit: true,
     canAnswer: true,
     credits: false,
+    // Nothing here stops the phone service to save cost, so a number never waits for it to start (F1574).
+    starting: false,
     links: {
         agent: id => `/agents?id=${enc(id)}`,
         address: { label: 'Set it on the Channels tab.', href: '/channels' },

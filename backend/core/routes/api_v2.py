@@ -534,9 +534,13 @@ async def v2_resume_run(
     queue_name = QUEUE_NAME
     # An email, date, phone or dropdown answer that is not one (F455), refused
     # before anything is queued, as `answer_paused_run` refuses it for v1.
+    # A Human form's text is read field by field, or refused saying how (F1561), as every other door reads it (F1564).
+    from core.orchestration.answers import asks_a_form
     from core.orchestration.human_fields import BadAnswer, check_answer
     try:
-        resp = check_answer(run_row.human_fields, body.response)
+        resp = check_answer(run_row.human_fields, body.response, form=asks_a_form(
+            run_row.human_fields, getattr(run_row, "step_progress", None), run_row.step_history,
+            run_row.current_step_id))
     except BadAnswer as exc:
         raise HTTPException(422, detail=str(exc))
     # The answer travels as the resume job's argument.

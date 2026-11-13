@@ -65,6 +65,27 @@ if _is_packaged() and not os.environ.get("SYNAPSE_HOME", "").strip():
     os.environ["SYNAPSE_HOME"] = str(Path.home() / ".synapse")
 
 
+def _library_tracking_off() -> None:
+    """Third-party libraries' usage tracking off here, so everything the CLI starts inherits it (F1567): the
+    backend's own list, `backend/core/library_tracking.py`, read from its file, as the CLI never imports the
+    backend. The backend sets the same for itself; this covers what else the CLI starts, such as its check that
+    cocoindex imports, which phoned home on its own."""
+    import importlib.util
+
+    path = BACKEND_DIR / "core" / "library_tracking.py"
+    if not path.is_file():
+        return
+    spec = importlib.util.spec_from_file_location("_synapse_library_tracking", path)
+    if spec is None or spec.loader is None:
+        return
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.turn_off()
+
+
+_library_tracking_off()
+
+
 def synapse_home() -> "Path | None":
     """This install's home, or None for a checkout. Read at call time."""
     home = os.environ.get("SYNAPSE_HOME", "").strip()

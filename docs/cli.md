@@ -8,6 +8,14 @@ or older than 20.9, Node.js into `~/.synapse/runtime` — no sudo. A pip install
 needs Python 3.11–3.14 and Node.js 20.9+ on `PATH`. `ollama` is optional (local
 models only).
 
+With Ollama, Synapse asks for a context long enough for each longer call, up to
+what the model reads, and says so when a call is longer than that rather than
+letting Ollama cut it. Calls that fit Ollama's own default, and calls through
+Ollama's OpenAI-compatible `/v1` address (which cannot ask), get that default:
+4,096 tokens on a small GPU unless `OLLAMA_CONTEXT_LENGTH` is set where Ollama
+runs. A longer context takes more GPU memory, and a small model that reads the
+whole prompt can still build workflows poorly.
+
 ## Installation
 
 ```bash

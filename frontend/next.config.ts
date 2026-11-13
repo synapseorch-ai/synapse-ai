@@ -27,6 +27,12 @@ if (fs.existsSync(_rootEnv)) {
   }
 }
 
+// Next.js's own telemetry off (F1567). `next build` reads this file before it makes its telemetry, wherever it runs:
+// a Docker build, the wheel's build, a checkout. Synapse sends nothing home; the packaged web server sends none.
+if (!process.env.NEXT_TELEMETRY_DISABLED) {
+  process.env.NEXT_TELEMETRY_DISABLED = "1";
+}
+
 // ---------------------------------------------------------------------------
 // The backend's address is NOT resolved here (F309). Anything this file puts
 // in `env` or in a rewrite is fixed at build: a packaged UI then called the port

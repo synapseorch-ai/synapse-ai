@@ -32,7 +32,11 @@ async def _oss_load() -> list[dict]:
                     "agent_ids": await store.get_agent_ids_for_channel(ch["id"]),
                     "default_agent_id": await store.get_default_agent_id(ch["id"]),
                     "has_conversation": bool(ch.get("default_conversation_id")),
-                    "conversation": ch.get("default_conversation_id")})
+                    "conversation": ch.get("default_conversation_id"),
+                    # Whether its senders are visitors, and what they may use (F282): a card says what they can't
+                    # reach (F1570).
+                    "senders_are_members": ch.get("senders_are_members", True) is not False,
+                    "visitor_tools": list(ch.get("visitor_tools") or [])})
     return out
 
 
@@ -45,8 +49,9 @@ async def _oss_run_notifications() -> str | None:
 @dataclass(frozen=True)
 class ChannelHost:
     """What a host reads its own way, for a card: its chat channels as {id, name, platform, enabled, status,
-    agent_ids, default_agent_id, has_conversation}, and the channel every run's notice goes to ("" none; None: this
-    host sends run notices some other way, so a card for it is not offered)."""
+    agent_ids, default_agent_id, has_conversation, senders_are_members, visitor_tools}, and the channel every run's
+    notice goes to ("" none; None: this host sends run notices some other way, so a card for it is not offered). A
+    host that leaves out senders_are_members has its channels read as members' (no visitor line on a card)."""
 
     load: Callable[[], Awaitable[list[dict]]]
     run_notifications: Callable[[], Awaitable[str | None]]

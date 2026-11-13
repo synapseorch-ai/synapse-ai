@@ -42,15 +42,21 @@ const VOICE_EXAMPLE: Record<string, string> = {
     Amazon: 'A voice name, such as Joanna-Neural',
 };
 
-/** Whether the number takes calls, in words: quiet when it does, red when it can't. */
+/**
+ * Whether the number takes calls, in words: quiet when it does, red when it can't, and "Getting ready" while the
+ * service that answers it is still starting (the host's `starting`, F1574), never "Receiving calls" before it does.
+ */
 function Status({ n }: { n: PhoneNumber }) {
+    const { starting } = usePhoneHost();
     const broken = n.status === 'error' || (!!n.lastError && n.enabled);
     const [word, dot, text] = !n.enabled
         ? ['Off', 'bg-text-faint', 'text-text-muted']
         : broken
             ? ["Can't take calls", 'bg-danger', 'text-danger']
             : n.status === 'running'
-                ? ['Receiving calls', 'bg-success', 'text-text-muted']
+                ? starting
+                    ? ['Getting ready', 'bg-accent', 'text-text-muted']
+                    : ['Receiving calls', 'bg-success', 'text-text-muted']
                 : ['Not receiving calls', 'bg-text-faint', 'text-text-muted'];
     return (
         <span className={cn('inline-flex items-center gap-1.5', text)} data-phone-status>

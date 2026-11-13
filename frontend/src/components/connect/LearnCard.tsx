@@ -31,7 +31,7 @@ export function LearnCard({ logos, onDismiss }: { logos: ConnectHost['logos']; o
         if (client === 'claude') {
             window.open(CLAUDE_CONNECTORS, '_blank', 'noopener,noreferrer');
             await copy(DOCS_MCP_URL);
-            setDone({ said: 'In Claude, choose “Add custom connector” and paste this address. No sign-in needed.', text: DOCS_MCP_URL });
+            setDone({ said: 'In Claude, choose “+ Add”, then “Add custom connector”, and paste this address. No sign-in needed.', text: DOCS_MCP_URL });
             return;
         }
         const link = installLink(client, { url: DOCS_MCP_URL, name: NAME });

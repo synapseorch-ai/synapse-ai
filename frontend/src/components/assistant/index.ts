@@ -17,6 +17,7 @@ export { ActionCard, type ActResult, type Actor } from './ActionCard';
 export { ChangeRows } from './ChangeRows';
 export { ConnectCard, type ConnectResult, type Connector } from './ConnectCard';
 export { FindingsCard } from './FindingsCard';
+export { GoToCard, goToLabel } from './GoToCard';
 export { HelperLane, HelperLanes, HelperNote } from './HelperLane';
 export {
     agentFromHelper,

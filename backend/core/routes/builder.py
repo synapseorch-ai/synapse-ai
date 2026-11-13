@@ -639,7 +639,7 @@ async def _drawn(s, run) -> dict:
     live = _driven(run)
     rows = (await s.execute(
         select(OrchestrationRunDB.run_id, OrchestrationRunDB.shared_state,
-               OrchestrationRunDB.human_prompt)
+               OrchestrationRunDB.human_prompt, OrchestrationRunDB.status)
         .where(
             OrchestrationRunDB.tenant_id == get_tenant(),
             OrchestrationRunDB.session_id == run.session_id,
@@ -649,11 +649,14 @@ async def _drawn(s, run) -> dict:
     )).all()
 
     turns = []
-    for run_id, state, asked in reversed(rows):
+    for run_id, state, asked, status in reversed(rows):
         state = state or {}
         # The open run's question is `pending`, not something already said.
         said = "" if (run_id == run.run_id and live) else _said(state, asked)
-        turns.append({"user": str(state.get("user_message") or ""), "assistant": said})
+        turn = {"user": str(state.get("user_message") or ""), "assistant": said}
+        # What a finished turn built, so the way to it is drawn again (F1577).
+        built = _built(state) if status == "completed" else []
+        turns.append({**turn, "writes": built} if built else turn)
 
     # Where the run's journal stood when it was read. A working run is followed
     # from its journal's start, which replays the questions it has already had
@@ -695,6 +698,23 @@ async def _drawn(s, run) -> dict:
 def _said(state: dict, asked: str | None) -> str:
     """What a finished turn said: its summary, else the question it asked, else what it read the ask as."""
     return str(state.get("summary") or asked or state.get("requirements") or "").strip()
+
+
+#: The writes a chat read back carries (F1577): what has a page a build takes the person to.
+_BUILT_KINDS = ("orchestration", "agent")
+
+
+def _built(state: dict) -> list[dict]:
+    """A finished turn's workflow and agent writes, as its `resource_saved` events said them (F1577): kind, action,
+    id, name, and why for a removal or a put-back. The panel draws the way to what the turn built from these, by the
+    rule it uses live (`builderEvents.placeBuilt`), so someone who left while it built finds the way there. Read from
+    the run's own record (`run_writes`); nothing else of it leaves."""
+    from core.orchestration.run_writes import WRITES_KEY
+
+    writes = state.get(WRITES_KEY)
+    return [{k: w[k] for k in ("kind", "action", "id", "name", "reason") if w.get(k) is not None}
+            for w in (writes if isinstance(writes, list) else [])
+            if isinstance(w, dict) and w.get("kind") in _BUILT_KINDS and w.get("id")]
 
 
 #: Where a chat's turns go when History deletes it: kept, as every run is (what it cost is on it), but no longer one

@@ -27,6 +27,7 @@ import {
     composerPillClass,
     ConnectCard,
     FindingsCard,
+    GoToCard,
     PillAvatar,
     PlanCard,
     QuestionCard,
@@ -41,6 +42,7 @@ import { BUILDER_EXAMPLES, BUILDER_GREETING, useBuilder, type BuilderChatValue }
 import { HowImBuilt } from '@/components/app/HowImBuilt';
 import { selfHostedActor } from '@/components/app/assistantActor';
 import { selfHostedConnector } from '@/components/app/builderConnector';
+import { here } from '@/components/app/builderChats';
 import {
     AttachButton,
     AttachmentChips,
@@ -49,12 +51,23 @@ import {
 } from '@/components/app/ImageAttachments';
 import { SUGGESTED_LABEL } from '@/components/tabs';
 import { Button, Combobox, Hint, Mark, Markdown, showWhileScrolling } from '@/components/ui';
-import { effortAnswer, isPlanReview, shownInTrail, type BuilderMessage } from '@/lib/builderEvents';
+import { effortAnswer, isPlanReview, shownInTrail, type BuilderMessage, type BuiltPlace } from '@/lib/builderEvents';
 import { cn, focusRing } from '@/lib/cn';
 import { modelOptions, withUnreachable } from '@/lib/models';
 
 /** Empty `sessionModel` means "follow the workspace builder model". */
 const DEFAULT_SENTINEL = '__default__';
+
+/**
+ * Where what a build made is in this install (F1577): a workflow's page, where Run is; Chat with the agent in a tab
+ * of its own (`/?agent=`, which Chat opens and takes off the address).
+ */
+export function placeHref(place: BuiltPlace): string {
+    const id = encodeURIComponent(place.id);
+    return place.kind === 'workflow' ? `/workflows?id=${id}` : `/?agent=${id}`;
+}
+
+const onPhone = () => window.matchMedia('(max-width: 767px)').matches;
 
 
 /**
@@ -166,7 +179,7 @@ export function BuilderConversation({
     onOpenChat?: (id: string, title: string) => void;
 }) {
     const builder = useBuilder();
-    const { state, streaming, send, stop, ready } = chat ?? builder;
+    const { state, streaming, send, stop, ready, watchBuilt } = chat ?? builder;
     const openChat = onOpenChat ?? ((id: string) => builder.showChat(id));
     const {
         canAttach, providers, builderModel, sessionModel, setSessionModel, saveBuilderModel, draft, draftTaken, takeDraft,
@@ -207,6 +220,26 @@ export function BuilderConversation({
         field.setSelectionRange(field.value.length, field.value.length);
     }, [suggested, initialInput]);
     const attachments = useImageAttachments();
+
+    // A build this chat sent that ends here, live, takes the person to what it made (F1577; Naveen 11-13), once: only
+    // from where they asked, and only while this conversation is out. Someone who went elsewhere meanwhile, or put the
+    // panel away, stays where they are, and the way there stays in the conversation; someone on it already stays on
+    // it. The way there is pressed as a person would press it (`GoToCard`), so a page's unsaved work asks first.
+    const [going, setGoing] = useState<string | null>(null);
+    const activeRef = useRef(active);
+    useEffect(() => { activeRef.current = active; });
+    const { showing, close: closePanel } = builder;
+    useEffect(() => watchBuilt((place, key, from) => {
+        if (!activeRef.current || here() !== from) return false;
+        if (!showing(place)) setGoing(key);
+        return true;
+    }), [watchBuilt, showing]);
+    // The panel steps aside for a chat, which is a conversation of its own, and on a phone, where it covers the page;
+    // a workflow's canvas keeps clear of it (`OrchestrationTab`'s inset), so it stays beside one. Reopened, it is the
+    // same conversation.
+    const stepAside = (place: BuiltPlace) => {
+        if (!chat && (place.kind === 'agent' || onPhone())) closePanel();
+    };
 
     useEffect(() => {
         // Not while closing: scrolling a card that is fading out is motion in
@@ -380,6 +413,21 @@ export function BuilderConversation({
                                     <Button type="button" variant="secondary" size="sm" onClick={() => openChat(to.id, to.title)}>
                                         Open that chat
                                     </Button>
+                                </div>
+                            );
+                        }
+                        if (message.kind === 'go_to' && message.place) {
+                            // The way to what the turn built (F1577), under what it said.
+                            const place = message.place;
+                            return (
+                                <div key={message.key} className={TEXT_INSET}>
+                                    <GoToCard
+                                        place={place}
+                                        href={placeHref(place)}
+                                        go={going === message.key}
+                                        onGo={() => stepAside(place)}
+                                        onGone={() => setGoing(null)}
+                                    />
                                 </div>
                             );
                         }

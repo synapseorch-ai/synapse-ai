@@ -157,19 +157,102 @@ def _named(name: str):
     return VirtualTool(name, "", {}, None)
 
 
+#: Besides a base's own name, the words that name an agent's knowledge for its visitors to search (F1570).
+_KNOWLEDGE_WORDS = frozenset({"knowledge", "knowledge base", "knowledge bases", "its knowledge", "the knowledge base"})
+#: Where a base is opened to visitors, in the screen's words.
+_OPEN_IT = "Knowledge → its settings → Visitors may search it"
+
+
+async def _agent_knowledge(agent_id: str) -> tuple[str, list]:
+    """The agent's name and the knowledge bases it answers from (none while Knowledge is off)."""
+    from core.knowledge import tools as knowledge_tools
+    from core.scale.context import resolve_agent
+
+    agent = await resolve_agent(agent_id) if agent_id else None
+    if agent is None:
+        return str(agent_id or ""), []
+    return str(agent.get("name") or agent_id), await knowledge_tools.agent_bases(agent)
+
+
+def _names(kbs: list) -> str:
+    return ", ".join(f'"{kb.name}"' for kb in kbs)
+
+
 async def reachable_visitor_tools(agent_id: str, names: list[str], choices: list[dict] | None = None) -> list[dict]:
     """`names`, each with its category, when the agent's visitor turn can reach every one; else the ones it can't, by
-    name (TRI1, F1262: a card never lets a visitor hold a tool by a name the agent doesn't have)."""
+    name (TRI1, F1262: a card never lets a visitor hold a tool by a name the agent doesn't have).
+
+    A knowledge base the agent answers from, named by its name (or "knowledge"), is the two tools a visitor's turn
+    searches it with (F1570: "visitors may only search the help pages" made a widget that could read nothing); one not
+    open to visitors is refused with where to open it. A name a visitor never holds (memory, boards) is refused by
+    name, never dropped."""
+    from core.knowledge.agent_contract import READ_TOOL, SEARCH_TOOL
+
     choices = choices if choices is not None else await visitor_tool_choices(agent_id)
     known = {c["name"]: c for c in choices}
-    wanted = _visitor.clean_tools(names)
-    missing = [n for n in wanted if n not in known]
+    asked = [n.strip() for n in names or [] if isinstance(n, str) and n.strip()]
+    never = [n for n in asked if n in _visitor.NEVER_FOR_VISITORS]
+    if never:
+        one = len(never) == 1
+        raise WidgetRefused(f"{', '.join(never)} {'is' if one else 'are'} never a visitor's: a visitor's turn has no "
+                            f"memory, no boards and no writes to the Vault. Leave {'it' if one else 'them'} off.", 422)
+    wanted: list[str] = []
+    missing: list[str] = []
+    bases: list | None = None
+    for name in asked:
+        if name in known:
+            wanted.append(name)
+            continue
+        if bases is None:
+            bases = (await _agent_knowledge(agent_id))[1]
+        folded = name.casefold()
+        named = [kb for kb in bases if str(kb.name).strip().casefold() == folded] or \
+            (bases if folded in _KNOWLEDGE_WORDS else [])
+        searches = [t for t in (SEARCH_TOOL, READ_TOOL) if t in known]
+        if named and not any(kb.visitor_access for kb in named):
+            one = len(named) == 1
+            raise WidgetRefused(f"{_names(named)} {'is' if one else 'are'} not open to visitors, so a visitor can't "
+                                f"search {'it' if one else 'them'}: open {'it' if one else 'them'} to visitors first "
+                                f"({_OPEN_IT}).", 422)
+        if named and searches:
+            wanted += searches
+            continue
+        missing.append(name)
     if missing:
         offered = ", ".join(sorted(known)) or "none"
-        raise WidgetRefused(f"The agent's visitor turn can't reach {', '.join(missing)}. It can offer: {offered}.", 422)
+        hint = f" To let visitors search its knowledge, name the base: {_names(bases)}." if bases else ""
+        raise WidgetRefused(f"The agent's visitor turn can't reach {', '.join(missing)}. It can offer: {offered}.{hint}",
+                            422)
+    wanted = _visitor.clean_tools(wanted)
     # What it does, and whether it asks first and so is refused for a visitor (F1524).
     return [{"name": n, "category": known[n]["category"], "asks_first": bool(known[n].get("asks_first"))}
             for n in wanted]
+
+
+async def knowledge_out_of_reach(agent_id: str, tools: list[str], where: str) -> str | None:
+    """A card's line (F1570) when the agent answers from knowledge that a visitor's turn holding `tools` can't search
+    `where` ("on your site", "on this channel"), with what to do; None when there is nothing to say. A visitor's turn
+    searches only bases open to visitors, and only through Knowledge's two tools."""
+    from core.knowledge.agent_contract import READ_TOOL, SEARCH_TOOL
+
+    name, bases = await _agent_knowledge(agent_id)
+    if not bases:
+        return None
+    closed = [kb for kb in bases if not kb.visitor_access]
+    if not {SEARCH_TOOL, READ_TOOL} & set(tools or []):
+        if len(closed) == len(bases):
+            how = (f"open {'it' if len(bases) == 1 else 'them'} to visitors first ({_OPEN_IT}), then ask for visitors "
+                   f"to search {'it' if len(bases) == 1 else 'them'}")
+        else:
+            how = f"ask for visitors to search {_names([kb for kb in bases if kb.visitor_access])}"
+        return (f"{name} answers from its knowledge ({_names(bases)}), but a visitor may use nothing that reads it, so "
+                f"{where} it can't search it: {how}.")
+    if closed:
+        one = len(closed) == 1
+        return (f"{_names(closed)} {'is' if one else 'are'} not open to visitors, so {where} {name} can't search "
+                f"{'it' if one else 'them'}: open {'it' if one else 'them'} to visitors ({_OPEN_IT}) if "
+                f"{'it' if one else 'they'} should be.")
+    return None
 
 
 # ── the owner's acts ─────────────────────────────────────────────────────────

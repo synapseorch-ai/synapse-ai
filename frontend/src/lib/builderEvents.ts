@@ -27,7 +27,8 @@ export type BuilderMessageKind =
     | 'action'
     | 'try_stronger'
     | 'effort_offer'
-    | 'open_chat';
+    | 'open_chat'
+    | 'go_to';
 
 /** A failed turn's one offer (F1018): the same message again, once, on a stronger model the server picked. */
 export interface TryStronger {
@@ -170,6 +171,54 @@ export interface SavedResource {
     name: string | null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     resource?: any;
+    /** Why, for a removal or a put-back a build makes (F1281): what was made is gone again (F1577). */
+    reason?: string | null;
+}
+
+/**
+ * Where a finished build takes the person (F1577): the workflow it made or changed, else the agent. `made`: this turn
+ * made it, rather than changing one that was there.
+ */
+export interface BuiltPlace {
+    kind: 'workflow' | 'agent';
+    id: string;
+    name: string;
+    made: boolean;
+}
+
+/** One write of a turn, as its `resource_saved` event said it and a chat read back carries it. */
+export type BuiltWrite = Pick<SavedResource, 'kind' | 'action' | 'id' | 'name' | 'reason'>;
+
+/**
+ * Where a turn's writes take the person (F1577; Naveen 11-13): a new workflow's page, where Run is; Chat with an agent
+ * when only agents were made; the workflow when both were; a change to what it changed. Read in the order they were
+ * written: a removal, or a write that says why it was made (a build putting back what it stopped half way: every
+ * removal a build makes carries its reason, F1281), takes the thing off, so a build taken back takes nobody anywhere.
+ * The last one standing is the one: inner workflows are made before the workflow that runs them, and members before
+ * their team (`build_save.save_calls`). Nothing else a build writes has a place this takes anyone to.
+ */
+export function placeBuilt(writes: readonly BuiltWrite[]): BuiltPlace | null {
+    const standing = new Map<string, BuiltPlace>();
+    for (const write of writes) {
+        const kind = write?.kind === 'orchestration' ? 'workflow' : write?.kind === 'agent' ? 'agent' : null;
+        if (!kind || !write.id) continue;
+        const key = `${kind}:${write.id}`;
+        const had = standing.get(key);
+        // Out, and in again at the end when it stands: the order is the order of the last write to each.
+        standing.delete(key);
+        if (write.reason || (write.action !== 'created' && write.action !== 'updated')) continue;
+        standing.set(key, {
+            kind, id: write.id, name: write.name || had?.name || write.id,
+            made: Boolean(had?.made) || write.action === 'created',
+        });
+    }
+    const all = [...standing.values()];
+    return all.findLast((p) => p.kind === 'workflow') ?? all.findLast((p) => p.kind === 'agent') ?? null;
+}
+
+/** The way to what a turn built, under what the turn said (F1577): one per turn, keyed on its turn. */
+export function goToMessage(place: BuiltPlace, key: string): BuilderMessage {
+    return { role: 'assistant', content: place.name, kind: 'go_to', key, place };
 }
 
 export interface BuilderMessage {
@@ -214,6 +263,8 @@ export interface BuilderMessage {
     effortOffer?: EffortOffer;
     /** "Open that chat" (`kind: 'open_chat'`): the person's own Synapse AI chat holding a workflow (TABS2, F1063). */
     chat?: { id: string; title: string };
+    /** The way to what the turn built (`kind: 'go_to'`, F1577). */
+    place?: BuiltPlace;
 }
 
 export interface BuilderState {
@@ -485,6 +536,7 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
             const saved: SavedResource = {
                 kind: event.kind, action: event.action, id: event.id ?? null,
                 name: event.name ?? null, resource: event.resource,
+                ...(typeof event.reason === 'string' && event.reason ? { reason: event.reason } : {}),
             };
             return append(state, {
                 role: 'assistant', content: bannerText(saved), kind: 'banner',
@@ -533,13 +585,25 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
             const withStatus = {
                 ...state, messages: completeLastStep(state.messages), status: null, done: true, pending: null,
             };
-            if (!summary) return withStatus;
-            const said = append(withStatus, {
-                role: 'assistant', content: withoutOpeningJson(String(summary)), kind: 'text',
-                key: `summary-${event.run_id ?? seq}`,
-            });
+            const asked = withStatus.messages.map((m) => m.role).lastIndexOf('user');
+            const turn = withStatus.messages.filter((_, i) => i > asked);
+            // The way to what this turn built (F1577), once the server says the run completed: a plan waiting has
+            // written nothing, and a run that failed or was stopped takes nobody anywhere. An event shrunk to its type
+            // has no status: completed unless the turn failed or was stopped.
+            const completed = (event.status ?? 'completed') === 'completed' && !state.error
+                && !turn.some((m) => m.key.startsWith('stopped-'));
+            const place = completed
+                ? placeBuilt(turn.filter((m) => m.kind === 'banner' && m.saved).map((m) => m.saved as SavedResource))
+                : null;
+            if (!summary && !place) return withStatus;
+            let said = summary
+                ? append(withStatus, {
+                    role: 'assistant', content: withoutOpeningJson(String(summary)), kind: 'text',
+                    key: `summary-${event.run_id ?? seq}`,
+                })
+                : withStatus;
+            if (place) said = append(said, goToMessage(place, `go-to-${event.run_id ?? state.runId ?? seq}`));
             // "Open that chat" came during the turn (F1063); it goes under the answer that says why.
-            const asked = said.messages.map((m) => m.role).lastIndexOf('user');
             const ways = said.messages.filter((m, i) => i > asked && m.kind === 'open_chat');
             return ways.length ? { ...said, messages: [...said.messages.filter((m) => !ways.includes(m)), ...ways] } : said;
         }

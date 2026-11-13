@@ -18,6 +18,7 @@ import {
     typedWhilePending,
     type BuilderMessage,
     type BuilderState,
+    type BuiltPlace,
     type SavedResource,
 } from '@/lib/builderEvents';
 import { isPanelEvent, reattachedState, type OpenConversation } from '@/lib/builderReattach';
@@ -60,6 +61,18 @@ export interface SendOptions {
 export interface SendContext {
     model: string;
     currentOrchestrationId: string | null;
+}
+
+/**
+ * A view's say in a build that ended live (F1577): handed what the turn built, its way-there message's key, and where
+ * the person was when they last sent here (`here()` then), it takes them there or not, and says whether it handled it.
+ * The first view to handle it ends it, so two views of one chat never move anyone twice.
+ */
+export type BuiltWatcher = (place: BuiltPlace, key: string, from: string) => boolean;
+
+/** Where the person is: the page and its address's question, as a build that ends compares it with where they asked. */
+export function here(): string {
+    return typeof window === 'undefined' ? '' : `${window.location.pathname}${window.location.search}`;
 }
 
 /** A chat as its views read it. */
@@ -137,6 +150,8 @@ export class BuilderChat {
     private closed = false;
     /** How many streams this chat has read: each stream's events are numbered apart from every other's (F1506). */
     private streams = 0;
+    /** The views that would take the person to what a build made (F1577). */
+    private builtWatchers = new Set<BuiltWatcher>();
 
     constructor(
         id: string,
@@ -192,6 +207,23 @@ export class BuilderChat {
         if (conversation.status === 'running') void this.follow(conversation.run_id, Number(conversation.cursor ?? 0) || 0);
     }
 
+    /**
+     * Be told when a build this chat sent ends here, live (F1577): never one read back or followed after a reload, so
+     * nobody is moved by a turn they did not just see end. The returned function stops it.
+     */
+    watchBuilt = (watcher: BuiltWatcher): (() => void) => {
+        this.builtWatchers.add(watcher);
+        return () => { this.builtWatchers.delete(watcher); };
+    };
+
+    /** A build that ended live: the first view that handles it decides (F1577). */
+    private built(message: BuilderMessage, from: string): void {
+        if (!message.place) return;
+        for (const watcher of [...this.builtWatchers]) {
+            if (watcher(message.place, message.key, from)) return;
+        }
+    }
+
     /** Whether nothing has been said in it yet, here or before. */
     isBlank(): boolean {
         return !this.touched && this.view.state.messages.every((m) => m.key === 'welcome');
@@ -216,7 +248,7 @@ export class BuilderChat {
      * so a shrunk completion or question is re-read from the run itself.
      */
     private async consume(response: Response, following?: { runId: string; cursor: number },
-                          first?: (event: RunEvent) => void): Promise<'paused' | 'ended'> {
+                          first?: (event: RunEvent) => void, sentFrom?: string): Promise<'paused' | 'ended'> {
         const reader = response.body?.getReader();
         if (!reader) return 'ended';
         const decoder = new TextDecoder();
@@ -257,8 +289,13 @@ export class BuilderChat {
                 seq += 1;
                 if (seq === 1) first?.(parsed);
                 const n = stream + seq;
+                // A way there this event adds (F1577): one already drawn, its replay, adds none.
+                const ways = sentFrom !== undefined && parsed?.type === 'orchestration_complete'
+                    ? new Set(this.view.state.messages.filter((m) => m.kind === 'go_to').map((m) => m.key)) : null;
                 this.update((prev) => applyBuilderEvent(prev, parsed, n));
                 if (parsed?.type === 'resource_saved') this.announce(parsed as SavedResource);
+                const way = ways && this.view.state.messages.find((m) => m.kind === 'go_to' && !ways.has(m.key));
+                if (way && sentFrom !== undefined) this.built(way, sentFrom);
                 if (following && parsed?.type === 'human_input_required') {
                     // Answered before the chat was read: history.
                     const replayed = thisId !== null && Number.isFinite(thisId) && thisId <= following.cursor;
@@ -325,6 +362,8 @@ export class BuilderChat {
         // An image on its own is a message. Only an empty one is nothing.
         if ((!text.trim() && !images.length) || streaming) return;
         this.touched = true;
+        // Where they asked from: a build this message ends takes them to what it made only from here (F1577).
+        const from = here();
         // A new request while a plan waits (F759): the plan is stopped where it waits — nothing it planned was
         // done — and this message starts a new turn instead of answering it.
         const setAside = state.pending !== null && typedWhilePending(state.pending, text, options.revising ?? false) === 'set_aside';
@@ -410,7 +449,7 @@ export class BuilderChat {
                 if (heldBack(event)) return;
                 this.update((prev) => ({ ...prev, messages: [
                     ...prev.messages.slice(0, answerAt), mine(answerAt), ...prev.messages.slice(answerAt)] }));
-            } : undefined);
+            } : undefined, from);
             // A refused answer leaves its question open (BWA1): the run is
             // still parked on it, so the next message answers it again.
             if (pending) this.update((prev) => (refusedAnswer(prev) && !prev.pending ? { ...prev, pending } : prev));

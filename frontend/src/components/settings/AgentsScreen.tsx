@@ -20,6 +20,7 @@ import { useDispatch } from "react-redux";
 import { ChevronDown, Plus, Sparkles } from "lucide-react";
 
 import { AppScreen } from "@/components/app/AppScreen";
+import { useBuilder } from "@/components/app/BuilderProvider";
 import { Button, ConfirmDialog, Menu, MenuItem, Toast, useToast } from "@/components/ui";
 import type { AppDispatch } from "@/store";
 import { removeAgent } from "@/store/settingsSlice";
@@ -51,6 +52,13 @@ export function AgentsScreen() {
     // already made: the workbench always opens an agent, so the page's own help ("Agents") would never show.
     const settingUpNew = draftAgent !== null && !(agents as any[]).some((a) => a.id === draftAgent.id);
     useHelpTopic(settingUpNew ? 'agents.editor' : null);
+    // The agent open here, for a build that changes it while the person has it open: they stay on it (F1577).
+    const { setCurrentAgent } = useBuilder();
+    const openAgentId = draftAgent && !settingUpNew ? (draftAgent.id as string) : null;
+    useEffect(() => {
+        setCurrentAgent(openAgentId);
+        return () => setCurrentAgent(null);
+    }, [openAgentId, setCurrentAgent]);
     const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
     // What the draft was when it was last opened or saved. The draft used to be

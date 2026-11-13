@@ -23,13 +23,14 @@ import {
 import {
     type BuilderMessage,
     type BuilderState,
+    type BuiltPlace,
     type SavedResource,
 } from '@/lib/builderEvents';
 import { AGENT_BUILDER_SWITCH, asksForAgentBuilderSwitch, withoutBuildParam } from '@/components/assistant';
 import { usePersisted } from '@/components/ui';
 import type { OpenConversation } from '@/lib/builderReattach';
 import type { ProviderModels } from '@/lib/models';
-import { BuilderChats, newChatId, type ChatView, type SendOptions } from './builderChats';
+import { BuilderChats, newChatId, type BuiltWatcher, type ChatView, type SendOptions } from './builderChats';
 
 /**
  * Announced when the builder writes something, so the list screens refetch
@@ -103,6 +104,8 @@ export interface BuilderChatValue {
      * question. Both are the same POST; only who reports it back differs.
      */
     stop: () => Promise<void>;
+    /** Be told when a build this chat sent ends live, to take the person to what it made (F1577). */
+    watchBuilt: (watcher: BuiltWatcher) => () => void;
 }
 
 interface BuilderContextValue extends BuilderChatValue {
@@ -115,6 +118,13 @@ interface BuilderContextValue extends BuilderChatValue {
      * launcher never had one to give (F17). Pass null on the way out.
      */
     setCurrentOrchestration: (id: string | null) => void;
+    /**
+     * Declare the agent a screen is showing, for as long as it shows it: Chat's tab in front, the agents workbench's
+     * open agent. Read only to leave someone on an agent a build changed while they look at it (F1577); never sent.
+     */
+    setCurrentAgent: (id: string | null) => void;
+    /** Whether the screen shows what a build made or changed now (F1577): they are on it already. */
+    showing: (place: BuiltPlace) => boolean;
     /**
      * True once the panel should be in its open position — one frame after
      * `isOpen`, and false for the length of the exit while `isOpen` is still
@@ -180,7 +190,7 @@ export function useBuilderChat(id: string, { fresh = false }: { fresh?: boolean 
         (text: string, images: string[] = [], options: SendOptions = {}) => chat.send(text, images, options, sendContext()),
         [chat, sendContext],
     );
-    return { chatId: id, state, streaming, ready, send, stop: chat.stop };
+    return { chatId: id, state, streaming, ready, send, stop: chat.stop, watchBuilt: chat.watchBuilt };
 }
 
 export function BuilderProvider({ children }: { children: React.ReactNode }) {
@@ -204,6 +214,8 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
     // this one" means this one. Held in a ref: it is read when a message is
     // sent, and changing it should not re-render the panel.
     const currentOrchestrationId = useRef<string | null>(null);
+    // The agent a screen shows (F1577): read when a build ends, never sent.
+    const currentAgentId = useRef<string | null>(null);
     //: The pending unmount at the end of the close transition, so `open` can cancel it.
     const exitTimer = useRef<number | null>(null);
 
@@ -253,6 +265,12 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
     const setCurrentOrchestration = useCallback((id: string | null) => {
         currentOrchestrationId.current = id;
     }, []);
+    const setCurrentAgent = useCallback((id: string | null) => {
+        currentAgentId.current = id;
+    }, []);
+    const showing = useCallback((place: BuiltPlace) => (
+        place.kind === 'workflow' ? currentOrchestrationId.current === place.id : currentAgentId.current === place.id
+    ), []);
 
     // Words `open({ ask })` sends once the panel is open (below `send`): held in a ref, the tick says there are some.
     const asked = useRef<string | null>(null);
@@ -380,16 +398,17 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
 
     const { state, streaming, ready } = panel;
     const stop = panel.chat.stop;
+    const watchBuilt = panel.chat.watchBuilt;
     const value = useMemo(
         () => ({
-            chatId: panelChat.id, state, streaming, ready, send, stop,
+            chatId: panelChat.id, state, streaming, ready, send, stop, watchBuilt,
             isOpen, entered, open, draft, draftTaken, takeDraft, close, newConversation, showChat,
             providers, canAttach, builderModel, sessionModel, setSessionModel, saveBuilderModel,
-            setCurrentOrchestration, chats, sendContext,
+            setCurrentOrchestration, setCurrentAgent, showing, chats, sendContext,
         }),
-        [panelChat.id, state, streaming, ready, send, stop, isOpen, entered, open, draft, draftTaken, close,
+        [panelChat.id, state, streaming, ready, send, stop, watchBuilt, isOpen, entered, open, draft, draftTaken, close,
          newConversation, showChat, providers, canAttach, builderModel, sessionModel, setSessionModel,
-         saveBuilderModel, setCurrentOrchestration, chats, sendContext],
+         saveBuilderModel, setCurrentOrchestration, setCurrentAgent, showing, chats, sendContext],
     );
 
     return <BuilderContext.Provider value={value}>{children}</BuilderContext.Provider>;

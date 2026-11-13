@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "synapse-orch-ai"
-version = "2.0.7"
+version = "2.0.10"
 description = "Synapse - A Multi Agent Orchestrator"
 readme = "README.md"
 license = { text = "AGPL-3.0-only" }
@@ -115,6 +115,9 @@ include = [
     "backend/core/",
     "backend/services/",
     "backend/tools/",
+    # The template packs Workflows → Templates lists (`/api/examples`, read beside `core/`): without them every
+    # pip, installer and npm install showed "No example packs available." (F1568).
+    "backend/examples/",
     "backend/main.py",
     "backend/requirements.txt",
     "backend/requirements-coding.txt",

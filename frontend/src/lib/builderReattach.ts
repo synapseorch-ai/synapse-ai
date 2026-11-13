@@ -14,14 +14,15 @@
  * products and this shape is not the same in both: open source answers a
  * question through `/api/builder/resume`'s own stream, so it needs no cursor.
  */
-import type { BuilderMessage, BuilderState } from './builderEvents';
+import { goToMessage, placeBuilt, type BuilderMessage, type BuilderState, type BuiltWrite } from './builderEvents';
 
 /** What `GET /api/builder/conversation` returns for a conversation still open. */
 export interface OpenConversation {
     client_session_id: string;
     run_id: string;
     status: 'paused' | 'running';
-    turns: { user: string; assistant: string }[];
+    /** `writes`: what a finished turn wrote, its workflows and agents (F1577), for the way to what it built. */
+    turns: { user: string; assistant: string; writes?: BuiltWrite[] }[];
     pending: {
         run_id: string; field: string; step_id: string | null; prompt: string;
         /**
@@ -47,6 +48,9 @@ export function reattachedState(conversation: OpenConversation, welcome: Builder
         if (turn.assistant) {
             messages.push({ role: 'assistant', content: turn.assistant, kind: 'text', key: `back-said-${i}` });
         }
+        // The way to what it built, as it was drawn live (F1577): someone who left while it built finds it here.
+        const place = placeBuilt(turn.writes ?? []);
+        if (place) messages.push(goToMessage(place, `back-go-to-${i}`));
     });
     const asked = conversation.pending;
     if (asked) {
