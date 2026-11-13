@@ -18,7 +18,8 @@
  *   each product's tool catalogue.
  * - Whether this person may change anything (cloud's viewers may not; OSS has
  *   no roles), whether they may answer a call's approval (cloud: an approver and
- *   up, F452), and whether calls are charged in credits (cloud).
+ *   up, F452), whether calls are charged in credits (cloud), and whether the
+ *   service that answers calls is still starting (cloud, F1574).
  *
  * Without a provider the screens get `DEFAULT_PHONE_HOST`: no numbers and
  * nothing to do, never a broken request.
@@ -88,6 +89,12 @@ export type PhoneHost = {
     canAnswer: boolean;
     /** Calls are charged in credits here (cloud: 4 a started minute, V21). */
     credits: boolean;
+    /**
+     * The service that answers calls is still starting, so a number that is on says "Getting ready", not "Receiving
+     * calls" (F1574). Cloud's, from its line: it runs voice only while a workspace has a number, and it takes about two
+     * minutes to start (F1544). OSS never stops it: false.
+     */
+    starting: boolean;
     links: {
         /** An agent's page, where its model, thinking and planning are set. */
         agent: (agentId: string) => string;
@@ -121,6 +128,7 @@ export const DEFAULT_PHONE_HOST: PhoneHost = {
     canEdit: false,
     canAnswer: false,
     credits: false,
+    starting: false,
     links: { agent: () => '#' },
     costLine: '',
     longestCall: '',
