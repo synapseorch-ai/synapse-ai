@@ -6159,6 +6159,442 @@ async def check_builderalone(browser) -> str:
     return "two act-alone presses: two plans drawn, the newest with Build it on"
 
 
+# ── after a build, the person goes to what it made (F1577) ──────────────────
+
+#: Synapse AI's turns, held open by the check: a message (`/api/builder/chat`) and an answer (`/api/builder/resume`)
+#: each get a stream the check feeds (`window.__built.push`, `.close`), and each call is kept with its body. A chat
+#: read back (`/api/builder/conversation?session=`) is `window.__readBack[id]`, else none; the panel's own read after a
+#: load finds none. Everything else reaches the scratch: the workflows and agents a build "made" are real ones, so the
+#: page the person is taken to is the real page. No model is called.
+BUILT_STUB = r"""
+window.__built = window.__built || {};
+window.__builtCalls = [];
+const _builtFetch = window.fetch;
+window.fetch = function (input, init) {
+  const url = String((input && input.url) || input || '');
+  const method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+  if (url.includes('/api/builder/conversation')) {
+    const id = new URL(url, location.href).searchParams.get('session');
+    const back = id && window.__readBack ? window.__readBack[id] : null;
+    return Promise.resolve(new Response(JSON.stringify({conversation: back ? Object.assign({client_session_id: id}, back) : null}),
+      {status: 200, headers: {'Content-Type': 'application/json'}}));
+  }
+  if ((url.includes('/api/builder/chat') || url.includes('/api/builder/resume')) && method === 'POST') {
+    window.__builtCalls.push({url: url, body: init && init.body ? String(init.body) : null});
+    // The chat as the server keeps it, for a chat read back on this page later (Back to Chat): its asks and the plan.
+    try {
+      const sent = JSON.parse((init && init.body) || '{}');
+      if (sent.client_session_id) (window.__readBack = window.__readBack || {})[sent.client_session_id] = {
+        run_id: 'run_back', status: 'completed', pending: null, cursor: '0',
+        turns: [{user: sent.message, assistant: 'Here is the plan: read each invoice, then post the totals.'}]};
+    } catch (e) {}
+    const body = new ReadableStream({
+      start(c) {
+        window.__built.push = (event) => c.enqueue(new TextEncoder().encode('data: ' + JSON.stringify(event) + '\n\n'));
+        window.__built.close = () => { try { c.close(); } catch (e) {} };
+      },
+    });
+    return Promise.resolve(new Response(body, {status: 200, headers: {'Content-Type': 'text/event-stream'}}));
+  }
+  return _builtFetch(input, init);
+};
+"""
+
+BUILT_RUN = "builder_uismoke_built"
+#: Naveen's laptop width, for the shots (the brief: 1440, light and dark).
+BUILT_SIZE = (1440, 900)
+
+
+def _built_fixtures() -> dict:
+    """Two real workflows and a real agent for a build to "make" or change, so each destination is the real page."""
+    stamp = int(time.time())
+    made = {"id": f"orch_uismoke_built_{stamp}", "name": f"Invoice reader {stamp % 10000}"}
+    changed = {"id": f"orch_uismoke_changed_{stamp}", "name": f"Weekly digest {stamp % 10000}"}
+    for flow in (made, changed):
+        api("/api/orchestrations", "POST", {
+            **flow, "description": "a ui-smoke fixture", "entry_step_id": "say", "trigger": "manual",
+            "steps": [{"id": "say", "name": "Say hello", "type": "print", "print_content": "hello",
+                       "output_key": "said", "next_step_id": None, "position_x": 0, "position_y": 0}]})
+    agent = {"id": f"agent_uismoke_built_{stamp}", "name": f"Researcher {stamp % 10000}"}
+    api("/api/agents", "POST", _agent(agent["id"], agent["name"]))
+    return {"made": made, "changed": changed, "agent": agent}
+
+
+def _drop_built(fx: dict) -> None:
+    drop_fixtures([fx["made"]["id"], fx["changed"]["id"]], [fx["agent"]["id"]])
+
+
+def _wrote(kind: str, action: str, thing: dict, **more) -> dict:
+    return {"type": "resource_saved", "kind": kind, "action": action, "id": thing["id"], "name": thing["name"], **more}
+
+
+def _built(writes: list[dict], *, status: str = "completed", failed: bool = False) -> list[dict]:
+    """A build's events after its yes: it saves `writes`, then the run ends as `status`."""
+    events = [{"type": "orchestration_start", "run_id": BUILT_RUN},
+              {"type": "step_start", "orch_step_id": "step_save", "step_name": "Save the Build", "step_type": "tool"},
+              *writes]
+    if failed:
+        events.append({"type": "step_error", "orch_step_id": "step_save", "error": "An internal error occurred.",
+                       "reason": "the save could not finish"})
+    events.append({"type": "orchestration_complete", "run_id": BUILT_RUN, "status": status,
+                   "final_state": {"summary": "" if failed else "Built it, as the plan said."}})
+    return events
+
+
+async def _built_page(browser, path: str, scheme: str = "light", read_back: dict | None = None):
+    ctx = await browser.new_context(viewport={"width": BUILT_SIZE[0], "height": BUILT_SIZE[1]}, color_scheme=scheme)
+    if read_back is not None:
+        await ctx.add_init_script(f"window.__readBack = {json.dumps(read_back)};")
+    await ctx.add_init_script(BUILT_STUB)
+    page = await ctx.new_page()
+    await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+    await asyncio.sleep(SETTLE)
+    return ctx, page
+
+
+async def _built_eval(page, js: str, arg=None):
+    """`page.evaluate`, read again when a navigation the check is waiting for swaps the page's context under it."""
+    for _ in range(40):
+        try:
+            return await (page.evaluate(js) if arg is None else page.evaluate(js, arg))
+        except Exception as exc:
+            if "context was destroyed" not in str(exc) and "navigat" not in str(exc).lower():
+                raise
+            await asyncio.sleep(0.25)
+    return await page.evaluate(js) if arg is None else page.evaluate(js, arg)
+
+
+async def _here(page) -> str:
+    return await _built_eval(page, "() => location.pathname + location.search")
+
+
+async def _streams(page) -> int:
+    return await _built_eval(page, "() => window.__builtCalls.length")
+
+
+async def _shows(page, text: str, tries: int = 40) -> bool:
+    for _ in range(tries):
+        if text in (await _built_eval(page, "() => document.body.innerText") or ""):
+            return True
+        await asyncio.sleep(0.25)
+    return False
+
+
+async def _stream_opened(page, n: int) -> None:
+    for _ in range(80):
+        if await _streams(page) >= n and await _built_eval(page, "() => typeof window.__built.push === 'function'"):
+            return
+        await asyncio.sleep(0.1)
+    raise AssertionError(f"Synapse AI's turn {n} never reached its route")
+
+
+async def _say(page, where: str, text: str) -> None:
+    """Type `text` into Synapse AI's composer — the panel's, or the front Synapse AI tab's — and send it."""
+    box = page.locator('[data-testid="assistant-panel"] textarea') if where == "panel" else page.locator("main textarea").last
+    await box.wait_for(timeout=15_000)
+    await box.fill(text)
+    for _ in range(30):
+        if not await box.is_disabled():
+            break
+        await asyncio.sleep(0.1)
+    await box.press("Enter")
+
+
+async def _ask_and_approve(page, where: str, *, before_build=None) -> None:
+    """Ask for a build, read its plan (nobody moves while a plan waits), and say yes: the build's stream is open."""
+    if where == "panel" and not await page.locator('[data-testid="assistant-panel"]').count():
+        await _build_with_ai(page)
+        await asyncio.sleep(0.6)
+    asked = await _streams(page)
+    start = await _here(page)
+    await _say(page, where, "read my invoices every Friday")
+    await _stream_opened(page, asked + 1)
+    await page.evaluate("(id) => { window.__built.push({type: 'orchestration_start', run_id: id});"
+                        " window.__built.push({type: 'human_input_required', run_id: id, orch_step_id: 'step_human_review',"
+                        " prompt: 'Here is the plan: read each invoice, then post the totals.', fields: [{name: 'feedback'}]});"
+                        " window.__built.close(); }", BUILT_RUN)
+    await asyncio.sleep(1.2)
+    if await _here(page) != start:
+        raise AssertionError(f"a plan waiting for its yes moved the person from {start} to {await _here(page)}")
+    await _say(page, where, "approve")
+    await _stream_opened(page, asked + 2)
+    if before_build is not None:
+        await before_build()
+
+
+async def _finish_build(page, events: list[dict]) -> None:
+    await page.evaluate("(events) => { for (const e of events) window.__built.push(e); window.__built.close(); }", events)
+
+
+async def _arrives(page, path: str, tries: int = 60) -> bool:
+    for _ in range(tries):
+        if await _here(page) == path:
+            return True
+        await asyncio.sleep(0.25)
+    return False
+
+
+async def _shot(page, name: str, scheme: str) -> None:
+    shots = os.environ.get("SMOKE_SHOTS")
+    if shots:
+        await asyncio.sleep(0.8)
+        await page.screenshot(path=os.path.join(shots, f"built-{name}-{scheme}-{BUILT_SIZE[0]}.png"))
+
+
+@check
+async def check_builtgoes(browser) -> str:
+    """After Synapse AI builds something, the person is on it (F1577; Naveen 11-13).
+
+    From the panel, on Home: a new workflow takes them to its page, where Run is, with the panel still beside it; only
+    an agent, to Chat with that agent, the panel stepping aside; both, to the workflow. The plan before it moves nobody,
+    and a build that fails moves nobody. The workflow's address holds on a reload. Light and dark at 1440; `SMOKE_SHOTS`
+    keeps a shot of each.
+    """
+    fx = _built_fixtures()
+    made, agent = fx["made"], fx["agent"]
+    flow_at = f"/workflows?id={made['id']}"
+    bad: list[str] = []
+    try:
+        for scheme in ("light", "dark"):
+            # A new workflow: its page, the conversation beside it.
+            ctx, page = await _built_page(browser, "/dashboard", scheme)
+            try:
+                await _ask_and_approve(page, "panel")
+                await _finish_build(page, _built([_wrote("orchestration", "created", made)]))
+                if not await _arrives(page, flow_at):
+                    bad.append(f"{scheme}: a new workflow left the person at {await _here(page)}, not {flow_at}")
+                else:
+                    if not await _shows(page, made["name"]):
+                        bad.append(f"{scheme}: the workflow's page does not show {made['name']!r}")
+                    if not await page.locator('[data-testid="assistant-panel"]').count():
+                        bad.append(f"{scheme}: the conversation went away when the person was taken to the workflow")
+                    elif not await page.locator('[data-testid="assistant-panel"]').get_by_role(
+                            "link", name=re.compile(re.escape(made["name"]))).count():
+                        bad.append(f"{scheme}: the conversation has no way back to the workflow it built")
+                    await _shot(page, "workflow", scheme)
+                    await page.reload(wait_until="domcontentloaded")
+                    await asyncio.sleep(SETTLE)
+                    if await _here(page) != flow_at or not await _shows(page, made["name"]):
+                        bad.append(f"{scheme}: a reload at the workflow lands at {await _here(page)}")
+            finally:
+                await ctx.close()
+
+            # Only an agent: Chat, that agent's tab in front, the panel out of its way.
+            ctx, page = await _built_page(browser, "/dashboard", scheme)
+            try:
+                await _ask_and_approve(page, "panel")
+                await _finish_build(page, _built([_wrote("agent", "created", agent)]))
+                if not await _arrives(page, "/"):
+                    bad.append(f"{scheme}: a new agent left the person at {await _here(page)}, not Chat")
+                else:
+                    try:
+                        named = await _composer_named(page)
+                    except Exception:
+                        named = ""
+                    if named != f"Message {agent['name']}":
+                        bad.append(f"{scheme}: Chat opened on {named!r}, not on {agent['name']!r}")
+                    if await page.locator('[data-testid="assistant-panel"]').count():
+                        await asyncio.sleep(0.6)
+                        if await page.locator('[data-testid="assistant-panel"]').count():
+                            bad.append(f"{scheme}: the panel stayed over the new agent's chat")
+                    await _shot(page, "agent", scheme)
+            finally:
+                await ctx.close()
+
+            # Both: the workflow.
+            ctx, page = await _built_page(browser, "/dashboard", scheme)
+            try:
+                await _ask_and_approve(page, "panel")
+                await _finish_build(page, _built([_wrote("agent", "created", agent),
+                                                  _wrote("orchestration", "created", made)]))
+                if not await _arrives(page, flow_at):
+                    bad.append(f"{scheme}: an agent and a workflow left the person at {await _here(page)}, not {flow_at}")
+                await _shot(page, "both", scheme)
+            finally:
+                await ctx.close()
+
+        # A build that failed after it wrote: nobody moves.
+        ctx, page = await _built_page(browser, "/dashboard")
+        try:
+            await _ask_and_approve(page, "panel")
+            await _finish_build(page, _built([_wrote("orchestration", "created", made)], status="failed", failed=True))
+            await asyncio.sleep(2.5)
+            if await _here(page) != "/dashboard":
+                bad.append(f"a failed build moved the person to {await _here(page)}")
+        finally:
+            await ctx.close()
+    finally:
+        _drop_built(fx)
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("a new workflow opens its page beside the conversation, and holds on a reload; an agent alone opens Chat "
+            "with it; both open the workflow; a plan or a failed build moves nobody — light and dark at 1440")
+
+
+@check
+async def check_builtstays(browser) -> str:
+    """A person who left while it built is not pulled back, and one already on it stays (F1577).
+
+    Gone elsewhere during the build, or with the panel closed: they stay where they are, and the conversation has the
+    way there; it takes them when pressed, and reopening the panel later takes nobody anywhere. A change to the workflow
+    they have open leaves them on it. `SMOKE_SHOTS` keeps the conversation's way there, light and dark at 1440.
+    """
+    fx = _built_fixtures()
+    changed = fx["changed"]
+    flow_at = f"/workflows?id={changed['id']}"
+    bad: list[str] = []
+    try:
+        for scheme in ("light", "dark"):
+            # Gone to Agents while it built.
+            ctx, page = await _built_page(browser, "/dashboard", scheme)
+            try:
+                async def leave():
+                    rail = page.locator('nav[aria-label="Primary"] a[href="/agents"]')
+                    await rail.first.click()
+                    if not await _arrives(page, "/agents"):
+                        raise AssertionError(f"the rail did not leave Home ({await _here(page)})")
+                    await asyncio.sleep(0.8)
+                await _ask_and_approve(page, "panel", before_build=leave)
+                await _finish_build(page, _built([_wrote("orchestration", "updated", changed)]))
+                await asyncio.sleep(2.5)
+                if await _here(page) != "/agents":
+                    bad.append(f"{scheme}: someone who went to Agents during the build was taken to {await _here(page)}")
+                way = page.locator('[data-testid="assistant-panel"]').get_by_role(
+                    "link", name=re.compile(re.escape(changed["name"])))
+                if not await way.count():
+                    bad.append(f"{scheme}: the conversation does not say where the change is")
+                else:
+                    await _shot(page, "elsewhere", scheme)
+                    await way.first.click()
+                    if not await _arrives(page, flow_at):
+                        bad.append(f"{scheme}: the way there took the person to {await _here(page)}, not {flow_at}")
+            finally:
+                await ctx.close()
+
+        # The panel closed while it built: nobody moves, then or when it opens again.
+        ctx, page = await _built_page(browser, "/dashboard")
+        try:
+            async def close():
+                await page.get_by_role("button", name="Close Synapse AI").click()
+                await asyncio.sleep(0.6)
+            await _ask_and_approve(page, "panel", before_build=close)
+            await _finish_build(page, _built([_wrote("orchestration", "updated", changed)]))
+            await asyncio.sleep(2.0)
+            if await _here(page) != "/dashboard":
+                bad.append(f"someone who closed the panel during the build was taken to {await _here(page)}")
+            await _build_with_ai(page)
+            await asyncio.sleep(2.0)
+            if await _here(page) != "/dashboard":
+                bad.append(f"opening the panel after the build took the person to {await _here(page)}")
+        finally:
+            await ctx.close()
+
+        # Already on it: a change to the workflow open on screen leaves them there.
+        ctx, page = await _built_page(browser, flow_at)
+        try:
+            if not await _shows(page, changed["name"]):
+                bad.append("the changed workflow's page never opened")
+            await _ask_and_approve(page, "panel")
+            await _finish_build(page, _built([_wrote("orchestration", "updated", changed)]))
+            await asyncio.sleep(2.5)
+            if await _here(page) != flow_at:
+                bad.append(f"a change to the workflow on screen moved the person to {await _here(page)}")
+        finally:
+            await ctx.close()
+    finally:
+        _drop_built(fx)
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("gone elsewhere or with the panel closed, nobody is pulled back and the conversation says where it is; on "
+            "the workflow already, they stay")
+
+
+@check
+async def check_builttab(browser) -> str:
+    """From a Synapse AI tab on Chat the same happens, and a chat read back says where its build is (F1577).
+
+    An agent made there opens its own tab in front, the Synapse AI tab kept in the strip; a workflow made there opens
+    its page, and Back is the chat as it was. A Synapse AI chat read back from its runs (a tab left during a build
+    lets its stream go) shows the way to what each turn built, and moves nobody.
+    """
+    _assistant_agent()
+    fx = _built_fixtures()
+    made, agent = fx["made"], fx["agent"]
+    flow_at = f"/workflows?id={made['id']}"
+    bad: list[str] = []
+    try:
+        ctx, page = await _built_page(browser, "/")
+        try:
+            # Its agent is known once the page has read the workspace's agents: until then the tab reads as a plain one.
+            for _ in range(60):
+                named = await _composer_named(page)
+                if named == f"Message {ASSISTANT_NAME}":
+                    break
+                await asyncio.sleep(0.25)
+            if named != f"Message {ASSISTANT_NAME}":
+                raise AssertionError(f"Chat's first tab is {named!r}, not Synapse AI's")
+            await _ask_and_approve(page, "tab")
+            await _finish_build(page, _built([_wrote("agent", "created", agent)]))
+            for _ in range(40):
+                try:
+                    named = await page.get_by_role("textbox", name=re.compile(r"^Message ")).first.get_attribute(
+                        "aria-label") or ""
+                except Exception:
+                    named = ""
+                if named == f"Message {agent['name']}":
+                    break
+                await asyncio.sleep(0.25)
+            if named != f"Message {agent['name']}":
+                bad.append(f"a new agent made from a Synapse AI tab left Chat on {named!r}")
+            titles = await _tab_titles(page)
+            if not any("read my invoices" in t for t in titles):
+                bad.append(f"the Synapse AI tab that made it is gone from the strip: {titles}")
+            await _shot(page, "tab-agent", "light")
+
+            await _strip(page).get_by_role("tab", name=re.compile("read my invoices")).click()
+            await asyncio.sleep(1.0)
+            await _ask_and_approve(page, "tab")
+            await _finish_build(page, _built([_wrote("orchestration", "created", made)]))
+            if not await _arrives(page, flow_at):
+                bad.append(f"a workflow made from a Synapse AI tab left the person at {await _here(page)}")
+            else:
+                await page.go_back(wait_until="domcontentloaded")
+                await asyncio.sleep(SETTLE)
+                if not await _shows(page, "Here is the plan: read each invoice"):
+                    bad.append("Back from the workflow does not find the Synapse AI chat as it was")
+        finally:
+            await ctx.close()
+
+        # A chat read back from its runs: the way to what it built is under its turn, and nobody moves.
+        cid = "uismoke-built-back"
+        back = {cid: {"run_id": "run_built_back", "status": "completed", "pending": None, "cursor": "0", "turns": [
+            {"user": "read my invoices every Friday", "assistant": f'Built the workflow "{made["name"]}".',
+             "writes": [{"kind": "agent", "action": "created", "id": agent["id"], "name": agent["name"]},
+                        {"kind": "orchestration", "action": "created", "id": made["id"], "name": made["name"]}]}]}}
+        for scheme in ("light", "dark"):
+            ctx, page = await _built_page(browser, f"/?session={cid}&agent=agent_synapse_ai", scheme, read_back=back)
+            try:
+                way = page.get_by_role("main").get_by_role("link", name=re.compile(re.escape(made["name"])))
+                for _ in range(40):
+                    if await way.count():
+                        break
+                    await asyncio.sleep(0.25)
+                if not await way.count():
+                    bad.append(f"{scheme}: a chat read back does not show the way to the workflow its turn built")
+                await asyncio.sleep(1.5)
+                if (await _here(page)).startswith("/workflows"):
+                    bad.append(f"{scheme}: reading a chat back moved the person to {await _here(page)}")
+                await _shot(page, "readback", scheme)
+            finally:
+                await ctx.close()
+    finally:
+        _drop_built(fx)
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("from a Synapse AI tab an agent opens its own tab and a workflow its page, Back finds the chat; a chat read "
+            "back shows the way and moves nobody")
+
+
 #: Agent switches recorded instead of sent: the stub's agents do not exist.
 RECORD_SWITCH = """
 window.__switches = [];
