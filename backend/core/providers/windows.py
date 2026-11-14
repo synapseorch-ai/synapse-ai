@@ -60,6 +60,12 @@ WINDOWS: tuple[tuple[str, int], ...] = (
     ("mistral-medium-latest", 256_000),
     ("mistral-small-latest", 256_000),
     ("mistral-large-4", 1_000_000),
+    # Bedrock's 2024 Mistral models (their Bedrock model cards; F1586: Large 24.02 refused a 40k-token prompt with
+    # "maximum context length is 32768 tokens"): older, smaller models than the names above on Mistral's own API.
+    ("mistral-large-2402", 32_768),
+    ("mistral-small-2402", 32_768),
+    ("mistral-7b-instruct", 32_768),
+    ("mixtral-8x7b", 32_768),
     # DeepSeek (api-docs.deepseek.com): deepseek-chat and -reasoner were retired 07-2026; V4 holds 1M.
     ("deepseek-v4", 1_000_000),
     ("deepseek-flash", 1_000_000),
