@@ -14682,6 +14682,152 @@ async def check_pickerwords(browser) -> str:
             "'pus' what holds it")
 
 
+#: The model the workspace, an agent and a step are saved on in `clisignedout`, while its CLI is signed out.
+_CLI_OUT_SAVED = "cli.claude.sonnet"
+_CLI_OUT_CLAUDE = ["cli.claude.fable", "cli.claude.opus", "cli.claude.sonnet", "cli.claude.haiku", "cli.claude"]
+_CLI_OUT_GEMINI = ["cli.gemini.pro", "cli.gemini"]
+#: `/api/models` with Claude Code installed and signed out (F1603): the route calls it available, as the engine needs to
+#: answer "sign in to Claude Code" (F1418), and lists its models, aliases first. Gemini's CLI cannot tell (null); a key
+#: for Anthropic is saved.
+_CLI_OUT_MODELS = {
+    "providers": {
+        "ollama": {"available": False, "models": [], "embedding_models": []},
+        "anthropic": {"available": True, "models": ["claude-sonnet-4-6", "claude-haiku-4-5"], "embedding_models": []},
+        "anthropic_cli": {"available": True, "models": _CLI_OUT_CLAUDE, "embedding_models": [],
+                          "cli": {"version": "2.1.312", "signed_in": False,
+                                  "sign_in_hint": "Run `claude` in a terminal and sign in.",
+                                  "models_source": "list", "models_note": None, "note": None}},
+        "gemini_cli": {"available": True, "models": _CLI_OUT_GEMINI, "embedding_models": [],
+                       "cli": {"version": "0.64.0", "signed_in": None, "sign_in_hint": None,
+                               "models_source": "list", "models_note": None, "note": None}},
+    },
+    "all_available": ["claude-sonnet-4-6", "claude-haiku-4-5", *_CLI_OUT_CLAUDE, *_CLI_OUT_GEMINI],
+    "local": [],
+    "cloud": ["claude-sonnet-4-6", "claude-haiku-4-5", *_CLI_OUT_CLAUDE, *_CLI_OUT_GEMINI],
+    "windows": {"claude-sonnet-4-6": 1_000_000, "claude-haiku-4-5": 200_000},
+    "synapse_ai_min_window": 128_000,
+}
+
+
+@check
+async def check_clisignedout(browser) -> str:
+    """A model CLI's models are offered only while that CLI is signed in, and a model saved on one stays visible where
+    it is set (F1603: "Leave the list; hide signed-out only"). With Claude Code signed out, Synapse AI's
+    panel, Settings → Models' Default and Builder model, an agent's Model and a workflow step's Model override offer
+    none of its models, and Gemini's CLI, which cannot tell, is offered. The workspace's default, an agent and a step
+    saved on cli.claude.sonnet show it on the closed picker (it read "Select…" on an agent and a step), and the open
+    list keeps it alone of Claude Code's, under Not reachable where the picker groups. Light and dark at 1440."""
+    aid, oid = "agent_uismoke_cliout", "uismoke_cliout"
+    shots = os.environ.get("SMOKE_SHOTS")
+    bad: list[str] = []
+
+    def claude(names: list[str]) -> list[str]:
+        return [n for n in names if n.startswith("cli.claude")]
+
+    async def listed(page, trigger) -> tuple[list[str], str]:
+        """The open picker's options (the kit's Combobox is cmdk's) and its group headings, nothing else on the page."""
+        await trigger.click()
+        await page.locator("[cmdk-item]").first.wait_for(timeout=10_000)
+        await asyncio.sleep(0.4)
+        names = [t.split("\n")[0].strip() for t in await page.locator("[cmdk-item]").all_inner_texts()]
+        return names, " | ".join(await page.locator("[cmdk-group-heading]").all_inner_texts())
+
+    async def shot(page, name: str, scheme: str) -> None:
+        if shots:
+            await page.screenshot(path=os.path.join(shots, f"clisignedout-{name}-{scheme}-1440.png"))
+
+    try:
+        api("/api/agents", "POST", {**_agent(aid, "UI smoke signed-out CLI"), "model": _CLI_OUT_SAVED})
+        api("/api/orchestrations", "POST", {
+            "id": oid, "name": "ui-smoke signed-out CLI", "description": "Temporary fixture created by scripts/ui-smoke.py.",
+            "steps": [{"id": f"{oid}_w", "name": "Write", "type": "llm", "prompt_template": "Say hi",
+                       "model": _CLI_OUT_SAVED, "output_key": "draft", "next_step_id": None,
+                       "position_x": 0, "position_y": 0}],
+            "entry_step_id": f"{oid}_w", "state_schema": {}, "trigger": "manual"})
+        settings = {**api("/api/settings"), "model": _CLI_OUT_SAVED}
+        for scheme in ("light", "dark"):
+            ctx = await browser.new_context(viewport={"width": 1440, "height": 900}, color_scheme=scheme)
+            await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{scheme}')}}catch(e){{}}")
+            await ctx.route(re.compile(r".*/api/models(\?.*)?$"), _answer(_CLI_OUT_MODELS))
+            await ctx.route(re.compile(r".*/api/settings$"), _answer(settings))
+            page = await ctx.new_page()
+            try:
+                # Settings → Models: the default saved on it shows, alone of Claude Code's; the Builder model has none.
+                await page.goto(f"{APP}/settings/models", wait_until="domcontentloaded")
+                default = page.locator('button[aria-label="Default model"]').first
+                await default.wait_for(timeout=30_000)
+                await asyncio.sleep(SETTLE)
+                if _CLI_OUT_SAVED not in await default.inner_text():
+                    bad.append(f"{scheme}: Settings' Default model reads {(await default.inner_text()).strip()!r}")
+                names, text = await listed(page, default)
+                if claude(names) != [_CLI_OUT_SAVED] or "not reachable" not in text.lower():
+                    bad.append(f"{scheme}: Settings' Default model lists {claude(names)} of Claude Code's")
+                if "cli.gemini.pro" not in names:
+                    bad.append(f"{scheme}: Settings' Default model leaves out Gemini's CLI, which cannot tell")
+                await shot(page, "settings-default", scheme)
+                await page.keyboard.press("Escape")
+                await asyncio.sleep(0.3)
+                names, _ = await listed(page, page.locator('button[aria-label="Builder model"]').first)
+                if claude(names):
+                    bad.append(f"{scheme}: Settings' Builder model offers {claude(names)}")
+                await shot(page, "settings-builder", scheme)
+                await page.keyboard.press("Escape")
+
+                # An agent saved on it: its Model shows it, and its list keeps it under Not reachable.
+                await page.goto(f"{APP}/agents", wait_until="domcontentloaded")
+                await asyncio.sleep(SETTLE)
+                await page.get_by_text("UI smoke signed-out CLI", exact=True).first.click()
+                model = page.locator('button[aria-label="Model"]').first
+                await model.wait_for(timeout=10_000)
+                await asyncio.sleep(1.0)
+                if _CLI_OUT_SAVED not in await model.inner_text():
+                    bad.append(f"{scheme}: the agent's Model reads {(await model.inner_text()).strip()!r}")
+                names, text = await listed(page, model)
+                if claude(names) != [_CLI_OUT_SAVED] or "not reachable" not in text.lower():
+                    bad.append(f"{scheme}: the agent's Model lists {claude(names)} of Claude Code's")
+                if "cli.gemini.pro" not in names:
+                    bad.append(f"{scheme}: the agent's Model leaves out Gemini's CLI")
+                await shot(page, "agent", scheme)
+                await page.keyboard.press("Escape")
+                await asyncio.sleep(0.3)
+
+                # Synapse AI's panel: none of Claude Code's.
+                await page.locator('[data-testid="assistant-open"]:visible').first.click()
+                pill = page.locator('[data-testid="assistant-panel"] [aria-label="Model for this build"]').first
+                await pill.wait_for(timeout=10_000)
+                await asyncio.sleep(0.6)
+                names, _ = await listed(page, pill)
+                if claude(names):
+                    bad.append(f"{scheme}: Synapse AI's panel offers {claude(names)}")
+                if "cli.gemini.pro" not in names:
+                    bad.append(f"{scheme}: Synapse AI's panel leaves out Gemini's CLI")
+                await shot(page, "panel", scheme)
+                await page.keyboard.press("Escape")
+
+                # A workflow step saved on it: its Model override shows it, and lists it alone of Claude Code's.
+                await open_step(page, oid, "Write")
+                override = page.locator('button[aria-label="Model override"]').first
+                await override.wait_for(timeout=10_000)
+                if _CLI_OUT_SAVED not in await override.inner_text():
+                    bad.append(f"{scheme}: the step's Model override reads {(await override.inner_text()).strip()!r}")
+                names, _ = await listed(page, override)
+                if claude(names) != [_CLI_OUT_SAVED]:
+                    bad.append(f"{scheme}: the step's Model override lists {claude(names)} of Claude Code's")
+                if "cli.gemini.pro" not in names:
+                    bad.append(f"{scheme}: the step's Model override leaves out Gemini's CLI")
+                await shot(page, "step", scheme)
+                await page.keyboard.press("Escape")
+            finally:
+                await ctx.close()
+    finally:
+        drop_fixtures([oid], [aid])
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("Claude Code signed out: the panel, Settings' Default and Builder model, an agent's Model and a step's offer "
+            "none of its models and Gemini's CLI that cannot tell; the default, the agent and the step saved on "
+            f"{_CLI_OUT_SAVED} show it, alone of Claude Code's, light and dark at 1440")
+
+
 # ── the browser inside Synapse: the pane (BRW2, D330) ───────────────────────
 
 #: A 16×10 JPEG: a frame of the screencast, and the screenshot after an action.
