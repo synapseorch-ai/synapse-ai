@@ -103,15 +103,16 @@ def _preview(value: Any, *, whole: bool = False) -> str:
     return str(value) if whole else str(value)[:500]
 
 
-def _reading_for(model: str | None, run: "OrchestrationRun"):
-    """While a model step builds its prompt: a saved output inline up to its model's read share (D339 P4)."""
+async def _reading_for(model: str | None, run: "OrchestrationRun"):
+    """While a model step builds its prompt: a saved output inline up to its model's read share (D339 P4), its window
+    as the host names it (F1591). Entered as `with await _reading_for(...)`."""
     from core.config import load_settings
-    from core.context_budget import budget
+    from core.context_budget import step_budget
     from core.step_refs import reading
 
     settings = load_settings()
     chosen = model or run.shared_state.get("_model_override") or settings.get("model") or ""
-    return reading(budget(str(chosen), settings).read_cap)
+    return reading((await step_budget(str(chosen), settings)).read_cap)
 
 
 async def on_model_or_fallback(call, model: str, fallback: str | None, used: list) -> str:
@@ -337,7 +338,7 @@ class AgentStepExecutor:
                 yield ev
             return
 
-        with _reading_for(step.model or (target_agent or {}).get("model"), run):
+        with await _reading_for(step.model or (target_agent or {}).get("model"), run):
             prompt, system_prompt_extra, system_prompt_prefix, mentions = await build_step_prompt(
                 step, run, engine, transition
             )
@@ -1573,7 +1574,7 @@ class EvaluatorStepExecutor:
             return
 
         variables = getattr(engine, "global_variables", None) or {}
-        with _reading_for(step.model, run):
+        with await _reading_for(step.model, run):
             instructions = _fill_task_template(step.evaluator_prompt or "", run.shared_state, variables,
                                                unwritten_in_words=True)
             descriptions = {label: _fill_task_template(text, run.shared_state, variables, unwritten_in_words=True)
@@ -3379,7 +3380,7 @@ class LLMStepExecutor:
             transition = TransitionContext(origin_type="entry", execution_number=1)
         from . import output_fields as _answer
 
-        with _reading_for(step.model, run):
+        with await _reading_for(step.model, run):
             prompt, system_prompt_extra, system_prompt_prefix, mentions = await build_step_prompt(
                 step, run, engine, transition
             )

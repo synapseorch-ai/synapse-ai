@@ -401,12 +401,15 @@ def _strength(e: ModelEntry | None) -> tuple:
     return (bool(e and e.reasoning), (e.price_out or 0) if e else 0)
 
 
-def stronger_than(current: str, needs: str, *, has_tools: bool, menu: list[ModelEntry]) -> Picked | None:
+def stronger_than(current: str, needs: str, *, has_tools: bool, menu: list[ModelEntry],
+                  long_inputs: bool = False) -> Picked | None:
     """The next real step up from `current`, with its price, for Synapse AI to offer (F1018). Below the ceiling, the
     strongest within it; only from a model at or above the ceiling, the strongest above it (SAI2's probe: from Nova
-    Pro, Sonnet, not Opus). Never an unpriced one: an offer says what it costs. None when nothing is stronger."""
+    Pro, Sonnet, not Opus). Never an unpriced one: an offer says what it costs. None when nothing is stronger.
+    `long_inputs`: the job reads long inputs (Synapse AI itself; an agent planned for them), so a model known to hold
+    less than `LONG_WINDOW` is no step up (F1591), as `pick` passes it over."""
     now = next((e for e in menu if e.id == current), None)
-    priced = [e for e in menu if e.source not in ("cli", "local") and _fits(e, needs, has_tools)
+    priced = [e for e in menu if e.source not in ("cli", "local") and _fits(e, needs, has_tools, long_inputs)
               and e.price_out is not None and e.id != current and _strength(e) > _strength(now)]
     at_ceiling = now is not None and (now.price_out or 0) >= AUTO_PICK_CEILING_USD_PER_MTOK_OUT
     within = [e for e in priced if e.price_out <= AUTO_PICK_CEILING_USD_PER_MTOK_OUT]

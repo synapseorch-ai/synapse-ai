@@ -1353,9 +1353,10 @@ async def run_agent_step(
     step_model = model_override.strip() if (model_override and model_override.strip().lower() not in ("", "default")) else None
     current_model = step_model or agent_model or current_settings.get("model", "mistral")
     # The step's context budget, from its model's window (D339 P1): where it compacts, what one tool result may
-    # hold before it is vaulted, what one vault read answers, and the prompt's last-resort cut.
-    from core.context_budget import budget as _context_budget
-    _budget = _context_budget(current_model, current_settings)
+    # hold before it is vaulted, what one vault read answers, and the prompt's last-resort cut. The window is the
+    # host's for its own ids (F1591: cloud's `synapse.mistral-large` is a 32K model the table reads as 128K).
+    from core.context_budget import step_budget as _step_budget
+    _budget = await _step_budget(current_model, current_settings)
     # Reasoning effort follows the same precedence as the model: the agent's own
     # setting, then the workspace default. It is deliberately not a per-step
     # override — a step picks a *model*, and how hard that model thinks is a

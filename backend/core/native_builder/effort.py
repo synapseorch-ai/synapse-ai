@@ -108,7 +108,8 @@ async def _stronger(current: str | None) -> tuple[Any, Any] | None:
     menu = await MM.menu()
     if not menu or not current:
         return None
-    picked = MM.stronger_than(current, "simple", has_tools=True, menu=menu)
+    # Synapse AI's own model: its planner reads a long prompt, so never one too small for it (F1591).
+    picked = MM.stronger_than(current, "simple", has_tools=True, menu=menu, long_inputs=True)
     entry = next((e for e in menu if picked is not None and e.id == picked.id), None)
     if entry is None or not entry.can_pay:
         return None

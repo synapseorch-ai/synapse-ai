@@ -15,7 +15,8 @@ Now the budget is a share of the model's own input window (`auto_compact_window_
 * **cut** the prompt (the engine's last-resort trim) at 90% of the window.
 
 A model whose window is not known (`core.providers.window_tokens` says None), or a share of 0, keeps the
-workspace's two fixed limits, as before.
+workspace's two fixed limits, as before. A step reads its model's window as the host names it (`step_budget`, F1591):
+a host's id can hide the model, as cloud's `synapse.mistral-large` is Bedrock's 32K model, not Mistral's 128K one.
 """
 from __future__ import annotations
 
@@ -62,15 +63,16 @@ def _int(value, default: int) -> int:
         return default
 
 
-def budget(model: str, settings: dict, *, output_tokens: int | None = None) -> Budget:
-    """The budget an agent step on `model` works within, under this workspace's `settings`."""
+def budget(model: str, settings: dict, *, output_tokens: int | None = None, window: int | None = None) -> Budget:
+    """The budget an agent step on `model` works within, under this workspace's `settings`: from `window` when the
+    caller knows it (`step_budget`), else from the table's reading of `model`."""
     from core.llm_providers import DEFAULT_MAX_OUTPUT_TOKENS
     from core.providers import window_tokens
 
     fixed_compact = _int(settings.get("auto_compact_threshold"), 80_000)
     fixed_spill = _int(settings.get("vault_threshold"), 100_000)
     pct = max(0, min(90, _int(settings.get("auto_compact_window_pct", DEFAULT_WINDOW_PCT), DEFAULT_WINDOW_PCT)))
-    window = window_tokens(model) if pct else None
+    window = (window or window_tokens(model)) if pct else None
     if not window:
         return Budget(window=None, compact_at=fixed_compact, spill_at=fixed_spill,
                       read_cap=max(READ_MIN, min(READ_MAX, fixed_spill // 2)), prompt_max=PROMPT_MAX_FIXED,
@@ -88,3 +90,10 @@ def budget(model: str, settings: dict, *, output_tokens: int | None = None) -> B
         tidy_at=max(COMPACT_MIN // 2, int(chars * TIDY_SHARE)),
         source="window",
     )
+
+
+async def step_budget(model: str, settings: dict, *, output_tokens: int | None = None) -> Budget:
+    """`budget` for a step on `model`, its window as the host names it (`core.providers.windows.window_of`, F1591)."""
+    from core.providers.windows import window_of
+
+    return budget(model, settings, output_tokens=output_tokens, window=await window_of(model))

@@ -36,14 +36,17 @@ TRIED = "That turn was already tried again on a stronger model."
 NOTHING_STRONGER = "There's no stronger model this workspace can use for that now."
 
 
-async def offer(current: str | None, *, has_tools: bool, vision: bool = False, retry_of: str) -> dict | None:
-    """The offer for a failed turn on `current`, or None when nothing stronger fits and can be paid for."""
+async def offer(current: str | None, *, has_tools: bool, vision: bool = False, retry_of: str,
+                long_inputs: bool = False) -> dict | None:
+    """The offer for a failed turn on `current`, or None when nothing stronger fits and can be paid for. A Synapse AI
+    turn passes `long_inputs`: its planner reads a long prompt, so a model too small for it is never offered (F1591)."""
     from core.native_builder import models_menu as MM
 
     menu = await MM.menu()
     if not menu or not current:
         return None
-    picked = MM.stronger_than(current, "vision" if vision else "simple", has_tools=has_tools, menu=menu)
+    picked = MM.stronger_than(current, "vision" if vision else "simple", has_tools=has_tools, menu=menu,
+                              long_inputs=long_inputs)
     if picked is None:
         return None
     name = next((e.name for e in menu if e.id == picked.id), picked.id)
@@ -190,7 +193,7 @@ async def panel_offer(run_id: str) -> dict | None:
     if failed is None:
         return None
     step, current = failed
-    return await offer(current, has_tools=step.type.value == "agent", retry_of=run_id)
+    return await offer(current, has_tools=step.type.value == "agent", retry_of=run_id, long_inputs=True)
 
 
 async def _why_not(run, session_id: str | None = None) -> str | None:
@@ -259,7 +262,7 @@ async def panel_retry(retry_of: str, session_id: str) -> dict | str:
         if failed is None:
             return NOT_THIS_TURN
         step, current = failed
-        made = await offer(current, has_tools=step.type.value == "agent", retry_of=retry_of)
+        made = await offer(current, has_tools=step.type.value == "agent", retry_of=retry_of, long_inputs=True)
         if made is None:
             return NOTHING_STRONGER
         run.shared_state[PRESSED] = True

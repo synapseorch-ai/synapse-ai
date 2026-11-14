@@ -244,7 +244,7 @@ async def pick_models(plan: O.Plan, stronger: list[str]) -> tuple[dict[str, O.Mo
         if isinstance(got, MM.NoModel):
             issues.append(f"{a.name}: {got.issue}")
             continue
-        up = MM.stronger_than(got.id, a.needs, has_tools=has_tools, menu=menu)
+        up = MM.stronger_than(got.id, a.needs, has_tools=has_tools, menu=menu, long_inputs=a.long_inputs)
         if up and a.name in stronger:
             picks[a.name] = O.ModelPick(model=up.id, name=names.get(up.id, up.id),
                                         reason=f"the stronger model you chose, {up.reason}")
