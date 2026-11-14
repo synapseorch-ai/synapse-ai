@@ -123,14 +123,14 @@ _BUDGET_CLAUDE = ("claude-3-7", "claude-sonnet-4", "claude-opus-4", "claude-haik
 #: deprecated. Matched before `_BUDGET_CLAUDE`, whose `claude-opus-4` would
 #: otherwise claim `claude-opus-4-8`. From the claude-api reference, 2026-09-17.
 _ADAPTIVE_CLAUDE = (
-    "claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-mythos-5",
+    "claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-mythos-5", "claude-haiku-5",
     "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6",
 )
 
 #: Of those, the ones that think when `thinking` is omitted — so "off" cannot be
 #: honoured by sending nothing, and the reference advises against disabling it
 #: on Opus 5 (tool calls written as text, leaked tags). "Off" runs at low.
-_THINKS_BY_DEFAULT = ("claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-mythos-5")
+_THINKS_BY_DEFAULT = ("claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-mythos-5", "claude-haiku-5")
 
 
 def _gemini_3_pro(name: str) -> bool:
@@ -193,7 +193,9 @@ _READ_ONLY_NATIVE = ("synapse.", "oaic.", "locv1.")
 LEVELS = "levels"
 GRADED = "graded"
 SWITCH = "switch"
-_LISTED_KINDS = (GRADED, SWITCH)
+#: A host may also list `LEVELS` (F1594): a gateway model that thinks only when asked, so off is off and low to high
+#: are each sent (cloud's Claude Opus 4.6, adaptive on Bedrock).
+_LISTED_KINDS = (GRADED, SWITCH, LEVELS)
 
 #: Hosted APIs (PROV1, D245) serve many families, and each family is asked to
 #: think its own way — sometimes differently at its maker than at a host — so
