@@ -91,6 +91,39 @@ export function modelOptions(
     });
 }
 
+/** What `/api/models` says of each model's window (F1592): a known one's tokens, and the least Synapse AI runs on. */
+export interface ModelWindows {
+    windows?: Record<string, number>;
+    synapse_ai_min_window?: number;
+}
+
+/** Where a picker of Synapse AI's model shows a remembered model too small for it, so it never reads as missing. */
+export const TOO_SMALL_FOR_SYNAPSE_AI = "Too small for Synapse AI";
+
+/** A window as it is said: 32,768 → "32K", 128,000 → "128K" (a round thousand first: it is also 125 × 1024). */
+export function tokensShort(tokens: number): string {
+    if (tokens % 1000 === 0) return `${tokens / 1000}K`;
+    return `${tokens % 1024 === 0 ? tokens / 1024 : Math.round(tokens / 1000)}K`;
+}
+
+/**
+ * Any picker of Synapse AI's model (F1592: the panel's, Settings → Models' Builder model, onboarding's Synapse AI's
+ * model): `options` but a model known to read less than Synapse AI needs (128K, as cloud's), which would be refused at
+ * its first step. A model whose window is not known stays, as the engine never rules one out. A remembered pick that is
+ * too small is kept visible under its own group, saying what it reads and what Synapse AI needs, as `withUnreachable`
+ * keeps one whose key went.
+ */
+export function synapseAIOnly(options: ComboboxOption[], said: ModelWindows, current?: string): ComboboxOption[] {
+    const { windows = {}, synapse_ai_min_window: floor } = said;
+    const small = (id: string) => floor !== undefined && windows[id] !== undefined && windows[id] < floor;
+    const fitting = options.filter((o) => !small(o.value));
+    if (!current || floor === undefined || !small(current)) return fitting;
+    const label = options.find((o) => o.value === current)?.label ?? current;
+    return [{ value: current, label, group: TOO_SMALL_FOR_SYNAPSE_AI,
+              hint: `reads up to ${tokensShort(windows[current])} tokens; Synapse AI needs ${tokensShort(floor)}` },
+            ...fitting];
+}
+
 /**
  * A model the workspace is set to but cannot currently reach — its provider has
  * no key, or it is gone from the provider's list.

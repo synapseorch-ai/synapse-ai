@@ -2,7 +2,7 @@ import { ExternalLink, RefreshCw } from 'lucide-react';
 import { Button, Checkbox, Combobox, Field, Input, Section, Textarea } from '@/components/ui';
 import { ProviderCard } from '@/components/providers/ProviderCard';
 import { FORM } from './form';
-import { modelOptions as buildModelOptions, providerLabel, withUnreachable } from '@/lib/models';
+import { modelOptions as buildModelOptions, providerLabel, synapseAIOnly, withUnreachable, type ModelWindows } from '@/lib/models';
 
 /** `builder_model` is empty when it should follow `model`; a Combobox needs a value. */
 const DEFAULT_SENTINEL = '__default__';
@@ -25,6 +25,8 @@ interface ModelsTabProps {
     reasoningEffort: string; setReasoningEffort: (v: string) => void;
     /** Served by the models endpoint: models with no Off, and where Off is the lowest level. */
     reasoningWithoutOff: string[]; reasoningOffMinimum: string[];
+    /** Each model's known window and Synapse AI's floors (F1592), for the Builder model picker. */
+    modelWindows: ModelWindows;
     awsRegion: string; setAwsRegion: (v: string) => void;
     loadingModels: boolean;
     /** Reads every provider's models again (the Providers section's Refresh). */
@@ -80,7 +82,7 @@ export const ModelsTab = ({
     builderModel, setBuilderModel,
     builderQuickModel, setBuilderQuickModel,
     maxOutputTokens, setMaxOutputTokens,
-    reasoningEffort, setReasoningEffort, reasoningWithoutOff, reasoningOffMinimum,
+    reasoningEffort, setReasoningEffort, reasoningWithoutOff, reasoningOffMinimum, modelWindows,
     awsRegion, setAwsRegion, loadingModels, onRefresh,
     onSave, isSaving, mode, setMode, localModels, cloudModels, filteredModels,
     openaiCompatibleBaseUrl, setOpenaiCompatibleBaseUrl,
@@ -120,7 +122,8 @@ export const ModelsTab = ({
     // needs a row of its own — a blank control reads as nothing being set.
     const builderOptions = [
         { value: DEFAULT_SENTINEL, label: `Same as default model${selectedModel ? ` (${selectedModel})` : ''}` },
-        ...withUnreachable(buildModelOptions(providers), builderModel),
+        // Synapse AI's model: never one too small for it (F1592: under 128K, as cloud's).
+        ...withUnreachable(synapseAIOnly(buildModelOptions(providers), modelWindows, builderModel || undefined), builderModel),
     ];
     const quickOptions = [
         { value: DEFAULT_SENTINEL, label: `Same as builder model${(builderModel || selectedModel) ? ` (${builderModel || selectedModel})` : ''}` },

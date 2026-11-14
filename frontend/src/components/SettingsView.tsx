@@ -719,6 +719,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         maxOutputTokens={maxOutputTokens} setMaxOutputTokens={setMaxOutputTokens}
                         reasoningEffort={reasoningEffort} setReasoningEffort={setReasoningEffort}
                         reasoningWithoutOff={rModels.reasoning_without_off || []}
+                        modelWindows={rModels}
                         reasoningOffMinimum={rModels.reasoning_off_minimum || []}
                         localModels={localModels} cloudModels={cloudModels}
                         filteredModels={filteredModels}

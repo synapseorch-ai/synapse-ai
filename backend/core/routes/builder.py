@@ -227,6 +227,20 @@ async def _selected_model(request_model: str | None) -> str | None:
     return load_settings().get("builder_model") or None
 
 
+async def _too_small(request_model: str | None) -> str | None:
+    """Why Synapse AI cannot run on the model this turn would take, or None (F1592): the pick, else the Builder model
+    setting, else the everyday model the run falls back to, each named as what chose it."""
+    from core.config import load_settings
+    from core.native_builder.models_menu import synapse_ai_refusal
+
+    settings = load_settings()
+    if request_model:
+        return await synapse_ai_refusal(request_model, source="pick")
+    if settings.get("builder_model"):
+        return await synapse_ai_refusal(settings["builder_model"], source="builder_model")
+    return await synapse_ai_refusal(settings.get("model"), source="everyday")
+
+
 #: Marks a conversation held by the builder panel. The chat page's builder-typed
 #: agent starts runs of the same orchestration under its own chat session id, so
 #: without this the panel could reopen a chat conversation as its own (F214).
@@ -905,6 +919,10 @@ async def builder_chat(request: BuilderChatRequest, http_request: Request):
             return _one({"type": "orchestration_error", "error": pressed})
         request = request.model_copy(update={"model": pressed["model"], "message": pressed["message"],
                                              "images": request.images or pressed["images"]})
+    # A model known too small for Synapse AI's planner is refused here, before any run or call (F1592; F1586 in cloud),
+    # saying where to change what chose it. A press's model is the server's own pick, which never is one (F1591).
+    if too_small := await _too_small(request.model):
+        return _one({"type": "builder_notice", "reason": "model_window", "message": too_small, "final": True})
     prepared = await prepare_builder_run(
         request, http_request.app.state.server_module, panel=True, retried=retried, pressed=pressed)
     if prepared is None:

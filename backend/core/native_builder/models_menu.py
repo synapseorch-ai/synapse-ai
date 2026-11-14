@@ -164,6 +164,71 @@ async def menu() -> list[ModelEntry]:
 #: The input window an agent that reads long inputs needs, in tokens (F1251): a model known to have less is skipped.
 LONG_WINDOW = 128_000
 
+
+# ── Synapse AI's own model (F1592) ──────────────────────────────────────────────────────────────────────────────────
+
+#: The least window Synapse AI runs on (F1592; Naveen 11-14: "128K, same as cloud", F1586): the long-input floor. Its
+#: planner's first call alone is about 30,000 tokens, and a build reads more as it goes. A test measures that call as
+#: the engine sends it and holds it under this (`test_self_hosted_synapse_ai_runs_only_on_a_model_that_can_hold_it`).
+SYNAPSE_AI_MIN_WINDOW = LONG_WINDOW
+#: A local model that reads that much, named where Synapse AI refuses a smaller one and in the first-run step's Ollama
+#: tip (Naveen 11-14: "suggest a 128K local model"): Llama 3.1 8B reads 131,072 tokens.
+SYNAPSE_AI_LOCAL_MODEL = "llama3.1"
+
+#: Where to change Synapse AI's model, by what chose it: a pick in its model menu, the Builder model setting, or the
+#: everyday model a turn takes when no Builder model is set. Cloud's words are the same (`model_windows.WHERE`).
+SYNAPSE_AI_WHERE = {
+    "pick": "Pick another model in Synapse AI's model menu, or leave it on Default.",
+    "builder_model": "Change Synapse AI's model in Settings → Models (Builder model), or clear it to use the default.",
+    "everyday": "Synapse AI is on your Default model because no Builder model is set: set a Builder model in "
+                "Settings → Models, or choose a larger Default model.",
+}
+
+
+def tokens_short(tokens: int) -> str:
+    """32,768 → "32K", 8,000 → "8K", 128,000 → "128K": a round thousand first (128,000 is also 125 × 1024)."""
+    if tokens % 1000 == 0:
+        return f"{tokens // 1000}K"
+    return f"{tokens // 1024 if tokens % 1024 == 0 else round(tokens / 1000)}K"
+
+
+async def synapse_ai_window(model: str | None) -> int | None:
+    """`model`'s window as Synapse AI's check reads it: an Ollama model's is what Ollama says it reads (`/api/show`,
+    F1569), else the engine's (`windows.window_of`, a host's word first). None when not known."""
+    from core.providers.windows import window_of
+
+    model = (model or "").strip()
+    if not model:
+        return None
+    if model.startswith("ollama."):
+        import httpx
+
+        from core import llm_providers as L
+        from core.config import load_settings
+
+        try:
+            async with httpx.AsyncClient() as client:
+                longest, _ = await L._ollama_model_context(client, L._ollama_base_url(load_settings()),
+                                                           model[len("ollama."):])
+        except Exception:  # noqa: BLE001 — Ollama not reached: not known, so never refused for it
+            longest = None
+        if longest:
+            return longest
+    return await window_of(model)
+
+
+async def synapse_ai_refusal(model: str | None, *, source: str, floor: int = SYNAPSE_AI_MIN_WINDOW,
+                             name: str | None = None) -> str | None:
+    """Why Synapse AI cannot run on `model`, in words, or None: only a model known to read less than `floor`.
+    `source` (a key of `SYNAPSE_AI_WHERE`) says what chose it; `name` is how the person knows it (else its id)."""
+    tokens = await synapse_ai_window(model)
+    if tokens is None or tokens >= floor:
+        return None
+    return (f"{name or model} reads up to {tokens_short(tokens)} tokens at once, and Synapse AI needs a model that "
+            f"reads at least {tokens_short(floor)} to read what it builds with, so it would be refused at its first "
+            f"step. {SYNAPSE_AI_WHERE[source]} With Ollama, {SYNAPSE_AI_LOCAL_MODEL} reads "
+            f"{tokens_short(floor)}: ollama pull {SYNAPSE_AI_LOCAL_MODEL}.")
+
 #: The pools a pick looks in, in order (Naveen, 10-30): the workspace's own keys, then the platform's models.
 POOLS = (("key", "from your own keys"), ("managed", "from the platform's models"))
 

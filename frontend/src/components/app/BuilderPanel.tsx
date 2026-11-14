@@ -53,7 +53,7 @@ import { SUGGESTED_LABEL } from '@/components/tabs';
 import { Button, Combobox, Hint, Mark, Markdown, showWhileScrolling } from '@/components/ui';
 import { effortAnswer, isPlanReview, shownInTrail, type BuilderMessage, type BuiltPlace } from '@/lib/builderEvents';
 import { cn, focusRing } from '@/lib/cn';
-import { modelOptions, withUnreachable } from '@/lib/models';
+import { modelOptions, synapseAIOnly, withUnreachable } from '@/lib/models';
 
 /** Empty `sessionModel` means "follow the workspace builder model". */
 const DEFAULT_SENTINEL = '__default__';
@@ -182,7 +182,8 @@ export function BuilderConversation({
     const { state, streaming, send, stop, ready, watchBuilt } = chat ?? builder;
     const openChat = onOpenChat ?? ((id: string) => builder.showChat(id));
     const {
-        canAttach, providers, builderModel, sessionModel, setSessionModel, saveBuilderModel, draft, draftTaken, takeDraft,
+        canAttach, providers, modelWindows, builderModel, sessionModel, setSessionModel, saveBuilderModel, draft,
+        draftTaken, takeDraft,
     } = builder;
     const entered = active;
     // The panel's hand-overs are the panel's: a tab's composer starts from its own words.
@@ -279,10 +280,12 @@ export function BuilderConversation({
 
     // Grouped by provider rather than one flat list of ~66, and a remembered
     // pick whose provider has since lost its key shows under "Not reachable"
-    // instead of leaving the control looking empty.
+    // instead of leaving the control looking empty. Never a model too small for
+    // Synapse AI (F1592: under 128K, as cloud's).
     const modelChoices = [
         { value: DEFAULT_SENTINEL, label: `Default (${builderModel || 'workspace model'})` },
-        ...withUnreachable(modelOptions(providers), sessionModel || undefined),
+        ...withUnreachable(synapseAIOnly(modelOptions(providers), modelWindows, sessionModel || undefined),
+                           sessionModel || undefined),
     ];
 
     // Consecutive activity collapses into one block; everything else is its own.
