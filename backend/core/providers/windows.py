@@ -35,6 +35,9 @@ WINDOWS: tuple[tuple[str, int], ...] = (
     # OpenAI (developers.openai.com model pages, 10-2026): gpt-5's input is 272K of its 400K; gpt-oss shares its
     # 131,072 between input and output, which the budget's output reserve covers.
     ("gpt-5", 272_000),
+    # GPT-6 and 6.1 hold about 1M, but Bedrock bills an input over 272,000 tokens at twice the input side and 1.5x
+    # output for the whole request (the GPT-6 cards, 11-2026): a step's budget keeps under the dearer tier (F1593).
+    ("gpt-6", 272_000),
     ("gpt-4.1", 1_047_576),
     ("gpt-4o", 128_000),
     ("o3", 200_000),
