@@ -68,16 +68,28 @@ export interface ProviderModels {
     available: boolean;
     models?: string[];
     embedding_models?: string[];
+    /** A model CLI's own word on its sign-in (CLIM1): false signed out, null when it cannot be told without a model call. */
+    cli?: { signed_in?: boolean | null } | null;
+}
+
+/**
+ * Whether a provider's models can be offered: it is reachable, and it is not a model CLI whose own command says it is
+ * signed out (F1603: none of a signed-out CLI's models runs). `/api/models` calls an installed CLI available either way,
+ * as the engine answers "sign in to Claude Code" from it (F1418); one that cannot be told is offered (CLIM1).
+ */
+function offered(info: ProviderModels): boolean {
+    return info.available && info.cli?.signed_in !== false;
 }
 
 /**
  * Grouped by provider, in the order the backend lists them, skipping providers
- * with no key and providers with nothing to offer. Each option wears its
- * provider's mark, and its group's name is searched with it, so "anthropic"
- * finds Claude's models in every picker built here (PICK1, F1482).
+ * with no key, a model CLI that is signed out (F1603), and providers with nothing
+ * to offer. Each option wears its provider's mark, and its group's name is
+ * searched with it, so "anthropic" finds Claude's models in every picker built
+ * here (F1482).
  *
- * `Combobox` does its own filtering and does not drop the selected value out
- * from under itself, so nothing here has to guard the current selection.
+ * `Combobox` shows its placeholder for a value outside its options, so a picker of
+ * a saved model keeps that model with `withUnreachable`.
  */
 export function modelOptions(
     providers: Record<string, ProviderModels>,
@@ -85,10 +97,20 @@ export function modelOptions(
 ): ComboboxOption[] {
     return Object.entries(providers).flatMap(([key, info]) => {
         const list = info[kind];
-        if (!info.available || !list?.length) return [];
+        if (!offered(info) || !list?.length) return [];
         const mark = providerMark(key);
         return list.map((model) => ({ value: model, label: model, group: providerLabel(key), mark }));
     });
+}
+
+/** The same models as `modelOptions`, as a plain list of ids: for a picker that takes one (a workflow step's, Data Lab's). */
+export function offeredModels(providers: Record<string, ProviderModels>): string[] {
+    return Object.values(providers).flatMap((info) => (offered(info) ? info.models ?? [] : []));
+}
+
+/** A plain list of model ids that keeps a saved model it no longer has, last, so the picker never reads it as blank. */
+export function withSaved(models: string[], saved: string | null | undefined): string[] {
+    return !saved || models.includes(saved) ? models : [...models, saved];
 }
 
 /** What `/api/models` says of each model's window (F1592): a known one's tokens, and the least Synapse AI runs on. */

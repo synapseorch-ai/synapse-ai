@@ -29,7 +29,7 @@ import { knowledgeApi, useKnowledgeEnabled, type KnowledgeBase } from '@/lib/kno
 import { cn } from '@/lib/cn';
 import { ifMatch, problemLabel, saveProblem, type SaveProblem } from '@/components/orchestration/saveConflict';
 import { SaveConflictDialog } from '@/components/orchestration/workbench/SaveConflictDialog';
-import { modelOptions } from '@/lib/models';
+import { modelOptions, withUnreachable } from '@/lib/models';
 
 /** The longest name the server accepts (core/models.py `AGENT_NAME_MAX`, F217). */
 const AGENT_NAME_MAX = 100;
@@ -791,8 +791,9 @@ export const AgentsTab = ({
                                                         searchPlaceholder="Search models or providers…"
                                                         options={[
                                                             { value: '__default__', label: `Use default (${defaultModel || 'not set'})` },
-                                                            // The one model list, with each provider's mark (PICK1, F1482).
-                                                            ...modelOptions(providers ?? {}),
+                                                            // The one model list, with each provider's mark (F1482),
+                                                            // and the agent's own model when it is no longer offered (F1603).
+                                                            ...withUnreachable(modelOptions(providers ?? {}), draftAgent.model || undefined),
                                                         ]}
                                                     />
                                                     <p className="mt-1 text-xs text-text-faint">Override the default model for this agent. Leave empty to use the system default.</p>

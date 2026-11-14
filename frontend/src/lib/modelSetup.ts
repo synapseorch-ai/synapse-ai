@@ -74,10 +74,12 @@ export function nothingYet(providers: Record<string, ProviderInfo>, secrets: Rec
     return foundHere(providers).length === 0 && !KEY_NAMES.some(n => secrets[n]?.set);
 }
 
-/** The models the two pickers offer: every reachable provider's, leaving out a signed-out CLI's (Naveen, 2026-10-20). */
+/**
+ * The models the two pickers offer: every reachable provider's, leaving out a signed-out CLI's,
+ * which is now every picker's rule (`modelOptions`, F1603).
+ */
 export function pickable(providers: Record<string, ProviderInfo>): ComboboxOption[] {
-    const usable = Object.fromEntries(Object.entries(providers).filter(([, info]) => info.cli?.signed_in !== false));
-    return modelOptions(usable);
+    return modelOptions(providers);
 }
 
 /** Where the everyday picker starts: today's model when it can be picked, else the first that can. */

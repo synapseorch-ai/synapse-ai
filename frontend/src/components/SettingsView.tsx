@@ -17,7 +17,7 @@ import { isSettingsEntry, navEntryFor } from '@/lib/nav';
 import { AUTH_CHANGED_EVENT, readAuthStatus } from '@/lib/auth';
 import { KNOWLEDGE_SWITCHED_EVENT, type RerankListing } from '@/lib/knowledge';
 import { BOARDS_SWITCHED_EVENT } from '@/components/boards/board';
-import { HOSTED_KEY_NAMES } from '@/lib/models';
+import { HOSTED_KEY_NAMES, offeredModels } from '@/lib/models';
 import { GeneralTab, type BoardsSettings } from './settings/GeneralTab';
 import type { ToolPolicy } from './settings/ToolPolicy';
 import { PersonalDetailsTab } from './settings/PersonalDetailsTab';
@@ -696,7 +696,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         dlTopic={dlTopic} setDlTopic={setDlTopic}
                         dlCount={dlCount} setDlCount={setDlCount}
                         dlModel={dlModel} setDlModel={setDlModel}
-                        modelOptions={Object.values(providers).flatMap(p => (p.available ? p.models : []))}
+                        modelOptions={offeredModels(providers)}
                         defaultModel={selectedModel}
                         dlSystemPrompt={dlSystemPrompt} setDlSystemPrompt={setDlSystemPrompt}
                         dlEdgeCases={dlEdgeCases} setDlEdgeCases={setDlEdgeCases}
