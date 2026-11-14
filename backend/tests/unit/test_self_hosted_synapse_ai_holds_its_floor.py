@@ -5,12 +5,15 @@ out of cloud's pickers. Self-hosted had the same door open: its route ran any mo
 its three pickers (the panel's, Settings → Models' Builder model, onboarding's Synapse AI's model) offered every model,
 so a model that cannot read the planner's prompt failed at its first step.
 
-Self-hosted's floor is Naveen's (11-14, in-tab: "refuse only sure failures"): 32,768 tokens, the least that holds the
-planner's first call (about 27,500 tokens, SHN1 11-13; the api_app test measures it) with room for its answer. A model
-from 32K up to the engine's long-input floor (128K) runs and is marked "may run out of room on a long build", since local
-models of 32K-40K reach the planner today (SHN1's qwen3 8B); cloud keeps 128K. A model whose window is not known is never
-refused for it (a CLI, an OpenAI-compatible or local endpoint, Hugging Face, an Ollama that does not say), as the
-engine's own pick never rules one out. An Ollama model's window is what Ollama says it reads (`/api/show`, F1569).
+Self-hosted's floor is Naveen's (11-14, in-tab, his second answer: "lets not have 32k floor actually... lets keep the
+bigger model", then "128K, same as cloud"): the engine's long-input floor, `LONG_WINDOW`, 128K, as cloud's (F1586). The
+planner's first call is about 30,000 tokens (the api_app test measures it), but a build reads more as it goes. Local
+models of 32K-40K (SHN1's qwen3 8B, Mistral 7B) are refused for Synapse AI and still run agents and workflows. Since our
+own first-run step told people to pull qwen3, it now names a local model that reads 128K, `ollama pull llama3.1` (8B,
+131,072 tokens; Naveen: "128K + suggest a 128K local model"), and so does the refusal, with where to change the model.
+A model whose window is not known is never refused for it (a CLI, an OpenAI-compatible or local endpoint, Hugging Face,
+an Ollama that does not say), as the engine's own pick never rules one out. An Ollama model's window is what Ollama says
+it reads (`/api/show`, F1569).
 """
 from __future__ import annotations
 
@@ -25,7 +28,8 @@ from core import llm_providers as L
 from core.native_builder import models_menu as MM
 
 SMALL = "meta.llama3-8b-instruct-v1:0"  # the table reads Llama 3 8B as 8,000 tokens
-AT_THE_FLOOR = "mistral.mistral-7b-instruct-v0:2"  # 32,768: exactly the floor, so it runs
+MISTRAL_7B = "mistral.mistral-7b-instruct-v0:2"  # 32,768: refused now
+AT_THE_FLOOR = "meta.llama3-1-70b-instruct-v1:0"  # Llama 3.1 70B, 128,000: exactly the floor, so it runs
 LARGE = "claude-sonnet-4-6"
 
 
@@ -42,14 +46,19 @@ def ollama(monkeypatch):
 
 
 class TestTheFloor:
-    def test_it_is_naveens_32k_and_under_the_engines_long_input_floor(self):
-        assert MM.SYNAPSE_AI_MIN_WINDOW == 32_768 < MM.LONG_WINDOW
+    def test_it_is_the_engines_long_input_floor_as_clouds(self):
+        assert MM.SYNAPSE_AI_MIN_WINDOW == MM.LONG_WINDOW == 128_000
 
-    async def test_a_model_known_smaller_is_refused_in_words(self):
+    async def test_a_model_known_smaller_is_refused_in_words_that_say_what_to_do(self):
         said = await MM.synapse_ai_refusal(SMALL, source="pick")
         assert said is not None
-        assert SMALL in said and "8K" in said and "32K" in said, said
+        assert SMALL in said and "8K" in said and "128K" in said, said
         assert "Synapse AI's model menu" in said, "where to change a pick"
+        assert "ollama pull llama3.1" in said, "a local model that reads 128K, named"
+
+    async def test_a_32k_model_is_refused_now(self):
+        said = await MM.synapse_ai_refusal(MISTRAL_7B, source="pick")
+        assert said is not None and "32K" in said, said
 
     async def test_a_model_at_the_floor_or_over_runs(self):
         assert await MM.synapse_ai_refusal(AT_THE_FLOOR, source="pick") is None
@@ -87,10 +96,15 @@ class TestAnOllamaModelReadsWhatOllamaSays:
         said = await MM.synapse_ai_refusal("ollama.llama3", source="builder_model")
         assert said is not None and "8K" in said, said
 
-    async def test_one_that_holds_the_planner_runs(self, ollama):
-        ollama["qwen3:8b"] = 40_960  # SHN1's qwen3 8B: a local model that reaches the planner today
+    async def test_qwen3_8b_is_refused_now(self, ollama):
+        ollama["qwen3:8b"] = 40_960  # SHN1's qwen3 8B, which our first-run step suggested
         assert await MM.synapse_ai_window("ollama.qwen3:8b") == 40_960
-        assert await MM.synapse_ai_refusal("ollama.qwen3:8b", source="pick") is None
+        said = await MM.synapse_ai_refusal("ollama.qwen3:8b", source="pick")
+        assert said is not None and "40K" in said and "ollama pull llama3.1" in said, said
+
+    async def test_the_one_it_names_runs(self, ollama):
+        ollama["llama3.1:8b"] = 131_072
+        assert await MM.synapse_ai_refusal("ollama.llama3.1:8b", source="pick") is None
 
 
 # ── the pickers (the frontend's own TypeScript, run in node) ──────────────────────────────────────────────────────
@@ -137,25 +151,22 @@ def node(tmp_path_factory):
     return run
 
 
-#: What `/api/models` says (F1592): each known window, the floor and the engine's long-input floor.
+#: What `/api/models` says (F1592): each known window and the least Synapse AI runs on.
 WINDOWS = {"windows": {"llama3-8b": 8_000, "ollama.qwen3:8b": 40_960, "claude-sonnet-4-6": 1_000_000},
-           "synapse_ai_min_window": 32_768, "synapse_ai_long_window": 128_000}
+           "synapse_ai_min_window": 128_000}
 OPTIONS = [{"value": v, "label": v, "group": "G"} for v in ("claude-sonnet-4-6", "llama3-8b", "ollama.qwen3:8b",
                                                             "cli.claude")]
 
 
 class TestSynapseAIsPickersOfferWhatCanHoldIt:
-    def test_one_under_the_floor_is_left_out_and_one_short_of_long_input_is_marked(self, node):
+    def test_one_under_the_floor_is_left_out_and_the_rest_are_as_they_were(self, node):
         got = node(f"return M.synapseAIOnly({json.dumps(OPTIONS)}, {json.dumps(WINDOWS)});")
-        assert [o["value"] for o in got] == ["claude-sonnet-4-6", "ollama.qwen3:8b", "cli.claude"]
-        marked = {o["value"]: o.get("hint") for o in got}
-        assert marked["ollama.qwen3:8b"] == "reads up to 40K tokens · may run out of room on a long build"
-        assert marked["claude-sonnet-4-6"] is None and marked["cli.claude"] is None, "known large, or not known"
+        assert got == [OPTIONS[0], OPTIONS[3]], "Llama 3 8B and qwen3 8B left out; a large one and an unknown kept"
 
-    def test_a_remembered_one_too_small_is_kept_visible_saying_why(self, node):
-        got = node(f"return M.synapseAIOnly({json.dumps(OPTIONS)}, {json.dumps(WINDOWS)}, 'llama3-8b');")
-        assert got[0] == {"value": "llama3-8b", "label": "llama3-8b", "group": "Too small for Synapse AI",
-                          "hint": "reads up to 8K tokens"}
+    def test_a_remembered_one_too_small_is_kept_visible_saying_what_it_needs(self, node):
+        got = node(f"return M.synapseAIOnly({json.dumps(OPTIONS)}, {json.dumps(WINDOWS)}, 'ollama.qwen3:8b');")
+        assert got[0] == {"value": "ollama.qwen3:8b", "label": "ollama.qwen3:8b", "group": "Too small for Synapse AI",
+                          "hint": "reads up to 40K tokens; Synapse AI needs 128K"}
 
     def test_with_no_windows_said_nothing_changes(self, node):
         assert node(f"return M.synapseAIOnly({json.dumps(OPTIONS)}, {{}});") == OPTIONS
@@ -169,6 +180,10 @@ class TestSynapseAIsPickersOfferWhatCanHoldIt:
         import re
 
         assert re.search(pattern, (SRC / path).read_text()), path
+
+    def test_the_first_run_steps_ollama_tip_names_a_model_that_reads_128k(self):
+        setup = (SRC / "components/onboarding/ModelSetup.tsx").read_text()
+        assert "ollama pull llama3.1" in setup and "ollama pull qwen3" not in setup
 
     def test_the_everyday_and_quick_step_pickers_still_list_every_model(self):
         setup = (SRC / "components/onboarding/ModelSetup.tsx").read_text()
