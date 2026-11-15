@@ -6173,6 +6173,113 @@ async def check_f1600card(browser) -> str:
             "arm; light and dark at 1440, and at 390")
 
 
+#: The import starter's line, and what the panel says when it is sent with nothing under it (F1607).
+F1607_LEAD = "Rebuild this OpenAI Agent Builder workflow here. Its export (Code → Agents SDK) is below:"
+F1607_NOTE = ("Paste the export under the line first: in OpenAI Agent Builder, open the workflow, choose Code → Agents "
+              "SDK and copy all of it.")
+#: The held note as the browser lays it out: whether all of it shows, what it says, and whether it is announced.
+F1607_NOTE_READ = r"""
+(el) => ({shown: el.clientWidth, needs: el.scrollWidth, text: (el.textContent || '').replace(/\s+/g, ' ').trim(),
+          status: !!el.closest('[role="status"]')})
+"""
+
+
+@check
+async def check_f1607note(browser) -> str:
+    """The import starter's line sent with nothing under it is held, and its note is read whole (F1607): it wraps
+    rather than being cut, reads at AA contrast for its size in light and dark, and is announced (role="status"); the
+    line stays in the composer, nothing is sent, and typing takes the note away. Light and dark at 1440, and at 390.
+    With SMOKE_SHOTS, the page and the panel are saved."""
+    shots = os.environ.get("SMOKE_SHOTS")
+    bad: list[str] = []
+    for scheme in ("light", "dark"):
+        for width in ((1440, 900), (390, 844)):
+            tag = f"{scheme} {width[0]}"
+            ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]}, color_scheme=scheme)
+            await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{scheme}')}}catch(e){{}}")
+            await ctx.add_init_script(TOURS_SEEN)
+            page = await ctx.new_page()
+            posts: list[str] = []
+            try:
+                await page.goto(f"{APP}/dashboard?build=agent-builder", wait_until="domcontentloaded")
+                panel = page.locator('[data-testid="assistant-panel"]')
+                await panel.wait_for(timeout=30_000)
+                box = panel.locator("textarea").first
+                await page.wait_for_function("([el, lead]) => el && el.value.trim() === lead",
+                                             arg=[await box.element_handle(), F1607_LEAD], timeout=15_000)
+                await asyncio.sleep(SETTLE / 2)
+                page.on("request", lambda r, posts=posts: posts.append(r.url) if r.method == "POST" else None)
+                await panel.get_by_role("button", name="Send", exact=True).click()
+                note = panel.get_by_text(F1607_NOTE[:38])
+                await note.first.wait_for(timeout=5_000)
+                await asyncio.sleep(0.6)
+                read = await note.first.evaluate(F1607_NOTE_READ)
+                if read["needs"] > read["shown"] + 1:
+                    bad.append(f"{tag}: the note is cut ({read['shown']}px shown of {read['needs']}px)")
+                if read["text"] != F1607_NOTE:
+                    bad.append(f"{tag}: the note says {read['text']!r}")
+                if not read["status"]:
+                    bad.append(f"{tag}: the note is not announced (no role=\"status\")")
+                faint = [r for r in await page.evaluate(CONTRAST) if r["txt"].startswith(F1607_NOTE[:20])]
+                if faint:
+                    bad.append(f"{tag}: the note reads at {faint[0]['ratio']}:1, under {faint[0]['need']}:1")
+                if (await box.input_value()).strip() != F1607_LEAD:
+                    bad.append(f"{tag}: the line did not stay in the composer")
+                if sent := [u for u in posts if "/api/" in u and any(w in u for w in ("builder", "assistant", "chat"))]:
+                    bad.append(f"{tag}: something was sent: {sent}")
+                if shots:
+                    await page.screenshot(path=os.path.join(shots, f"f1607note-{scheme}-{width[0]}.png"))
+                    await panel.screenshot(path=os.path.join(shots, f"f1607note-panel-{scheme}-{width[0]}.png"))
+                await box.press("End")
+                await box.type(" ")
+                await asyncio.sleep(0.4)
+                if await note.count() and await note.first.is_visible():
+                    bad.append(f"{tag}: typing did not take the note away")
+            finally:
+                await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("the bare import line is held, its note whole, announced and at AA in light and dark at 1440 and 390; "
+            "nothing sent, and typing takes it away")
+
+
+@check
+async def check_f1607shortnote(browser) -> str:
+    """A short note under the composer keeps today's look (F1607's wrapping is for the held import line only): Chat's
+    "Sent to the lead." after a message to a team at work, on one line, in the footer's faint 2xs, cut rather than
+    wrapped, and not announced as a status."""
+    history = {"turns": [], "pending_approval": None,
+               "running": {"turn_id": "t1", "message": "Run the Monday supplier review", "started_at": 0,
+                           "cursor": "t1-0"}}
+    ctx, page = await _chat_page(browser, "uismoke-f1607-short-note", history, extra_init=TEAM_ROUTES_STUB)
+    try:
+        await _stream_open(page, "events")
+        await _push(page, "events", _team_frames())
+        await page.get_by_role("region", name="Member: Supplier analyst", exact=True).wait_for(timeout=10_000)
+        await page.get_by_label(re.compile("^Message ")).last.fill("Keep the note short")
+        await page.get_by_role("button", name="Send to the lead").click()
+        said = "Sent to the lead. It reads it before its next step."
+        note = page.get_by_text(said, exact=True)
+        await note.first.wait_for(timeout=10_000)
+        look = await note.first.evaluate(
+            "el => ({cls: el.className, footer: el.parentElement.className, status: !!el.closest('[role=\"status\"]'),"
+            " high: el.getBoundingClientRect().height, line: parseFloat(getComputedStyle(el).lineHeight) || 16})")
+    finally:
+        await ctx.close()
+    bad = []
+    if not {"min-w-0", "truncate"} <= set(look["cls"].split()):
+        bad.append(f"its classes are {look['cls']!r}, not today's min-w-0 truncate")
+    if not {"text-2xs", "text-text-faint"} <= set(look["footer"].split()):
+        bad.append(f"its footer is {look['footer']!r}, not today's text-2xs text-text-faint")
+    if look["status"]:
+        bad.append("it is announced as a status")
+    if look["high"] > look["line"] * 1.5:
+        bad.append(f"it takes {look['high']}px, more than one line of {look['line']}px")
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "Chat's short note to a team at work keeps one faint 2xs line, cut not wrapped, not a status"
+
+
 @check
 async def check_builderalone(browser) -> str:
     """Each "Let … act without asking" press on one plan gets its own card, and the last one can be built (F1506).
