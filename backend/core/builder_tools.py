@@ -4918,6 +4918,10 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
     # And a field of a key: one the steps writing it never write is always missing, so a condition on it always takes
     # its documented default (F1549: every approval routed "no").
     issues += _fields_never_written(steps, agents)
+    # A Loop over a whole answer object, or a field of it that is no list, ran zero times and said Completed (F1613).
+    from core.orchestration.step_answers import loops_over_an_answer
+
+    issues += loops_over_an_answer(steps)
     # A model step's declared answer (F1553): fields the run can hold a model to, and only where they are read.
     issues += _answer_field_problems(steps, agents)
     # What a run makes (F249): a result_key no step writes is never the result.

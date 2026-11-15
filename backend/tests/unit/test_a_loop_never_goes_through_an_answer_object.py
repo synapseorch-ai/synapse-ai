@@ -176,3 +176,24 @@ class TestValidatingAWorkflow:
         orch = _workflow(_llm(None), "state.keyword_researcher",
                          state_schema={"keyword_researcher": {"type": "list", "default": []}})
         assert _issues(orch) == []
+
+    def test_a_list_field_of_a_retrieve_answer_is_not_refused(self):
+        """Retrieve answers `chunks: list[Hit]`, `citations: list[Citation]`, and text and an object besides."""
+        find = {"id": "find", "name": "Find", "type": "retrieve", "output_key": "find", "next_step_id": "each",
+                "retrieve": {"kb_ids": ["kb_policies"], "query": "{{ state.user_input }}"}}
+        assert _issues(_workflow(find, "state.find.chunks")) == []
+        assert len(_issues(_workflow(find, "state.find"))) == 1
+
+
+def test_an_optional_list_field_reads_as_a_list():
+    """A field typed `list[X] | None` or `Optional[list[X]]` is a list that may be unset, never text."""
+    from typing import Optional
+
+    from core.orchestration.step_answers import annotation_kind
+
+    assert annotation_kind(list[int] | None) == "list"
+    assert annotation_kind(Optional[list[str]]) == "list"
+    assert annotation_kind(Optional[dict[str, str]]) == "object"
+    assert annotation_kind(int | str) == "string"
+    assert annotation_kind(str) == "string"
+

@@ -632,6 +632,37 @@ def _without(plan: O.Plan, tools: list[str], took_out: list[str] | None = None) 
     return out
 
 
+def _loops_through_their_list(plan: O.Plan, notes: list[str]) -> O.Plan:
+    """The Plan with each Loop over a whole answer that holds one list going through that list (F1613), said in
+    `notes` for the card. A model step that declares its answer's fields answers one object, `{"keywords": [...]}`;
+    a Loop over the step itself went through the object and ran zero times. Two lists, or none, are the planner's to
+    pick, sent back by the validator's `step_answers.loops_over_an_answer`."""
+    from core.orchestration.output_fields import field_type, normalised
+
+    def through(steps: list[O.Step]) -> list[O.Step]:
+        by_id = {s.id: s for s in steps}
+        out = []
+        for s in steps:
+            over = (s.loop_over or "").strip()
+            head, _, rest = over.removeprefix("state.").partition(".")
+            writer = by_id.get(head) if s.type == "loop" else None
+            if writer is not None and writer.type in ("llm", "agent") and rest in ("", "output", "result", "results"):
+                fields = normalised((writer.config or {}).get("output_fields"))
+                lists = [f["name"].strip() for f in fields if field_type(f.get("type")) == "list"]
+                if fields and len(lists) == 1:
+                    s = s.model_copy(update={"loop_over": f"{head}.{lists[0]}"})
+                    notes.append(f"The loop '{s.name}' goes through `{lists[0]}`, the one list in what "
+                                 f"'{writer.name}' answers.")
+            out.append(s)
+        return out
+
+    out = plan.model_copy(deep=True)
+    out.steps = through(out.steps)
+    for w in out.inner_workflows:
+        w.steps = through(w.steps)
+    return out
+
+
 def _instructions_whole(plan: O.Plan, state: dict, notes: list[str]) -> tuple[O.Plan, list[str]]:
     """The Plan with a pasted export's Agents' instructions whole in its steps' prompts (F1550, `verbatim.whole`): a
     reference put there, a retyped copy made whole, said in `notes` for the card; the errors are references to an
@@ -701,6 +732,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     # A pasted export's Agents' instructions, whole (F1550): put where the plan names them, and made whole where it
     # retyped them. Before the key check, which reads what is saved.
     plan, copy_errors = _instructions_whole(plan, state, took_out)
+    # A Loop over a step that answers one list field goes through that field, said on the card (F1613).
+    plan = _loops_through_their_list(plan, took_out)
     from core.native_builder.change_tools import _holds_a_key
     from core.secret_scrub import holds_credential
 

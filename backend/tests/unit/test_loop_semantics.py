@@ -140,7 +140,8 @@ class TestForEach:
         assert complete["status"] == "failed"
         assert "tail" not in (complete.get("final_state") or {})
         errors = [e["error"] for e in events if e.get("type") == "step_error" and e.get("orch_step_id") == "loop1"]
-        assert len(errors) == 1, errors
+        # The loop's own sentence first; the engine's sanitised line for any raised failure follows it (F195).
+        assert errors, events
         assert "state.items" in errors[0] and words in errors[0] and "not a list" in errors[0], errors[0]
 
     async def test_an_object_with_one_list_names_it_in_the_failure(self):
