@@ -95,7 +95,10 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
     const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
     const { notifications } = useNotifications();
     const [runs, setRuns] = useState<RunSummary[]>([]);
+    /** Whether the runs list has been read (F1611): until then Home says nothing about runs, never that there are none. */
     const [runsLoaded, setRunsLoaded] = useState(false);
+    /** The runs list has never been read because the read failed (F1611): Home says so, never "nothing is waiting". */
+    const [runsUnread, setRunsUnread] = useState(false);
     const [summary, setSummary] = useState<Summary | null>(null);
     const [workflows, setWorkflows] = useState<Orchestration[]>([]);
     const [agents, setAgents] = useState<{ id: string; name?: string }[]>([]);
@@ -117,10 +120,15 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
 
     const refreshRuns = useCallback(() => {
         fetch(`/api/orchestrations/runs?limit=${RUNS_READ}`)
-            .then(r => r.json())
-            .then(d => { if (Array.isArray(d)) setRuns(d); })
-            .catch(() => { })
-            .finally(() => setRunsLoaded(true));
+            .then(r => (r.ok ? r.json() : Promise.reject(new Error(`runs: ${r.status}`))))
+            .then(d => {
+                if (!Array.isArray(d)) throw new Error('runs: not a list');
+                setRuns(d);
+                setRunsLoaded(true);
+                setRunsUnread(false);
+            })
+            // A failed read is not an empty list. After one that worked, what was read stays; before, it is said.
+            .catch(() => setRunsUnread(true));
     }, []);
 
     const refreshCounts = useCallback(() => {
@@ -316,12 +324,20 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
                 )}
 
                 {/* With nothing waiting, a new workspace's path leads; its fourth step says what Needs you is. */}
-                {(!showStart || startFolded || waitingCount > 0) && (
+                {/* Only once the runs are read (F1611): before that, an empty list is not "nothing is waiting". */}
+                {runsLoaded && (!showStart || startFolded || waitingCount > 0) && (
                     <RunHostProvider value={OSS_RUN_HOST}>
                         <div data-tour="home-needs-you">
                             <NeedsYou runs={cards} more={more} tools={tools} hrefOf={runHref} onChanged={refreshRuns} />
                         </div>
                     </RunHostProvider>
+                )}
+
+                {runsUnread && !runsLoaded && (
+                    <div role="alert" className="flex flex-wrap items-center gap-3">
+                        <p className="m-0 text-sm text-danger">Could not load your runs.</p>
+                        <Button size="sm" variant="secondary" onClick={refreshRuns}>Try again</Button>
+                    </div>
                 )}
 
                 {showStart && (
@@ -386,48 +402,53 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
                     />
                 )}
 
-                <HomeStats
-                    running={rows.filter(r => r.status === 'running').length}
-                    nextRun={next[0]?.at ?? null}
-                    waiting={waitingCount}
-                    waitingSince={pausedSince}
-                    failed={stats.failed}
-                    failedSub={stats.lastFailure
-                        ? <Link href={runHref(stats.lastFailure.id)} className="text-accent-ink hover:underline">{stats.lastFailure.workflowName ?? DELETED_WORKFLOW}</Link>
-                        : undefined}
-                    completed={stats.completed}
-                    runs={stats.runs}
-                    capped={capped}
-                    clock={clock}
-                />
-
-                <HomeSection id="active" title="Active now" link={live.length > 0 ? { href: '/runs', label: 'All runs' } : undefined}>
-                    <RecentRuns
-                        live
-                        label="Active now"
-                        rows={live}
-                        workflows={workflows}
-                        hrefOf={row => runHref(row.id)}
-                        empty={
-                            <p className="m-0 text-sm text-text-muted">
-                                <span className="font-medium text-text">Nothing running.</span>{' '}
-                                Start one from <TextLink href="/workflows">Workflows</TextLink>.
-                            </p>
-                        }
+                {/* The figures, Active now and the week say what ran: each waits for the runs (F1611). */}
+                {runsLoaded && (<>
+                    <HomeStats
+                        running={rows.filter(r => r.status === 'running').length}
+                        nextRun={next[0]?.at ?? null}
+                        waiting={waitingCount}
+                        waitingSince={pausedSince}
+                        failed={stats.failed}
+                        failedSub={stats.lastFailure
+                            ? <Link href={runHref(stats.lastFailure.id)} className="text-accent-ink hover:underline">{stats.lastFailure.workflowName ?? DELETED_WORKFLOW}</Link>
+                            : undefined}
+                        completed={stats.completed}
+                        runs={stats.runs}
+                        capped={capped}
+                        clock={clock}
                     />
-                </HomeSection>
 
-                <RunWeek rows={week} hrefOf={row => runHref(row.id)} clock={clock} />
-
-                <div className="grid gap-7 min-[1100px]:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
-                    <HomeSection id="recent" title="Recent runs" link={{ href: '/runs', label: 'All runs' }}>
+                    <HomeSection id="active" title="Active now" link={live.length > 0 ? { href: '/runs', label: 'All runs' } : undefined}>
                         <RecentRuns
-                            rows={recent}
+                            live
+                            label="Active now"
+                            rows={live}
                             workflows={workflows}
                             hrefOf={row => runHref(row.id)}
-                            empty={<p className="m-0 text-sm text-text-muted">No runs yet</p>}
+                            empty={
+                                <p className="m-0 text-sm text-text-muted">
+                                    <span className="font-medium text-text">Nothing running.</span>{' '}
+                                    Start one from <TextLink href="/workflows">Workflows</TextLink>.
+                                </p>
+                            }
                         />
                     </HomeSection>
+
+                    <RunWeek rows={week} hrefOf={row => runHref(row.id)} clock={clock} />
+                </>)}
+
+                <div className="grid gap-7 min-[1100px]:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
+                    {runsLoaded && (
+                        <HomeSection id="recent" title="Recent runs" link={{ href: '/runs', label: 'All runs' }}>
+                            <RecentRuns
+                                rows={recent}
+                                workflows={workflows}
+                                hrefOf={row => runHref(row.id)}
+                                empty={<p className="m-0 text-sm text-text-muted">No runs yet</p>}
+                            />
+                        </HomeSection>
+                    )}
                     <HomeSection id="next" title="Coming up" link={{ href: '/schedules', label: 'Schedules' }}>
                         <ComingUp
                             items={next}
