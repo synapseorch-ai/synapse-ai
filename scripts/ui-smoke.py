@@ -12531,6 +12531,115 @@ async def check_homewaitsforruns(browser) -> str:
             "and Try again shows what is there; light and dark at 1440 and 390")
 
 
+#: Home's own reads besides the runs (F1611), each with what Home may only say once that read has answered: a claim
+#: of nothing or zero in the section it fills, the Workspace rows it counts, and what Home says when it fails.
+F1611_READS: dict[str, dict] = {
+    "schedules": {"route": r".*/api/schedules(\?.*)?$", "claims": ["Nothing runs on its own yet.", "Nothing scheduled"],
+                  "rows": ["Schedules"], "unread": "Could not load your schedules."},
+    "usage": {"route": r".*/api/usage/summary(\?.*)?$", "claims": ["No usage recorded yet"], "spend": True,
+              "unread": "Could not load usage."},
+    "workflows": {"route": r".*/api/orchestrations(\?.*)?$", "claims": ["Getting started"], "rows": ["Workflows"]},
+    "agents": {"route": r".*/api/agents(\?.*)?$", "claims": [], "rows": ["Agents"]},
+    "apps": {"route": r".*/api/mcp/servers(\?.*)?$", "claims": [], "rows": ["Apps"]},
+    "rubrics": {"route": r".*/api/rubrics(\?.*)?$", "claims": ["Check your workflows keep doing well"]},
+    "keys": {"route": r".*/api/settings/api-keys(\?.*)?$", "claims": ["Use Synapse from your AI tools"]},
+}
+#: Each Workspace row's figure, and the Spend and usage cells, as Home shows them.
+F1611_FIGURES = r"""
+() => ({
+  rows: Object.fromEntries([...document.querySelectorAll('section[aria-labelledby="home-workspace"] li a')].map(a => {
+    const spans = a.querySelectorAll('span'); return [spans[0].textContent.trim(), spans[spans.length - 1].textContent.trim()];
+  })),
+  spend: [...document.querySelectorAll('section[aria-labelledby="home-spend"] dl > div')]
+    .map(d => d.querySelector('dd').textContent.trim()),
+})
+"""
+
+
+async def _f1611_home(browser, routes: dict, mode: str, *, width=WIDE, theme: str | None = None):
+    """Home with the runs stubbed (none) and each read in `routes` late by 5 s (`mode` "late") or failing ("failed").
+    Returns (ctx, page, the event set once every late read has answered)."""
+    answered = asyncio.Event()
+    pending = {"n": len(routes)}
+
+    async def late(route, *, body: str):
+        await asyncio.sleep(5.0)
+        await route.fulfill(status=200, content_type="application/json", body=body)
+        pending["n"] -= 1
+        if pending["n"] <= 0:
+            answered.set()
+
+    async def failed(route):
+        await route.fulfill(status=500, content_type="application/json", body='{"detail": "boom"}')
+
+    async def before(ctx):
+        for name, pattern in routes.items():
+            body = '{"total_cost": 0, "total_requests": 0, "total_tokens": 0, "by_model": []}' if name == "usage" else "[]"
+            if mode == "late":
+                await ctx.route(re.compile(pattern), lambda route, *, body=body: late(route, body=body))
+            else:
+                await ctx.route(re.compile(pattern), failed)
+
+    ctx, page, _ = await _m2b_page(browser, "/dashboard", width=width, runs={}, theme=theme, before=before)
+    if mode != "late":
+        answered.set()
+    return ctx, page, answered
+
+
+@check
+async def check_homereadsbeforeitsays(browser) -> str:
+    """Every Home section waits for its own read before it says nothing or zero (F1611), the runs' rule for the rest of
+    Home: while that read is late, Coming up never says "Nothing runs on its own yet.", Spend by model never says "No
+    usage recorded yet", the first-workflow path is not drawn on workflows it has not read, a Workspace row and a Spend
+    and usage cell show "—" rather than 0, and More you can do and the connect card offer nothing on lists they have
+    not read. When the read fails Home says so where the section would speak ("Could not load your schedules.", "Could
+    not load usage."), and a figure stays "—". With SMOKE_SHOTS: Home with every one of these reads late, and with
+    every one failed, light and dark at 1440 and 390."""
+    shots = os.environ.get("SMOKE_SHOTS")
+    bad: list[str] = []
+    for name, read in F1611_READS.items():
+        for mode in ("late", "failed"):
+            tag = f"{name} {mode}"
+            ctx, page, answered = await _f1611_home(browser, {name: read["route"]}, mode)
+            try:
+                if mode == "failed":
+                    await asyncio.sleep(1.5)
+                looks = 0
+                while looks == 0 or (mode == "late" and not answered.is_set()):
+                    looks += 1
+                    text = " ".join((await page.locator("main").inner_text()).split())
+                    said = [c for c in read["claims"] if c in text]
+                    figures = await page.evaluate(F1611_FIGURES)
+                    zero_rows = [r for r in read.get("rows", []) if figures["rows"].get(r, "—") != "—"]
+                    zero_spend = read.get("spend") and any(v != "—" for v in figures["spend"])
+                    if said or zero_rows or zero_spend:
+                        bad.append(f"{tag}: Home said {said or ''}{' rows ' + str(zero_rows) if zero_rows else ''}"
+                                   f"{' spend ' + str(figures['spend']) if zero_spend else ''}")
+                        break
+                    if mode == "late":
+                        await asyncio.sleep(0.2)
+                if mode == "failed" and read.get("unread") and read["unread"] not in text:
+                    bad.append(f"{tag}: Home does not say {read['unread']!r}")
+            finally:
+                await ctx.close()
+    if shots:
+        everything = {n: r["route"] for n, r in F1611_READS.items()}
+        for scheme in ("light", "dark"):
+            for width in ((1440, 900), (390, 844)):
+                for mode in ("late", "failed"):
+                    ctx, page, _ = await _f1611_home(browser, everything, mode, width=width, theme=scheme)
+                    try:
+                        await asyncio.sleep(1.5 if mode == "failed" else 0.2)
+                        await page.screenshot(path=os.path.join(shots, f"f1611-reads-{mode}-{scheme}-{width[0]}.png"),
+                                              full_page=True)
+                    finally:
+                        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("each Home read is waited for before its section says nothing or zero, and a failed one is said; "
+            "Workspace and Spend figures stay — until read")
+
+
 
 async def _composer(page) -> str:
     """What the AI builder's composer holds, once its panel is open."""
