@@ -346,6 +346,25 @@ def _hard_reads(step: dict) -> dict[str, str]:
         keys |= {m.group(1) for m in _CODE_ATTR.finditer(expr) if m.group(1) not in _DICT_NAMES}
         keys |= {m.group(2).split(".")[0] for m in _CODE_ITEM.finditer(expr)}
         return {k: "it loops over nothing there and the run goes on as if it had" for k in sorted(keys)}
+    if step.get("type") == "tool" and step.get("tool_arguments") is not None:
+        # A Tool step's set arguments (E1) are rendered from state with no model to repair them: a key a run reaches
+        # unset stops the run, "could not set its arguments" (F1617: a save after a Switch read each arm's own key).
+        from core.templating import STATE_REF
+
+        keys: set[str] = set()
+
+        def walk(value: object) -> None:
+            if isinstance(value, str):
+                keys.update(m.group(1).split(".")[0] for m in STATE_REF.finditer(value))
+            elif isinstance(value, dict):
+                for v in value.values():
+                    walk(v)
+            elif isinstance(value, list):
+                for v in value:
+                    walk(v)
+
+        walk(step["tool_arguments"])
+        return {k: "its arguments cannot be set there and the run stops" for k in sorted(keys)}
     return {}
 
 
@@ -381,8 +400,13 @@ def missing_key_reads(orch: dict) -> list[str]:
                 continue
             fixes = (f"read it with state.get('{key}'), or give it a default in the state schema"
                      if step.get("type") == "transform" else
+                     "or write one key every arm writes (each arm's step answering the same output_key) and read "
+                     "that, or do this step in each arm"
+                     if step.get("type") == "tool" else
                      "an empty list where there is nothing, or give it a default of [] in the state schema")
             if key not in written:
+                if step.get("type") == "tool":
+                    continue  # a key no step writes: the validator's own Tool-arguments check says it (E1)
                 sentences.append(f"Step '{step['id']}' reads state.{key}, which no step writes, so {breaks}. Write "
                                  f"it in an earlier step, {fixes}.")
                 continue
