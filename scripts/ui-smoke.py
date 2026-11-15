@@ -6099,6 +6099,80 @@ def _alone_plan(alone: list[str]) -> dict:
             "offers": ["build", *[f"alone:{t}" for t in asks], "change", "stop"]}
 
 
+#: F1600's three ways a run starts, as check_build fills them in: a person's form (with what it assumed and a part
+#: done on one arm only), a schedule, and when someone runs it.
+F1600_PLANS = {
+    "form": {"title": "Supplier invoice approval", "summary": "Check each new supplier invoice against our terms.",
+             "starts": "When someone fills in **Enter the invoice**, its first step",
+             "assumed": ["You type each invoice in, one at a time: nothing reads your inbox.",
+                         '"Check against the terms" checks against general terms, not yours: nothing gives it '
+                         "yours. Add your document as a knowledge base, or ask for it in the form."],
+             "off": ['"check each new supplier invoice against our terms" is done only on one arm of '
+                     '"Over $1,000?": a run that takes the other arm skips it'],
+             "steps": [{"id": "submit", "type": "human", "name": "Enter the invoice", "does": "You enter the invoice"},
+                       {"id": "over", "type": "if_else", "name": "Over $1,000?", "does": "Splits by amount"},
+                       {"id": "check", "type": "llm", "name": "Check against the terms", "does": "Checks it"}]},
+    "schedule": {"title": "Weekly note", "summary": "Every Monday, write the week's note.",
+                 "starts": "On its schedule: every Monday at 9:00",
+                 "steps": [{"id": "write", "type": "llm", "name": "Write the note", "does": "Writes the note"}]},
+    "plain": {"title": "Translate a document", "summary": "Translate a document into French and Spanish.",
+              "starts": "When you run it, or ask Synapse AI to run it",
+              "steps": [{"id": "fr", "type": "llm", "name": "Translate to French", "does": "Translates it"}]},
+}
+
+
+@check
+async def check_f1600card(browser) -> str:
+    """A plan's card says how its run starts, what it assumed, and a part of the ask done on one arm only (F1600).
+
+    Drawn from the plan as check_build fills it in (`starts`, `assumed`, `off`), for a form-started build, a scheduled
+    one and a plain one; light and dark at 1440, and at 390. With SMOKE_SHOTS, each panel is saved."""
+    shots = os.environ.get("SMOKE_SHOTS")
+    bad: list[str] = []
+    for scheme in ("light", "dark"):
+        for width in ((1440, 900), (390, 844)):
+            if scheme == "dark" and width[0] == 390:
+                continue
+            for name, plan in F1600_PLANS.items():
+                parked = {"client_session_id": f"conv-f1600-{name}", "run_id": RUN_ID, "status": "paused",
+                          "turns": [{"user": plan["summary"], "assistant": ""}],
+                          "pending": {"run_id": RUN_ID, "field": "feedback", "step_id": "step_human_review",
+                                      "prompt": "Here is the plan.", "context_key": "plan_checked",
+                                      "context": {"object": "plan", "outcome": "review",
+                                                  "plan": {"kind": "create", **plan}, "offers": ["build", "change"]}}}
+                ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]}, color_scheme=scheme)
+                await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{scheme}')}}catch(e){{}}")
+                await ctx.add_init_script(f"window.__conversation = {json.dumps(parked)};")
+                await ctx.add_init_script(BUILDER_BACK)
+                page = await ctx.new_page()
+                try:
+                    await page.goto(APP, wait_until="domcontentloaded")
+                    await asyncio.sleep(SETTLE + 1.0)
+                    await page.locator('[data-testid="assistant-open"]:visible').first.click()
+                    panel = page.locator('[data-testid="assistant-panel"]')
+                    await panel.get_by_text("How it starts", exact=True).first.wait_for(timeout=10_000)
+                    text = " ".join((await panel.inner_text()).split())
+                    tag = f"{name} {scheme} {width[0]}"
+                    if plan["starts"].replace("**", "") not in text:
+                        bad.append(f"{tag}: How it starts does not say {plan['starts']!r}")
+                    for line in plan.get("assumed", []):
+                        if "What I assumed" not in text or line.split(":")[0] not in text:
+                            bad.append(f"{tag}: What I assumed does not say {line[:40]!r}")
+                    for line in plan.get("off", []):
+                        if "only on one arm" not in text:
+                            bad.append(f"{tag}: Missing or off does not say the part done on one arm")
+                    if "assumed" not in plan and "What I assumed" in text:
+                        bad.append(f"{tag}: an empty What I assumed is drawn")
+                    if shots:
+                        await panel.screenshot(path=os.path.join(shots, f"f1600card-{name}-{scheme}-{width[0]}.png"))
+                finally:
+                    await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("form, schedule and plain plans say how they start; the form's says what it assumed and the part on one "
+            "arm; light and dark at 1440, and at 390")
+
+
 @check
 async def check_builderalone(browser) -> str:
     """Each "Let … act without asking" press on one plan gets its own card, and the last one can be built (F1506).
