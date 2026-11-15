@@ -12429,6 +12429,108 @@ async def check_homeempty(browser) -> str:
     return "nothing waiting reads as one calm line, and every section says it is empty"
 
 
+#: What Home may only say once it has read the runs (F1611): each is a claim about runs it has not seen yet.
+F1611_UNKNOWN_UNTIL_READ = ("Nothing is waiting on you.", "Needs you · 0", "Nothing needs you", "Nothing running.",
+                            "No runs this week.", "No runs yet", "all clear")
+F1611_UNREAD = "Could not load your runs."
+
+
+@check
+async def check_homewaitsforruns(browser) -> str:
+    """Home says nothing about runs until it has read them (F1611): while the runs list is on its way, no "Nothing is
+    waiting on you.", no "Needs you · 0" and no "Nothing running." or "No runs yet"; once it answers with a run waiting,
+    that run is what Home says. When the read fails, Home says it could not load the runs and offers to try again,
+    never that nothing is waiting; trying again once the list reads says what is now known. Light and dark at 1440,
+    and at 390. With SMOKE_SHOTS: Home loading, Home with one run waiting, and Home after a failed read."""
+    shots = os.environ.get("SMOKE_SHOTS")
+    waiting = {"run_smoke_m2b_wait": _M2B_RUNS["run_smoke_m2b_wait"]}
+    bad: list[str] = []
+
+    async def said(page) -> str:
+        return " ".join((await page.locator("main").inner_text()).split())
+
+    for scheme in ("light", "dark"):
+        for width in ((1440, 900), (390, 844)):
+            tag = f"{scheme} {width[0]}"
+            # A runs list that answers late, with one run waiting.
+            answered = asyncio.Event()
+
+            async def late(route, *, answered=answered):
+                await asyncio.sleep(5.0)
+                await route.fulfill(status=200, content_type="application/json",
+                                    body=json.dumps([_m2b_summary(r) for r in waiting.values()]))
+                answered.set()
+
+            async def before_late(ctx, *, late=late):
+                await ctx.route(re.compile(r".*/api/orchestrations/runs(\?.*)?$"), late)
+
+            ctx, page, _ = await _m2b_page(browser, "/dashboard", width=width, runs=waiting, theme=scheme,
+                                           before=before_late)
+            try:
+                seen: set[str] = set()
+                while not answered.is_set():
+                    text = await said(page)
+                    seen |= {w for w in F1611_UNKNOWN_UNTIL_READ if w in text}
+                    if shots and not seen and not os.path.exists(os.path.join(shots, f"f1611-loading-{scheme}-{width[0]}.png")):
+                        await page.screenshot(path=os.path.join(shots, f"f1611-loading-{scheme}-{width[0]}.png"))
+                    await asyncio.sleep(0.1)
+                if seen:
+                    bad.append(f"{tag}: before the runs were read Home said {sorted(seen)}")
+                await page.get_by_role("region", name="Waiting for a person").first.wait_for(timeout=15_000)
+                line = (await page.locator("main header p").first.inner_text()).strip()
+                if not line.startswith("One thing needs you."):
+                    bad.append(f"{tag}: with one run waiting the status line reads {line!r}")
+                if shots:
+                    await page.screenshot(path=os.path.join(shots, f"f1611-waiting-{scheme}-{width[0]}.png"))
+            finally:
+                await ctx.close()
+
+            # A runs list that fails, then reads empty when tried again.
+            state = {"fail": True}
+
+            async def broken(route, *, state=state):
+                if state["fail"]:
+                    await route.fulfill(status=500, content_type="application/json", body='{"detail": "boom"}')
+                else:
+                    await route.fulfill(status=200, content_type="application/json", body="[]")
+
+            async def before_broken(ctx, *, broken=broken):
+                await ctx.route(re.compile(r".*/api/orchestrations/runs(\?.*)?$"), broken)
+
+            ctx, page, _ = await _m2b_page(browser, "/dashboard", width=width, runs={}, theme=scheme,
+                                           before=before_broken)
+            try:
+                await asyncio.sleep(1.0)
+                text = await said(page)
+                if claimed := [w for w in F1611_UNKNOWN_UNTIL_READ if w in text]:
+                    bad.append(f"{tag}: after a failed read Home said {claimed}")
+                if F1611_UNREAD not in text:
+                    bad.append(f"{tag}: after a failed read Home does not say {F1611_UNREAD!r}")
+                retry = page.get_by_role("button", name="Try again", exact=True)
+                if not await retry.count():
+                    bad.append(f"{tag}: after a failed read there is no Try again")
+                if shots:
+                    await page.screenshot(path=os.path.join(shots, f"f1611-unread-{scheme}-{width[0]}.png"))
+                if await retry.count():
+                    # Once the list reads (empty here), what is known is said: a new workspace's Recent runs.
+                    state["fail"] = False
+                    await retry.first.click()
+                    try:
+                        await page.get_by_text("No runs yet", exact=True).first.wait_for(timeout=10_000)
+                    except Exception:  # noqa: BLE001 — said below
+                        bad.append(f"{tag}: Try again, once the runs read, does not show what is there")
+                    if F1611_UNREAD in await said(page):
+                        bad.append(f"{tag}: the failed read is still said after the runs read")
+                    if not (await page.locator("main header p").first.inner_text()).strip():
+                        bad.append(f"{tag}: once the runs read, the status line is still blank")
+            finally:
+                await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("Home says nothing about runs until it has read them, says it could not load them when the read fails, "
+            "and Try again shows what is there; light and dark at 1440 and 390")
+
+
 
 async def _composer(page) -> str:
     """What the AI builder's composer holds, once its panel is open."""
