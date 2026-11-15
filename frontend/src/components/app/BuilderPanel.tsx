@@ -531,6 +531,8 @@ export function BuilderConversation({
                         onChange={(value) => { setInput(value); setLeadHeld(false); }}
                         onSend={submit}
                         note={leadHeld ? IMPORT_LEAD_NOTE : undefined}
+                        // The held line's note says what to paste and where it comes from: read whole, and heard.
+                        noteWraps
                         canSend={(Boolean(input.trim()) || attachments.images.length > 0) && !streaming}
                         sendLabel={state.pending && (!planWaiting || changingPlan) ? 'Send your answer' : 'Send'}
                         // Only until the run has an id — after that this button is Stop.

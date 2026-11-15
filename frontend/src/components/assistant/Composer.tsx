@@ -69,6 +69,13 @@ export interface ComposerProps {
     showHint?: boolean;
     /** Under the field, always: what must stay said ("Fixed for this conversation."). */
     note?: React.ReactNode;
+    /**
+     * For a note the person has to act on (F1607: what to paste, and where it comes from): it wraps instead of being
+     * cut, reads in the muted tone rather than the faint one, takes the keys hint's place, and is announced. Its status
+     * region is there before any note is, so a screen reader hears the words when they arrive. Off, a note keeps one
+     * faint line.
+     */
+    noteWraps?: boolean;
     /** `page` for chat's full width, `panel` for the builder's card. */
     density?: 'page' | 'panel';
     /** Lines of room the empty field opens with. */
@@ -81,7 +88,7 @@ const MAX_HEIGHT = 200;
 export function Composer({
     value, onChange, onSend, canSend, sendLabel, sendTitle, sendPending = false, busy = false, sendWhileBusy = false, onStop,
     stopLabel, stopTitle, placeholder, label, labelText, id, disabled = false, autoFocus = false, onEscape,
-    textareaRef, dropHandlers, pasteHandlers, top, pill, attach, model, hint, showHint = true, note,
+    textareaRef, dropHandlers, pasteHandlers, top, pill, attach, model, hint, showHint = true, note, noteWraps = false,
     density = 'page', rows = 2, className,
 }: ComposerProps) {
     const inner = React.useRef<HTMLTextAreaElement | null>(null);
@@ -99,7 +106,8 @@ export function Composer({
     }, [value]);
 
     const page = density === 'page';
-    const hasFooter = Boolean(hint) || Boolean(note);
+    const hasFooter = Boolean(hint) || Boolean(note) || noteWraps;
+    const noteShown = noteWraps && Boolean(note);
 
     return (
         <div className={cn('w-full', className)}>
@@ -182,8 +190,12 @@ export function Composer({
             </form>
             {hasFooter && (
                 <div className={cn('flex min-h-5 items-center gap-3 px-2 pt-1.5 text-2xs text-text-faint', page ? '' : 'px-1')}>
-                    {note && <span className="min-w-0 truncate">{note}</span>}
-                    {hint && (
+                    {noteWraps ? (
+                        <span role="status" className="min-w-0 text-xs text-text-muted">{note}</span>
+                    ) : (
+                        note && <span className="min-w-0 truncate">{note}</span>
+                    )}
+                    {hint && !noteShown && (
                         <span
                             aria-hidden={!showHint}
                             className={cn(
