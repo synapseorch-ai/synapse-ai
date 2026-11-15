@@ -22,6 +22,8 @@ import {
     ActionCard,
     AGENT_BUILDER_SWITCH,
     AgentTurn,
+    IMPORT_LEAD_NOTE,
+    isBareImportLead,
     askedForm,
     Composer,
     composerPillClass,
@@ -266,11 +268,18 @@ export function BuilderConversation({
     const planWaiting = isPlanReview(state.pending);
     const changingPlan = revising && planWaiting;
 
+    // The import starter's line with nothing pasted under it is held back, saying where the export comes from (F1607).
+    const [leadHeld, setLeadHeld] = useState(false);
+
     const submit = () => {
         const text = input.trim();
         // An image on its own is a message — "what is this?" is often the
         // picture, not the words.
         if ((!text && !attachments.images.length) || streaming) return;
+        if (isBareImportLead(text) && !attachments.images.length) {
+            setLeadHeld(true);
+            return;
+        }
         const images = attachments.images.map((image) => image.base64);
         setInput('');
         attachments.clear();
@@ -519,8 +528,9 @@ export function BuilderConversation({
                     <Composer
                         density={density}
                         value={input}
-                        onChange={setInput}
+                        onChange={(value) => { setInput(value); setLeadHeld(false); }}
                         onSend={submit}
+                        note={leadHeld ? IMPORT_LEAD_NOTE : undefined}
                         canSend={(Boolean(input.trim()) || attachments.images.length > 0) && !streaming}
                         sendLabel={state.pending && (!planWaiting || changingPlan) ? 'Send your answer' : 'Send'}
                         // Only until the run has an id — after that this button is Stop.

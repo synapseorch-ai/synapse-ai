@@ -222,6 +222,12 @@ def decide(message: str, *, previous: dict, facts: dict, change: dict | None = N
     # route through the role door, never classified again, so it cannot become an answer on the stronger model.
     if pressed:
         return Turn(route="effort_build", then="build")
+    # The import starter with nothing pasted under it (F1607): said, and where the export comes from; never a plan,
+    # never a workflow here taken for "this workflow".
+    from core.native_builder.export import EXPORT_MISSING, lead_only
+
+    if lead_only(message):
+        return Turn(route="export_missing", then="said", say=EXPORT_MISSING)
     offered = previous.get("effort") if isinstance(previous.get("effort"), dict) else {}
     if offered.get("next") == "offer" and offered.get("ask"):
         ask = str(offered["ask"])

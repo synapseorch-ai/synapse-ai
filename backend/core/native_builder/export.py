@@ -50,6 +50,27 @@ class ExportRead:
     removed: int
 
 
+#: The panel's import starter (`components/assistant/switch.ts`'s AGENT_BUILDER_SWITCH.lead), word for word (F1607).
+IMPORT_LEAD = "Rebuild this OpenAI Agent Builder workflow here. Its export (Code → Agents SDK) is below:"
+#: Its words as the line starts, older shapes too ("… workflow here:"), whatever follows on the line.
+_LEAD = re.compile(r"\s*Rebuild this OpenAI Agent Builder workflow here\b[^\n]*")
+#: What is said when the starter came with nothing under it (F1607): no plan, no workflow here touched.
+EXPORT_MISSING = ("Nothing was pasted under the line, so there is no export to rebuild yet. In OpenAI Agent Builder, open "
+                  "the workflow, choose Code → Agents SDK, copy all of it, and paste it here under the line.")
+
+
+def lead_present(message: str) -> bool:
+    """Whether `message` starts with the import starter's line (F1607): its "this workflow" is the paste's, never one
+    here."""
+    return bool(_LEAD.match(message or ""))
+
+
+def lead_only(message: str) -> bool:
+    """The import starter's line with nothing under it (F1607)."""
+    m = _LEAD.match(message or "")
+    return bool(m) and not (message or "")[m.end():].strip()
+
+
 def read_export(message: str) -> ExportRead | None:
     """The export in `message`, or None when it holds no Agents SDK code."""
     if not message:

@@ -197,11 +197,15 @@ async def _target_state(
     resolver with its own tenant's rows.
     """
     from core.builder_tools import _is_visible
-    from core.native_builder.target import describe_page, resolve_target
+    from core.native_builder.export import lead_present
+    from core.native_builder.target import Target, describe_page, resolve_target
     from core.store.resources import load_orchestrations
 
     visible = [o for o in await load_orchestrations() if _is_visible(o)]
-    target = resolve_target(message, viewing_id, visible, previous_matches, built_id)
+    # The import starter's "this workflow" is the paste's (F1607): no workflow here is its target, open, built or named
+    # by a word of the line.
+    target = Target() if lead_present(message) else resolve_target(message, viewing_id, visible, previous_matches,
+                                                                     built_id)
     viewing = next((o for o in visible if viewing_id and o["id"] == viewing_id), None)
     page = describe_page("orchestration", viewing.get("name", ""), viewing["id"]) if viewing else ""
     return {**target.state(), "current_page": page}

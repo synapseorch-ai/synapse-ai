@@ -19,6 +19,17 @@ export const AGENT_BUILDER_SWITCH = {
     lead: 'Rebuild this OpenAI Agent Builder workflow here. Its export (Code → Agents SDK) is below:\n\n',
 } as const;
 
+/**
+ * Whether `text` is the import starter's line and nothing else (F1607): the panel holds it back and says where the export
+ * comes from. Anything under the line, code or not, goes to the server, which decides.
+ */
+export function isBareImportLead(text: string): boolean {
+    return text.trim() === AGENT_BUILDER_SWITCH.lead.trim();
+}
+
+/** What the panel says when it holds the bare line back. */
+export const IMPORT_LEAD_NOTE = 'Paste the export under the line first: in OpenAI Agent Builder, open the workflow, choose Code → Agents SDK and copy all of it.';
+
 /** Whether `search` (a `location.search`) asks for the switch. */
 export function asksForAgentBuilderSwitch(search: string): boolean {
     return new URLSearchParams(search).get('build') === AGENT_BUILDER_SWITCH.param;
