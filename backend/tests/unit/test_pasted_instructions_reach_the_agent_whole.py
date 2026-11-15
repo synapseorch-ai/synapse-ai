@@ -10,8 +10,8 @@ prompt writer was told both "under 250 words each" and "word for word".
 The export says, exactly, which text is which Agent's instructions, so code copies them:
 - `export.agent_instructions` reads each Agent's instructions out of the code, by its name, as written: Python parsed
   (never run), a literal, an f-string or the function that returns one; TypeScript's string and template literals,
-  inline or a function's; a value read at run time is the words "given in the message" (the guide's rule) and a key
-  taken out is "the key it held";
+  inline or a function's; a value read at run time is named by its variable, "the topic (given in the message)"
+  (F1614), and a key taken out is "the key it held";
 - by reference: a step's prompt or a new agent's instructions may hold `‹instructions of "<Agent name>"›`, and code
   puts that Agent's instructions there; an Agent the code does not have is sent back, naming the ones it has;
 - checked: a prompt or instructions that copies most of an Agent's words, in order, but not whole has the copy
@@ -135,7 +135,8 @@ const returnAgent = new Agent({
 });
 '''
 
-CART = "You keep given in the message’s cart — in PYG, never USD.\nTotals are sums of “price × qty”."
+CART = ("You keep the customer name (given in the message)’s cart — in PYG, never USD.\n"
+        "Totals are sums of “price × qty”.")
 
 #: The Data Base Agent as Sonnet 4.6 wrote it (its own words, kept whole by BLD3's run): typography flattened, the
 #: examples and fences gone, and the step's own input line after it.
@@ -185,7 +186,8 @@ class TestReadOutOfTheCode:
 
         found = export.agent_instructions(TS_EXPORT)
         assert found == {
-            "Research Agent": "You research given in the message — one keyword at a time.\nSay `done` when finished.",
+            "Research Agent": "You research the state topic (given in the message) — one keyword at a time.\nSay `done` when "
+                              "finished.",
             "Summary Agent": "Summarise every keyword’s findings.\n\n\"Quote\" sources, and use — dashes.",
             "Return agent": "Offer a replacement device with \"free\" shipping.",
         }

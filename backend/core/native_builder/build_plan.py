@@ -255,6 +255,17 @@ async def pick_models(plan: O.Plan, stronger: list[str]) -> tuple[dict[str, O.Mo
     return picks, issues, ""
 
 
+def _persons_words(state: dict) -> str:
+    """The turn's words that are the person's (F1614): with a pasted export, only what they wrote above the code; the
+    code's own words (an Agent's instructions saying "recent") were asked about as theirs."""
+    message = str(state.get("user_message") or "")
+    if state.get("export_source"):
+        from core.native_builder.export import own_words
+
+        return own_words(message)
+    return message
+
+
 def go_ahead_request(state: dict) -> str | None:
     """What a bare go-ahead right after findings asks for (F1064, from P5's res-02 measure): the findings' goal, in
     code's words. "build it" alone has no request of its own, and a planner given only those words asked what to
@@ -2526,7 +2537,7 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     if NEW_BESIDE_KEY in state:
         cap_assumed.append(built_new_said(str(state.get(NEW_BESIDE_KEY) or "")))
     if finish in ("submit_plan", "ask_person") and not periods_said and not prior.get("asking_periods") and (
-            q := periods.question(f"{state.get('user_message') or ''} {go_ahead_request(state) or ''}",
+            q := periods.question(f"{_persons_words(state)} {go_ahead_request(state) or ''}",
                                   state.get("person_timezone"))):
         # A period the person did not pin down is asked once, before any plan is shown, with its dates on their
         # clock (F1210): a planner picked one of two weeks without saying so.

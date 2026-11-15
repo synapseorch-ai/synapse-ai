@@ -65,6 +65,19 @@ def lead_present(message: str) -> bool:
     return bool(_LEAD.match(message or ""))
 
 
+#: Where pasted code starts: a Python or TypeScript import, a require, or a fence.
+_CODE_STARTS = re.compile(r"^\s*(?:from\s+[\w.]+\s+import\b|import\b|const\s+\w+\s*=\s*require\(|```)", re.M)
+
+
+def own_words(message: str) -> str:
+    """What the person wrote with a pasted export (F1614): the words above the code, the starter's line taken out.
+    Everything from the code's first line on is the export's, whose words are its Agents' and never the person's."""
+    text = str(message or "")
+    m = _CODE_STARTS.search(text)
+    above = text[:m.start()] if m else text
+    return _LEAD.sub("", above, count=1).strip()
+
+
 def lead_only(message: str) -> bool:
     """The import starter's line with nothing under it (F1607)."""
     m = _LEAD.match(message or "")
@@ -109,6 +122,19 @@ INSTRUCTIONS_REF = re.compile(r"‹\s*instructions\s+of\s+[\"“]?([^\"“”›
 #: What a value the instructions read at run time becomes (the guide's rule 3), and a key taken out (its last line).
 GIVEN = "given in the message"
 KEY_HELD = "the key it held"
+_PLAIN_NAME = re.compile(r"[A-Za-z_$][\w$]*")
+
+
+def named_value(expr: str) -> str:
+    """What a value read at run time becomes in an Agent's instructions (F1614): named by its variable when it is a
+    plain name, `${topic}` → "the topic (given in the message)", `{numKeywords}` → "the num keywords (given in the
+    message)", so a sentence with two of them still reads; anything else, `GIVEN` as it always was."""
+    name = expr.strip()
+    if not _PLAIN_NAME.fullmatch(name):
+        return GIVEN
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", name.strip("_$")).replace("_", " ")
+    spaced = re.sub(r"\s+", " ", spaced).strip().lower()
+    return f"the {spaced} ({GIVEN})" if spaced else GIVEN
 
 
 def agent_instructions(text: str) -> dict[str, str]:
@@ -160,7 +186,9 @@ def _python_instructions(text: str) -> dict[str, str]:
         if isinstance(node, ast.Constant):
             return node.value if isinstance(node.value, str) else None
         if isinstance(node, ast.JoinedStr):
-            return "".join(str(p.value) if isinstance(p, ast.Constant) else GIVEN for p in node.values)
+            return "".join(str(p.value) if isinstance(p, ast.Constant)
+                           else named_value(p.value.id) if isinstance(getattr(p, "value", None), ast.Name) else GIVEN
+                           for p in node.values)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             left, right = words(node.left, depth + 1), words(node.right, depth + 1)
             return left + right if left is not None and right is not None else None
@@ -186,7 +214,7 @@ _JS_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f", "v": "\v",
 
 def _js_literal(src: str, i: int) -> tuple[str | None, int]:
     """The JavaScript string or template literal opening at `src[i]`, as its value, and the index after it. A
-    template's `${…}` is `GIVEN`. (None, i) when there is none there."""
+    template's `${…}` is `named_value(…)`. (None, i) when there is none there."""
     quote = src[i:i + 1]
     if quote not in ("'", '"', "`"):
         return None, i
@@ -223,6 +251,7 @@ def _js_literal(src: str, i: int) -> tuple[str | None, int]:
             return "".join(out), j + 1
         if quote == "`" and src.startswith("${", j):
             depth, j = 1, j + 2
+            start = j
             while j < len(src) and depth:
                 if src[j] in "'\"`":
                     _, after = _js_literal(src, j)
@@ -230,7 +259,7 @@ def _js_literal(src: str, i: int) -> tuple[str | None, int]:
                     continue
                 depth += {"{": 1, "}": -1}.get(src[j], 0)
                 j += 1
-            out.append(GIVEN)
+            out.append(named_value(src[start:j - 1]) if not depth else GIVEN)
             continue
         if quote != "`" and c == "\n":
             return None, i
