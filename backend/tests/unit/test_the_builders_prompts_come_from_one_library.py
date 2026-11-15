@@ -190,7 +190,10 @@ from core.native_builder import prompt_lint, seed
 #: step and never a decision read out of its words, 826eb2a5… (on 36c3e1ea).
 #: F1570 (FIX2): the planner's rule 13 puts in visitor_tools what the person named, a tool by its name or a knowledge
 #: base by its name when they let visitors search or read it, c81f207d… (on 2.0.8's 5a19900e).
-BUNDLE_SHA256 = "c81f207d4727228cd7439028bb1899099a04daadc4743632b9fa463312477d0e"
+#: F1600: the planner's # Finishing asks what the build depends on and only the person can say (where the data
+#: comes from or arrives, their own rules or documents, where the results go), at most two rounds in all, writes the
+#: rest in `assumed`, and names each done part's `steps` (and `when`), 84043abd… (on 2.0.11's 26346700).
+BUNDLE_SHA256 = "84043abde94f1fcf3875a191be4aa95068f6588158f02485e4ff6a8679168fdd"
 
 
 def _sha(definitions) -> str:

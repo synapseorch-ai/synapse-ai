@@ -57,7 +57,7 @@ class TestCodesOwnQuestionsCount:
 
     async def test_a_model_question_is_not_asked_past_the_cap(self, client, desk, monkeypatch):
         async def ambiguous(plan, stronger):
-            return [], [], "Which Claude did you mean: Claude Sonnet 4.6 or Claude Opus 4.5?"
+            return {}, [], "Which Claude did you mean: Claude Sonnet 4.6 or Claude Opus 4.5?"
         monkeypatch.setattr(build_plan, "pick_models", ambiguous)
         run = await _run("Make a weekly report of our sales on Claude.", **{T.ROUNDS_KEY: 2})
         out = await _check(run, SALES_PLAN | {"summary": "Each week, the sales report."})

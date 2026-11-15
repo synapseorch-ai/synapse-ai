@@ -98,3 +98,50 @@ class TestOldAndPartialDraftsGoOn:
         plan = O.Plan.model_validate({k: v for k, v in invoices().items() if k != "finish"})
         [(part, arm)] = build_plan.parts_off_a_path(plan)
         assert part.part.startswith("check each") and arm == "Over $1,000?"
+
+
+def _part_plan(steps: list[dict]) -> O.Plan:
+    return O.Plan.model_validate({"kind": "create", "title": "Invoices", "summary": "Check invoices.", "steps": steps,
+                                  "asked": [{"part": "check each invoice", "how": "plan", "steps": ["check"]}]})
+
+
+SUBMIT = {"id": "submit", "type": "human", "name": "Enter the invoice", "does": "You enter it", "prompt": "The invoice",
+          "next": "kind"}
+CHECK_STEP = {"id": "check", "type": "llm", "name": "Check it", "does": "Checks it", "prompt": "Check it.",
+              "next": "end"}
+
+
+class TestTheArmItNames:
+    """the fork named is the one deciding it, nearest the part: never simply the plan's first fork."""
+
+    def test_on_the_second_forks_arm_it_names_the_second_fork(self):
+        plan = _part_plan([
+            SUBMIT,
+            {"id": "kind", "type": "if_else", "name": "New customer?", "does": "Splits by customer",
+             "condition": "state.invoice.new", "branches": {"true": "welcome", "false": "over"}},
+            {"id": "welcome", "type": "llm", "name": "Welcome note", "does": "Writes a note", "prompt": "Write.",
+             "next": "over"},
+            {"id": "over", "type": "if_else", "name": "Over $1,000?", "does": "Splits by amount",
+             "condition": "state.invoice.amount > 1000", "branches": {"true": "check", "false": "end"}},
+            CHECK_STEP])
+        [(_, arm)] = build_plan.parts_off_a_path(plan)
+        assert arm == "Over $1,000?"
+
+    def test_inside_a_loop_on_one_arm_it_names_that_arm(self):
+        plan = _part_plan([
+            {**SUBMIT, "next": "over"},
+            {"id": "over", "type": "if_else", "name": "Over $1,000?", "does": "Splits by amount",
+             "condition": "state.invoice.amount > 1000", "branches": {"true": "each", "false": "end"}},
+            {"id": "each", "type": "loop", "name": "Each line", "does": "Goes through each line",
+             "loop_over": "state.invoice.lines", "body": ["check"], "next": "end"},
+            CHECK_STEP])
+        [(_, arm)] = build_plan.parts_off_a_path(plan)
+        assert arm == "Over $1,000?"
+
+    def test_inside_a_loop_on_every_path_it_is_not_off(self):
+        plan = _part_plan([
+            {**SUBMIT, "next": "each"},
+            {"id": "each", "type": "loop", "name": "Each line", "does": "Goes through each line",
+             "loop_over": "state.invoice.lines", "body": ["check"], "next": "end"},
+            CHECK_STEP])
+        assert build_plan.parts_off_a_path(plan) == []

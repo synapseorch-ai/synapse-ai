@@ -123,6 +123,10 @@ export interface Plan {
     parts?: string | null;
     /** What is missing or off besides a missing tool, each with where it is put right (F1228). */
     off?: string | null;
+    /** How a run starts, from the plan itself (F1600): its schedule, a person's form, or when someone runs it. */
+    starts?: string | null;
+    /** What the plan took as so that the person did not say (F1600), theirs to check. */
+    assumed?: string | null;
     /** What this plan changed from the one the person last saw (F1245). */
     changed?: string | null;
 }
@@ -691,6 +695,10 @@ export interface PlanObjectView {
         part_words?: string[];
         /** What is missing or off, besides a missing tool or a connection to make (F1228). Set by code. */
         off?: string[];
+        /** How a run starts (F1600). Set by code. */
+        starts?: string;
+        /** What it took as so without the person saying it (F1600): the planner's, and code's past the question cap. */
+        assumed?: string[];
         /** What it changed from the plan the person last saw: a step, a tool, a shown input (F1245). Set by code. */
         since_last?: string[];
     };
@@ -785,6 +793,8 @@ export function planFromPlanObject(view: PlanObjectView, prompt: string): Plan |
             }),
         parts: bullets(view.plan.part_words),
         off: bullets(view.plan.off),
+        starts: view.plan.starts?.trim() || null,
+        assumed: bullets(view.plan.assumed),
         changed: bullets(view.plan.since_last),
         agentInstructions: Object.entries(view.prompts ?? {})
             .filter(([, text]) => text.trim())

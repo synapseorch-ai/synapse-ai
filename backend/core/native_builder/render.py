@@ -268,6 +268,19 @@ def eval_lines(plan: Any) -> list[str]:
     return out
 
 
+def start_words(plan: Plan) -> str:
+    """How a new workflow's run starts, from the plan (F1600): its schedule; a person's form, when its first step is
+    one; else when someone runs it. A change to a workflow says none: it starts as it did."""
+    if plan.kind != "create" or not plan.steps:
+        return ""
+    if plan.schedule is not None:
+        return f"On its schedule: {plan.schedule.says}"
+    first = next((s for s in plan.steps if s.type != "end"), None)
+    if first is not None and first.type == "human":
+        return f"When someone fills in **{first.name}**, its first step"
+    return "When you run it, or ask Synapse AI to run it"
+
+
 def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
     """The plan card's text. `agent_names` names the workspace's agents a plan reuses (by id)."""
     names = dict(agent_names or {})
@@ -278,6 +291,9 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
     overview = (plan.summary or "").strip()
     if overview:
         parts.append(f"## You asked for\n{overview}")
+    # How a run starts, from the plan itself (F1600): never the summary's word for it ("automatically").
+    if starts := (getattr(plan, "starts", "") or start_words(plan)):
+        parts.append(f"## How it starts\n{starts}")
     # What a re-plan changed from the plan the person last saw (F1245), before the steps it changed.
     if since := getattr(plan, "since_last", None):
         parts.append("## Changed from the last plan\n" + _bullets(since))
@@ -384,6 +400,9 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
     shown = [*knowledge_lines(plan), *own_part_lines(plan), *(line for a in plan.agents for line in switch_lines(a))]
     missing = missing_words(plan) + [o for o in getattr(plan, "off", []) or []
                                      if o not in shown and not any(o.endswith(f": {s}") for s in shown)]
+    # What it took as so that the person did not say (F1600), before what it can't do: theirs to check.
+    if assumed := [a for a in getattr(plan, "assumed", []) or [] if str(a).strip()]:
+        parts.append("## What I assumed\n" + _bullets(assumed))
     if missing:
         parts.append("## Missing here\n" + _bullets(missing))
     if plan.room:

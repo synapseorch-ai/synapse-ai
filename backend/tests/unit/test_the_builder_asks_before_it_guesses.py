@@ -213,7 +213,11 @@ class TestTheCapHolds:
         run = await _run(**{T.ROUNDS_KEY: T.QUESTIONS})
         out = await _check(run, _plan())
         assert out["outcome"] == "review"
-        assert SITE in out["say"] and "haven't given me" in out["say"]
+        # F1600: past the cap the address it goes on with is said as what it assumed, on the card and in the plan the
+        # panel draws, never among what can't be done, and never dropped from both.
+        assumed = out["review"].split("## What I assumed\n", 1)[1].split("\n## ", 1)[0]
+        assert SITE in assumed and "haven't given me" in assumed
+        assert any(SITE in a and "haven't given me" in a for a in out["plan"]["assumed"])
 
 
 # ── a plan carries no question ──────────────────────────────────────────────────────────────────────────────────

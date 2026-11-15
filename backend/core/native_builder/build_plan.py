@@ -783,6 +783,10 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
 
     asked = _obj(state.get("request"))
     shaped = await structure.issues(filled, ws, asked if isinstance(asked, dict) else None)
+    # F1600: a part of the ask done on one arm only, and a check against their own terms nothing gives it; each is
+    # said once with the structure findings (`_STRUCTURE_SAID_KEY`), then the plan goes as it is and its card says it.
+    shaped += [off_a_path_finding(p, arm) for p, arm in parts_off_a_path(filled)]
+    shaped += [own_terms_finding(step, thing) for step, thing in own_terms_unsaid(filled)]
     try:
         filled.run_cost = (await estimate.of(filled, ws)).words()
     except Exception as exc:  # noqa: BLE001 — a cost not worked out is said nowhere, never a plan refused
@@ -2476,12 +2480,22 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
                             "issues": [], "checks": int(prior.get("checks") or 0) + 1, "asked": asked,
                             "research": prior.get("research") or [], "offered": prior.get("offered") or [],
                             "periods": periods_said}
+    from core.native_builder.change_tools import QUESTIONS, questions_asked
+
+    _, asking_run = _run()
+    # Past the request's cap (F1600: two rounds) nothing more is asked, whoever would ask it: what would have been
+    # asked is the plan's pick, said under What I assumed.
+    at_cap = questions_asked(state, asking_run) >= QUESTIONS
+    cap_assumed: list[str] = []
     if finish in ("submit_plan", "ask_person") and not periods_said and not prior.get("asking_periods") and (
             q := periods.question(f"{state.get('user_message') or ''} {go_ahead_request(state) or ''}",
                                   state.get("person_timezone"))):
         # A period the person did not pin down is asked once, before any plan is shown, with its dates on their
         # clock (F1210): a planner picked one of two weeks without saying so.
-        return {**base, "outcome": "ask", "question": q.text, "asking_periods": q.dump()}
+        if not at_cap:
+            return {**base, "outcome": "ask", "question": q.text, "asking_periods": q.dump()}
+        cap_assumed += [f'When you said "{p.said}", the plan takes the days as its steps work them out: say which '
+                        f'days you mean if it matters.' for p in q.periods]
     if finish == "ask_person" and isinstance(draft.get("form"), list) and draft["form"]:
         from core.native_builder.change_tools import FORM_LEAD, form_text
 
@@ -2579,9 +2593,12 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
                 "plan": plan.model_dump()}
 
     plan.models, model_issues, model_question = await pick_models(plan, stronger)
-    if model_question:
+    if model_question and not at_cap:
         # A wish that could mean more than one model is asked, with the menu's names; never guessed (F966).
         return {**base, "outcome": "ask", "question": model_question}
+    if model_question:
+        cap_assumed.append("You named a model that could be more than one: the plan uses the one it names on its "
+                           "steps; change it if you meant another.")
     # The check's errors are its own words, said to the person through `as_said`; a model's are the person's already.
     checks = list(found.errors)
     found.errors += model_issues
@@ -2645,7 +2662,8 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
         said.append("It can't be saved as it is: " + " ".join(model_issues[:3]))
     said += [f"{why}." for why in found.blocks.values()]
     said += found.notes
-    said += unsaid_said + names_said
+    said += names_said
+    cap_assumed += unsaid_said
     # Every part of the ask (F1515, eb's QA B13): what this plan does not do is said with why, never dropped; one they
     # asked to run once after it is built is a Run card after the save, pressed by them, since a run spends credits.
     not_done = [f"{' '.join(a.part.split())}: {' '.join((a.why_not or '').split())}" for a in plan.asked
@@ -2687,6 +2705,13 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     names = {i: a.get("name") or i for i, a in ws.agents.items()}
     # What this plan changed from the one the person last saw (F1245), on the card and the panel alike.
     plan.since_last = since_last(plan, plan_before_of(state, prior))
+    # F1600: how a run starts, from the plan; what it assumed, the planner's and code's own; a part done on one arm.
+    from core.native_builder.render import start_words
+
+    plan.starts = start_words(plan)
+    plan.assumed = list(dict.fromkeys([*plan.assumed, *cap_assumed,
+                                       *(own_terms_assumed(step, thing) for step, thing in own_terms_unsaid(plan))]))
+    plan.off += [off_a_path_words(p, arm) for p, arm in parts_off_a_path(plan)]
     review = render(plan, agent_names=names)
     if answer.get("outcome") == "replan" and answer.get("refused"):
         # A save refused after the yes (F1295): why it is asked again, in the save's own words.
@@ -2901,6 +2926,145 @@ def unnamed_knowledge(draft: dict, ws: Workspace, said: list[Any]) -> list[str]:
             used.add(by_id.get(str(ingest["kb_id"]), str(ingest["kb_id"])))
     words = json.dumps(said, default=str, ensure_ascii=False).lower()
     return sorted(n for n in used & names if n.lower() not in words)
+
+
+# ── F1600: every part of the ask on every path; their own terms never assumed silently ──────────────────────────────
+_END = "\x00end"
+#: A check against something of the person's own, by what it is called (F1600: a tester's "our terms").
+_OWN_THING = re.compile(r"\b(?:our|my|your|their)\s+(?:own\s+)?(?:[a-z]+\s+)?"
+                        r"(terms|polic(?:y|ies)|rules|guidelines|price list|pricing)\b", re.I)
+_THING_WORDS = re.compile(r"\b(terms|polic(?:y|ies)|rules|guidelines|price list|pricing)\b", re.I)
+
+
+def _flow(plan: O.Plan) -> tuple[str | None, dict[str, list[str]], dict[str, str]]:
+    """The plan's steps as a graph: its first step, each step's next ones (an if_else or switch has one per arm), and
+    the step each loop or parallel body step runs inside."""
+    ids = {s.id for s in plan.steps if s.type != "end"}
+    inside = {b: s.id for s in plan.steps for b in (s.body or []) if b in ids}
+    edges: dict[str, list[str]] = {}
+    for st in plan.steps:
+        if st.id not in ids:
+            continue
+        out = [*(st.branches or {}).values(), *([st.next] if st.next else [])]
+        edges[st.id] = [t if t in ids else _END for t in out] or [_END]
+    first = next((s.id for s in plan.steps if s.id in ids and s.id not in inside), None)
+    return first, edges, inside
+
+
+def _reaches_end(start: str, edges: dict[str, list[str]], avoid: set[str]) -> bool:
+    seen, todo = set(), [start]
+    while todo:
+        at = todo.pop()
+        if at == _END:
+            return True
+        if at in seen or at in avoid:
+            continue
+        seen.add(at)
+        todo += edges.get(at, [_END])
+    return False
+
+
+def parts_off_a_path(plan: O.Plan) -> list[tuple[O.PlanPart, str]]:
+    """Each part the plan does, by the steps it names, that a run can finish without (F1600), with the if_else or
+    switch whose arm it sits on. A part that says `when`, names no steps (a plan from before), or is run_once or
+    not_done is never one."""
+    first, edges, inside = _flow(plan)
+    if first is None:
+        return []
+    names = {s.id: s.name for s in plan.steps}
+    forks = [s.id for s in plan.steps if s.branches and s.id in edges]
+    out = []
+    for part in plan.asked:
+        if part.how != "plan" or (part.when or "").strip() or not part.steps:
+            continue
+        doing = {inside.get(i, i) for i in part.steps if i in edges or i in inside}
+        if not doing or not _reaches_end(first, edges, doing):
+            continue
+        arm = _deciding_fork(first, edges, forks, doing)
+        if arm is not None:
+            out.append((part, names.get(arm, arm)))
+    return out
+
+
+def _reach(start: str, edges: dict[str, list[str]], avoid: set[str] = frozenset()) -> set[str]:
+    """The steps a run can reach from `start` (itself included), never through `avoid`."""
+    seen, todo = set(), [start]
+    while todo:
+        at = todo.pop()
+        if at == _END or at in seen or at in avoid:
+            continue
+        seen.add(at)
+        todo += edges.get(at, [])
+    return seen
+
+
+def _steps_to(start: str, edges: dict[str, list[str]], doing: set[str]) -> int:
+    """How many steps from `start` to the nearest of `doing` (a large number when none is reached)."""
+    depth, level, seen = 0, [start], set()
+    while level:
+        if any(at in doing for at in level):
+            return depth
+        seen |= set(level)
+        level = [n for at in level for n in edges.get(at, []) if n != _END and n not in seen]
+        depth += 1
+    return 10 ** 6
+
+
+def _deciding_fork(first: str, edges: dict[str, list[str]], forks: list[str], doing: set[str]) -> str | None:
+    """The if_else or switch that decides whether a run does `doing`: one of its arms never reaches it
+    while another does. Of several, the one nearest it on the path; never simply the plan's first fork. Failing that,
+    a fork with an arm that finishes avoiding it and an arm that reaches it, again the nearest."""
+    on_path = _reach(first, edges, doing)
+
+    def reaches(arm: str) -> bool:
+        return arm != _END and bool(_reach(arm, edges) & doing)
+
+    def arms(f: str) -> list[str]:
+        return edges.get(f, [])
+
+    deciding = [f for f in forks if f in on_path and f not in doing
+                and any(reaches(a) for a in arms(f)) and any(not reaches(a) for a in arms(f))]
+    deciding = deciding or [f for f in forks if f in on_path and f not in doing
+                            and any(reaches(a) for a in arms(f))
+                            and any(a == _END or _reaches_end(a, edges, doing) for a in arms(f))]
+    return min(deciding, key=lambda f: _steps_to(f, edges, doing)) if deciding else None
+
+
+def off_a_path_finding(part: O.PlanPart, arm: str) -> str:
+    return (f'The part "{" ".join(part.part.split())}" is done only on one arm of **{arm}** (its steps: '
+            f'{", ".join(part.steps)}): a run that takes the other arm skips it. Put its step where every run passes, '
+            f"or say in the part's `when` when it applies.")
+
+
+def off_a_path_words(part: O.PlanPart, arm: str) -> str:
+    return (f'"{" ".join(part.part.split())}" is done only on one arm of "{arm}": a run that takes the other arm '
+            f"skips it")
+
+
+def own_terms_unsaid(plan: O.Plan) -> list[tuple[O.Step, str]]:
+    """Each step that checks against the person's own terms, policy or rules while nothing in the plan gives them
+    (F1600): no knowledge base, no form step asking for them, no line of `assumed` about them."""
+    if plan.knowledge:
+        return []
+    given = " ".join([*(s.prompt or "" for s in plan.steps if s.type == "human"), *plan.assumed])
+    out = []
+    for st in plan.steps:
+        if st.type not in ("agent", "llm"):
+            continue
+        m = _OWN_THING.search(f"{st.does} {st.prompt or ''}")
+        if m and not re.search(rf"\b{re.escape(m.group(1)[:5])}", given, re.I):
+            out.append((st, m.group(1).lower()))
+    return out
+
+
+def own_terms_finding(step: O.Step, thing: str) -> str:
+    return (f"**{step.name}** checks against their own {thing}, but nothing in the plan gives them: ask for the "
+            f"document in a form step, use a knowledge base of it, or write in `assumed` that it uses general {thing}.")
+
+
+def own_terms_assumed(step: O.Step, thing: str) -> str:
+    return (f'"{step.name}" checks against general {thing}, not yours: nothing gives it yours. Add your document '
+            f"as a knowledge base, or ask for it in the form.")
 
 
 async def _asked_first(base: dict, draft: dict, carried: list[str], ws: Workspace,

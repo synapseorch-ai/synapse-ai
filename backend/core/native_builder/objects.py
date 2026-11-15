@@ -294,6 +294,11 @@ class PlanPart(_Written):
                                                   "workflow takes a message")
     why_not: str | None = Field(None, description="not_done: why (another route or screen does it, or it can't be "
                                                   "done here)")
+    steps: list[str] = Field(default_factory=list, description=(
+        "plan: the ids of the steps that do this part (F1600): a part the person asked of every run is done on every "
+        "path of the run, never only on one arm of an if_else or switch"))
+    when: str | None = Field(None, description="plan: when it applies, in their words, if they asked it only for "
+                                               "some runs (e.g. only invoices over $1,000)")
 
 
 class PlanDraft(_Written):
@@ -329,6 +334,10 @@ class PlanDraft(_Written):
         "what it does not do and why"))
     settings: dict[str, Any] | None = Field(None, description="Optional workflow settings by their engine names: "
                                                               "state_schema, result_key")
+    assumed: list[str] = Field(default_factory=list, description=(
+        "What this plan takes as so that the person did not say (F1600), one plain line each, said on the card under "
+        "What I assumed for them to check: e.g. \"You type each invoice in\", \"Checked against general terms: add "
+        "your terms document\""))
 
 
 # ── what code fills in ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -409,6 +418,8 @@ class Plan(PlanDraft):
     part_words: list[str] = Field(default_factory=list)
     #: What is missing or off, besides a missing tool or a connection to make, each with where it is put right.
     off: list[str] = Field(default_factory=list)
+    #: How a run starts, from the plan itself (F1600): its schedule, a person's form, or when someone runs it.
+    starts: str = ""
     #: What this plan changed from the one the person last saw: a step added or removed, its tool, a shown input
     #: (F1245, `build_plan.since_last`). Set by `check_build`.
     since_last: list[str] = Field(default_factory=list)
