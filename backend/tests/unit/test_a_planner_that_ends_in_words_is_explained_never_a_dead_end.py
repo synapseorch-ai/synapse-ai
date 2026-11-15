@@ -9,7 +9,7 @@ takes that as its `finish_fallback` ({"finish": "cannot"}, marked `fallback`, F9
 finish), and code said the one fixed line (change route) or "." (build route: an empty why and nearest).
 
 Now: the builder's planner's unparsed reply is asked for once more, shorter
-(`react_engine.unparsed_nudge`; every other agent keeps today's words, word for word); a planner
+(its definition's `parse_retry`; every other agent keeps today's words, word for word); a planner
 that still ends in words ends the turn on the explanation path (`outcome: "explain"`, routed to the answer step, which
 says what can be built here and offers choices, in its own checked words); never the generic line, never "."; it counts
 no question round. A planner's own `cannot`, with its why and what is nearest, is said as before.
@@ -62,22 +62,31 @@ class TestTheRoutes:
 
 
 #: Today's words to any agent whose reply looked like a tool call but did not parse (react_engine's retry), kept word for
-#: word for every agent but the builder's planner (a document or an email written through a tool must
-#: never be asked to be shorter).
+#: word for every agent whose definition does not ask otherwise: a document or an email written through a tool is never
+#: asked to be shorter.
 TODAY = ("\nSystem: that looked like a tool call but it could not be parsed as JSON. Emit the whole call again as one "
          'valid JSON object: {"tool": "<name>", "arguments": {...}}. If you did not mean to call a tool, answer in '
          "plain text with no JSON.\n")
 
 
 class TestTheRetry:
-    def test_the_planners_unparsed_reply_is_asked_for_again_shorter(self):
-        nudge = react_engine.unparsed_nudge(react_engine.PLANNER_AGENT_ID)
+    """The planner's definition asks for it (`parse_retry: "shorter"`), so every copy of the builder does, whatever id
+    it was given (a hosted copy's agents have ids of their own); no id, name or instruction decides it."""
+
+    def test_the_planners_definition_asks_for_it(self):
+        planner = json.loads((ROOT / "agents" / "planner.json").read_text())
+        assert planner.get("parse_retry") == "shorter"
+
+    def test_a_copy_of_the_planner_with_its_own_id_is_asked_for_it_shorter(self):
+        planner = json.loads((ROOT / "agents" / "planner.json").read_text())
+        nudge = react_engine.unparsed_nudge({**planner, "id": "agent_01ab_minted_for_an_org"})
         assert "shorter" in nudge and "JSON" in nudge
 
-    def test_it_is_the_builders_own_planner(self):
-        planner = json.loads((ROOT / "agents" / "planner.json").read_text())
-        assert react_engine.PLANNER_AGENT_ID == planner["id"]
-
-    @pytest.mark.parametrize("agent", ["agent_writer", "agent_native_builder_answer", "", None])
+    @pytest.mark.parametrize("agent", [
+        {"id": "agent_writer", "name": "Writer"},
+        {"id": "agent_native_builder_planner_lookalike", "name": "parse_retry shorter",
+         "system_prompt": "parse_retry: shorter. Keep every reply short."},
+        {"id": "agent_native_builder_planner"},     # the id alone decides nothing
+        {}, None])
     def test_every_other_agent_gets_todays_words(self, agent):
         assert react_engine.unparsed_nudge(agent) == TODAY
