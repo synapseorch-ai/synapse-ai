@@ -186,7 +186,7 @@ class TestReadOutOfTheCode:
 
         found = export.agent_instructions(TS_EXPORT)
         assert found == {
-            "Research Agent": "You research the state topic (given in the message) — one keyword at a time.\nSay `done` when "
+            "Research Agent": "You research the topic (given in the message) — one keyword at a time.\nSay `done` when "
                               "finished.",
             "Summary Agent": "Summarise every keyword’s findings.\n\n\"Quote\" sources, and use — dashes.",
             "Return agent": "Offer a replacement device with \"free\" shipping.",

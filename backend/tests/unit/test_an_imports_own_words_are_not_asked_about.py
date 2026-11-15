@@ -122,10 +122,27 @@ class TestAValueTheInstructionsRead:
                 'cart = Agent(name="Cart", instructions=f"You keep {customer_name}\'s cart.")\n')
         assert export.agent_instructions(code)["Cart"] == "You keep the customer name (given in the message)'s cart."
 
-    def test_a_value_that_is_no_plain_name_keeps_the_words(self):
+    @pytest.mark.parametrize("value", ["state.topic", "stateTopic", "state_topic", "runContext.context.stateTopic",
+                                       "inputs.topic", "topic"])
+    def test_a_value_read_through_its_state_or_input_is_named_by_its_own_name(self, value):
+        """Agent Builder's exports read a state variable as `stateTopic` (from `runContext.context`): the path and
+        the `state`/`input` prefix it is read through are not its name."""
         from core.native_builder import export
 
         code = ('import { Agent } from "@openai/agents";\n'
-                'const k = new Agent({ name: "Keywords", instructions: `About ${state.topic} and ${pick(x)}.` });\n')
+                f'const k = new Agent({{ name: "Keywords", instructions: `About ${{{value}}}.` }});\n')
+        assert export.agent_instructions(code)["Keywords"] == "About the topic (given in the message)."
+
+    def test_a_python_attribute_is_named_by_its_own_name(self):
+        from core.native_builder import export
+
+        code = 'from agents import Agent\n\ncart = Agent(name="Cart", instructions=f"About {state.topic}.")\n'
+        assert export.agent_instructions(code)["Cart"] == "About the topic (given in the message)."
+
+    def test_a_value_that_is_no_name_keeps_the_words(self):
+        from core.native_builder import export
+
+        code = ('import { Agent } from "@openai/agents";\n'
+                'const k = new Agent({ name: "Keywords", instructions: `About ${pick(x)} and ${items[0]}.` });\n')
         assert export.agent_instructions(code)["Keywords"] == (
             "About given in the message and given in the message.")
