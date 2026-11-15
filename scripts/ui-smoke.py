@@ -12419,8 +12419,11 @@ async def check_homeempty(browser) -> str:
         line = (await page.locator("main header p").first.inner_text()).strip()
         if line != "Nothing needs you. Nothing has run this week.":
             bad.append(f"the status line reads {line!r}")
+        # Each section says its words once its own read has answered (F1611), so each is waited for.
         for words in ("Nothing running.", "No runs this week.", "No runs yet", "all clear", "Nothing runs on its own yet."):
-            if not await page.get_by_text(words, exact=False).count():
+            try:
+                await page.get_by_text(words, exact=False).first.wait_for(timeout=10_000)
+            except Exception:  # noqa: BLE001 — said below
                 bad.append(f"no {words!r}")
     finally:
         await ctx.close()
