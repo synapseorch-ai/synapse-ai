@@ -55,7 +55,7 @@ async def _canonical(server_module: Any):
     tools bare (`firecrawl_scrape`) while the catalogue, the resolver and every saved agent call it
     `firecrawl__firecrawl_scrape`; and a model writes a native server's tool as `web_scraper.scrape_url`. Every
     one of those read as "nothing provides it", so a plan using the built-in scraper, or a Firecrawl already
-    connected, was sent to research, which offered to connect Firecrawl (gethubservice, prod rc4.2).
+    connected, was sent to research, which offered to connect Firecrawl (in a client's workspace).
 
     Accepted, in order: the name itself (the run's own lookup); `server.tool` and `server__tool`; a bare tool name
     exactly one server answers. A bare name two servers answer is never guessed: it reads as missing, and the

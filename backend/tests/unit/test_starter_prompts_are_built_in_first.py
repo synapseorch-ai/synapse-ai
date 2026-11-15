@@ -3,7 +3,7 @@
 `frontend/src/components/starters/table.ts` is reviewed copy that lands in a new Synapse AI chat. Every row must
 work on the built-in tools (web search, read and scrape a page, screenshots, the Vault) unless it names the app it
 needs, and then its card says so. A row that sends someone to a scraping or search vendor breaks Naveen's
-built-in-first rule (the Firecrawl offer on gethubservice, rc4.2), so the vendors' names fail here, in the words or
+built-in-first rule (the Firecrawl offer in a client's workspace), so the vendors' names fail here, in the words or
 in `needs`. OSS Home's "I work in" offers each persona, so each must have rows of its own.
 """
 from __future__ import annotations

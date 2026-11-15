@@ -169,9 +169,20 @@ Scratch — genuinely throwaway working files — is `core/storage/scratch.py`. 
    app.include_router(my_router)
    ```
 
+## How code and comments are written
+
+This repository is public, and everything committed to it stays in its history.
+
+- **A comment says why the code is the way it is**: the rule it follows, the failure it prevents, the trade-off it makes, in plain words someone new to the code can follow. What the code does should be readable from the code itself. A tracking number may tag it (`F1606`); who found the problem, when, or where it was discussed does not belong in it.
+- **A test's name and docstring state the behaviour it holds**, not the incident that prompted it.
+- **No names of people, customers or teams** in code, comments, tests or commit messages. Describe a situation by its role instead: "a workspace with nothing connected", "a model with a small context window".
+- **No production data**: no real ids, logs, transcripts, email addresses, or anything a user wrote. Tests use made-up data: an invented company, `example.com`, an id that is obviously fake.
+- **A commit message says what changed and why**, and how it was tested.
+
 ## PR Checklist
 
 - [ ] No secrets or API keys committed (`backend/var/` is a running install's data and is never committed)
+- [ ] Comments, tests and commit messages name no person, customer or team, and carry no production data
 - [ ] New state goes through `core/store/`, `core/storage/` or `core/runtime_dirs.py` — no path from `__file__`, no path cached at import
 - [ ] `next.config.ts` still has `output: 'standalone'`
 - [ ] New env vars documented in `.env.example`
