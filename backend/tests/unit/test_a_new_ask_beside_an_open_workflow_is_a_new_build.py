@@ -120,3 +120,37 @@ class TestNothingEndsInSilence:
         state = json.loads((root / "orchestration.json").read_text()).get("state_schema") or {}
         default = json.dumps(state.get("run_changes", ""))
         assert run_writes.NOTHING_CHANGED + '"' not in default
+
+
+class TestAnyLanguageIsAskedNeverAChange:
+    """the job-shape words are a fast path; when they can't decide, in any language, the message is asked
+    about once ("Change X, or build something new?"), within F1600's cap, and never goes silently to the change route."""
+
+    BENGALI = "প্রতি সোমবার গ্রাহকদের ইমেইলের সারাংশ আমাকে পাঠাও"
+    JAPANESE = "毎朝、売上の要約を送ってください"
+
+    @pytest.mark.parametrize("message", [BENGALI, JAPANESE])
+    @pytest.mark.parametrize("kind", ["change", "build"])
+    def test_a_non_latin_new_job_is_asked_about_never_changed(self, message, kind):
+        routed = _route(message, kind)
+        assert routed.route == "step_turn_said" and routed.overridden_by == "open_or_new", (kind, routed.route)
+
+    def test_the_ask_names_the_open_workflow_and_a_new_build(self):
+        from core.native_builder.classify import open_or_new_said
+
+        said = open_or_new_said("Customer Refund Approval")
+        assert '"Customer Refund Approval"' in said and "something new" in said
+
+    def test_talk_is_never_asked_it(self):
+        assert _route("hello there", "answer").route == "step_answer"
+
+    def test_past_the_cap_it_is_built_new(self):
+        from core.native_builder.change_tools import QUESTIONS, ROUNDS_KEY
+
+        routed = override(Request(kind="change", needs="workspace"), message=self.JAPANESE,
+                          state={**OPEN, ROUNDS_KEY: QUESTIONS}, inventory=INVENTORY, connectable=set())
+        assert routed.kind == "build" and routed.route == "step_plan_room"
+
+    def test_a_new_answers_the_ask_with_a_new_build(self):
+        turn = read_turn.decide("new", previous={"offered_build": {"fact": "", "ask": self.JAPANESE}}, facts={})
+        assert turn.route == "offer_taken" and turn.message == self.JAPANESE
