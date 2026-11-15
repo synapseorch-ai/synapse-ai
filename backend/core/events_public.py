@@ -98,6 +98,9 @@ PRIVATE_STATE_PREFIXES = (
     # answer lacks was said (`build_plan._ANSWER_FIELDS_SAID`, F1394), and that an object put into text was
     # (`build_plan._OBJECT_TEXT_SAID`, F1402).
     "_approved_review", "_built_new_beside", "_plan_sendbacks", "_plan_structure_said", "_answer_fields_said", "_object_text_said",
+    # Where a builder run's model came from: the person's pick, the Builder model setting, or the everyday model
+    # (`effort.MODEL_SOURCE_KEY`, F1606).
+    "_model_source",
     # That a save refused after the yes went back to the planner once (`build_save.SAVE_REPLAN_KEY`, F1295).
     "_save_replanned",
     # That a change request's words went back once for a card (`change_tools.WORDS_SENT_KEY`, F1310).

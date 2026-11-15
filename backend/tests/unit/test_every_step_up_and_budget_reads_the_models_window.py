@@ -104,7 +104,12 @@ class TestSynapseAIIsSteppedUpOnlyToAModelThatCanHoldIt:
         assert (await try_stronger.panel_retry(RUN, SESSION))["model"] == SONNET.id
 
     async def test_the_effort_offers_use_stronger(self, menu):
-        found = await effort._stronger(HAIKU.id)
+        """F1606: the pre-build offer is for a measured stronger model only; measured or not, never one too small."""
+        MM.set_measured_stronger({HAIKU.id: [SMALL.id, SONNET.id]})
+        try:
+            found = await effort._stronger(HAIKU.id)
+        finally:
+            MM.set_measured_stronger({})
         assert found is not None and found[0].id == SONNET.id
 
     async def test_an_agents_chat_offer_is_as_before(self, menu):

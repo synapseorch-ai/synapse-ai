@@ -94,6 +94,12 @@ async def _turns(session_id: str | None, run_id: str) -> list[tuple[str, str, di
     return [(r[0], r[1], r[2] or {}) for r in rows]
 
 
+#: Where this run's model came from (F1606), set by the route: "pick" (the panel's), "builder_model" (the setting) or
+#: "everyday" (the workspace's default). A model the person chose is never second-guessed before a build.
+MODEL_SOURCE_KEY = "_model_source"
+CHOSEN = ("pick", "builder_model")
+
+
 def _current_model(state: dict) -> str | None:
     from core.config import load_settings
     from core.orchestration.engine import OrchestrationEngine
@@ -101,24 +107,25 @@ def _current_model(state: dict) -> str | None:
     return state.get(OrchestrationEngine.MODEL_OVERRIDE_KEY) or load_settings().get("model") or None
 
 
-async def _stronger(current: str | None) -> tuple[Any, Any] | None:
-    """The model up from `current` this workspace can call and pay for, and `current`'s own entry; None if none."""
+async def _stronger(current: str | None) -> tuple[Any, Any, list] | None:
+    """The model F1598's rank measured stronger than `current`, this workspace can call and pay for, with `current`'s
+    own entry and the menu; None if none (F1606: until F1598 measures, none)."""
     from core.native_builder import models_menu as MM
 
     menu = await MM.menu()
     if not menu or not current:
         return None
-    # Synapse AI's own model: its planner reads a long prompt, so never one too small for it (F1591).
-    picked = MM.stronger_than(current, "simple", has_tools=True, menu=menu, long_inputs=True)
-    entry = next((e for e in menu if picked is not None and e.id == picked.id), None)
-    if entry is None or not entry.can_pay:
+    entry = MM.measured_stronger(current, menu)
+    if entry is None:
         return None
-    return entry, next((e for e in menu if e.id == current), None)
+    return entry, next((e for e in menu if e.id == current), None), menu
 
 
 def _price(up: Any, now: Any) -> str:
+    """The price up, as it is (F1606): "about 1.4× the price", never rounded to "about 1×"."""
     if now is not None and now.price_out and up.price_out:
-        return f"about {round(up.price_out / now.price_out):g}× the price"
+        ratio = f"{up.price_out / now.price_out:.1f}".rstrip("0").rstrip(".")
+        return f"about {ratio}× the price"
     return f"about ${up.price_out:g} per 1M output tokens"
 
 
@@ -179,18 +186,24 @@ async def effort_check(args: dict, server_module: Any, events: list[dict]) -> di
     why = reasons(request, message, connectable=await _connectable(), failed_before=failed_before)
     if not is_heavy(why):
         return {**go, "why": why}
+    # The person chose this model, in the panel or as their Builder model: never second-guessed before a build (F1606).
+    if state.get(MODEL_SOURCE_KEY) in CHOSEN:
+        return {**go, "why": why, "chosen": state.get(MODEL_SOURCE_KEY)}
     found = await _stronger(current)
     if found is None:
         return {**go, "why": why}
-    up, now = found
-    default_name = now.name if now is not None else str(current)
+    up, now, menu = found
+    from core.native_builder.models_menu import display_name
+
+    up_name, default_name = await display_name(up.id, menu), await display_name(current, menu)
     said_why = ", ".join(WORDS[w] for w in why)
     price = _price(up, now)
-    events.append({"type": KIND, "model": up.id, "name": up.name, "default": current, "default_name": default_name,
-                   "price": price, "why": why, "use": f"Use {up.name}", "continue": f"Continue with {default_name}",
+    at = f"{price} of {default_name}" if now is not None and now.price_out else price
+    events.append({"type": KIND, "model": up.id, "name": up_name, "default": current, "default_name": default_name,
+                   "price": price, "why": why, "use": f"Use {up_name}", "continue": f"Continue with {default_name}",
                    "effort_of": run_id})
-    say = (f"This looks like a bigger build ({said_why}). {up.name} usually does these better, at {price} of "
-           f"{default_name}. Use {up.name} for this build, or continue with {default_name}.")
+    say = (f"This looks like a bigger build ({said_why}). {up_name} usually does these better, at {at}. Use "
+           f"{up_name} for this build, or continue with {default_name}.")
     out = {"next": "offer", "ask": message, "model": up.id, "why": why, "say": say,
            "carry": {k: state[k] for k in CARRY if k in state}}
     # The ask's images, kept past this turn's end (a finished run lets its own go): its press or the next message

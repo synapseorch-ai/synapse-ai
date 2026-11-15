@@ -82,6 +82,40 @@ def set_model_facts(fn: Facts | None) -> None:
     _facts = fn
 
 
+#: F1598's measured rank, by model id: the models measured stronger for building, best first (F1606). Empty until F1598
+#: measures, so no model is offered as stronger before a build on a ranking by reasoning and price alone.
+_measured: dict[str, list[str]] = {}
+
+
+def set_measured_stronger(rank: dict[str, list[str]] | None) -> None:
+    global _measured
+    _measured = {k: list(v) for k, v in (rank or {}).items()}
+
+
+def measured_stronger(current: str | None, menu: list) -> Any:
+    """The model F1598's rank measured stronger than `current` that this workspace can call and pay for, and that
+    holds Synapse AI's long prompt (F1591's rule, stronger_than's own test: it calls tools, and its window is
+    LONG_WINDOW or more, or one not known), or None."""
+    for model_id in _measured.get(current or "", []):
+        entry = next((e for e in menu if e.id == model_id and e.can_pay and _fits(e, "simple", True, True)), None)
+        if entry is not None:
+            return entry
+    return None
+
+
+async def display_name(model_id: str | None, menu: list | None = None) -> str:
+    """A model as the person reads it (F1606): the menu's name, else the host's facts for it, else its id as it is."""
+    model_id = str(model_id or "")
+    entry = next((e for e in menu or [] if e.id == model_id), None)
+    if entry is not None and entry.name and entry.name != model_id:
+        return entry.name
+    if _facts is not None and model_id:
+        said = (await _facts([model_id]) or {}).get(model_id) or {}
+        if said.get("name"):
+            return str(said["name"])
+    return model_id
+
+
 def _source(model_id: str, mode: str) -> str:
     low = model_id.lower()
     if low.startswith("synapse."):

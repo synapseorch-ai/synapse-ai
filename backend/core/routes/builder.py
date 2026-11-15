@@ -231,6 +231,17 @@ async def _selected_model(request_model: str | None) -> str | None:
     return load_settings().get("builder_model") or None
 
 
+def _model_source(request_model: str | None) -> dict[str, str]:
+    """Where this turn's model came from (F1606), as the run's state key (`effort.MODEL_SOURCE_KEY`): the panel's pick,
+    the Builder model setting, or the everyday model."""
+    from core.config import load_settings
+    from core.native_builder.effort import MODEL_SOURCE_KEY
+
+    if request_model:
+        return {MODEL_SOURCE_KEY: "pick"}
+    return {MODEL_SOURCE_KEY: "builder_model" if load_settings().get("builder_model") else "everyday"}
+
+
 async def _too_small(request_model: str | None) -> str | None:
     """Why Synapse AI cannot run on the model this turn would take, or None (F1592): the pick, else the Builder model
     setting, else the everyday model the run falls back to, each named as what chose it."""
@@ -410,6 +421,8 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
         # Applied by the engine on run and re-applied on resume, so the second
         # half of a conversation runs on the model the first half did.
         OrchestrationEngine.MODEL_OVERRIDE_KEY: await _selected_model(request.model),
+        # Where it came from (F1606): a model the person chose gets no offer of another before a build.
+        **_model_source(request.model),
         # The builder's quick steps (its routing evaluators, `model_role: "quick"`) on their own model when the
         # workspace names one (BWA1); empty leaves them on the builder model.
         OrchestrationEngine.MODEL_ROLES_KEY: _quick_roles(),
