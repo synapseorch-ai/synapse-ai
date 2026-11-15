@@ -6151,6 +6151,11 @@ async def check_f1600card(browser) -> str:
                     await page.locator('[data-testid="assistant-open"]:visible').first.click()
                     panel = page.locator('[data-testid="assistant-panel"]')
                     await panel.get_by_text("How it starts", exact=True).first.wait_for(timeout=10_000)
+                    # The panel fades in over 200 ms (opacity 0 → 1): a shot taken before that ends shows the page
+                    # through it, which it never does once it is in.
+                    await page.wait_for_function(
+                        "() => getComputedStyle(document.querySelector('[data-testid=\"assistant-panel\"]')).opacity === '1'",
+                        timeout=5_000)
                     text = " ".join((await panel.inner_text()).split())
                     tag = f"{name} {scheme} {width[0]}"
                     if plan["starts"].replace("**", "") not in text:
@@ -6165,6 +6170,13 @@ async def check_f1600card(browser) -> str:
                         bad.append(f"{tag}: an empty What I assumed is drawn")
                     if shots:
                         await panel.screenshot(path=os.path.join(shots, f"f1600card-{name}-{scheme}-{width[0]}.png"))
+                        if width[0] == 390 and plan.get("assumed"):
+                            # The card runs past a phone's fold: the conversation scrolled to its end shows What I
+                            # assumed and Missing or off.
+                            await panel.locator(".overflow-y-auto").first.evaluate("(el) => el.scrollTo(0, el.scrollHeight)")
+                            await asyncio.sleep(0.4)
+                            await panel.screenshot(path=os.path.join(
+                                shots, f"f1600card-{name}-{scheme}-{width[0]}-scrolled.png"))
                 finally:
                     await ctx.close()
     if bad:
