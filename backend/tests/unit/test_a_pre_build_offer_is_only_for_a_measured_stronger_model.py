@@ -89,3 +89,20 @@ class TestThePrice:
                                                 (25, 10, "about 2.5× the price")])
     def test_it_is_said_as_it_is(self, up, now, said):
         assert effort._price(_named("u", "U", up), _named("n", "N", now)) == said
+
+
+class TestEvenAMeasuredStepUpHoldsSynapseAIsPrompt:
+    """F1591's rule on the measured path: a model too small for Synapse AI's long prompt is never offered, measured or
+    not (a tester's Mistral Large, 32K, offered as "better" on prod)."""
+
+    def test_a_too_small_model_ranked_first_is_passed_over(self):
+        small = MM.ModelEntry(id="synapse.mistral-large", name="Mistral Large", provider="mistral", source="managed",
+                              tools="native", vision=False, reasoning=True, price_in=4, price_out=12, can_pay=True,
+                              window=32_768)
+        menu = [*NAMED, small]
+        MM.set_measured_stronger({"synapse.claude-haiku": ["synapse.mistral-large", "synapse.claude-sonnet"]})
+        try:
+            picked = MM.measured_stronger("synapse.claude-haiku", menu)
+        finally:
+            MM.set_measured_stronger({})
+        assert picked is not None and picked.id == "synapse.claude-sonnet"
