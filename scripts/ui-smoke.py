@@ -12712,12 +12712,15 @@ async def check_homestall(browser) -> str:
                         bad.append(f"{tag}: {name} held past the timeout, Home still says {loading!r}")
                 if shots:
                     await page.screenshot(path=f"{shots}/f1612-timedout-{scheme}-{width[0]}.png", full_page=True)
-                release.set()
+                # Try again first, then the backend answers: released first, the 10 s poll can read the runs before
+                # the press lands, and the line with its button is gone.
                 retry = page.get_by_role("alert").filter(has_text=F1611_UNREAD).get_by_role("button", name="Try again")
                 if not await retry.count():
                     bad.append(f"{tag}: no Try again for the runs after the timeout")
+                    release.set()
                 else:
                     await retry.click()
+                    release.set()
                     try:
                         await page.get_by_text("No runs yet", exact=True).first.wait_for(timeout=10_000)
                     except Exception:  # noqa: BLE001 — said below

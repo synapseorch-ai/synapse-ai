@@ -32,8 +32,10 @@ def _node(script: str) -> dict:
     return json.loads(run.stdout.strip().splitlines()[-1])
 
 
-#: A fetch that never answers, as a stalled backend's, until its signal gives up on it.
+#: A fetch that never answers, as a stalled backend's, until its signal gives up on it. Node lets a process end while
+#: only `AbortSignal.timeout`'s timer is pending (a browser's page stays), so a timer holds it open meanwhile.
 STALLED = """
+const hold = setInterval(() => {}, 1000);
 let asked = 0;
 const stalled = (url, init) => { asked += 1; return new Promise((_, reject) => {
   init?.signal?.addEventListener('abort', () => reject(init.signal.reason), { once: true }); }); };
@@ -53,6 +55,7 @@ def test_a_stalled_read_gives_up():
 const t0 = Date.now();
 let why = null;
 try { await R.readJson('/api/usage/summary', { timeoutMs: 50, fetchImpl: stalled }); } catch (e) { why = e?.name; }
+clearInterval(hold);
 console.log(JSON.stringify({why, ms: Date.now() - t0}));
 """)
     assert out["why"] == "TimeoutError" and out["ms"] < 2000, out
@@ -67,6 +70,7 @@ let gaveUp = false;
 try { await first; } catch { gaveUp = true; }
 const third = read();
 third?.catch(() => {});
+clearInterval(hold);
 console.log(JSON.stringify({second: second === null, gaveUp, asked}));
 """)
     assert out == {"second": True, "gaveUp": True, "asked": 2}, out
