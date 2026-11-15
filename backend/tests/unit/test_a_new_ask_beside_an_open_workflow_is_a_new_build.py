@@ -150,6 +150,18 @@ class TestAnyLanguageIsAskedNeverAChange:
         routed = override(Request(kind="change", needs="workspace"), message=self.JAPANESE,
                           state={**OPEN, ROUNDS_KEY: QUESTIONS}, inventory=INVENTORY, connectable=set())
         assert routed.kind == "build" and routed.route == "step_plan_room"
+        assert routed.overridden_by == "new_past_cap", "a guess past the cap, its own rule, so it is said"
+
+    async def test_past_the_cap_the_card_says_it_was_built_new_not_a_change(self, client):
+        """built new without asking is a guess, so it is said under What I assumed (F1600)."""
+        from core.native_builder.classify import NEW_BESIDE_KEY
+        from test_the_builder_asks_before_it_guesses import _check, _plan, _run, desk  # noqa: F401
+
+        run = await _run(**{NEW_BESIDE_KEY: "Customer Refund Approval"})
+        out = await _check(run, _plan())
+        assumed = out["review"].split("## What I assumed", 1)
+        assert len(assumed) == 2
+        assert 'Built as a new workflow, not a change to "Customer Refund Approval"' in assumed[1]
 
     def test_a_new_answers_the_ask_with_a_new_build(self):
         turn = read_turn.decide("new", previous={"offered_build": {"fact": "", "ask": self.JAPANESE}}, facts={})
