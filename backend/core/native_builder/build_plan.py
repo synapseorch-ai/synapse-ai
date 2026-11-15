@@ -2511,6 +2511,10 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
 
         return {**base, "outcome": "ask", "question": asked_text(draft.get("question") or "",
                                                                  list(draft.get("options") or []))}
+    if finish == "cannot" and draft.get("fallback"):
+        # The planner ended in words, not a finish (F958's fallback): the answer step explains what can be built here
+        # and offers choices, in its own checked words; never "." (F1600 hardening). No question round is counted.
+        return {**base, "outcome": "explain"}
     if finish == "cannot":
         return {**base, "outcome": "said", "say": f"{str(draft.get('why', '')).rstrip('.')}. "
                                                   f"{draft.get('nearest', '')}".strip()}

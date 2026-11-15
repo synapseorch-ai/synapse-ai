@@ -1998,9 +1998,10 @@ async def _check_change(args: dict, server_module: Any, events: list[dict]) -> d
         return {**base, "outcome": "ask", "question": asked_text(draft.get("question") or "",
                                                                  list(draft.get("options") or []))}
     if finish == "cannot" and draft.get("fallback"):
-        # The planner answered in words, not with a finish (F958: a channel's agent, which no op re-points). Code's
-        # words, never the model's, which said "Done, it's moved" of a change nobody made.
-        return {**base, "outcome": "said", "say": FALLBACK_CANNOT}
+        # The planner answered in words, not with a finish (F958: a channel's agent, which no op re-points): never the
+        # model's words, which said "Done, it's moved" of a change nobody made, and never a dead end either: the answer
+        # step explains what can be done here, in its own checked words (F1600 hardening).
+        return {**base, "outcome": "explain"}
     if finish == "cannot":
         return {**base, "outcome": "said", "say": cannot_said(draft)}
     if finish != "submit_change":

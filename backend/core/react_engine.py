@@ -56,6 +56,27 @@ NO_TOOLS_SENTENCE = "Sorry, I couldn't put that into words; could you say it ano
 MAX_TURNS = 30
 
 
+
+#: What any agent is told when its reply looked like a tool call but could not be parsed. Kept word for word for every
+#: agent whose definition does not ask otherwise: a document or an email written through a tool is never asked to be
+#: shorter.
+UNPARSED_NUDGE = ("\nSystem: that looked like a tool call but it could not be parsed as JSON. Emit the whole call again as "
+                  'one valid JSON object: {"tool": "<name>", "arguments": {...}}. If you did not mean to call a tool, '
+                  "answer in plain text with no JSON.\n")
+#: For an agent whose definition says `parse_retry: "shorter"` (the builder's planner, F1600 hardening): a plan for a
+#: very long ask can run past what one reply carries.
+SHORTER_UNPARSED_NUDGE = ("\nSystem: your last reply looked like a tool call but did not parse as JSON. Send it again, "
+                          'shorter: the whole call as one valid JSON object, {"tool": "<name>", "arguments": {...}}, with '
+                          "each step's words kept to what it needs. If what was asked can't be built here, finish with "
+                          "cannot and say why and what is nearest.\n")
+
+
+def unparsed_nudge(agent: dict | None) -> str:
+    """The words after an unparsed reply: as the agent's own definition asks (`parse_retry`), else every agent's as they
+    were. The definition decides, never an id, so every copy of an agent is asked alike."""
+    return SHORTER_UNPARSED_NUDGE if (agent or {}).get("parse_retry") == "shorter" else UNPARSED_NUDGE
+
+
 def _builder_reads() -> frozenset[str]:
     """The AI builder's tools that only read (`builder_access.READS`): reads for the repeat guard (F1236)."""
     from core.builder_access import READS
@@ -3142,10 +3163,7 @@ async def run_agent_step(
                            'To call a tool, write the whole call: {"tool": "<name>", "arguments": {...}}. If '
                            "you already have the answer, give it to the person in plain words.\n"
                            if _bare == "then_words" else
-                           "\nSystem: that looked like a tool call but it could not be parsed as "
-                           "JSON. Emit the whole call again as one valid JSON object: "
-                           '{"tool": "<name>", "arguments": {...}}. If you did not mean to call a '
-                           "tool, answer in plain text with no JSON.\n")
+                           unparsed_nudge(active_agent))
                     )
                     for _e in _unstream("retry"):
                         yield _e

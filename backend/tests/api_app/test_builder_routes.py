@@ -448,7 +448,9 @@ class TestAChangeThatChangesNothingHasNothingToApprove:
         with the engine's sentence: the check runs, the apply never does, and nothing is saved."""
         from core.native_builder.change_tools import FALLBACK_CANNOT
 
-        fake_llm.script([route("manage"), "I would delete it.", "Yes, delete it."])
+        # F1600 hardening: then the answer step explains, in its own words, checked (F1323) so that no change it did
+        # not make is claimed: here it says it deleted it, which it never did.
+        fake_llm.script([route("manage"), "I would delete it.", "Yes, delete it.", "Done, I deleted it."])
         events = await stream(client, "/api/builder/chat", {"message": "delete something"})
 
         assert not [e for e in events if e["type"] == "human_input_required"]
@@ -456,7 +458,9 @@ class TestAChangeThatChangesNothingHasNothingToApprove:
         assert "Apply the Change" not in steps
         assert not [e for e in events if e.get("type") == "resource_saved"]
         done = next(e for e in events if e["type"] == "orchestration_complete")
-        assert done["final_state"]["summary"] == FALLBACK_CANNOT
+        said = done["final_state"]["summary"]
+        assert said != FALLBACK_CANNOT and "Answer the Question" in steps, "explained, never the dead end"
+        assert "deleted" not in said.lower() and said.startswith("Nothing was changed"), "no change it never made"
 
 
 class TestAnAttachmentReachesTheStepAndNothingElse:

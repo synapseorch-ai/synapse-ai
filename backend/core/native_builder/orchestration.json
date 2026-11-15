@@ -1519,6 +1519,7 @@
             ],
             "switch_expression": "state.plan_checked.outcome or \"error\"",
             "switch_cases": {
+                "explain": "step_answer",
                 "review": "step_human_review",
                 "ask": "step_human_clarify",
                 "research": "step_plan_lookup",
@@ -2499,6 +2500,7 @@
             "output_key": null,
             "switch_expression": "state.change_checked.outcome or \"error\"",
             "switch_cases": {
+                "explain": "step_answer",
                 "review": "step_manage_review",
                 "ask": "step_change_clarify",
                 "said": "step_change_said",

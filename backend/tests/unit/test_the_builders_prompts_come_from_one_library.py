@@ -195,7 +195,9 @@ from core.native_builder import prompt_lint, seed
 #: rest in `assumed`, and names each done part's `steps` (and `when`), 84043abd… (on 2.0.11's 26346700).
 #: F1605: the run's starting words for run_changes are never "Nothing in your workspace changed." alone;
 #: they say what to ask instead; and classify's switch takes F1605's one question to step_turn_said, f76f03e6… (on F1600's 84043abd).
-BUNDLE_SHA256 = "f76f03e6f2a18a3fe82987edace195342cb68f9f3c5b9be9da0e48f7e630dcb6"
+#: F1600 hardening: step_plan_route and step_check_route take the planner's ending in words to step_answer
+#: ("explain"), and the planner's definition asks for an unparsed reply again shorter (parse_retry), 6f6c9024… (on F1605's f76f03e6).
+BUNDLE_SHA256 = "6f6c90247098ca6a8136a3d0143fb43ae32bd996ad4fb87a56287a56d016c3b7"
 
 
 def _sha(definitions) -> str:
