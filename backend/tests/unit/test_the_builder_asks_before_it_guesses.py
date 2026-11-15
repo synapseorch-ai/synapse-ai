@@ -241,6 +241,14 @@ class TestAPlanCarriesNoQuestion:
         steps = " ".join((ROOT / "prompts" / "plan_steps.md").read_text().split())
         assert "never guessed" in steps
 
+    def test_the_planner_is_told_what_to_ask_and_to_say_what_it_assumed(self):
+        """F1600 ("ask once or twice … be careful on not making the builder just assume or guess"):
+        what a build depends on and only the person knows is asked, in at most two rounds, and the rest is said."""
+        prompt = " ".join(json.loads((ROOT / "agents" / "planner.json").read_text())["system_prompt"].split())
+        for asked in ("where the data comes from", "their own rules or documents", "where the results go"):
+            assert asked in prompt, asked
+        assert "at most two rounds" in prompt and "`assumed`" in prompt
+
 
 # ── the form ────────────────────────────────────────────────────────────────────────────────────────────────────
 
