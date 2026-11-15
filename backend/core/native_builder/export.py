@@ -122,17 +122,30 @@ INSTRUCTIONS_REF = re.compile(r"‹\s*instructions\s+of\s+[\"“]?([^\"“”›
 #: What a value the instructions read at run time becomes (the guide's rule 3), and a key taken out (its last line).
 GIVEN = "given in the message"
 KEY_HELD = "the key it held"
-_PLAIN_NAME = re.compile(r"[A-Za-z_$][\w$]*")
+_PATH = re.compile(r"[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*")
+#: The prefixes a value is read through inside one name, never part of it: Agent Builder's `stateTopic` (from
+#: `runContext.context`), `input_topic`, `varsTopic`. Any case at the first letter, then a capital or an underscore,
+#: so `statements` and `inputs` stay whole. A dotted path keeps only its last name (`state.topic`, `ctx.topic`).
+_LEADING = re.compile(r"^(?:[Ss]tate|[Ii]nputs?|[Vv]ars?)(?:_+(?=[A-Za-z])|(?=[A-Z]))")
+#: What follows a prefix that is part of the name: `stateOfTheArt`, `input_as_text`.
+_JOINS = re.compile(r"(?:[Oo]f|[Aa]nd|[Oo]r|[Tt]he|[Tt]o|[Ii]n|[Ff]or|[Oo]n|[Aa]t|[Aa]s|[Bb]y|[Ww]ith)(?:[A-Z_]|$)")
 
 
 def named_value(expr: str) -> str:
-    """What a value read at run time becomes in an Agent's instructions (F1614): named by its variable when it is a
-    plain name, `${topic}` → "the topic (given in the message)", `{numKeywords}` → "the num keywords (given in the
-    message)", so a sentence with two of them still reads; anything else, `GIVEN` as it always was."""
-    name = expr.strip()
-    if not _PLAIN_NAME.fullmatch(name):
+    """What a value read at run time becomes in an Agent's instructions (F1614): named by its own name, so a sentence
+    with two of them still reads. `${topic}`, `${state.topic}`, `${runContext.context.stateTopic}` and an f-string's
+    `{state.topic}` are each "the topic (given in the message)"; `{numKeywords}` is "the num keywords (given in the
+    message)". The path and the state or input prefix a value is read through are dropped. A call, an index or
+    anything else keeps `GIVEN`, as it always was."""
+    text = expr.strip()
+    if not _PATH.fullmatch(text):
         return GIVEN
-    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", name.strip("_$")).replace("_", " ")
+    name = re.split(r"\s*\.\s*", text)[-1].strip("_$")
+    bare = _LEADING.sub("", name, count=1)
+    # A prefix that is part of the name stays: `stateOfTheArt` is not "of the art".
+    if bare and not _JOINS.match(bare):
+        name = bare
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", name).replace("_", " ")
     spaced = re.sub(r"\s+", " ", spaced).strip().lower()
     return f"the {spaced} ({GIVEN})" if spaced else GIVEN
 
@@ -142,7 +155,7 @@ def agent_instructions(text: str) -> dict[str, str]:
     the builder's model retyped them, and lost up to 70%). Python is parsed, never run: a literal, an f-string, a
     concatenation, a name bound to one or the function that returns one (Agent Builder's dynamic instructions).
     TypeScript's string and template literals are read the same ways. A value read at run time (an f-string's `{x}`, a
-    template's `${x}`) is the words `GIVEN`, and a key the door took out `KEY_HELD`. `text` may carry words around the
+    template's `${x}`) is `named_value`'s words, and a key the door took out `KEY_HELD`. `text` may carry words around the
     code; what does not read gives nothing, never an error."""
     found = _python_instructions(text) if _PY_AGENT.search(text) else {}
     if not found and _TS_AGENT.search(text):
@@ -187,7 +200,8 @@ def _python_instructions(text: str) -> dict[str, str]:
             return node.value if isinstance(node.value, str) else None
         if isinstance(node, ast.JoinedStr):
             return "".join(str(p.value) if isinstance(p, ast.Constant)
-                           else named_value(p.value.id) if isinstance(getattr(p, "value", None), ast.Name) else GIVEN
+                           else named_value(ast.unparse(p.value)) if isinstance(getattr(p, "value", None),
+                                                                                (ast.Name, ast.Attribute)) else GIVEN
                            for p in node.values)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             left, right = words(node.left, depth + 1), words(node.right, depth + 1)
