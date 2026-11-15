@@ -674,6 +674,31 @@ def _loops_through_their_list(plan: O.Plan, notes: list[str]) -> O.Plan:
     return out
 
 
+def _reused_for_an_export(plan: O.Plan, ws: "Workspace", state: dict) -> list[str]:
+    """Each agent already in the workspace that the plan's steps use, named like a pasted export's Agent, whose
+    instructions are not that Agent's (F1615): reusing it keeps its own, as reusing means, and the card says so, so the
+    person knows to check. An ordinary build, or one making its agents new, says nothing."""
+    from core.native_builder import verbatim
+
+    pasted = verbatim.sources(state)
+    if not pasted:
+        return []
+    new = {verbatim._key(a.name) for a in plan.agents}
+    by_key = {verbatim._key(n): n for n in pasted}
+    said: list[str] = []
+    for ref in dict.fromkeys(s.agent for s in [*plan.steps, *(s for w in plan.inner_workflows for s in w.steps)]
+                             if s.agent):
+        here = ws.agents.get(ref) or next((a for a in ws.agents.values() if verbatim._key(str(a.get("name") or ""))
+                                           == verbatim._key(ref)), None)
+        if here is None or verbatim._key(str(here.get("name") or "")) in new:
+            continue
+        source = by_key.get(verbatim._key(str(here.get("name") or "")))
+        if source and str(here.get("system_prompt") or "").strip() != pasted[source].strip():
+            said.append(f"“{here.get('name')}” is an agent already here: it keeps its own instructions, not the "
+                        f"export's “{source}”.")
+    return said
+
+
 def _instructions_whole(plan: O.Plan, state: dict, notes: list[str]) -> tuple[O.Plan, list[str]]:
     """The Plan with a pasted export's Agents' instructions whole in its steps' prompts (F1550, `verbatim.whole`): a
     reference put there, a retyped copy made whole, said in `notes` for the card; the errors are references to an
@@ -745,6 +770,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     plan, copy_errors = _instructions_whole(plan, state, took_out)
     # A Loop over a step that answers one list field goes through that field, said on the card (F1613).
     plan = _loops_through_their_list(plan, took_out)
+    # An agent already here that the plan uses for an export's Agent keeps its own instructions; said (F1615).
+    took_out += _reused_for_an_export(plan, ws, state)
     from core.native_builder.change_tools import _holds_a_key
     from core.secret_scrub import holds_credential
 
@@ -2729,6 +2756,11 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     said += [f"{render_gate(g)}." for g in plan.gates if g.decision == "deny" and g.tool not in found.blocks]
     buildable = not (no_way or connect or found.errors or found.blocks)
     prompts = prompts_for(plan, state) if plan.agents else {}
+    if prompts:
+        # What code kept whole of an imported Agent's instructions, over what the prompt writer wrote (F1615).
+        raw_prompts = _obj(state.get(PROMPTS_KEY))
+        said += [n for n in (raw_prompts.get("notes") or []) if isinstance(n, str)] if isinstance(
+            raw_prompts, dict) else []
     if prompts:
         # Each board agent is told how to work its board, in code's words the card shows (F1254).
         prompts = boards_rule.with_board_lines(plan, prompts)

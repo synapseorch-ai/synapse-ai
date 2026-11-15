@@ -57,6 +57,46 @@ def expand(text: str, agents: dict[str, str]) -> tuple[str, list[str]]:
     return INSTRUCTIONS_REF.sub(put, text), unknown
 
 
+_QUOTED = re.compile(r"[\"“]([^\"“”]+)[\"”]")
+
+
+def standing_for(agent: dict[str, Any], agents: dict[str, str]) -> tuple[str | None, str | None]:
+    """The export Agent a new agent stands for (F1615), and why it cannot be told: its name is that Agent's, case and
+    spacing aside; else its purpose names that one Agent in quotes, as the guide has the planner write ("Keeps the
+    export's "X" instructions"). (None, None) for an agent that stands for none; (None, why) for a purpose naming two."""
+    by_key = {_key(n): n for n in agents}
+    if (named := by_key.get(_key(str(agent.get("name") or "")))) is not None:
+        return named, None
+    said = list(dict.fromkeys(by_key[k] for q in _QUOTED.findall(str(agent.get("purpose") or ""))
+                              if (k := _key(q)) in by_key))
+    if len(said) > 1:
+        return None, (f'"{agent.get("name")}" says it keeps the instructions of ' + " and ".join(f'"{n}"' for n in said)
+                      + ": one agent keeps one Agent's instructions; make one agent for each, or say which it keeps")
+    return (said[0] if said else None), None
+
+
+def kept_whole(new_agents: list[dict[str, Any]], given: dict[str, str],
+               agents: dict[str, str]) -> tuple[dict[str, str], list[str], list[str]]:
+    """Each new agent that stands for an export Agent with that Agent's instructions, exactly, whatever the prompt
+    writer wrote for it (F1615: its rewrites, at 12–28% of an Agent's words, were under `COPIED` and saved as they
+    were); the others as written. The errors to send back, and the card's notes (what was kept, and the share the
+    rewrite had)."""
+    out, errors, notes = dict(given), [], []
+    for agent in new_agents:
+        name = str(agent.get("name") or "")
+        source, why = standing_for(agent, agents)
+        if why:
+            errors.append(why)
+            continue
+        if source is None or name not in out or out[name] == agents[source]:
+            continue
+        share, _, _ = _copy(agents[source], out[name])
+        out[name] = agents[source]
+        notes.append(f"Kept “{source}”'s instructions whole for “{name}”: as the prompt writer wrote them, they had "
+                     f"{min(share, 1.0):.0%} of their words.")
+    return out, errors, notes
+
+
 def _words(text: str) -> tuple[list[str], list[re.Match]]:
     found = list(_WORD.finditer(text))
     return [m.group().casefold() for m in found], found

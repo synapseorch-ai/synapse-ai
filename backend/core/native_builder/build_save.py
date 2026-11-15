@@ -93,11 +93,16 @@ async def submit_prompts(args: dict, server_module: Any, events: list[dict]) -> 
     # whole; the card shows what is saved.
     from core.native_builder import verbatim
 
+    kept: list[str] = []
     if pasted := verbatim.sources(_state()):
         fixed, wrong, _ = verbatim.whole({f"agent {n}": t for n, t in given.items()}, pasted)
         if wrong:
             return {"error": "\n".join(wrong)}
         given = {n: fixed[f"agent {n}"] for n in given}
+        # An agent standing for an export Agent keeps that Agent's instructions, whatever was written (F1615).
+        given, wrong, kept = verbatim.kept_whole(agents, given, pasted)
+        if wrong:
+            return {"error": "\n".join(wrong)}
     if _holds_a_key(given):  # a key, or the door's mark where one was (SAI2's review, 3)
         return {"error": "Instructions never hold a key, a token or a password: the agent's tools carry those."}
     if any(MADE in text for text in given.values()):
@@ -120,7 +125,7 @@ async def submit_prompts(args: dict, server_module: Any, events: list[dict]) -> 
         given[name] = given[name].rstrip() + "\n\n" + " ".join(ADDRESS_LINE.format(url=u) for u in found)
     # What each was written for, so a plan revised since is written for again (`build_plan.prompts_for`).
     written_for = {a["name"]: (checked.get("for") or {}).get(a["name"]) or agent_fingerprint(a) for a in agents}
-    return {"finish": "submit_prompts", "prompts": given, "for": written_for}
+    return {"finish": "submit_prompts", "prompts": given, "for": written_for, **({"notes": kept} if kept else {})}
 
 
 # ── the calls a save makes ────────────────────────────────────────────────────────────────────────────────────────
