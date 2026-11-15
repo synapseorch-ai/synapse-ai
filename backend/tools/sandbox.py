@@ -121,7 +121,7 @@ async def list_tools() -> list[Tool]:
         # -- Vault tools --
         Tool(
             name="vault_create",
-            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
+            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False),
             description=(
                 "Create a new file in the shared vault workspace. "
                 "Returns the absolute path for passing to other tools or the Python sandbox. "
@@ -172,7 +172,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="vault_write",
-            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False),
+            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
             description=(
                 "Write (overwrite) a file in the vault. Creates it if missing. "
                 "Returns the absolute path."
@@ -194,7 +194,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="vault_patch",
-            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False),
+            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
             description=(
                 "Patch an existing file. JSON files: deep-merges the provided object. "
                 "Text files: replaces first occurrence of `find` with `replace`. "
@@ -244,7 +244,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="vault_delete",
-            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False),
+            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
             description="Delete a file from the vault. Returns confirmation.",
             inputSchema={
                 "type": "object",
@@ -260,7 +260,7 @@ async def list_tools() -> list[Tool]:
         # -- Python executor --
         Tool(
             name="execute_python",
-            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False),
+            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True),
             description=(
                 "Execute Python code in a secure Docker container (512 MB RAM, 1 CPU, "
                 "read-only filesystem, no network by default). "
@@ -305,7 +305,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="tool_code",
-            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False),
+            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True),
             description=(
                 "Alias for execute_python. Execute Python code in a secure Docker container. "
                 "Use this to run calculations, data processing, or test logic safely."

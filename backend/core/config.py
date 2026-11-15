@@ -220,6 +220,10 @@ _DEFAULTS = {
         # ~50–80% cost reduction on multi-turn agents at the cost of a 25% write
         # surcharge on the first turn. Disable only if a provider misbehaves.
         "prompt_cache_enabled": True,
+        # An OpenAI-compatible server that passes Anthropic-style cache markers on (LiteLLM in front of Claude): an
+        # agent turn is sent to it with its prompt marked, as our gateway and OpenRouter's Claude are (F1588). Off: a
+        # server may refuse content parts.
+        "openai_compatible_cache_markers": False,
         # Transform step Python execution runtime — kept for old settings files and shown read-only;
         # it no longer chooses anything (F968). Transforms run in the sandbox-python container
         # (512 MB / 1 CPU / 60s) with no network. The host runtime (full RAM, GPU, filesystem,

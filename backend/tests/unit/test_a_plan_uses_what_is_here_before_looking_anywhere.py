@@ -4,7 +4,7 @@ A plan uses what this workspace has before anything is looked up (F950, F1043; S
 Found on prod (rc4.3's check in Kestrel, the old route): "scrape example.com every morning and summarise what changed"
 was drafted with `web_scraper` (the built-in scraper *server's* name, not a tool), `natural_language_processing` and
 `store_result`. All three read as missing; research offered Apify, a cloud scraper and Google's language API, and
-Connect cards followed. In the gethub conversation Synapse AI kept suggesting Firecrawl though the product scrapes.
+Connect cards followed. In a client's workspace Synapse AI kept suggesting Firecrawl though the product scrapes.
 
 In the plan check, before any lookup or card, a name nothing provides goes back to the planner when code can say what
 it is instead:

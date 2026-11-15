@@ -213,7 +213,11 @@ class TestTheCapHolds:
         run = await _run(**{T.ROUNDS_KEY: T.QUESTIONS})
         out = await _check(run, _plan())
         assert out["outcome"] == "review"
-        assert SITE in out["say"] and "haven't given me" in out["say"]
+        # F1600: past the cap the address it goes on with is said as what it assumed, on the card and in the plan the
+        # panel draws, never among what can't be done, and never dropped from both.
+        assumed = out["review"].split("## What I assumed\n", 1)[1].split("\n## ", 1)[0]
+        assert SITE in assumed and "haven't given me" in assumed
+        assert any(SITE in a and "haven't given me" in a for a in out["plan"]["assumed"])
 
 
 # ── a plan carries no question ──────────────────────────────────────────────────────────────────────────────────
@@ -240,6 +244,14 @@ class TestAPlanCarriesNoQuestion:
         assert "every question at once" in prompt and "your best guess" in prompt
         steps = " ".join((ROOT / "prompts" / "plan_steps.md").read_text().split())
         assert "never guessed" in steps
+
+    def test_the_planner_is_told_what_to_ask_and_to_say_what_it_assumed(self):
+        """F1600 ("ask once or twice … be careful on not making the builder just assume or guess"):
+        what a build depends on and only the person knows is asked, in at most two rounds, and the rest is said."""
+        prompt = " ".join(json.loads((ROOT / "agents" / "planner.json").read_text())["system_prompt"].split())
+        for asked in ("where the data comes from", "their own rules or documents", "where the results go"):
+            assert asked in prompt, asked
+        assert "at most two rounds" in prompt and "`assumed`" in prompt
 
 
 # ── the form ────────────────────────────────────────────────────────────────────────────────────────────────────

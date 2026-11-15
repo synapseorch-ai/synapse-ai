@@ -1,10 +1,11 @@
 import { createSlice, PayloadAction, createAsyncThunk } from '@reduxjs/toolkit';
+import type { ModelWindows } from '@/lib/models';
 
 export interface SettingsState {
     agents: any[];
     mcpServers: any[];
     customTools: any[];
-    models: { local: string[], cloud: string[], providers: Record<string, any>, reasoning_capable?: string[], reasoning_without_off?: string[], reasoning_off_minimum?: string[] };
+    models: { local: string[], cloud: string[], providers: Record<string, any>, reasoning_capable?: string[], reasoning_without_off?: string[], reasoning_off_minimum?: string[] } & ModelWindows;
     loading: boolean;
     initialized: boolean;
 }

@@ -161,20 +161,39 @@ async def test_a_maker_that_would_go_on_making_makes_one(client, builder, fake_l
     assert [a["name"] for a in await load_agents() if a.get("name") == "Claude Builder"] == ["Claude Builder"]
 
 
-async def test_a_change_the_planner_has_no_op_for_is_said_in_our_words(client, builder, fake_llm):
-    """F958 (P2's dev after-pass, chg-05 on Nova Pro and gpt-oss): "re-point the Patient chat channel" has no op, so
-    the planner answered in words twice and the person read "Agent step 'Plan the Change' ended without calling
-    submit_change or ask_person or cannot…". The step ends in code's `cannot` instead, said in our words."""
-    fake_llm.script([route("manage"), "I'll move the channel to the new agent for you.", "Done, it's moved."])
+async def _no_op_change(fake_llm, client, answer: str) -> tuple[str, list[dict]]:
+    """F958 (P2's dev after-pass, chg-05 on Nova Pro and gpt-oss): "re-point the Patient chat channel" has no op, so the
+    planner answers in words, then again when asked for its reply once more (the F1600 hardening's shorter retry). It
+    used to end in code's one fixed line; now the answer step explains, and `answer` is that step's reply."""
+    fake_llm.script([route("manage"), "I'll move the channel to the new agent for you.", "Done, it's moved.", answer])
     events = await stream(client, "/api/builder/chat",
                           {"message": "Point the Patient chat channel at the Triage agent"})
+    return _summary(events), events
 
-    said = _summary(events)
-    # Neutral: the fallback fires on any reply in words, a weak model's "Sure, renamed it" to a change it could make
-    # too, so it claims no reason code does not know (SAI2's review, 3).
-    assert said == "I couldn't turn that into something I can make or change here. Say it another way, or do it on its own page."
+
+def _ended_cleanly(events) -> None:
     assert "ended without calling" not in json.dumps(events)
-    assert not [e for e in events if e.get("type") in ("orchestration_error", "step_error")]
+    assert not [e for e in events if e.get("type") in ("orchestration_error", "step_error", "resource_saved")]
+    assert "Answer the Question" in [e.get("step_name") for e in events if e["type"] == "step_start"]
+
+
+async def test_a_change_the_planner_has_no_op_for_is_explained_to_the_person(client, builder, fake_llm):
+    """The point of the hardening: a change the planner has no op for reaches the person as an explanation of what can
+    be done and where, never the generic dead end."""
+    from core.native_builder.change_tools import FALLBACK_CANNOT
+
+    honest = ("I can't re-point a channel's agent from here. Open Channels, choose Patient chat and pick the Triage "
+              "agent there. Here I can build a workflow or an agent for it.")
+    said, events = await _no_op_change(fake_llm, client, honest)
+    assert said == honest and said != FALLBACK_CANNOT, said
+    _ended_cleanly(events)
+
+
+async def test_a_change_the_planner_has_no_op_for_never_claims_a_change(client, builder, fake_llm):
+    """An answer step that claims the change it never made is said as nothing changed (F1323), never as done."""
+    said, events = await _no_op_change(fake_llm, client, "Done, I moved it.")
+    assert said.startswith("Nothing was changed") and "moved it" not in said, said
+    _ended_cleanly(events)
 
 
 async def test_a_name_given_before_a_pick_survives_both_pauses(client, builder, fake_llm):

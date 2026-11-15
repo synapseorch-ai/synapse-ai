@@ -50,6 +50,7 @@ import {
     type RunHost, type RunLogState, type RunRecord, type RunRow, type StepExecution, type StepResultEntry,
 } from '@/components/run';
 import { OSS_RUN_HOST, ossLastRun, ossRunRecord, ossRunRow } from '@/lib/runHost';
+import { offeredModels, withSaved } from '@/lib/models';
 import { ResponseModal } from '@/components/workflows/runLog';
 import { RunDrawer } from '@/components/workflows/RunDrawer';
 import { RunStrip, type RunDrawerView } from '@/components/workflows/RunStrip';
@@ -473,8 +474,9 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
             setAgents(Array.isArray(data) ? data : []);
         }).catch(() => {});
 
+        // A step's models are every picker's (F1603: not a signed-out CLI's).
         fetch('/api/models').then(r => r.json()).then(data => {
-            setAvailableModels(data.all_available || []);
+            setAvailableModels(offeredModels(data.providers ?? {}));
         }).catch(() => {});
 
         // Schedule names, for labelling schedule-triggered runs.
@@ -2081,7 +2083,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                                     onClose={() => setSelectedStepId(null)}
                                     isEntry={draft.entry_step_id === step.id}
                                     onSetEntry={() => setEntryPoint(step.id)}
-                                    availableModels={availableModels}
+                                    // A model the step is set to stays visible when it is no longer offered (F1603).
+                                    availableModels={withSaved(availableModels, step.model)}
                                     orchestration={draft}
                                     knowledgeEnabled={knowledgeEnabled}
                                     knowledgeBases={knowledgeBases}

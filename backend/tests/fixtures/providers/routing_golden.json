@@ -24352,14 +24352,19 @@
      ],
      "call": "call_v1_compatible",
      "kwargs": {
+      "cache_markers": true,
       "chat_url": "https://openrouter.ai/api/v1/chat/completions",
       "images": null,
       "label": "OpenRouter",
       "max_tokens": 8192,
+      "prompt_blocks": [
+       "block"
+      ],
       "prompt_cache": true,
       "reasoning": null,
       "reasoning_body": {},
-      "tools": "<tools>"
+      "tools": "<tools>",
+      "volatile_tail": "tail"
      }
     },
     {
@@ -25871,9 +25876,13 @@
      "call": "call_model_gateway",
      "kwargs": {
       "images": null,
+      "prompt_blocks": [
+       "block"
+      ],
       "prompt_cache": true,
       "reasoning": null,
-      "tools": "<tools>"
+      "tools": "<tools>",
+      "volatile_tail": "tail"
      }
     },
     {
@@ -26001,9 +26010,13 @@
      "call": "call_model_gateway",
      "kwargs": {
       "images": null,
+      "prompt_blocks": [
+       "block"
+      ],
       "prompt_cache": true,
       "reasoning": null,
-      "tools": "<tools>"
+      "tools": "<tools>",
+      "volatile_tail": "tail"
      }
     },
     {
@@ -26131,9 +26144,13 @@
      "call": "call_model_gateway",
      "kwargs": {
       "images": null,
+      "prompt_blocks": [
+       "block"
+      ],
       "prompt_cache": true,
       "reasoning": null,
-      "tools": "<tools>"
+      "tools": "<tools>",
+      "volatile_tail": "tail"
      }
     },
     {
@@ -26261,9 +26278,13 @@
      "call": "call_model_gateway",
      "kwargs": {
       "images": null,
+      "prompt_blocks": [
+       "block"
+      ],
       "prompt_cache": true,
       "reasoning": null,
-      "tools": "<tools>"
+      "tools": "<tools>",
+      "volatile_tail": "tail"
      }
     },
     {
@@ -26391,9 +26412,13 @@
      "call": "call_model_gateway",
      "kwargs": {
       "images": null,
+      "prompt_blocks": [
+       "block"
+      ],
       "prompt_cache": true,
       "reasoning": null,
-      "tools": "<tools>"
+      "tools": "<tools>",
+      "volatile_tail": "tail"
      }
     },
     {

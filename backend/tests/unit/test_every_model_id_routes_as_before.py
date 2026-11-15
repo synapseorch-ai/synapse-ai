@@ -19,7 +19,11 @@ Ollama: `amazon.titan-embed-text-v1` and `-v2:0`, Bedrock's ids written without
 `bedrock.`, which no provider claims. Chat says them as unknown and calls nothing,
 and `embed_batch` answers its zeros without a call. Only those two entries were
 rewritten: a whole rewrite would also replace `MIXED_CASE`'s recordings of the
-chains with the table's.
+chains with the table's. F1588 (CTX2) sends an agent turn's transcript blocks and
+tail to the endpoints that cache only what is marked: the `chat_tools` recordings
+of the `synapse.*` ids and of `openrouter.anthropic/claude-sonnet-4.5` gain
+`prompt_blocks` and `volatile_tail` (that one also `cache_markers`). Only those six
+entries were rewritten; every other id is sent exactly as before.
 
 `PF1_WRITE_GOLDEN=1` rewrites the file from whatever the code does now — only
 ever from the chains' code, or to record a change a commit makes on purpose.

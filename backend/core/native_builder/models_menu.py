@@ -82,6 +82,40 @@ def set_model_facts(fn: Facts | None) -> None:
     _facts = fn
 
 
+#: F1598's measured rank, by model id: the models measured stronger for building, best first (F1606). Empty until F1598
+#: measures, so no model is offered as stronger before a build on a ranking by reasoning and price alone.
+_measured: dict[str, list[str]] = {}
+
+
+def set_measured_stronger(rank: dict[str, list[str]] | None) -> None:
+    global _measured
+    _measured = {k: list(v) for k, v in (rank or {}).items()}
+
+
+def measured_stronger(current: str | None, menu: list) -> Any:
+    """The model F1598's rank measured stronger than `current` that this workspace can call and pay for, and that
+    holds Synapse AI's long prompt (F1591's rule, stronger_than's own test: it calls tools, and its window is
+    LONG_WINDOW or more, or one not known), or None."""
+    for model_id in _measured.get(current or "", []):
+        entry = next((e for e in menu if e.id == model_id and e.can_pay and _fits(e, "simple", True, True)), None)
+        if entry is not None:
+            return entry
+    return None
+
+
+async def display_name(model_id: str | None, menu: list | None = None) -> str:
+    """A model as the person reads it (F1606): the menu's name, else the host's facts for it, else its id as it is."""
+    model_id = str(model_id or "")
+    entry = next((e for e in menu or [] if e.id == model_id), None)
+    if entry is not None and entry.name and entry.name != model_id:
+        return entry.name
+    if _facts is not None and model_id:
+        said = (await _facts([model_id]) or {}).get(model_id) or {}
+        if said.get("name"):
+            return str(said["name"])
+    return model_id
+
+
 def _source(model_id: str, mode: str) -> str:
     low = model_id.lower()
     if low.startswith("synapse."):
@@ -163,6 +197,71 @@ async def menu() -> list[ModelEntry]:
 
 #: The input window an agent that reads long inputs needs, in tokens (F1251): a model known to have less is skipped.
 LONG_WINDOW = 128_000
+
+
+# ── Synapse AI's own model (F1592) ──────────────────────────────────────────────────────────────────────────────────
+
+#: The least window Synapse AI runs on (F1592; Naveen 11-14: "128K, same as cloud", F1586): the long-input floor. Its
+#: planner's first call alone is about 30,000 tokens, and a build reads more as it goes. A test measures that call as
+#: the engine sends it and holds it under this (`test_self_hosted_synapse_ai_runs_only_on_a_model_that_can_hold_it`).
+SYNAPSE_AI_MIN_WINDOW = LONG_WINDOW
+#: A local model that reads that much, named where Synapse AI refuses a smaller one and in the first-run step's Ollama
+#: tip (Naveen 11-14: "suggest a 128K local model"): Llama 3.1 8B reads 131,072 tokens.
+SYNAPSE_AI_LOCAL_MODEL = "llama3.1"
+
+#: Where to change Synapse AI's model, by what chose it: a pick in its model menu, the Builder model setting, or the
+#: everyday model a turn takes when no Builder model is set. Cloud's words are the same (`model_windows.WHERE`).
+SYNAPSE_AI_WHERE = {
+    "pick": "Pick another model in Synapse AI's model menu, or leave it on Default.",
+    "builder_model": "Change Synapse AI's model in Settings → Models (Builder model), or clear it to use the default.",
+    "everyday": "Synapse AI is on your Default model because no Builder model is set: set a Builder model in "
+                "Settings → Models, or choose a larger Default model.",
+}
+
+
+def tokens_short(tokens: int) -> str:
+    """32,768 → "32K", 8,000 → "8K", 128,000 → "128K": a round thousand first (128,000 is also 125 × 1024)."""
+    if tokens % 1000 == 0:
+        return f"{tokens // 1000}K"
+    return f"{tokens // 1024 if tokens % 1024 == 0 else round(tokens / 1000)}K"
+
+
+async def synapse_ai_window(model: str | None) -> int | None:
+    """`model`'s window as Synapse AI's check reads it: an Ollama model's is what Ollama says it reads (`/api/show`,
+    F1569), else the engine's (`windows.window_of`, a host's word first). None when not known."""
+    from core.providers.windows import window_of
+
+    model = (model or "").strip()
+    if not model:
+        return None
+    if model.startswith("ollama."):
+        import httpx
+
+        from core import llm_providers as L
+        from core.config import load_settings
+
+        try:
+            async with httpx.AsyncClient() as client:
+                longest, _ = await L._ollama_model_context(client, L._ollama_base_url(load_settings()),
+                                                           model[len("ollama."):])
+        except Exception:  # noqa: BLE001 — Ollama not reached: not known, so never refused for it
+            longest = None
+        if longest:
+            return longest
+    return await window_of(model)
+
+
+async def synapse_ai_refusal(model: str | None, *, source: str, floor: int = SYNAPSE_AI_MIN_WINDOW,
+                             name: str | None = None) -> str | None:
+    """Why Synapse AI cannot run on `model`, in words, or None: only a model known to read less than `floor`.
+    `source` (a key of `SYNAPSE_AI_WHERE`) says what chose it; `name` is how the person knows it (else its id)."""
+    tokens = await synapse_ai_window(model)
+    if tokens is None or tokens >= floor:
+        return None
+    return (f"{name or model} reads up to {tokens_short(tokens)} tokens at once, and Synapse AI needs a model that "
+            f"reads at least {tokens_short(floor)} to read what it builds with, so it would be refused at its first "
+            f"step. {SYNAPSE_AI_WHERE[source]} With Ollama, {SYNAPSE_AI_LOCAL_MODEL} reads "
+            f"{tokens_short(floor)}: ollama pull {SYNAPSE_AI_LOCAL_MODEL}.")
 
 #: The pools a pick looks in, in order (Naveen, 10-30): the workspace's own keys, then the platform's models.
 POOLS = (("key", "from your own keys"), ("managed", "from the platform's models"))
@@ -401,12 +500,15 @@ def _strength(e: ModelEntry | None) -> tuple:
     return (bool(e and e.reasoning), (e.price_out or 0) if e else 0)
 
 
-def stronger_than(current: str, needs: str, *, has_tools: bool, menu: list[ModelEntry]) -> Picked | None:
+def stronger_than(current: str, needs: str, *, has_tools: bool, menu: list[ModelEntry],
+                  long_inputs: bool = False) -> Picked | None:
     """The next real step up from `current`, with its price, for Synapse AI to offer (F1018). Below the ceiling, the
     strongest within it; only from a model at or above the ceiling, the strongest above it (SAI2's probe: from Nova
-    Pro, Sonnet, not Opus). Never an unpriced one: an offer says what it costs. None when nothing is stronger."""
+    Pro, Sonnet, not Opus). Never an unpriced one: an offer says what it costs. None when nothing is stronger.
+    `long_inputs`: the job reads long inputs (Synapse AI itself; an agent planned for them), so a model known to hold
+    less than `LONG_WINDOW` is no step up (F1591), as `pick` passes it over."""
     now = next((e for e in menu if e.id == current), None)
-    priced = [e for e in menu if e.source not in ("cli", "local") and _fits(e, needs, has_tools)
+    priced = [e for e in menu if e.source not in ("cli", "local") and _fits(e, needs, has_tools, long_inputs)
               and e.price_out is not None and e.id != current and _strength(e) > _strength(now)]
     at_ceiling = now is not None and (now.price_out or 0) >= AUTO_PICK_CEILING_USD_PER_MTOK_OUT
     within = [e for e in priced if e.price_out <= AUTO_PICK_CEILING_USD_PER_MTOK_OUT]

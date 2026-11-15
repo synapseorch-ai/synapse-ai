@@ -331,6 +331,8 @@ class Settings(BaseModel):
     # Read by core/cache/prompt_cache.py. Missing here, so it could not be
     # changed through the settings route (F76).
     prompt_cache_enabled: bool = True
+    # The OpenAI-compatible server passes Anthropic-style cache markers on (F1588; core/cache/prompt_cache.py).
+    openai_compatible_cache_markers: bool = False
     # Where Ollama answers; empty uses the OLLAMA_BASE_URL env var (F76).
     ollama_base_url: str = ""
     auto_compact_enabled: bool = False

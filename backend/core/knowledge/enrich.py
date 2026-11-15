@@ -295,13 +295,20 @@ async def _price(model: str, input_tokens: int, output_tokens: int, *, cache_rea
 
 async def caching_for(model: str) -> tuple[str | None, int]:
     """Where a cache point holds for `model`: a platform model as the deployment's rate says — our gateway puts one
-    after the system prompt (the document) for a model it prices a cache for (F349) — any other by `_caching`."""
+    after the system prompt (the document) by itself for a model it prices a cache for whose write costs no more than
+    input (Nova, F349) — any other by `_caching`.
+
+    A platform model whose write costs more than input (Claude, cloud's 0107) is cached only when the caller marks
+    the prompt (D191), and these calls are not marked: no cache holds, so none is counted (F1589). A rate with no
+    write price writes at the input price, which is "no more"."""
     from core.knowledge.costs import _is_platform_model, platform_rate
 
     if _is_platform_model(model):
         rate = await platform_rate(model)
         if rate is not None and rate.cache_read_per_mtok is not None:
-            return "explicit", int(rate.cache_min_tokens or 0)
+            write = rate.input_per_mtok if rate.cache_write_per_mtok is None else rate.cache_write_per_mtok
+            if write <= rate.input_per_mtok:
+                return "explicit", int(rate.cache_min_tokens or 0)
         return None, 0
     return _caching(model)
 

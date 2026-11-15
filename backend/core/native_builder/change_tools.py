@@ -691,10 +691,12 @@ SECRET_ASKED = ("Never ask the person for a key, a token or a password: a connec
 WAY_IN_ASKED = ("Never ask the person how to connect a service: who provides a tool, and how it is reached, is "
                 "looked up, not asked. Ask only what the person alone knows.")
 ABOUT = ("which", "when", "what", "who", "how_much")
-#: How many questions one request asks, across its runs, before it goes on with what it has (F1226).
-QUESTIONS = 5
-ASKED_ENOUGH = ("You have asked the person {n} questions already: go on with what you know. What you pick is on the "
-                "plan's card for them to check.")
+#: How many rounds of questions one request asks, across its runs, before it goes on with what it has (F1226): two
+#: (F1600: at most two rounds). Every door that puts a question counts, the planner's and code's own.
+QUESTIONS = 2
+ASKED_ENOUGH = ("You have asked the person {n} questions already: go on with what you know, and write each "
+                "thing you pick without them in the plan's `assumed`, one plain line each: the card says it under "
+                "What I assumed for them to check.")
 #: The most questions one form asks (F1253): a form is one round of the request's cap.
 FORM_MAX = 6
 #: A form question's kind, as the field it is (`humanFields.ts`).
@@ -1996,9 +1998,10 @@ async def _check_change(args: dict, server_module: Any, events: list[dict]) -> d
         return {**base, "outcome": "ask", "question": asked_text(draft.get("question") or "",
                                                                  list(draft.get("options") or []))}
     if finish == "cannot" and draft.get("fallback"):
-        # The planner answered in words, not with a finish (F958: a channel's agent, which no op re-points). Code's
-        # words, never the model's, which said "Done, it's moved" of a change nobody made.
-        return {**base, "outcome": "said", "say": FALLBACK_CANNOT}
+        # The planner answered in words, not with a finish (F958: a channel's agent, which no op re-points): never the
+        # model's words, which said "Done, it's moved" of a change nobody made, and never a dead end either: the answer
+        # step explains what can be done here, in its own checked words (F1600 hardening).
+        return {**base, "outcome": "explain"}
     if finish == "cannot":
         return {**base, "outcome": "said", "say": cannot_said(draft)}
     if finish != "submit_change":

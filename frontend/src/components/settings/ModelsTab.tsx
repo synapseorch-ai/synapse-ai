@@ -1,8 +1,8 @@
 import { ExternalLink, RefreshCw } from 'lucide-react';
-import { Button, Combobox, Field, Input, Section, Textarea } from '@/components/ui';
+import { Button, Checkbox, Combobox, Field, Input, Section, Textarea } from '@/components/ui';
 import { ProviderCard } from '@/components/providers/ProviderCard';
 import { FORM } from './form';
-import { modelOptions as buildModelOptions, providerLabel, withUnreachable } from '@/lib/models';
+import { modelOptions as buildModelOptions, providerLabel, synapseAIOnly, withUnreachable, type ModelWindows } from '@/lib/models';
 
 /** `builder_model` is empty when it should follow `model`; a Combobox needs a value. */
 const DEFAULT_SENTINEL = '__default__';
@@ -25,6 +25,8 @@ interface ModelsTabProps {
     reasoningEffort: string; setReasoningEffort: (v: string) => void;
     /** Served by the models endpoint: models with no Off, and where Off is the lowest level. */
     reasoningWithoutOff: string[]; reasoningOffMinimum: string[];
+    /** Each model's known window and Synapse AI's floors (F1592), for the Builder model picker. */
+    modelWindows: ModelWindows;
     awsRegion: string; setAwsRegion: (v: string) => void;
     loadingModels: boolean;
     /** Reads every provider's models again (the Providers section's Refresh). */
@@ -34,6 +36,8 @@ interface ModelsTabProps {
     openaiCompatibleBaseUrl: string; setOpenaiCompatibleBaseUrl: (v: string) => void;
     openaiCompatibleModels: string; setOpenaiCompatibleModels: (v: string) => void;
     openaiCompatibleEmbedModels: string; setOpenaiCompatibleEmbedModels: (v: string) => void;
+    /** The server passes Anthropic-style cache markers on: agent turns are sent to it marked (F1588). */
+    openaiCompatibleCacheMarkers: boolean; setOpenaiCompatibleCacheMarkers: (v: boolean) => void;
     localCompatibleBaseUrl: string; setLocalCompatibleBaseUrl: (v: string) => void;
     localCompatibleModels: string; setLocalCompatibleModels: (v: string) => void;
     localCompatibleEmbedModels: string; setLocalCompatibleEmbedModels: (v: string) => void;
@@ -78,12 +82,13 @@ export const ModelsTab = ({
     builderModel, setBuilderModel,
     builderQuickModel, setBuilderQuickModel,
     maxOutputTokens, setMaxOutputTokens,
-    reasoningEffort, setReasoningEffort, reasoningWithoutOff, reasoningOffMinimum,
+    reasoningEffort, setReasoningEffort, reasoningWithoutOff, reasoningOffMinimum, modelWindows,
     awsRegion, setAwsRegion, loadingModels, onRefresh,
     onSave, isSaving, mode, setMode, localModels, cloudModels, filteredModels,
     openaiCompatibleBaseUrl, setOpenaiCompatibleBaseUrl,
     openaiCompatibleModels, setOpenaiCompatibleModels,
     openaiCompatibleEmbedModels, setOpenaiCompatibleEmbedModels,
+    openaiCompatibleCacheMarkers, setOpenaiCompatibleCacheMarkers,
     localCompatibleBaseUrl, setLocalCompatibleBaseUrl,
     localCompatibleModels, setLocalCompatibleModels,
     localCompatibleEmbedModels, setLocalCompatibleEmbedModels,
@@ -117,7 +122,8 @@ export const ModelsTab = ({
     // needs a row of its own — a blank control reads as nothing being set.
     const builderOptions = [
         { value: DEFAULT_SENTINEL, label: `Same as default model${selectedModel ? ` (${selectedModel})` : ''}` },
-        ...withUnreachable(buildModelOptions(providers), builderModel),
+        // Synapse AI's model: never one too small for it (F1592: under 128K, as cloud's).
+        ...withUnreachable(synapseAIOnly(buildModelOptions(providers), modelWindows, builderModel || undefined), builderModel),
     ];
     const quickOptions = [
         { value: DEFAULT_SENTINEL, label: `Same as builder model${(builderModel || selectedModel) ? ` (${builderModel || selectedModel})` : ''}` },
@@ -184,6 +190,20 @@ export const ModelsTab = ({
                             onChange={e => (local ? setLocalCompatibleEmbedModels : setOpenaiCompatibleEmbedModels)(e.target.value)}
                             placeholder={local ? 'e.g. bge-m3' : 'e.g. hf:nomic-ai/nomic-embed-text-v1.5'} />
                     </Field>
+                    {!local && (
+                        <div className="flex items-start gap-2">
+                            <Checkbox id="openaicompatiblecachemarkers" checked={openaiCompatibleCacheMarkers}
+                                onChange={setOpenaiCompatibleCacheMarkers} label="Send prompt cache markers" />
+                            <div className="grid gap-0.5">
+                                <label htmlFor="openaicompatiblecachemarkers" className="text-sm text-text">Send prompt cache markers</label>
+                                <span className="text-xs text-text-muted">
+                                    For a server that passes Anthropic-style cache markers on, such as LiteLLM in front of
+                                    Claude: an agent&rsquo;s turns are marked so they cost less. Leave off unless the server
+                                    takes them.
+                                </span>
+                            </div>
+                        </div>
+                    )}
                     {saveHere}
                 </div>
             );

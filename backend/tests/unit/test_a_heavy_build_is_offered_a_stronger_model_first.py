@@ -31,6 +31,15 @@ HEAVY_ASK = ("Every morning, pull yesterday's Stripe payouts, match them to the 
 
 
 @pytest.fixture(autouse=True)
+def measured_rank():
+    """F1606: a pre-build offer is only for a model F1598 measured stronger, so this file's offers stand on that
+    measure: Sonnet measured stronger than Haiku. (A module's own autouse: a file that imports `menu` does not get it.)"""
+    MM.set_measured_stronger({"synapse.claude-haiku": ["synapse.claude-sonnet"]})
+    yield
+    MM.set_measured_stronger({})
+
+
+@pytest.fixture(autouse=True)
 def menu(monkeypatch):
     now = {"menu": list(MENU)}
 

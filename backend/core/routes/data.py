@@ -713,9 +713,19 @@ async def get_models(refresh: bool = False):
     from core.images import model_can_see_images
     from core.reasoning import off_runs_as, supports_native
 
+    # Each model's known window, and the least Synapse AI runs on (F1592), so its pickers leave out a model too small
+    # for it. An Ollama model's is what Ollama says (`/api/show`, asked once per model in this process); an unknown one
+    # is left out.
+    from core.native_builder.models_menu import SYNAPSE_AI_MIN_WINDOW, synapse_ai_window
+
+    listed = list(dict.fromkeys(all_available))
+    known = await asyncio.gather(*(synapse_ai_window(m) for m in listed))
+
     return {
         "providers": providers,
         "all_available": all_available,
+        "windows": {m: t for m, t in zip(listed, known) if t},
+        "synapse_ai_min_window": SYNAPSE_AI_MIN_WINDOW,
         "local": ollama_chat,
         "cloud": cloud_models,
         # A Claude CLI model is on it too: it takes the agent's effort as

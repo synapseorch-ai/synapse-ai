@@ -120,7 +120,8 @@ OUT: dict[str, tuple[str, str]] = {
         "bedrock_api_key", "aws_access_key_id", "aws_secret_access_key", "aws_session_token", "cohere_key",
         "voyage_key", "jina_key", "knowledge_rerank_key")},
     **{name: (_PROVIDER, MODELS) for name in (
-        "openai_compatible_base_url", "openai_compatible_models", "local_compatible_base_url",
+        "openai_compatible_base_url", "openai_compatible_models", "openai_compatible_cache_markers",
+        "local_compatible_base_url",
         "local_compatible_models", "openai_compatible_embed_models", "local_compatible_embed_models",
         "huggingface_models", "anthropic_cli_models", "gemini_cli_models", "codex_cli_models",
         "github_copilot_cli_models", "huggingface_max_new_tokens", "aws_region", "ollama_base_url", "mode")},

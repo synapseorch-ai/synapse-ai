@@ -30,6 +30,9 @@ TEXT_KEY = "run_changes"
 STOPPED_KEY = "_run_stopped"
 
 NOTHING_CHANGED = "Nothing in your workspace changed."
+#: What follows it when the route gave no reason of its own (F1605: it never stands alone).
+NOTHING_DONE_WHY = ("I didn't find something to build or change in what you asked: say what you'd like built, or what "
+                    "to change and in which workflow, and I'll plan it.")
 
 _NOUN = {"orchestration": "workflow", "agent": "agent", "tool": "tool", "skill": "skill", "schedule": "schedule",
          "mcp_server": "app", "knowledge_base": "knowledge base", "document": "document", "memory": "memory item"}
@@ -117,7 +120,7 @@ def _net(writes: list[dict]) -> dict[tuple[str, str], dict]:
     return net
 
 
-def render(writes: Any, failures: Any = None, stopped: Any = None) -> str:
+def render(writes: Any, failures: Any = None, stopped: Any = None, why: str | None = None) -> str:
     """The run's writes as fixed sentences, or `NOTHING_CHANGED` (and what last failed); a build that stopped says why
     instead (F768)."""
     net = _net(writes if isinstance(writes, list) else [])
@@ -174,4 +177,5 @@ def render(writes: Any, failures: Any = None, stopped: Any = None) -> str:
     last = (failures or [])[-1] if isinstance(failures, list) and failures else None
     if last:
         return f"{NOTHING_CHANGED} The last thing that failed: {last.get('error')}"
-    return NOTHING_CHANGED
+    # Never alone (F1605): the route's own reason, else what to say instead.
+    return f"{NOTHING_CHANGED} {(why or '').strip() or NOTHING_DONE_WHY}"

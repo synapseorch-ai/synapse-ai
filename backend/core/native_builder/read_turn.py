@@ -182,6 +182,31 @@ def card_above(turns: list[tuple[dict, dict]]) -> dict:
     return facts
 
 
+#: "New", to F1605's "Change X, or build something new?".
+_NEW_ANSWER = {"new", "something new", "build something new", "build new", "a new one", "new one",
+               "build a new one", "make a new one", "new workflow", "a new workflow", "build it new"}
+#: Running or testing "it" with nothing else said (F1605).
+_RUN_IT = re.compile(r"(?:please )?(?:run|test|try|start) (?:it|this|that)(?: now| please| again)?(?: please)?")
+
+
+def unbuilt_ask(previous: dict) -> str:
+    """The previous turn's ask when it was a request to build or change something and wrote nothing (F1605): what
+    "run it" means then. "" after an answer turn, or after a turn that built or changed something."""
+    from core.orchestration.run_writes import WRITES_KEY
+
+    request = previous.get("request") if isinstance(previous.get("request"), dict) else {}
+    asked_to_make = request.get("kind") in ("build", "change") or previous.get("intent") in ("create", "update")
+    if not asked_to_make or previous.get(WRITES_KEY):
+        return ""
+    return " ".join(str(previous.get("user_message") or "").split())
+
+
+def unbuilt_said(ask: str) -> str:
+    short = ask if len(ask) <= 160 else ask[:157].rstrip() + "…"
+    return (f'Nothing has been built yet for "{short}", so there is nothing of it to run. Say yes and I\'ll plan it '
+            f"now, or name the workflow you want to run.")
+
+
 def decide(message: str, *, previous: dict, facts: dict, change: dict | None = None,
            prior_findings: Any = None, pressed: bool = False, inventory: dict | None = None) -> Turn:
     """What code makes of `message`, given the previous turn's state (`previous`), its card's facts (`facts`, F977),
@@ -197,6 +222,12 @@ def decide(message: str, *, previous: dict, facts: dict, change: dict | None = N
     # route through the role door, never classified again, so it cannot become an answer on the stronger model.
     if pressed:
         return Turn(route="effort_build", then="build")
+    # The import starter with nothing pasted under it (F1607): said, and where the export comes from; never a plan,
+    # never a workflow here taken for "this workflow".
+    from core.native_builder.export import EXPORT_MISSING, lead_only
+
+    if lead_only(message):
+        return Turn(route="export_missing", then="said", say=EXPORT_MISSING)
     offered = previous.get("effort") if isinstance(previous.get("effort"), dict) else {}
     if offered.get("next") == "offer" and offered.get("ask"):
         ask = str(offered["ask"])
@@ -207,7 +238,7 @@ def decide(message: str, *, previous: dict, facts: dict, change: dict | None = N
     # builder's turn keeps an offer, so a viewer's yes is read as below.
     offer = previous.get(OFFERED_KEY) if isinstance(previous.get(OFFERED_KEY), dict) else {}
     if ask := str(offer.get("ask") or ""):
-        if yes or said in _GO_ON:
+        if yes or said in _GO_ON or said in _NEW_ANSWER:
             return Turn(route="offer_taken", then="classify", message=ask)
         if _YES_FIRST.match(said):
             return Turn(route="offer_taken", then="classify", message=f"{ask}\n\n{message}")
@@ -216,6 +247,11 @@ def decide(message: str, *, previous: dict, facts: dict, change: dict | None = N
     # workflow): code says where, every time, and no model is asked.
     if tool := tool_run_once(said, inventory):
         return Turn(route="tool_test", then="said", say=tool_test_said(tool, facts))
+
+    # 0d. "run it" right after an ask that built nothing (F1605): that ask, said back with an offer to build
+    # it, never a workflow that happens to be on screen.
+    if _RUN_IT.fullmatch(said) and (ask := unbuilt_ask(previous)):
+        return Turn(route="run_unbuilt", then="said", message=ask, say=unbuilt_said(ask))
 
     # 1. A yes to the second request the last turn queued.
     also = str(facts.get("also") or "").strip()
@@ -399,6 +435,9 @@ async def read_turn(args: dict, server_module: Any, events: list[dict]) -> dict:
         # The queued request, the ask with the offered option chosen (F1347), or the offer's ask (F1382), is this
         # turn's message from here on: classify and every route read it.
         run.shared_state["user_message"] = turn.message
+    if turn.route == "run_unbuilt" and run is not None:
+        # A yes next turn builds that ask, as a yes to the live-fact offer does (F1382's OFFERED_KEY).
+        run.shared_state[OFFERED_KEY] = {"fact": "", "ask": turn.message}
     if turn.route == "offer_taken" and run is not None:
         # Classify sends it to the build route, through the role door (F1382).
         run.shared_state[OFFER_TAKEN_KEY] = True

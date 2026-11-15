@@ -22,6 +22,8 @@ import {
     ActionCard,
     AGENT_BUILDER_SWITCH,
     AgentTurn,
+    IMPORT_LEAD_NOTE,
+    isBareImportLead,
     askedForm,
     Composer,
     composerPillClass,
@@ -53,7 +55,7 @@ import { SUGGESTED_LABEL } from '@/components/tabs';
 import { Button, Combobox, Hint, Mark, Markdown, showWhileScrolling } from '@/components/ui';
 import { effortAnswer, isPlanReview, shownInTrail, type BuilderMessage, type BuiltPlace } from '@/lib/builderEvents';
 import { cn, focusRing } from '@/lib/cn';
-import { modelOptions, withUnreachable } from '@/lib/models';
+import { modelOptions, synapseAIOnly, withUnreachable } from '@/lib/models';
 
 /** Empty `sessionModel` means "follow the workspace builder model". */
 const DEFAULT_SENTINEL = '__default__';
@@ -182,7 +184,8 @@ export function BuilderConversation({
     const { state, streaming, send, stop, ready, watchBuilt } = chat ?? builder;
     const openChat = onOpenChat ?? ((id: string) => builder.showChat(id));
     const {
-        canAttach, providers, builderModel, sessionModel, setSessionModel, saveBuilderModel, draft, draftTaken, takeDraft,
+        canAttach, providers, modelWindows, builderModel, sessionModel, setSessionModel, saveBuilderModel, draft,
+        draftTaken, takeDraft,
     } = builder;
     const entered = active;
     // The panel's hand-overs are the panel's: a tab's composer starts from its own words.
@@ -265,11 +268,18 @@ export function BuilderConversation({
     const planWaiting = isPlanReview(state.pending);
     const changingPlan = revising && planWaiting;
 
+    // The import starter's line with nothing pasted under it is held back, saying where the export comes from (F1607).
+    const [leadHeld, setLeadHeld] = useState(false);
+
     const submit = () => {
         const text = input.trim();
         // An image on its own is a message — "what is this?" is often the
         // picture, not the words.
         if ((!text && !attachments.images.length) || streaming) return;
+        if (isBareImportLead(text) && !attachments.images.length) {
+            setLeadHeld(true);
+            return;
+        }
         const images = attachments.images.map((image) => image.base64);
         setInput('');
         attachments.clear();
@@ -279,10 +289,12 @@ export function BuilderConversation({
 
     // Grouped by provider rather than one flat list of ~66, and a remembered
     // pick whose provider has since lost its key shows under "Not reachable"
-    // instead of leaving the control looking empty.
+    // instead of leaving the control looking empty. Never a model too small for
+    // Synapse AI (F1592: under 128K, as cloud's).
     const modelChoices = [
         { value: DEFAULT_SENTINEL, label: `Default (${builderModel || 'workspace model'})` },
-        ...withUnreachable(modelOptions(providers), sessionModel || undefined),
+        ...withUnreachable(synapseAIOnly(modelOptions(providers), modelWindows, sessionModel || undefined),
+                           sessionModel || undefined),
     ];
 
     // Consecutive activity collapses into one block; everything else is its own.
@@ -516,8 +528,11 @@ export function BuilderConversation({
                     <Composer
                         density={density}
                         value={input}
-                        onChange={setInput}
+                        onChange={(value) => { setInput(value); setLeadHeld(false); }}
                         onSend={submit}
+                        note={leadHeld ? IMPORT_LEAD_NOTE : undefined}
+                        // The held line's note says what to paste and where it comes from: read whole, and heard.
+                        noteWraps
                         canSend={(Boolean(input.trim()) || attachments.images.length > 0) && !streaming}
                         sendLabel={state.pending && (!planWaiting || changingPlan) ? 'Send your answer' : 'Send'}
                         // Only until the run has an id — after that this button is Stop.

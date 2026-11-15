@@ -34,7 +34,9 @@ export {
     type HelperStatus,
     type LaneWork,
 } from './helpers';
-export { AGENT_BUILDER_SWITCH, asksForAgentBuilderSwitch, withoutBuildParam } from './switch';
+export {
+    AGENT_BUILDER_SWITCH, asksForAgentBuilderSwitch, IMPORT_LEAD_NOTE, isBareImportLead, withoutBuildParam,
+} from './switch';
 export {
     askedForm,
     BUILDER_QUESTION_STEPS,

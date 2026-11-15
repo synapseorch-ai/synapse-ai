@@ -1,6 +1,6 @@
 """Every tool name the builder's own listings print is a tool its checks find (F1035).
 
-Prod rc4.2, gethubservice: the plan used the built-in scraper as `web_scraper.scrape_url`, and the plan check said
+In a client's workspace, the plan used the built-in scraper as `web_scraper.scrape_url`, and the plan check said
 "Nothing in this workspace provides `web_scraper.scrape_url`", so research ran and offered to connect Firecrawl.
 Once Firecrawl was connected, `list_server_tools` printed its tools bare (`firecrawl_scrape`); the catalogue, the
 resolver and every saved agent call them `firecrawl__firecrawl_scrape`, so `get_tools_detail` and the plan check
@@ -116,7 +116,7 @@ class TestTheListingsAndTheChecksAgree:
         assert detail["firecrawl_scrape"]["name"] == f"firecrawl{SEP}firecrawl_scrape"
         assert detail["web_scraper.scrape_url"]["name"] == "scrape_url" and not detail.get("_not_found")
 
-    async def test_gethubservices_plan_needs_no_research(self, server):
+    async def test_the_built_in_scraper_named_server_dot_tool_needs_no_research(self, server):
         """The prod case: the plan names the built-in scraper as `web_scraper.scrape_url`."""
         from core.builder_guard import check_plan
 

@@ -334,6 +334,13 @@ export function PlanCard({
                             <Markdown className="text-sm leading-relaxed text-text-muted">{plan.overview}</Markdown>
                         </div>
                     ) : <Markdown className="text-sm leading-relaxed text-text-muted">{plan.overview}</Markdown>)}
+                    {plan.starts && (
+                        // How a run starts, from the plan itself (F1600), never the summary's word for it.
+                        <div className="flex flex-col gap-0.5">
+                            <span className="text-xs font-medium text-text">How it starts</span>
+                            <Markdown className="text-sm leading-relaxed text-text-muted">{plan.starts}</Markdown>
+                        </div>
+                    )}
                     {plan.changed && (
                         // What a re-plan changed from the plan last shown (F1245): a swapped site is seen before the yes.
                         <div className="flex flex-col gap-0.5">
@@ -427,6 +434,13 @@ export function PlanCard({
                         <div className="flex flex-col gap-1 rounded-lg bg-surface-2 px-3 py-2.5">
                             <span className="text-xs font-medium text-text">Acts without asking</span>
                             <Markdown className="text-[13px] leading-relaxed">{plan.actsAlone}</Markdown>
+                        </div>
+                    )}
+                    {plan.assumed && (
+                        // What it took as so that the person did not say (F1600): theirs to check, before the yes.
+                        <div className="flex flex-col gap-1 rounded-lg bg-surface-2 px-3 py-2.5">
+                            <span className="text-xs font-medium text-text">What I assumed</span>
+                            <Markdown className="text-[13px] leading-relaxed">{plan.assumed}</Markdown>
                         </div>
                     )}
                     {(plan.needs || plan.off) && (

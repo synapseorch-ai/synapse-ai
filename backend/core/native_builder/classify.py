@@ -50,6 +50,56 @@ _CHANGE_ONLY = re.compile(r"\b(?:change|edit|update|rename|reschedule|move|delet
 _NEW = re.compile(r"\b(?:new|another|create|build me|make me|from scratch|set up a|a fresh)\b")
 #: Words that edit what is open.
 _EDIT = re.compile(r"\b(?:add|change|edit|update|remove|modify|fix|rename|replace|insert|also|instead|make it)\b")
+#: A message about the workflow on screen (F1605): it says "this", "its", "that one", or starts as an edit of it.
+_REFERS = re.compile(r"\b(?:this|its|that one|the workflow|this workflow|the open one)\b")
+_EDIT_FIRST = re.compile(r"^(?:please\s+)?(?:add|change|edit|update|remove|delete|modify|fix|rename|replace|insert|also|"
+                         r"instead|make it|have it|let it|turn|set|move|switch|swap|drop|put|pause|resume|stop|start|"
+                         r"run|test|enable|disable)\b")
+#: A whole job described from its start (F1605): a schedule, a trigger, or "make/build a workflow …", in the words a
+#: request starts with; English and the other languages people asked in.
+_NEW_JOB = re.compile(
+    r"^(?:please\s+)?(?:make|build|create|set up|every|each|daily|weekly|monthly|whenever|when|watch|monitor|track|"
+    r"research|summari[sz]e|send me|remind me|cada|todos|todas|chaque|tous|jeden|jede)\b"
+    r"|\b(?:a|an|another|new)\s+(?:workflow|agent|assistant|bot|report|automation)\b")
+
+
+def new_beside_open(text: str, state: dict) -> bool:
+    """A new request typed beside an open workflow (F1605): it neither refers to the open one nor starts
+    as an edit of it, and it describes a whole job. Never when nothing is open, or the message names the open one."""
+    if state.get("current_orchestration_source") != "viewing":
+        return False
+    name = _words(str(state.get("current_orchestration_name") or ""))
+    if _EDIT_FIRST.match(text) or _REFERS.search(text) or (name and name in text):
+        return False
+    return bool(_NEW_JOB.search(text))
+
+
+def open_or_new(text: str, state: dict) -> bool:
+    """A message beside an open workflow that neither refers to it nor starts as an edit of it, and that the job-shape
+    words cannot place (any language): asked once whether it changes the open one or is new,
+    never sent to the change route on the quick model's word."""
+    if state.get("current_orchestration_source") != "viewing":
+        return False
+    name = _words(str(state.get("current_orchestration_name") or ""))
+    return not (_EDIT_FIRST.match(text) or _REFERS.search(text) or (name and name in text) or _NEW_JOB.search(text))
+
+
+#: The open workflow a message was built new beside, past the cap without asking (F1605): said as an assumption.
+NEW_BESIDE_KEY = "_built_new_beside"
+
+
+def built_new_said(name: str) -> str:
+    it = f'"{name}"' if name else "the workflow open on screen"
+    return f"Built as a new workflow, not a change to {it}: say if you meant to change {it}."
+
+
+def open_or_new_said(name: str) -> str:
+    """F1605's one question, said by code: the open workflow by its name, or something new."""
+    it = f'"{name}"' if name else "the workflow open on screen"
+    return (f"Change {it}, or build something new? Say \"new\" to build it as a new workflow, or say what to change "
+            f"in {it}.")
+
+
 #: Asking to use an outside service: what a lookup answers, never a bare "can't".
 _USE = re.compile(
     r"\b(?:integrate|sync|use|work with|works with|support|supports|post to|send to|send|book|order|buy|pay|ship|"
@@ -227,6 +277,17 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
             things.get("schedule") or things.get("agent")
             or any(w in text.split() for k in ("schedule", "agent") if inventory.get(k) for w in _KINDS[k])):
         kind, by = "change", "named_change"
+    # A new request typed beside an open workflow is a new build, whatever the quick model read (F1605): "this" and
+    # "it" mean the open one only when the message is about it.
+    elif kind in ("change", "build") and not things and new_beside_open(text, state):
+        kind, by = "build", "new_beside_open"
+    # Neither about the open one nor placeable by its words (any language): asked once, within the request's cap
+    # (F1600); past it, built new. Never the change route on the quick model's word.
+    elif kind in ("change", "build") and not things and open_or_new(text, state):
+        from core.native_builder.change_tools import QUESTIONS, ROUNDS_KEY
+
+        kind, by = ("build", "new_past_cap") if int(state.get(ROUNDS_KEY) or 0) >= QUESTIONS else (
+            "answer", "open_or_new")
     # Findings, then a yes or a build: the build plans from them (F766).
     elif _findings(state.get("prior_findings")) and kind != "build" and by != "evals" and (
             kind == "research" or is_yes(message) or (_BUILD.search(text) and kind != "answer")):
@@ -260,8 +321,10 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
     source = state.get("current_orchestration_source")
     not_it = source == "built" or source in ("named", "picked") and _words(
         state.get("current_orchestration_name") or "") in {_words(r) for r in things.get("recording") or []}
-    route = _entry(kind, text, {**state, "current_orchestration_source": ""} if by == "recording_named" and not_it
-                   else state)
+    route = _entry(kind, text, {**state, "current_orchestration_source": ""}
+                   if (by == "recording_named" and not_it) or by in ("new_beside_open", "new_past_cap") else state)
+    if by == "open_or_new":
+        route = "step_turn_said"
     if route == "step_answer" and kind == "build":
         needs = "workspace"  # two workflows match: the answer asks which, from the list
     if route not in ("step_answer", "step_research") and not _may(kind, state):
@@ -317,7 +380,7 @@ def _entry(kind: str, text: str, state: dict) -> str:
     # The conversation's own last build too (F1229): more detail, or a change, is about it unless they ask for a new one.
     if source in ("named", "picked", "built") and not _NEW.search(text):
         return "step_fetch_existing"
-    if source == "viewing" and _EDIT.search(text) and not _NEW.search(text):
+    if source == "viewing" and _EDIT.search(text) and not _NEW.search(text) and not new_beside_open(text, state):
         return "step_fetch_existing"
     return "step_plan_room"
 
@@ -426,6 +489,18 @@ async def _classified(request: Request, events: list[dict]) -> dict:
             # The offer the talk step makes, kept for the next turn's yes (F1382); a viewer's turn keeps none.
             fact = (routed.live_fact or "").strip()
             run.shared_state[OFFERED_KEY] = {"fact": fact, "ask": offer_ask(fact)}
+        if routed.overridden_by == "open_or_new":
+            from core.native_builder.change_tools import ROUNDS_KEY
+
+            turn = run.shared_state.get("turn") if isinstance(run.shared_state.get("turn"), dict) else {}
+            run.shared_state["turn"] = {**turn, "then": "said",
+                                        "say": open_or_new_said(str(state.get("current_orchestration_name") or ""))}
+            # A "new" (or a yes) next turn builds this message new (F1382's offer path); the ask is a round (F1600).
+            run.shared_state[OFFERED_KEY] = {"fact": "", "ask": message}
+            run.shared_state[ROUNDS_KEY] = int(run.shared_state.get(ROUNDS_KEY) or 0) + 1
+        if routed.overridden_by == "new_past_cap":
+            # Built new without asking: a guess, said on the plan's card (F1600's What I assumed).
+            run.shared_state[NEW_BESIDE_KEY] = str(state.get("current_orchestration_name") or "")
         if routed.overridden_by == "recording_or_workflow":
             # The change route asks which, once (F1231).
             named = _named(_words(message), inventory).get("recording") or []

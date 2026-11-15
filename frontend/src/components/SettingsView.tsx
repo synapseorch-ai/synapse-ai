@@ -17,7 +17,7 @@ import { isSettingsEntry, navEntryFor } from '@/lib/nav';
 import { AUTH_CHANGED_EVENT, readAuthStatus } from '@/lib/auth';
 import { KNOWLEDGE_SWITCHED_EVENT, type RerankListing } from '@/lib/knowledge';
 import { BOARDS_SWITCHED_EVENT } from '@/components/boards/board';
-import { HOSTED_KEY_NAMES } from '@/lib/models';
+import { HOSTED_KEY_NAMES, offeredModels } from '@/lib/models';
 import { GeneralTab, type BoardsSettings } from './settings/GeneralTab';
 import type { ToolPolicy } from './settings/ToolPolicy';
 import { PersonalDetailsTab } from './settings/PersonalDetailsTab';
@@ -104,6 +104,8 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
     const [openaiCompatibleBaseUrl, setOpenaiCompatibleBaseUrl] = useState('');
     const [openaiCompatibleModels, setOpenaiCompatibleModels] = useState('');
     const [openaiCompatibleEmbedModels, setOpenaiCompatibleEmbedModels] = useState('');
+    // The server passes Anthropic-style cache markers on (a LiteLLM in front of Claude): agent turns go marked (F1588).
+    const [openaiCompatibleCacheMarkers, setOpenaiCompatibleCacheMarkers] = useState(false);
     const [localCompatibleBaseUrl, setLocalCompatibleBaseUrl] = useState('');
     const [localCompatibleKey, setLocalCompatibleKey] = useState('');
     const [localCompatibleModels, setLocalCompatibleModels] = useState('');
@@ -252,6 +254,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
             openai_compatible_base_url: openaiCompatibleBaseUrl,
             openai_compatible_models: openaiCompatibleModels,
             openai_compatible_embed_models: openaiCompatibleEmbedModels,
+            openai_compatible_cache_markers: openaiCompatibleCacheMarkers,
             local_compatible_base_url: localCompatibleBaseUrl,
             local_compatible_key: localCompatibleKey,
             local_compatible_models: localCompatibleModels,
@@ -491,6 +494,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                 setOpenaiCompatibleBaseUrl(data.openai_compatible_base_url || '');
                 setOpenaiCompatibleModels(data.openai_compatible_models || '');
                 setOpenaiCompatibleEmbedModels(data.openai_compatible_embed_models || '');
+                setOpenaiCompatibleCacheMarkers(data.openai_compatible_cache_markers === true);
                 setLocalCompatibleBaseUrl(data.local_compatible_base_url || '');
                 setLocalCompatibleKey(data.local_compatible_key || '');
                 setLocalCompatibleModels(data.local_compatible_models || '');
@@ -692,7 +696,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         dlTopic={dlTopic} setDlTopic={setDlTopic}
                         dlCount={dlCount} setDlCount={setDlCount}
                         dlModel={dlModel} setDlModel={setDlModel}
-                        modelOptions={Object.values(providers).flatMap(p => (p.available ? p.models : []))}
+                        modelOptions={offeredModels(providers)}
                         defaultModel={selectedModel}
                         dlSystemPrompt={dlSystemPrompt} setDlSystemPrompt={setDlSystemPrompt}
                         dlEdgeCases={dlEdgeCases} setDlEdgeCases={setDlEdgeCases}
@@ -715,6 +719,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         maxOutputTokens={maxOutputTokens} setMaxOutputTokens={setMaxOutputTokens}
                         reasoningEffort={reasoningEffort} setReasoningEffort={setReasoningEffort}
                         reasoningWithoutOff={rModels.reasoning_without_off || []}
+                        modelWindows={rModels}
                         reasoningOffMinimum={rModels.reasoning_off_minimum || []}
                         localModels={localModels} cloudModels={cloudModels}
                         filteredModels={filteredModels}
@@ -727,6 +732,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         openaiCompatibleBaseUrl={openaiCompatibleBaseUrl} setOpenaiCompatibleBaseUrl={setOpenaiCompatibleBaseUrl}
                         openaiCompatibleModels={openaiCompatibleModels} setOpenaiCompatibleModels={setOpenaiCompatibleModels}
                         openaiCompatibleEmbedModels={openaiCompatibleEmbedModels} setOpenaiCompatibleEmbedModels={setOpenaiCompatibleEmbedModels}
+                        openaiCompatibleCacheMarkers={openaiCompatibleCacheMarkers} setOpenaiCompatibleCacheMarkers={setOpenaiCompatibleCacheMarkers}
                         localCompatibleBaseUrl={localCompatibleBaseUrl} setLocalCompatibleBaseUrl={setLocalCompatibleBaseUrl}
                         localCompatibleModels={localCompatibleModels} setLocalCompatibleModels={setLocalCompatibleModels}
                         localCompatibleEmbedModels={localCompatibleEmbedModels} setLocalCompatibleEmbedModels={setLocalCompatibleEmbedModels}

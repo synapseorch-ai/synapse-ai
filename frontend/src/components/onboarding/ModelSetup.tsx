@@ -25,7 +25,7 @@ import { ProviderCard } from '@/components/providers/ProviderCard';
 import { pickSecrets, type SecretState } from '@/components/settings/SavedSecret';
 import { AppMark, Button, Combobox, ErrorNote, Field, buttonStyles } from '@/components/ui';
 import { cn, focusRing } from '@/lib/cn';
-import { providerLabel } from '@/lib/models';
+import { providerLabel, synapseAIOnly, type ModelWindows } from '@/lib/models';
 import {
     FIRST_PROVIDERS, FREE_KEY_PROVIDER, KEY_NAMES, ONBOARDING_PROVIDERS, foundHere, keyNote, nothingYet, pickable,
     startingModel, type FoundHere,
@@ -68,6 +68,8 @@ export function ModelSetup({ open, problem, onClose, onSaved }: {
     const [path, setPath] = useState<'key' | 'ollama' | null>(null);
     const [everyday, setEveryday] = useState<string | null>(null);
     const [assistant, setAssistant] = useState(SAME);
+    // Each model's known window and Synapse AI's floors (F1592), for Synapse AI's picker.
+    const [windows, setWindows] = useState<ModelWindows>({});
     const [checking, setChecking] = useState(false);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
@@ -78,6 +80,7 @@ export function ModelSetup({ open, problem, onClose, onSaved }: {
             fetch('/api/settings').then(r => r.json()),
         ]);
         setProviders(models.providers ?? {});
+        setWindows(models);
         setSecrets(pickSecrets(settings, KEY_NAMES));
         setCurrent({ model: settings.model, builder_model: settings.builder_model });
         return { secrets: pickSecrets(settings, KEY_NAMES) };
@@ -279,7 +282,9 @@ export function ModelSetup({ open, problem, onClose, onSaved }: {
                                     </Field>
                                     <Field label="Synapse AI’s model" hint="Builds your workflows and answers in the assistant. A stronger model pays for itself here.">
                                         <Combobox value={assistant || 'same'} onChange={(v) => setAssistant(v === 'same' ? SAME : v)}
-                                            options={[{ value: 'same', label: 'Same as everyday model' }, ...options]}
+                                            // Never a model too small for Synapse AI's planner (F1592); the everyday one lists all.
+                                            options={[{ value: 'same', label: 'Same as everyday model' },
+                                                      ...synapseAIOnly(options, windows, assistant || undefined)]}
                                             searchPlaceholder={SEARCH} aria-label="Synapse AI’s model" />
                                     </Field>
                                     <p className="text-xs text-text-faint">You can change both in Settings → Models.</p>
@@ -390,7 +395,8 @@ function TwoWays({ path, checking, onKey, onOllama, onCheck }: {
                             Download Ollama <ExternalLink className="size-3" aria-hidden />
                         </a> and start it.
                     </li>
-                    <li>In a terminal, pull a model: <code className="font-code text-text">ollama pull qwen3</code></li>
+                    {/* A model that reads 128K, the least Synapse AI runs on (F1592): qwen3 reads 40K. */}
+                    <li>In a terminal, pull a model: <code className="font-code text-text">ollama pull llama3.1</code></li>
                     <li>
                         Press{' '}
                         <button type="button" onClick={onCheck} disabled={checking}

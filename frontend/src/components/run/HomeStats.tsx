@@ -18,7 +18,10 @@ export function HomeStats({
     running, nextRun, waiting, waitingSince, failed, failedSub, completed, runs, capped = false, clock,
 }: {
     running: number;
-    /** The soonest scheduled run, for "Next: …". */
+    /**
+     * The soonest scheduled run, for "Next: …"; null when nothing is scheduled. Undefined when the schedules have not
+     * been read, so the figure says nothing about them rather than "Nothing scheduled" (F1611).
+     */
     nextRun?: string | null;
     /** Runs and tool calls waiting on the reader. */
     waiting: number;
@@ -39,7 +42,7 @@ export function HomeStats({
             cells={[
                 {
                     label: 'Running now', dot: 'machine', value: running,
-                    sub: nextRun ? <>Next: <When iso={nextRun} clock={clock} /></> : 'Nothing scheduled',
+                    sub: nextRun ? <>Next: <When iso={nextRun} clock={clock} /></> : nextRun === null ? 'Nothing scheduled' : undefined,
                 },
                 {
                     label: 'Waiting on you', dot: 'person', value: waiting,

@@ -95,12 +95,20 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
     const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
     const { notifications } = useNotifications();
     const [runs, setRuns] = useState<RunSummary[]>([]);
+    /** Whether the runs list has been read (F1611): until then Home says nothing about runs, never that there are none. */
     const [runsLoaded, setRunsLoaded] = useState(false);
+    /** The runs list has never been read because the read failed (F1611): Home says so, never "nothing is waiting". */
+    const [runsUnread, setRunsUnread] = useState(false);
     const [summary, setSummary] = useState<Summary | null>(null);
     const [workflows, setWorkflows] = useState<Orchestration[]>([]);
     const [agents, setAgents] = useState<{ id: string; name?: string }[]>([]);
     const [schedules, setSchedules] = useState<Schedule[]>([]);
     const [mcpCount, setMcpCount] = useState(0);
+    /**
+     * Which of Home's own lists have been read (F1611): a section says what its list holds, or that it could not be
+     * read, never an empty or a zero it has not seen. Once read, a later read that fails keeps what was read.
+     */
+    const [read, setRead] = useState<Partial<Record<'workflows' | 'agents' | 'schedules' | 'apps', true>>>({});
     /** What the workspace has used of what Home's "More you can do" points at (F914); absent until read. */
     const [used, setUsed] = useState<Partial<Record<TryKey, boolean>>>({});
     const [moreHidden, setMoreHidden] = usePersisted<'0' | '1'>('synapseHomeMoreHidden', (raw) => (raw === '1' ? '1' : '0'), '0');
@@ -117,10 +125,15 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
 
     const refreshRuns = useCallback(() => {
         fetch(`/api/orchestrations/runs?limit=${RUNS_READ}`)
-            .then(r => r.json())
-            .then(d => { if (Array.isArray(d)) setRuns(d); })
-            .catch(() => { })
-            .finally(() => setRunsLoaded(true));
+            .then(r => (r.ok ? r.json() : Promise.reject(new Error(`runs: ${r.status}`))))
+            .then(d => {
+                if (!Array.isArray(d)) throw new Error('runs: not a list');
+                setRuns(d);
+                setRunsLoaded(true);
+                setRunsUnread(false);
+            })
+            // A failed read is not an empty list. After one that worked, what was read stays; before, it is said.
+            .catch(() => setRunsUnread(true));
     }, []);
 
     const refreshCounts = useCallback(() => {
@@ -130,12 +143,21 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
             j('/api/schedules'), j('/api/mcp/servers'), j('/api/personal-details'), j('/api/settings'),
             j('/api/rubrics'), j('/api/knowledge/bases'), j('/api/settings/api-keys'), j('/api/messaging/channels'),
         ]).then(([usage, orch, agentList, scheduleList, mcp, me, set, rubrics, bases, keys, channels]) => {
-            const list = (v: any) => (Array.isArray(v) ? v : Array.isArray(v?.servers) ? v.servers : []);
+            // A list that could not be read is not an empty one: only one that came back as a list is taken (F1611).
+            const list = (v: any): any[] | null => (Array.isArray(v) ? v : Array.isArray(v?.servers) ? v.servers : null);
             if (usage) setSummary(usage);
-            setWorkflows(list(orch));
-            setAgents(list(agentList));
-            setSchedules(list(scheduleList));
-            setMcpCount(list(mcp).length);
+            const [orchList, agentsList, schedulesList, appsList] = [list(orch), list(agentList), list(scheduleList), list(mcp)];
+            if (orchList) setWorkflows(orchList);
+            if (agentsList) setAgents(agentsList);
+            if (schedulesList) setSchedules(schedulesList);
+            if (appsList) setMcpCount(appsList.length);
+            setRead(cur => ({
+                ...cur,
+                ...(orchList ? { workflows: true as const } : {}),
+                ...(agentsList ? { agents: true as const } : {}),
+                ...(schedulesList ? { schedules: true as const } : {}),
+                ...(appsList ? { apps: true as const } : {}),
+            }));
             setName(firstName(me?.first_name));
             if (set && typeof set === 'object') setSettings(set);
             setUsed(usedOf({ rubrics, bases, channels }));
@@ -251,7 +273,9 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
         waiting: waiting.length > 0,
         runsOnItsOwn: schedules.some(s => s.enabled !== false),
     });
-    const showStart = loaded && runsLoaded && startHidden !== '1' && !startDone(steps);
+    // The path ticks itself from the workflows and schedules: drawn only once both are read (F1611).
+    const showStart = loaded && runsLoaded && Boolean(read.workflows && read.schedules) && startHidden !== '1'
+        && !startDone(steps);
     // Once a workflow has run the path folds to one line under Needs you (Naveen's call).
     const startFolded = Boolean(steps.find(st => st.id === 'run')?.done);
     const target = newest ?? null;
@@ -278,7 +302,7 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
         waiting: waitingCount,
         failedWorkflow: failedToday?.workflowName ?? null,
         running: rows.filter(r => r.status === 'running').length,
-        empty: workflows.length === 0,
+        empty: Boolean(read.workflows) && workflows.length === 0,
         hour: Number.isNaN(clock.now) ? null : Number(new Intl.DateTimeFormat('en-US', {
             hour: 'numeric', hourCycle: 'h23', timeZone: clock.timeZone }).format(clock.now)),
     };
@@ -316,13 +340,16 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
                 )}
 
                 {/* With nothing waiting, a new workspace's path leads; its fourth step says what Needs you is. */}
-                {(!showStart || startFolded || waitingCount > 0) && (
+                {/* Only once the runs are read (F1611): before that, an empty list is not "nothing is waiting". */}
+                {runsLoaded && (!showStart || startFolded || waitingCount > 0) && (
                     <RunHostProvider value={OSS_RUN_HOST}>
                         <div data-tour="home-needs-you">
                             <NeedsYou runs={cards} more={more} tools={tools} hrefOf={runHref} onChanged={refreshRuns} />
                         </div>
                     </RunHostProvider>
                 )}
+
+                {runsUnread && !runsLoaded && <Unread what="your runs" onRetry={refreshRuns} />}
 
                 {showStart && (
                     <div data-tour="home-start">
@@ -386,63 +413,70 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
                     />
                 )}
 
-                <HomeStats
-                    running={rows.filter(r => r.status === 'running').length}
-                    nextRun={next[0]?.at ?? null}
-                    waiting={waitingCount}
-                    waitingSince={pausedSince}
-                    failed={stats.failed}
-                    failedSub={stats.lastFailure
-                        ? <Link href={runHref(stats.lastFailure.id)} className="text-accent-ink hover:underline">{stats.lastFailure.workflowName ?? DELETED_WORKFLOW}</Link>
-                        : undefined}
-                    completed={stats.completed}
-                    runs={stats.runs}
-                    capped={capped}
-                    clock={clock}
-                />
-
-                <HomeSection id="active" title="Active now" link={live.length > 0 ? { href: '/runs', label: 'All runs' } : undefined}>
-                    <RecentRuns
-                        live
-                        label="Active now"
-                        rows={live}
-                        workflows={workflows}
-                        hrefOf={row => runHref(row.id)}
-                        empty={
-                            <p className="m-0 text-sm text-text-muted">
-                                <span className="font-medium text-text">Nothing running.</span>{' '}
-                                Start one from <TextLink href="/workflows">Workflows</TextLink>.
-                            </p>
-                        }
+                {/* The figures, Active now and the week say what ran: each waits for the runs (F1611). */}
+                {runsLoaded && (<>
+                    <HomeStats
+                        running={rows.filter(r => r.status === 'running').length}
+                        nextRun={read.schedules ? (next[0]?.at ?? null) : undefined}
+                        waiting={waitingCount}
+                        waitingSince={pausedSince}
+                        failed={stats.failed}
+                        failedSub={stats.lastFailure
+                            ? <Link href={runHref(stats.lastFailure.id)} className="text-accent-ink hover:underline">{stats.lastFailure.workflowName ?? DELETED_WORKFLOW}</Link>
+                            : undefined}
+                        completed={stats.completed}
+                        runs={stats.runs}
+                        capped={capped}
+                        clock={clock}
                     />
-                </HomeSection>
 
-                <RunWeek rows={week} hrefOf={row => runHref(row.id)} clock={clock} />
-
-                <div className="grid gap-7 min-[1100px]:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
-                    <HomeSection id="recent" title="Recent runs" link={{ href: '/runs', label: 'All runs' }}>
+                    <HomeSection id="active" title="Active now" link={live.length > 0 ? { href: '/runs', label: 'All runs' } : undefined}>
                         <RecentRuns
-                            rows={recent}
+                            live
+                            label="Active now"
+                            rows={live}
                             workflows={workflows}
                             hrefOf={row => runHref(row.id)}
-                            empty={<p className="m-0 text-sm text-text-muted">No runs yet</p>}
+                            empty={
+                                <p className="m-0 text-sm text-text-muted">
+                                    <span className="font-medium text-text">Nothing running.</span>{' '}
+                                    Start one from <TextLink href="/workflows">Workflows</TextLink>.
+                                </p>
+                            }
                         />
                     </HomeSection>
+
+                    <RunWeek rows={week} hrefOf={row => runHref(row.id)} clock={clock} />
+                </>)}
+
+                <div className="grid gap-7 min-[1100px]:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
+                    {runsLoaded && (
+                        <HomeSection id="recent" title="Recent runs" link={{ href: '/runs', label: 'All runs' }}>
+                            <RecentRuns
+                                rows={recent}
+                                workflows={workflows}
+                                hrefOf={row => runHref(row.id)}
+                                empty={<p className="m-0 text-sm text-text-muted">No runs yet</p>}
+                            />
+                        </HomeSection>
+                    )}
                     <HomeSection id="next" title="Coming up" link={{ href: '/schedules', label: 'Schedules' }}>
-                        <ComingUp
-                            items={next}
-                            clock={clock}
-                            ways={{ schedules: '/schedules', channels: '/channels', api: '/settings/api_keys' }}
-                            tip={favourite ? {
-                                text: `“${favourite.name}” ran ${favourite.count} times by hand this week. Put it on a schedule?`,
-                                action: (
-                                    <Button size="sm" variant="secondary" onClick={() => openBuilder({ prompt: `Put the workflow “${favourite.name}” on a schedule.` })}>
-                                        <Mark size={20} compact={false} className="text-accent" />
-                                        Schedule it with AI
-                                    </Button>
-                                ),
-                            } : null}
-                        />
+                        {read.schedules ? (
+                            <ComingUp
+                                items={next}
+                                clock={clock}
+                                ways={{ schedules: '/schedules', channels: '/channels', api: '/settings/api_keys' }}
+                                tip={favourite ? {
+                                    text: `“${favourite.name}” ran ${favourite.count} times by hand this week. Put it on a schedule?`,
+                                    action: (
+                                        <Button size="sm" variant="secondary" onClick={() => openBuilder({ prompt: `Put the workflow “${favourite.name}” on a schedule.` })}>
+                                            <Mark size={20} compact={false} className="text-accent" />
+                                            Schedule it with AI
+                                        </Button>
+                                    ),
+                                } : null}
+                            />
+                        ) : loaded ? <Unread what="your schedules" onRetry={refreshCounts} /> : null}
                     </HomeSection>
                 </div>
 
@@ -463,7 +497,9 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
                     {/* One series, so one hue and no legend: the row label is the
                         identity and the value is direct-labelled beside it. */}
                     <HomeSection id="models" title="Spend by model" link={{ href: '/usage', label: 'Usage' }}>
-                        {models.length === 0 ? (
+                        {summary === null ? (
+                            loaded ? <Unread what="usage" onRetry={refreshCounts} /> : null
+                        ) : models.length === 0 ? (
                             <p className="m-0 text-sm text-text-muted">No usage recorded yet</p>
                         ) : (
                             <div>
@@ -506,13 +542,13 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
                     <HomeSection id="workspace" title="Workspace">
                         <ul className="m-0 list-none divide-y divide-border border-y border-border p-0">
                             {[
-                                { icon: Workflow, label: 'Workflows', href: '/workflows', value: workflows.length },
-                                { icon: Bot, label: 'Agents', href: '/agents', value: agents.length },
+                                { icon: Workflow, label: 'Workflows', href: '/workflows', value: workflows.length, known: Boolean(read.workflows) },
+                                { icon: Bot, label: 'Agents', href: '/agents', value: agents.length, known: Boolean(read.agents) },
                                 {
-                                    icon: Clock, label: 'Schedules', href: '/schedules', value: schedules.length,
+                                    icon: Clock, label: 'Schedules', href: '/schedules', value: schedules.length, known: Boolean(read.schedules),
                                     sub: schedules.length > 0 ? `${schedulesOn} enabled` : undefined,
                                 },
-                                { icon: Blocks, label: 'Apps', href: '/apps', value: mcpCount },
+                                { icon: Blocks, label: 'Apps', href: '/apps', value: mcpCount, known: Boolean(read.apps) },
                             ].map(row => (
                                 <li key={row.href}>
                                     <Link href={row.href} className="flex items-center gap-3 px-1 py-2.5 transition-colors hover:text-text">
@@ -520,7 +556,7 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
                                         <span className="flex-1 text-sm text-text-muted">{row.label}</span>
                                         {row.sub && <span className="text-2xs text-text-faint">{row.sub}</span>}
                                         <span className="w-10 text-right text-sm tabular-nums text-text">
-                                            {loaded ? row.value : '—'}
+                                            {row.known ? row.value : '—'}
                                         </span>
                                     </Link>
                                 </li>
@@ -546,6 +582,16 @@ function usedOf(lists: { rubrics: unknown; bases: unknown; channels: unknown }):
 function anyKeyUsed(keys: unknown): boolean | undefined {
     if (!Array.isArray(keys)) return undefined;
     return keys.some((k: { last_used_at?: string | null } | null) => Boolean(k?.last_used_at));
+}
+
+/** A list Home could not read, said as such where its section would speak (F1611), with a way to read it again. */
+function Unread({ what, onRetry }: { what: string; onRetry: () => void }) {
+    return (
+        <div role="alert" className="flex flex-wrap items-center gap-3">
+            <p className="m-0 text-sm text-danger">Could not load {what}.</p>
+            <Button size="sm" variant="secondary" onClick={onRetry}>Try again</Button>
+        </div>
+    );
 }
 
 /** What a schedule runs, by name. */

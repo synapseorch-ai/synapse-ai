@@ -29,7 +29,7 @@ import {
 import { AGENT_BUILDER_SWITCH, asksForAgentBuilderSwitch, withoutBuildParam } from '@/components/assistant';
 import { usePersisted } from '@/components/ui';
 import type { OpenConversation } from '@/lib/builderReattach';
-import type { ProviderModels } from '@/lib/models';
+import type { ModelWindows, ProviderModels } from '@/lib/models';
 import { BuilderChats, newChatId, type BuiltWatcher, type ChatView, type SendOptions } from './builderChats';
 
 /**
@@ -143,6 +143,8 @@ interface BuilderContextValue extends BuilderChatValue {
     /** The panel shows chat `id`: one picked from its list, or a tab's (TABS2, F1062). */
     showChat: (id: string) => void;
     providers: Record<string, ProviderModels>;
+    /** Each model's known window and Synapse AI's floors (F1592), so its picker offers what can hold it. */
+    modelWindows: ModelWindows;
     /**
      * Whether the model this build will actually run on can see an attachment.
      * Resolved here rather than in the panel because it needs three things the
@@ -199,6 +201,8 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
     const [draft, setDraft] = useState<BuilderDraft | null>(null);
     const [draftTaken, takeDraft] = useState(0);
     const [providers, setProviders] = useState<Record<string, ProviderModels>>({});
+    // Each model's known window and Synapse AI's floors (F1592), for its picker.
+    const [modelWindows, setModelWindows] = useState<ModelWindows>({});
     // Served by the backend rather than restated here: a second copy of which
     // model families can see would be wrong the first time only one was updated.
     const [visionCapable, setVisionCapable] = useState<string[]>([]);
@@ -248,6 +252,7 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
                 if (modelsRes.ok) {
                     const data = await modelsRes.json();
                     setProviders(data.providers ?? {});
+                    setModelWindows({ windows: data.windows, synapse_ai_min_window: data.synapse_ai_min_window });
                     setVisionCapable(Array.isArray(data.vision_capable) ? data.vision_capable : []);
                 }
                 if (settingsRes.ok) {
@@ -403,11 +408,11 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
         () => ({
             chatId: panelChat.id, state, streaming, ready, send, stop, watchBuilt,
             isOpen, entered, open, draft, draftTaken, takeDraft, close, newConversation, showChat,
-            providers, canAttach, builderModel, sessionModel, setSessionModel, saveBuilderModel,
+            providers, modelWindows, canAttach, builderModel, sessionModel, setSessionModel, saveBuilderModel,
             setCurrentOrchestration, setCurrentAgent, showing, chats, sendContext,
         }),
         [panelChat.id, state, streaming, ready, send, stop, watchBuilt, isOpen, entered, open, draft, draftTaken, close,
-         newConversation, showChat, providers, canAttach, builderModel, sessionModel, setSessionModel,
+         newConversation, showChat, providers, modelWindows, canAttach, builderModel, sessionModel, setSessionModel,
          saveBuilderModel, setCurrentOrchestration, setCurrentAgent, showing, chats, sendContext],
     );
 
