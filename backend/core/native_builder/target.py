@@ -193,6 +193,11 @@ def resolve_target(
             # What the screen and the message leave open is the conversation's own last build (F1229).
             built = next((row for row in rows if built_id and row["id"] == built_id), None)
             return Target(built["id"], str(built.get("name") or ""), BUILT) if built is not None else Target()
+        built = next((row for row in rows if built_id and row["id"] == built_id), None)
+        if built is not None and built["id"] != viewing["id"]:
+            # What this conversation built, and another open on screen (F1605): asked, never assumed to be the screen's.
+            return Target(source=AMBIGUOUS, matches=(_line(viewing, "open on screen"),
+                                                     _line(built, "built in this conversation")))
         return Target(viewing["id"], str(viewing.get("name") or ""), VIEWING)
 
     if len(named) == 1 and (viewing is None or named[0]["id"] == viewing["id"]):

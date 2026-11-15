@@ -24,7 +24,7 @@
         "plan_research": {"type": "str", "default": "", "description": "The Researcher's report on who provides the tools a build's plan names that nothing here provides (F763)"},
         "plan_findings": {"type": "dict", "default": {}, "description": "Who provides what the build needs: report_findings on the build's own look-up (F763), or the findings card the conversation's previous turn ended in (F766); read by the analyst, the drafter and check_plan's Connect cards"},
         "prior_findings": {"type": "dict", "default": {}, "description": "The findings card the conversation's previous turn ended in, set by the host before the run (F766): a research request after it goes to the build"},
-        "run_changes": {"type": "str", "default": "Nothing in your workspace changed.", "description": "What this run changed in the workspace, in words, from its own writes; set by the engine as they happen (F490)"},
+        "run_changes": {"type": "str", "default": "Nothing in your workspace changed. I didn't find something to build or change in what you asked: say what you'd like built, or what to change and in which workflow, and I'll plan it.", "description": "What this run changed in the workspace, in words, from its own writes; set by the engine as they happen (F490)"},
         "chat_history": {"type": "str", "default": "", "description": "Prior conversation turns"},
         "selected_agent_ids": {"type": "list", "default": [], "description": "Agent IDs the user pre-selected"},
         "can_create_agents": {"type": "bool", "default": false, "description": "Whether the builder may create new agents"},
@@ -355,7 +355,8 @@
                 "step_change_context": "step_may_change",
                 "step_plan_room": "step_may_change",
                 "step_fetch_existing": "step_may_change",
-                "step_review_research": "step_review_research"
+                "step_review_research": "step_review_research",
+                "step_turn_said": "step_turn_said"
             },
             "switch_default_step_id": "step_answer",
             "max_iterations": 3,

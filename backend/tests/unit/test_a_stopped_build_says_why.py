@@ -26,7 +26,7 @@ def test_a_stopped_build_is_said_instead_of_nothing_changed():
                {"kind": "agent", "action": "deleted", "id": "a1", "name": "Mailer", "reason": "the build stopped"}]
     both = run_writes.render(removed, None, WHY)
     assert both.startswith('Removed the agent "Mailer" again') and both.endswith(WHY)
-    assert run_writes.render([], None, None) == run_writes.NOTHING_CHANGED
+    assert run_writes.render([], None, None) == f"{run_writes.NOTHING_CHANGED} {run_writes.NOTHING_DONE_WHY}"  # F1605
 
 
 def test_the_record_keeps_the_reason_and_re_renders():

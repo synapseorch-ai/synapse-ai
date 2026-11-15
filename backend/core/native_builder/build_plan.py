@@ -2487,6 +2487,11 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     # asked is the plan's pick, said under What I assumed.
     at_cap = questions_asked(state, asking_run) >= QUESTIONS
     cap_assumed: list[str] = []
+    # Built new beside an open workflow past the cap, without asking (F1605): said as the guess it is.
+    from core.native_builder.classify import NEW_BESIDE_KEY, built_new_said
+
+    if NEW_BESIDE_KEY in state:
+        cap_assumed.append(built_new_said(str(state.get(NEW_BESIDE_KEY) or "")))
     if finish in ("submit_plan", "ask_person") and not periods_said and not prior.get("asking_periods") and (
             q := periods.question(f"{state.get('user_message') or ''} {go_ahead_request(state) or ''}",
                                   state.get("person_timezone"))):

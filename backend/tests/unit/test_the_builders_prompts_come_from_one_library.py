@@ -193,7 +193,9 @@ from core.native_builder import prompt_lint, seed
 #: F1600: the planner's # Finishing asks what the build depends on and only the person can say (where the data
 #: comes from or arrives, their own rules or documents, where the results go), at most two rounds in all, writes the
 #: rest in `assumed`, and names each done part's `steps` (and `when`), 84043abd… (on 2.0.11's 26346700).
-BUNDLE_SHA256 = "84043abde94f1fcf3875a191be4aa95068f6588158f02485e4ff6a8679168fdd"
+#: F1605: the run's starting words for run_changes are never "Nothing in your workspace changed." alone;
+#: they say what to ask instead; and classify's switch takes F1605's one question to step_turn_said, f76f03e6… (on F1600's 84043abd).
+BUNDLE_SHA256 = "f76f03e6f2a18a3fe82987edace195342cb68f9f3c5b9be9da0e48f7e630dcb6"
 
 
 def _sha(definitions) -> str:

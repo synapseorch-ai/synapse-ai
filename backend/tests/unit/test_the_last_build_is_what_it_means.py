@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 
 from core.native_builder.classify import _entry
-from core.native_builder.target import BUILT, LAST_BUILT_KEY, VIEWING, last_built, resolve_target
+from core.native_builder.target import AMBIGUOUS, BUILT, LAST_BUILT_KEY, VIEWING, last_built, resolve_target
 from core.orchestration.run_writes import WRITES_KEY
 
 from tests.unit.test_the_build_route_decides_in_code import CHECK, TELL, _call, _plan, _run, workspace  # noqa: F401
@@ -28,8 +28,12 @@ class TestTheTarget:
         target = resolve_target("run it", None, ROWS, built_id="orch_sales")
         assert (target.id, target.source) == ("orch_sales", BUILT)
 
-    def test_what_is_open_on_screen_comes_first(self):
-        assert resolve_target("run it", "orch_other", ROWS, built_id="orch_sales").source == VIEWING
+    def test_what_is_open_on_screen_and_what_it_built_are_asked_about(self):
+        """F1605: another workflow open than the one this conversation built is asked about, never assumed to be the
+        screen's; the one open is it when it is the one built."""
+        target = resolve_target("run it", "orch_other", ROWS, built_id="orch_sales")
+        assert target.source == AMBIGUOUS and len(target.matches) == 2
+        assert resolve_target("run it", "orch_sales", ROWS, built_id="orch_sales").source == VIEWING
 
     def test_a_name_in_the_message_comes_first(self):
         target = resolve_target("run the Weekly digest", None, ROWS, built_id="orch_sales")

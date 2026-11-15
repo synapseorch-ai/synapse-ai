@@ -157,7 +157,10 @@ class TestAnyLanguageIsAskedNeverAChange:
         from core.native_builder.classify import NEW_BESIDE_KEY
         from test_the_builder_asks_before_it_guesses import _check, _plan, _run, desk  # noqa: F401
 
-        run = await _run(**{NEW_BESIDE_KEY: "Customer Refund Approval"})
+        from core.native_builder.change_tools import QUESTIONS, ROUNDS_KEY
+
+        # Past the cap for everything: the plan's address nobody gave is said as assumed too, not asked first.
+        run = await _run(**{NEW_BESIDE_KEY: "Customer Refund Approval", ROUNDS_KEY: QUESTIONS})
         out = await _check(run, _plan())
         assumed = out["review"].split("## What I assumed", 1)
         assert len(assumed) == 2

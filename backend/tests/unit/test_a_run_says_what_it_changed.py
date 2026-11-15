@@ -85,4 +85,7 @@ def test_an_ordinary_tools_error_is_not_kept():
 
 
 def test_render_on_nothing_is_nothing_changed():
-    assert rw.render([]) == rw.NOTHING_CHANGED and rw.render(None) == rw.NOTHING_CHANGED
+    # F1605: never alone; it says what to ask instead.
+    for nothing in ([], None):
+        said = rw.render(nothing)
+        assert said.startswith(rw.NOTHING_CHANGED) and said.endswith(rw.NOTHING_DONE_WHY)

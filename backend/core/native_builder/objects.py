@@ -495,7 +495,7 @@ class RequestAtPlan(Request):
 
 #: The route entries code hands a request to: a contract with the routes' owners (EDIT-LEDGER.md).
 ENTRIES = ("step_answer", "step_change_context", "step_plan_room", "step_fetch_existing", "step_research",
-           "step_not_yours")
+           "step_not_yours", "step_turn_said")
 
 
 class Routed(Request):
@@ -571,7 +571,8 @@ class Turn(BaseModel):
     """
 
     route: Literal["pick", "card_label", "plan_answer", "pressed", "yes_without_review", "next_request", "classify",
-                   "effort_continue", "effort_build", "offer_pick", "offer_taken", "tool_test"]
+                   "effort_continue", "effort_build", "offer_pick", "offer_taken", "tool_test",
+                   "run_unbuilt"]
     #: What a pick chose: an act's call (code puts its card up) or a change's chosen id (the change route takes it).
     picked: str | dict[str, Any] | None = None
     card: str | None = None
