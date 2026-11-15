@@ -4770,6 +4770,11 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
             issues.append(f"Evaluator step '{sid}' has an empty route_map.")
         if stype == "tool" and not s.get("forced_tool"):
             issues.append(f"Tool step '{sid}' has no forced_tool.")
+        if stype == "tool" and str(s.get("forced_tool") or "").split("__")[-1] == "collect_data":
+            # An agent's way to ask in a chat: as a Tool step a run gets the form, never the answers (F1616).
+            from core.native_builder.build_plan import FORM_TOOL_SAID
+
+            issues.append(f"Tool step '{sid}': {FORM_TOOL_SAID}.")
         if stype == "workflow" and not s.get("workflow_id"):
             issues.append(f"Workflow step '{sid}' has no workflow_id: name the workflow it runs.")
         if stype == "human" and not s.get("human_prompt"):

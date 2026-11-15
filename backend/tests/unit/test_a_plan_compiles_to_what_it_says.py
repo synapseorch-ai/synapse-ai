@@ -90,7 +90,8 @@ def _model_plans():
 MODEL_PLANS = _model_plans()
 #: What only the planner can answer: the compiler reports these and never invents them.
 PLANNERS = ("Expression problem", "has no transform_code", "has no switch_expression", "routing is ignored inside a "
-            "loop body", "which is neither in the loop body nor the loop's done path", "is not set up")
+            "loop body", "which is neither in the loop body nor the loop's done path", "is not set up",
+            "never a Tool step")
 
 
 class TestWhatModelsPlanned:
@@ -109,7 +110,9 @@ class TestWhatModelsPlanned:
     def test_most_compile_clean(self):
         clean = sum(not compile_plan(p, existing_agents=HARBOR_AGENTS, mint=_counter()).all_issues()
                     for _, p in MODEL_PLANS)
-        assert clean >= 84
+        # 77, not 84: seven of these plans ran `collect_data` as a Tool step, which gets a run the form, never the
+        # answers, so each would have failed every run; it is refused since F1616.
+        assert clean >= 77
 
     @pytest.mark.parametrize("name,plan", MODEL_PLANS[:40], ids=[p[0] for p in MODEL_PLANS[:40]])
     def test_compiling_what_it_reads_back_changes_nothing(self, name, plan):

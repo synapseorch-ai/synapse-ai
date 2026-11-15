@@ -858,6 +858,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     # said once with the structure findings (`_STRUCTURE_SAID_KEY`), then the plan goes as it is and its card says it.
     shaped += [off_a_path_finding(p, arm) for p, arm in parts_off_a_path(filled)]
     shaped += [own_terms_finding(step, thing) for step, thing in own_terms_unsaid(filled)]
+    # F1616: a request for a form, planned without one first, is said with the step it starts with instead.
+    shaped += [form_unstarted_finding(first) for first in [form_not_first(filled, state)] if first is not None]
     try:
         filled.run_cost = (await estimate.of(filled, ws)).words()
     except Exception as exc:  # noqa: BLE001 — a cost not worked out is said nowhere, never a plan refused
@@ -1377,6 +1379,8 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
             errors.append(f"step {s.id}: \"{s.name}\" is done once by the person, never by each run: the plan's "
                           "Connect card after the yes covers connecting a service, and a step only does what each run "
                           "does; take it out")
+        if s.type == "tool" and s.tool == FORM_TOOL:
+            errors.append(f"step {s.id}: {FORM_TOOL_SAID}")
         if s.type == "tool" and s.tool in TOOL_NAMES:
             errors.append(f"step {s.id}: board tools are an agent's, not a Tool step's: give `{s.tool}` to the "
                           "agent of an agent step")
@@ -3124,6 +3128,31 @@ def off_a_path_finding(part: O.PlanPart, arm: str) -> str:
 def off_a_path_words(part: O.PlanPart, arm: str) -> str:
     return (f'"{" ".join(part.part.split())}" is done only on one arm of "{arm}": a run that takes the other arm '
             f"skips it")
+
+
+#: An agent's way to ask for fields inside a chat (`tools/collect_data.py`), never a workflow's Tool step (F1616).
+FORM_TOOL = "collect_data"
+FORM_TOOL_SAID = (f"`{FORM_TOOL}` is an agent's way to ask for fields in a chat, never a Tool step: a run's Tool step "
+                  "gets the form it would show, never the answers. A form a person fills in is a `human` step with "
+                  "`human_fields` for what it asks, first in the workflow; the card then says the workflow starts when "
+                  "someone fills it in")
+#: A request for a form: "on a form", "fills in a form", "a form where…" — never "in the form of".
+_FORM_ASKED = re.compile(r"\bforms?\b(?!\s+of\b)", re.I)
+
+
+def form_not_first(plan: O.Plan, state: dict) -> O.Step | None:
+    """The step a new workflow starts with when the person asked for a form and that step is no form (F1616): a
+    `human` step first is the form the card says it starts from (`render.start_words`). None otherwise."""
+    if plan.kind != "create" or plan.schedule is not None or not _FORM_ASKED.search(_request_words(state)):
+        return None
+    first = next((s for s in plan.steps if s.type != "end"), None)
+    return first if first is not None and first.type != "human" else None
+
+
+def form_unstarted_finding(first: O.Step) -> str:
+    return (f"They asked for a form, but the workflow starts with **{first.name}**, which is no form: make its first "
+            "step a `human` step with `human_fields` for what the form asks, so a run starts when someone fills it "
+            "in, and the card says so.")
 
 
 def own_terms_unsaid(plan: O.Plan) -> list[tuple[O.Step, str]]:
