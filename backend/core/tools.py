@@ -76,7 +76,7 @@ class VirtualTool:
     read from a database write.
     """
     def __init__(self, name, description, inputSchema, annotations=None, title=None,
-                 trusted: bool = True):
+                 trusted: bool = True, custom: bool = False, origin: tuple[str, str] | None = None):
         self.name = name
         self.description = description
         self.inputSchema = inputSchema
@@ -86,6 +86,12 @@ class VirtualTool:
         #: boundary (see core/tool_policy.py) — believed when they restrict,
         #: not when they reassure.
         self.trusted = trusted
+        #: A person's own tool (HTTP or Python, `custom_virtual_tool`): it keeps its approval whatever its own tags say
+        #: (F1608), as only our own tools are ever counted inside the workspace.
+        self.custom = custom
+        #: The session that serves it and its name there, for a tool resolved from a server (`resolve_one_tool`); None
+        #: for one made here. What says a tool is one of our own (F1608), where a name alone could be anyone's.
+        self.origin = origin
 
 
 @dataclass(frozen=True)
@@ -175,7 +181,7 @@ def custom_virtual_tool(ct: dict) -> "VirtualTool":
     return VirtualTool(ct["name"], ct.get("description", ""), ct.get("inputSchema") or {"type": "object"},
                        annotations=ct.get("annotations") if isinstance(ct.get("annotations"), dict) else None,
                        # A person's tags carry no mark; the builder's and a file's are a claim (F488, TAG1).
-                       trusted=not ct.get("annotations_by"))
+                       trusted=not ct.get("annotations_by"), custom=True)
 
 
 def tool_hints(tool, *, trusted: bool = True) -> ToolHints:
@@ -384,7 +390,8 @@ async def resolve_one_tool(server_module, name: str, active_agent: dict, custom_
                 # step's policy check believed a third party's "I only read".
                 return VirtualTool(name, t.description, t.inputSchema,
                                    getattr(t, "annotations", None),
-                                   trusted=not session_key.startswith("ext_mcp_"))
+                                   trusted=not session_key.startswith("ext_mcp_"),
+                                   origin=(session_key, actual))
             return None
 
     for vt in build_virtual_tools():

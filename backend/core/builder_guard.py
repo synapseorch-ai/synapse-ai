@@ -558,6 +558,31 @@ def exempt_in_plan(plan: str) -> set[str]:
     return set(re.findall(r"`([^`\s]+)`", rest[:end.start()] if end else rest))
 
 
+#: Our own tools that write only inside the workspace (F1608: own Vault needs no approval), by the session that serves
+#: them and their name there (`core.tools_registry`): the sandbox's Vault create, write, patch and delete, and the
+#: fleet's Vault write. A tool counts as inside only when it came from one of these, is marked trusted, and its own
+#: declaration, by our code, says its world is closed (openWorldHint False). Never by a name alone (a bundled
+#: third-party server that shipped a vault_write is not ours), never by the trusted flag alone (that server can claim a
+#: closed world and write the person's disk), never a person's own tool, never with the hint absent. It removes an
+#: approval, so it fails closed: no origin, or no trusted mark, is outside.
+OWN_INSIDE_TOOLS = frozenset({*(("vault_sandbox", name) for name in ("vault_create", "vault_write", "vault_patch",
+                                                                     "vault_delete")),
+                              ("vault", "vault_write")})
+
+
+def _declared_closed(tool: Any) -> bool:
+    """Whether `tool` itself says openWorldHint False, set explicitly; an absent hint is never closed."""
+    ann = getattr(tool, "annotations", None)
+    value = ann.get("openWorldHint") if isinstance(ann, dict) else getattr(ann, "openWorldHint", None)
+    return value is False
+
+
+def inside_workspace(tool: Any) -> bool:
+    """One of our own tools that writes only inside this workspace (F1608): no approval step before it."""
+    return (getattr(tool, "origin", None) in OWN_INSIDE_TOOLS and getattr(tool, "trusted", False) is True
+            and not getattr(tool, "custom", False) and _declared_closed(tool))
+
+
 def acts(name: str, tool: Any) -> bool:
     """Whether the tool `name`, declared as `tool`, changes something outside this workspace: the plan check's one test
     (`acting_tool`), and a reply's cut where it was written as text (F1523, `react_engine._reply_kept`). The builder's
@@ -565,7 +590,7 @@ def acts(name: str, tool: Any) -> bool:
     from core.builder_access import READS
     from core.tools import tool_hints
 
-    if name in READS or tool is None:
+    if name in READS or tool is None or inside_workspace(tool):
         return False
     hints = tool_hints(tool, trusted=getattr(tool, "trusted", True))
     return not (hints.declared and hints.read_only)

@@ -221,7 +221,9 @@ WRITE_MAX_BYTES = 5 * 1024 * 1024
 
 _WRITE_TOOL = types.Tool(
     name=WRITE,
-    annotations=types.ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True),
+    # The workspace's own Vault, nothing outside it (F1608).
+    annotations=types.ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True,
+                                      openWorldHint=False),
     description=(
         "Write a text file into the vault: a CSV the vault draws as a chart, a report, a note. Creates it, or writes "
         "over a file this tool wrote before (a chart each run rewrites). Only .json, .md, .txt, .csv or .tsv, at most "
