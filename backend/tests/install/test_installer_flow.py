@@ -631,6 +631,55 @@ def test_an_upgrade_with_no_extras_runs_the_same_command_as_before(world, monkey
     assert not [c for c in calls if "--help" in c]      # uv is not asked about PyTorch
 
 
+def _index_answers(monkeypatch, versions):
+    """The install's index answers in PEP 691 JSON with `versions` (F1638); before the fix there is no index module."""
+    try:
+        from synapse.installer import index
+    except ImportError:
+        return
+    monkeypatch.setattr(index, "_read", lambda url, headers=None, timeout=15: {
+        "meta": {"api-version": "1.1"}, "name": "synapse-orch-ai", "versions": list(versions), "files": []})
+
+
+def test_an_upgrade_the_index_does_not_serve_yet_stops_nothing_and_backs_up_nothing(world, monkeypatch):
+    """F1638: the index the install reads has not caught up with the release; nothing is stopped, backed up or
+    installed, and the person is told so plainly."""
+    _existing(world)
+    _bundled_constraints(monkeypatch)
+    _index_answers(monkeypatch, ["2.0.0"])
+
+    code, out, calls = world["install"](upgrade=True, version_override="2.0.1")
+
+    assert code != 0, out
+    assert "Synapse 2.0.1 is still reaching PyPI" in out and "Nothing was changed" in out, out
+    assert not [c for c in calls if c[:3] == ["uv", "tool", "install"]]
+    backups = world["home"] / "backups"
+    assert not backups.exists() or not any(backups.iterdir())
+
+
+def test_an_upgrade_the_index_serves_goes_on_as_before(world, monkeypatch):
+    _existing(world)
+    _bundled_constraints(monkeypatch)
+    _index_answers(monkeypatch, ["2.0.0", "2.0.1"])
+
+    code, out, calls = world["install"](upgrade=True, version_override="2.0.1")
+
+    assert code == 0, out
+    assert _tool_install(calls)[-1] == "synapse-orch-ai==2.0.1"
+
+
+def test_the_install_reads_the_packages_index_page_again(world, monkeypatch):
+    """F1638: uv's own cache can hold the page from before the release; the install re-reads it."""
+    _existing(world)
+    _bundled_constraints(monkeypatch)
+
+    code, out, calls = world["install"](upgrade=True, version_override="2.0.1")
+
+    assert code == 0, out
+    install = _tool_install(calls)
+    assert install[install.index("--refresh-package") + 1] == "synapse-orch-ai", install
+
+
 def test_with_adds_an_extra_and_a_later_upgrade_keeps_it(world, monkeypatch):
     _existing(world)
     _bundled_constraints(monkeypatch)

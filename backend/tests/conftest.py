@@ -214,6 +214,23 @@ def _no_model_list():
 
 
 @pytest.fixture(autouse=True)
+def _no_package_index_is_read(monkeypatch):
+    """No test reads a real package index (F1638): the installer's index reader answers as an index that does not
+    answer in JSON, so the upgrade goes on as before; a test about the index sets its own."""
+    try:
+        from synapse.installer import index
+        from synapse.installer.net import HttpError
+    except ImportError:
+        return
+
+    def unread(url, headers=None, timeout=15):
+        raise HttpError(f"{url}: not read in tests")
+
+    monkeypatch.setattr(index, "_read", unread)
+    monkeypatch.setattr(index, "_read_npm", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _api_probe_answers():
     """A found API answers here (F1423): no test reaches the network to ask whether it does, and one about the probe
     sets its own."""
