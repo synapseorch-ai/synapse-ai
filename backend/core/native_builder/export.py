@@ -86,6 +86,20 @@ def lead_only(message: str) -> bool:
     return bool(m) and not (message or "")[m.end():].strip()
 
 
+#: What the line asks when a screenshot came with it and nothing was written under it (F1637): the planner sees the
+#: image, as it sees any the person sends, and rebuilds what it shows.
+SCREENSHOT_ASK = "The workflow is shown in the attached screenshot: rebuild what it shows."
+
+
+def screenshot_ask(message: str, *, has_images: bool) -> str:
+    """The import starter's line sent with a screenshot and nothing under it, as an ask to rebuild what the screenshot
+    shows (F1637); any other message as it came. Someone with no export who brings a picture of the workflow is never
+    told to paste code they do not have."""
+    if has_images and lead_only(message):
+        return f"{(message or '').strip()}\n\n{SCREENSHOT_ASK}"
+    return message
+
+
 def read_export(message: str) -> ExportRead | None:
     """The export in `message`, or None when it holds no Agents SDK code."""
     if not message:

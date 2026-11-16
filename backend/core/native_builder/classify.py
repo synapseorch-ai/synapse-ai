@@ -83,7 +83,14 @@ _A_NEW_ONE = re.compile(r"\b(?:a|an|another|new)\s+(?:workflow|flow|automation|a
 
 
 #: The ways a request beside an open workflow is built new: it plans from nothing, never from the open one.
-_BUILT_NEW_BESIDE = ("new_beside_open", "new_past_cap", "new_using_open")
+_BUILT_NEW_BESIDE = ("new_beside_open", "new_past_cap", "new_using_open", "import_described")
+
+
+def _import_described(message: str) -> bool:
+    """The import starter's line with something under it that is not Agents SDK code (F1637)."""
+    from core.native_builder.export import lead_only, lead_present, read_export
+
+    return lead_present(message) and not lead_only(message) and read_export(message) is None
 
 
 def new_using_open(text: str, state: dict) -> bool:
@@ -296,7 +303,11 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
     also = request.also
     # Why something failed is said before it is fixed (F1378, prod-07): the answer reads the failed run, and the fix
     # waits for after it. The quick model's order of the two asks never decides it.
-    if state.get(OFFER_TAKEN_KEY):
+    if _import_described(message):
+        # The import line with something under it that is not code (the person's words, or the screenshot ask) is a
+        # new build, whatever the quick model read (F1637): the line asks for one, and no workflow here is meant.
+        kind, by = "build", "import_described"
+    elif state.get(OFFER_TAKEN_KEY):
         # A yes to the offer to set up the workflow for a live fact (F1382): its ask is this turn's message.
         kind, by = "build", "offer_taken"
     elif kind in ("change", "build") and by is None and _CAUSE.search(text):
