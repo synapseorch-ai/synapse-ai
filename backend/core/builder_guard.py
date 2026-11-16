@@ -125,12 +125,13 @@ async def canonical_names(names: list[Any], server_module: Any) -> list[Any]:
 
 
 async def _known_names(server_module: Any) -> list[str]:
-    """Every tool name this workspace offers, for suggesting the nearest real one."""
+    """Every tool name this workspace offers, for suggesting the nearest real one: those held only by naming them too
+    (F1625), since a name is what is suggested."""
     try:
         from core.routes.tools import load_custom_tools
-        from core.tools import aggregate_all_tools
+        from core.tools import aggregate_all_tools, catalogue_holder
 
-        tools = (await aggregate_all_tools(server_module, {"tools": ["all"]}, await load_custom_tools()))[0]
+        tools = (await aggregate_all_tools(server_module, catalogue_holder(), await load_custom_tools()))[0]
         return sorted({getattr(t, "name", "") for t in tools if getattr(t, "name", "")})
     except Exception:  # noqa: BLE001 — suggestions are a courtesy
         return []

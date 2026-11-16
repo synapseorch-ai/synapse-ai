@@ -235,6 +235,31 @@ def opt_in(server: str, tool: str) -> bool:
     return server in OPT_IN_SERVERS or (server, tool) in OPT_IN_TOOLS
 
 
+def catalogue_holder() -> dict:
+    """What the builder asks the workspace's tools with (F1625): `"all"`, and each per-tool opt-in by name.
+
+    Opting in is about what an agent made with `"all"` holds, never about what the builder may know exists. Asked
+    with `"all"` alone, the builder never saw the Vault's write where the `vault` server serves it, and a plan that
+    saves to the Vault or draws a chart was told there is none. Naming a tool lists it only where the host serves it,
+    so a host with no writer lists nothing new. Whole opt-in servers (`sql`) are not named here.
+    """
+    return {"tools": ["all", *sorted({tool for _server, tool in OPT_IN_TOOLS})]}
+
+
+async def named_only_offered(server_module) -> frozenset[str]:
+    """Each per-tool opt-in this host serves (F1625): a tool an agent, or a Tool step's agent, holds only by naming it.
+
+    Read off the servers' tool lists, cached on the module once listed (`aggregate_all_tools`), so it costs no second
+    listing after the catalogue. The sandbox's own `vault_write` is not one: `"all"` holds it.
+    """
+    cache = getattr(server_module, "_session_tools", None)
+    if not cache:
+        await aggregate_all_tools(server_module, catalogue_holder(), [])
+        cache = getattr(server_module, "_session_tools", None) or {}
+    return frozenset(name for server, tools in cache.items() for t in tools or []
+                     if (name := getattr(t, "name", None)) and (server, name) in OPT_IN_TOOLS)
+
+
 #: How many tokens of declarations `"all"` may add to one turn from the servers a
 #: workspace connected, for tools the agent did not name (F483).
 #:

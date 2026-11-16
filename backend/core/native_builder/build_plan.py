@@ -132,6 +132,15 @@ async def workspace(server_module: Any) -> Workspace:
     except Exception as exc:  # noqa: BLE001 — a server that cannot list is not a workspace with no tools
         _log.warning("the build's catalogue was not read: %s", exc)
         catalogue = []
+    # The tools this host serves only to who names them (F1625): listed, and said so, so a plan's agent that uses one
+    # names it (a Tool step with no agent names its own).
+    try:
+        from core.tools import named_only_offered
+
+        named = await named_only_offered(server_module)
+    except Exception as exc:  # noqa: BLE001 — not knowing which need naming is a word not said, never a plan refused
+        _log.warning("the build's named-only tools were not read: %s", exc)
+        named = frozenset()
     # What a tool here declares it answers (F1394): an MCP tool's `outputSchema`, or a custom tool's, which the
     # catalogue does not carry.
     try:
@@ -150,7 +159,10 @@ async def workspace(server_module: Any) -> Workspace:
             does = getattr(t, "description", None) or (t.get("function", {}).get("description")
                                                         if isinstance(t, dict) else "")
             out = getattr(t, "outputSchema", None) or declared.get(name)
-            tools.append({"name": name, "does": " ".join(str(does or "").split())[:140],
+            said = " ".join(str(does or "").split())[:140]
+            if name in named:
+                said += " (An agent holds it only by naming it in its tools.)"
+            tools.append({"name": name, "does": said, **({"named_only": True} if name in named else {}),
                           **({"outputSchema": out} if isinstance(out, dict) else {})})
             took = getattr(t, "inputSchema", None) or (t.get("function", {}).get("parameters")
                                                         if isinstance(t, dict) else None)
