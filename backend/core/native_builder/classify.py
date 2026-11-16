@@ -74,6 +74,32 @@ def new_beside_open(text: str, state: dict) -> bool:
     return bool(_NEW_JOB.search(text))
 
 
+#: Words a new workflow uses another with (F1628): "runs my X", "calls X", "starts after X", "uses the X workflow".
+_USES = (r"\b(?:runs?|running|calls?|calling|starts?|starting|triggers?|triggering|uses?|using|after|follows?|"
+         r"following|kicks? off)")
+_FILLER = r"(?:\s+(?:my|our|the|a|an|each|every))?"
+#: A new one asked for, before what it uses: "every Monday run X" schedules the open one, and is not new.
+_A_NEW_ONE = re.compile(r"\b(?:a|an|another|new)\s+(?:workflow|flow|automation|agent|assistant|bot)\b")
+
+
+#: The ways a request beside an open workflow is built new: it plans from nothing, never from the open one.
+_BUILT_NEW_BESIDE = ("new_beside_open", "new_past_cap", "new_using_open")
+
+
+def new_using_open(text: str, state: dict) -> bool:
+    """A new job that names the open workflow as what it runs, calls or follows (F1628): built new, never a change to
+    the open one. English, by its words: the message starts as a whole job (F1605's words) and the open workflow's
+    name comes right after a word that uses it, after the new one is asked for. "make X run every Monday" and "every
+    Monday run X" name it as what to change or schedule, and stay as they were."""
+    if state.get("current_orchestration_source") != "viewing":
+        return False
+    name = _words(str(state.get("current_orchestration_name") or ""))
+    if not name or _EDIT_FIRST.match(text) or not _NEW_JOB.search(text):
+        return False
+    new_one, uses = _A_NEW_ONE.search(text), re.search(rf"{_USES}{_FILLER}\s+{re.escape(name)}\b", text)
+    return bool(new_one and uses and new_one.start() < uses.start())
+
+
 def open_or_new(text: str, state: dict) -> bool:
     """A message beside an open workflow that neither refers to it nor starts as an edit of it, and that the job-shape
     words cannot place (any language): asked once whether it changes the open one or is new,
@@ -277,6 +303,9 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
             things.get("schedule") or things.get("agent")
             or any(w in text.split() for k in ("schedule", "agent") if inventory.get(k) for w in _KINDS[k])):
         kind, by = "change", "named_change"
+    # A new workflow that runs, calls or follows the open one is a new build, though it names it (F1628).
+    elif kind in ("change", "build") and new_using_open(text, state):
+        kind, by = "build", "new_using_open"
     # A new request typed beside an open workflow is a new build, whatever the quick model read (F1605): "this" and
     # "it" mean the open one only when the message is about it.
     elif kind in ("change", "build") and not things and new_beside_open(text, state):
@@ -322,7 +351,7 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
     not_it = source == "built" or source in ("named", "picked") and _words(
         state.get("current_orchestration_name") or "") in {_words(r) for r in things.get("recording") or []}
     route = _entry(kind, text, {**state, "current_orchestration_source": ""}
-                   if (by == "recording_named" and not_it) or by in ("new_beside_open", "new_past_cap") else state)
+                   if (by == "recording_named" and not_it) or by in _BUILT_NEW_BESIDE else state)
     if by == "open_or_new":
         route = "step_turn_said"
     if route == "step_answer" and kind == "build":

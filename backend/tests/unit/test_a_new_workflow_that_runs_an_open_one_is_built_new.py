@@ -47,6 +47,8 @@ class TestAnEditOfTheOpenOneThatNamesItStaysOne:
 
     @pytest.mark.parametrize("message", ["add an approval step to Customer Refund Approval",
                                          "make Customer Refund Approval run every Monday",
-                                         "change Customer Refund Approval's threshold to 200"])
+                                         "change Customer Refund Approval's threshold to 200",
+                                         "Every Monday run Customer Refund Approval for last week's refunds",
+                                         "make Customer Refund Approval start after Nightly invoices"])
     def test_it_stays_a_change(self, message):
         assert _route(message, "change").kind == "change", message
