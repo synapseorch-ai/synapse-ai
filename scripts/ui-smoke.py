@@ -6187,8 +6187,8 @@ async def check_f1600card(browser) -> str:
 
 #: The import starter's line, and what the panel says when it is sent with nothing under it (F1607).
 F1607_LEAD = "Rebuild this OpenAI Agent Builder workflow here. Its export (Code → Agents SDK) is below:"
-F1607_NOTE = ("Paste the export under the line first: in OpenAI Agent Builder, open the workflow, choose Code → Agents "
-              "SDK and copy all of it.")
+F1607_NOTE = ("Paste the workflow's Agents SDK code under the line first (the Code → Agents SDK export from Agent "
+              "Builder, or a copy you saved), or describe the workflow in your own words.")
 #: The held note as the browser lays it out: whether all of it shows, what it says, and whether it is announced.
 F1607_NOTE_READ = r"""
 (el) => ({shown: el.clientWidth, needs: el.scrollWidth, text: (el.textContent || '').replace(/\s+/g, ' ').trim(),

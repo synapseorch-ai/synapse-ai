@@ -55,8 +55,10 @@ IMPORT_LEAD = "Rebuild this OpenAI Agent Builder workflow here. Its export (Code
 #: Its words as the line starts, older shapes too ("… workflow here:"), whatever follows on the line.
 _LEAD = re.compile(r"\s*Rebuild this OpenAI Agent Builder workflow here\b[^\n]*")
 #: What is said when the starter came with nothing under it (F1607): no plan, no workflow here touched.
-EXPORT_MISSING = ("Nothing was pasted under the line, so there is no export to rebuild yet. In OpenAI Agent Builder, open "
-                  "the workflow, choose Code → Agents SDK, copy all of it, and paste it here under the line.")
+#: True before and after Agent Builder closes (F1636): a saved export is still one, and the person's own words always do.
+EXPORT_MISSING = ("Nothing was pasted under the line, so there is no export to rebuild yet. Paste the workflow's Agents "
+                  "SDK code under the line (the Code → Agents SDK export from Agent Builder, or a copy you saved), or "
+                  "describe the workflow in your own words and I'll plan it from that.")
 
 
 def lead_present(message: str) -> bool:
