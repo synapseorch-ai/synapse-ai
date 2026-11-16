@@ -124,15 +124,32 @@ class TestForEach:
         # the run still moves on down the done path
         assert _final_state(events)["tail"] == "done"
 
-    async def test_non_list_source_warns_and_runs_zero_iterations(self):
-        events = await _run(_orch({"loop_over": "state.items"}),
-                            initial_state={"items": "not a list"})
-        warnings = _warnings(events)
-        # one line naming the real problem, not a second one about emptiness
-        assert len(warnings) == 1 and "not a list" in warnings[0]
-        assert _loop_complete(events)["stopped_reason"] == "empty_collection"
+    @pytest.mark.parametrize(("value", "words"), [
+        ({"keywords": ["a", "b"]}, "an object"),
+        ("not a list", "text"),
+        (7, "a number"),
+        (True, "a yes/no"),
+    ])
+    async def test_a_source_that_is_no_list_fails_the_loop(self, value, words):
+        """F1613. A source that is no list used to warn and run zero times, and the run carried on as Completed: the
+        steps after the loop then worked on nothing (a summary of research that never ran). It fails the Loop step now,
+        as a collection over the cap does (F254), saying what the source is and that nothing after it ran."""
+        events = await _run(_orch({"loop_over": "state.items"}), initial_state={"items": value})
         assert _iterations(events) == []
-        assert _final_state(events)["tail"] == "done"
+        complete = next(e for e in reversed(events) if e.get("type") == "orchestration_complete")
+        assert complete["status"] == "failed"
+        assert "tail" not in (complete.get("final_state") or {})
+        errors = [e["error"] for e in events if e.get("type") == "step_error" and e.get("orch_step_id") == "loop1"]
+        # The loop's own sentence first; the engine's sanitised line for any raised failure follows it (F195).
+        assert errors, events
+        assert "state.items" in errors[0] and words in errors[0] and "not a list" in errors[0], errors[0]
+
+    async def test_an_object_with_one_list_names_it_in_the_failure(self):
+        """F1613: the repair is said with the failure. An answer object holding one list names that field."""
+        events = await _run(_orch({"loop_over": "state.items"}),
+                            initial_state={"items": {"keywords": ["a", "b"], "notes": "n"}})
+        errors = [e["error"] for e in events if e.get("type") == "step_error" and e.get("orch_step_id") == "loop1"]
+        assert errors and "state.items.keywords" in errors[0], errors
 
     async def test_a_source_written_as_json_text_is_typed_and_iterates(self):
         """F14, the headline: the upstream step answers in text, the loop runs.
@@ -183,9 +200,13 @@ class TestForEach:
         assert _final_state(events)["tail"] == "done"
 
     async def test_missing_source_warns_rather_than_crashing(self):
+        """An unset source is what a branch that did not run leaves (U74), so the loop runs zero times and the run
+        carries on. F1613: the run says why in plain words, never a type name."""
         events = await _run(_orch({"loop_over": "state.nope"}))
         assert _iterations(events) == []
-        assert any(e.get("type") == "orchestration_complete" for e in events)
+        complete = next(e for e in reversed(events) if e.get("type") == "orchestration_complete")
+        assert complete["status"] == "completed"
+        assert _warnings(events) == ["The Loop 'Loop' ran 0 times: nope was never set on this path."]
 
     async def test_a_collection_over_loop_max_iterations_fails_the_loop(self):
         """F254 (Naveen's call): a collection larger than the cap fails before

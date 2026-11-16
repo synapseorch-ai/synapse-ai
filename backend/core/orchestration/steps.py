@@ -2361,6 +2361,38 @@ class MergeStepExecutor:
         }
 
 
+def _loop_source_name(expr: str) -> str:
+    """What a Loop goes through, as a person reads it: `state.keyword_researcher` is `keyword_researcher`."""
+    from core.expressions import _unbraced
+
+    return _unbraced(expr or "").strip().removeprefix("state.") or "its list"
+
+
+def _not_a_list(step: StepConfig, value: Any) -> str:
+    """Why a Loop cannot go through `value`, and the fix (F1613): an object names its one list field, if it has one."""
+    from core.expressions import _unbraced
+
+    expr = _unbraced(step.loop_over or "").strip()
+    fix = ""
+    if isinstance(value, dict):
+        lists = [k for k, v in value.items() if isinstance(v, (list, tuple))]
+        kind = f"an object (fields: {', '.join(map(str, value)) or 'none'})"
+        fix = (f" Point it at the list: {expr}.{lists[0]}." if len(lists) == 1
+               else " Point it at one of its list fields." if lists else " A step before it makes the list.")
+    elif isinstance(value, str):
+        kind = "text"
+        fix = (" A step before it makes the list: an llm step answering a JSON list, its key declared a list, or a "
+               "Transform.")
+    elif isinstance(value, bool):
+        kind = "a yes/no"
+    elif isinstance(value, (int, float)):
+        kind = "a number"
+    else:
+        kind = type(value).__name__
+    return (f"The Loop '{step.name}' goes through {expr}, which is {kind}, not a list, so it has nothing to go "
+            f"through and nothing after it ran.{fix}")
+
+
 class LoopStepExecutor:
     """Run a body of steps repeatedly, accumulating each iteration's results.
 
@@ -2473,11 +2505,20 @@ class LoopStepExecutor:
                             yield {"type": "step_warning", "orch_step_id": step.id,
                                    "message": f"loop_over '{step.loop_over}' is an "
                                               f"empty list — zero iterations"}
-                    else:
+                    elif resolved is None:
+                        # Unset: what a branch that did not run leaves (U74), so the loop runs zero times and the
+                        # run carries on, said in words a person reads on the run (F1613).
                         yield {"type": "step_warning", "orch_step_id": step.id,
-                               "message": f"loop_over '{step.loop_over}' is "
-                                          f"{type(resolved).__name__}, not a list — zero iterations"}
+                               "message": f"The Loop '{step.name}' ran 0 times: "
+                                          f"{_loop_source_name(step.loop_over)} was never set on this path."}
                         items = []
+                    else:
+                        # Anything else is no list, and going through it zero times read as work done: the run said
+                        # Completed and the steps after it summed up nothing (F1613). It fails here, as a list over
+                        # the cap does (F254), with the list to point at when the value holds one.
+                        message = _not_a_list(step, resolved)
+                        yield {"type": "step_error", "orch_step_id": step.id, "error": message}
+                        raise RuntimeError(message)
                     # Judged on the collection as evaluated, never on a resumed
                     # snapshot: a run paused inside the loop carries on with
                     # the items it was already iterating.

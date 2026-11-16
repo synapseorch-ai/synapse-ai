@@ -255,6 +255,17 @@ async def pick_models(plan: O.Plan, stronger: list[str]) -> tuple[dict[str, O.Mo
     return picks, issues, ""
 
 
+def _persons_words(state: dict) -> str:
+    """The turn's words that are the person's (F1614): with a pasted export, only what they wrote above the code; the
+    code's own words (an Agent's instructions saying "recent") were asked about as theirs."""
+    message = str(state.get("user_message") or "")
+    if state.get("export_source"):
+        from core.native_builder.export import own_words
+
+        return own_words(message)
+    return message
+
+
 def go_ahead_request(state: dict) -> str | None:
     """What a bare go-ahead right after findings asks for (F1064, from P5's res-02 measure): the findings' goal, in
     code's words. "build it" alone has no request of its own, and a planner given only those words asked what to
@@ -632,6 +643,62 @@ def _without(plan: O.Plan, tools: list[str], took_out: list[str] | None = None) 
     return out
 
 
+def _loops_through_their_list(plan: O.Plan, notes: list[str]) -> O.Plan:
+    """The Plan with each Loop over a whole answer that holds one list going through that list (F1613), said in
+    `notes` for the card. A model step that declares its answer's fields answers one object, `{"keywords": [...]}`;
+    a Loop over the step itself went through the object and ran zero times. Two lists, or none, are the planner's to
+    pick, sent back by the validator's `step_answers.loops_over_an_answer`."""
+    from core.orchestration.output_fields import field_type, normalised
+
+    def through(steps: list[O.Step]) -> list[O.Step]:
+        by_id = {s.id: s for s in steps}
+        out = []
+        for s in steps:
+            over = (s.loop_over or "").strip()
+            head, _, rest = over.removeprefix("state.").partition(".")
+            writer = by_id.get(head) if s.type == "loop" else None
+            if writer is not None and writer.type in ("llm", "agent") and rest in ("", "output", "result", "results"):
+                fields = normalised((writer.config or {}).get("output_fields"))
+                lists = [f["name"].strip() for f in fields if field_type(f.get("type")) == "list"]
+                if fields and len(lists) == 1:
+                    s = s.model_copy(update={"loop_over": f"{head}.{lists[0]}"})
+                    notes.append(f"The loop '{s.name}' goes through `{lists[0]}`, the one list in what "
+                                 f"'{writer.name}' answers.")
+            out.append(s)
+        return out
+
+    out = plan.model_copy(deep=True)
+    out.steps = through(out.steps)
+    for w in out.inner_workflows:
+        w.steps = through(w.steps)
+    return out
+
+
+def _reused_for_an_export(plan: O.Plan, ws: "Workspace", state: dict) -> list[str]:
+    """Each agent already in the workspace that the plan's steps use, named like a pasted export's Agent, whose
+    instructions are not that Agent's (F1615): reusing it keeps its own, as reusing means, and the card says so, so the
+    person knows to check. An ordinary build, or one making its agents new, says nothing."""
+    from core.native_builder import verbatim
+
+    pasted = verbatim.sources(state)
+    if not pasted:
+        return []
+    new = {verbatim._key(a.name) for a in plan.agents}
+    by_key = {verbatim._key(n): n for n in pasted}
+    said: list[str] = []
+    for ref in dict.fromkeys(s.agent for s in [*plan.steps, *(s for w in plan.inner_workflows for s in w.steps)]
+                             if s.agent):
+        here = ws.agents.get(ref) or next((a for a in ws.agents.values() if verbatim._key(str(a.get("name") or ""))
+                                           == verbatim._key(ref)), None)
+        if here is None or verbatim._key(str(here.get("name") or "")) in new:
+            continue
+        source = by_key.get(verbatim._key(str(here.get("name") or "")))
+        if source and str(here.get("system_prompt") or "").strip() != pasted[source].strip():
+            said.append(f"“{here.get('name')}” is an agent already here: it keeps its own instructions, not the "
+                        f"export's “{source}”.")
+    return said
+
+
 def _instructions_whole(plan: O.Plan, state: dict, notes: list[str]) -> tuple[O.Plan, list[str]]:
     """The Plan with a pasted export's Agents' instructions whole in its steps' prompts (F1550, `verbatim.whole`): a
     reference put there, a retyped copy made whole, said in `notes` for the card; the errors are references to an
@@ -701,6 +768,10 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     # A pasted export's Agents' instructions, whole (F1550): put where the plan names them, and made whole where it
     # retyped them. Before the key check, which reads what is saved.
     plan, copy_errors = _instructions_whole(plan, state, took_out)
+    # A Loop over a step that answers one list field goes through that field, said on the card (F1613).
+    plan = _loops_through_their_list(plan, took_out)
+    # An agent already here that the plan uses for an export's Agent keeps its own instructions; said (F1615).
+    took_out += _reused_for_an_export(plan, ws, state)
     from core.native_builder.change_tools import _holds_a_key
     from core.secret_scrub import holds_credential
 
@@ -787,6 +858,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     # said once with the structure findings (`_STRUCTURE_SAID_KEY`), then the plan goes as it is and its card says it.
     shaped += [off_a_path_finding(p, arm) for p, arm in parts_off_a_path(filled)]
     shaped += [own_terms_finding(step, thing) for step, thing in own_terms_unsaid(filled)]
+    # F1616: a request for a form, planned without one first, is said with the step it starts with instead.
+    shaped += [form_unstarted_finding(first) for first in [form_not_first(filled, state)] if first is not None]
     try:
         filled.run_cost = (await estimate.of(filled, ws)).words()
     except Exception as exc:  # noqa: BLE001 — a cost not worked out is said nowhere, never a plan refused
@@ -1306,6 +1379,8 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
             errors.append(f"step {s.id}: \"{s.name}\" is done once by the person, never by each run: the plan's "
                           "Connect card after the yes covers connecting a service, and a step only does what each run "
                           "does; take it out")
+        if s.type == "tool" and s.tool == FORM_TOOL:
+            errors.append(f"step {s.id}: {FORM_TOOL_SAID}")
         if s.type == "tool" and s.tool in TOOL_NAMES:
             errors.append(f"step {s.id}: board tools are an agent's, not a Tool step's: give `{s.tool}` to the "
                           "agent of an agent step")
@@ -2493,7 +2568,7 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     if NEW_BESIDE_KEY in state:
         cap_assumed.append(built_new_said(str(state.get(NEW_BESIDE_KEY) or "")))
     if finish in ("submit_plan", "ask_person") and not periods_said and not prior.get("asking_periods") and (
-            q := periods.question(f"{state.get('user_message') or ''} {go_ahead_request(state) or ''}",
+            q := periods.question(f"{_persons_words(state)} {go_ahead_request(state) or ''}",
                                   state.get("person_timezone"))):
         # A period the person did not pin down is asked once, before any plan is shown, with its dates on their
         # clock (F1210): a planner picked one of two weeks without saying so.
@@ -2685,6 +2760,11 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     said += [f"{render_gate(g)}." for g in plan.gates if g.decision == "deny" and g.tool not in found.blocks]
     buildable = not (no_way or connect or found.errors or found.blocks)
     prompts = prompts_for(plan, state) if plan.agents else {}
+    if prompts:
+        # What code kept whole of an imported Agent's instructions, over what the prompt writer wrote (F1615).
+        raw_prompts = _obj(state.get(PROMPTS_KEY))
+        said += [n for n in (raw_prompts.get("notes") or []) if isinstance(n, str)] if isinstance(
+            raw_prompts, dict) else []
     if prompts:
         # Each board agent is told how to work its board, in code's words the card shows (F1254).
         prompts = boards_rule.with_board_lines(plan, prompts)
@@ -3048,6 +3128,31 @@ def off_a_path_finding(part: O.PlanPart, arm: str) -> str:
 def off_a_path_words(part: O.PlanPart, arm: str) -> str:
     return (f'"{" ".join(part.part.split())}" is done only on one arm of "{arm}": a run that takes the other arm '
             f"skips it")
+
+
+#: An agent's way to ask for fields inside a chat (`tools/collect_data.py`), never a workflow's Tool step (F1616).
+FORM_TOOL = "collect_data"
+FORM_TOOL_SAID = (f"`{FORM_TOOL}` is an agent's way to ask for fields in a chat, never a Tool step: a run's Tool step "
+                  "gets the form it would show, never the answers. A form a person fills in is a `human` step with "
+                  "`human_fields` for what it asks, first in the workflow; the card then says the workflow starts when "
+                  "someone fills it in")
+#: A request for a form: "on a form", "fills in a form", "a form where…" — never "in the form of".
+_FORM_ASKED = re.compile(r"\bforms?\b(?!\s+of\b)", re.I)
+
+
+def form_not_first(plan: O.Plan, state: dict) -> O.Step | None:
+    """The step a new workflow starts with when the person asked for a form and that step is no form (F1616): a
+    `human` step first is the form the card says it starts from (`render.start_words`). None otherwise."""
+    if plan.kind != "create" or plan.schedule is not None or not _FORM_ASKED.search(_request_words(state)):
+        return None
+    first = next((s for s in plan.steps if s.type != "end"), None)
+    return first if first is not None and first.type != "human" else None
+
+
+def form_unstarted_finding(first: O.Step) -> str:
+    return (f"They asked for a form, but the workflow starts with **{first.name}**, which is no form: make its first "
+            "step a `human` step with `human_fields` for what the form asks, so a run starts when someone fills it "
+            "in, and the card says so.")
 
 
 def own_terms_unsaid(plan: O.Plan) -> list[tuple[O.Step, str]]:

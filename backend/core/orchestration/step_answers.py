@@ -22,6 +22,9 @@ agent is not known. A Tool step's is known only from the workspace's tools, and 
 from __future__ import annotations
 
 import json
+import re
+import types
+import typing
 from typing import Any
 
 #: The key every Human step's answer is written to as well, and the one it is written to when it names none.
@@ -123,6 +126,90 @@ def repair(step: dict[str, Any], key: str, field: str) -> str:
 
 def kind_words(step: dict[str, Any]) -> str:
     return {"if_else": "if/else"}.get(step.get("type") or "", step.get("type") or "")
+
+
+# ── A Loop that would go through an answer object (F1613) ─────────────────────────────────────────────────────────────
+
+_LOOP_SOURCE = re.compile(r"state\.([A-Za-z_]\w*)(?:\.([A-Za-z_]\w*))?")
+
+
+def typed_answer(step: dict[str, Any]) -> dict[str, str] | None:
+    """Each field of the step's answer with its type (`list` for a list), or None when the step does not say: a model
+    step that declares no fields answers text, which a state schema may type (F14), and a Tool or a Transform answers
+    whatever it answers."""
+    from core.orchestration.output_fields import field_type
+
+    kind = step.get("type")
+    if kind in ("llm", "agent"):
+        declared = declared_fields(step)
+        return {f["name"].strip(): field_type(f.get("type")) or "string" for f in declared} if declared else None
+    if kind == "human":
+        return {f["name"]: field_type(f.get("type")) or "string" for f in human_fields(step)}
+    if kind in ("retrieve", "ingest"):
+        from core.knowledge.api_models import IngestStepOutput, RetrieveStepOutput
+
+        model = RetrieveStepOutput if kind == "retrieve" else IngestStepOutput
+        return {name: annotation_kind(f.annotation) for name, f in model.model_fields.items()}
+    return None
+
+
+def annotation_kind(annotation: Any) -> str:
+    """`list`, `object` or `string` for a field's type. An optional one (`list[X] | None`, `Optional[list[X]]`) is its
+    one arm that is not None, so a loop over a list that may be unset is never refused for it."""
+    origin = typing.get_origin(annotation)
+    if origin in (typing.Union, types.UnionType):
+        arms = [a for a in typing.get_args(annotation) if a is not type(None)]
+        return annotation_kind(arms[0]) if len(arms) == 1 else "string"
+    return {list: "list", dict: "object"}.get(origin, "string")
+
+
+def loops_over_an_answer(steps: list) -> list[str]:
+    """Each Loop whose list is a whole answer object, or a field of one that is no list, with its fix (F1613).
+
+    A step that says its answer's fields answers one object: `{"keywords": [...]}`. A Loop over `state.<its key>` went
+    through the object, ran zero times and the run said Completed. Checked only where every step writing the key says
+    its fields, as `_fields_never_written` is: what a Tool or a Transform writes may be a list, and the run checks it.
+    A field the writers never declare is that check's to say."""
+    from core.expressions import _unbraced
+
+    writers: dict[str, list[dict]] = {}
+    for s in steps:
+        if isinstance(s, dict):
+            for key in keys_written(s):
+                writers.setdefault(key, []).append(s)
+    said: list[str] = []
+    for s in steps:
+        if not (isinstance(s, dict) and s.get("type") == "loop" and isinstance(s.get("loop_over"), str)):
+            continue
+        m = _LOOP_SOURCE.fullmatch(_unbraced(s["loop_over"]).strip())
+        if not m or m[1] not in writers:
+            continue
+        key, field, ws = m[1], m[2], writers[m[1]]
+        typed = [typed_answer(w) for w in ws]
+        if any(t is None for t in typed):
+            continue
+        fields: dict[str, str] = {}
+        for t in typed:
+            fields.update(t or {})
+        lists = [f for f, kind in fields.items() if kind == "list"]
+        w = ws[0]
+        who = f"{kind_words(w)} step '{w.get('id', '?')}'"
+        if len(lists) == 1:
+            fix = f"point loop_over at state.{key}.{lists[0]}, its one list"
+        elif lists:
+            fix = "point loop_over at one of its list fields: " + ", ".join(f"state.{key}.{f}" for f in lists)
+        else:
+            fix = ("none of its fields is a list, so a step before the loop makes the list (a field of type list in "
+                   "its output_fields)")
+        sid = s.get("id", "?")
+        if field is None:
+            shown = ", ".join(f"{f}: {kind}" for f, kind in fields.items()) or "no fields"
+            said.append(f"Loop '{sid}' goes through state.{key}, the whole answer {who} gives ({shown}), which is "
+                        f"an object, not a list, so it would run zero times: {fix}.")
+        elif field in fields and fields[field] != "list":
+            said.append(f"Loop '{sid}' goes through state.{key}.{field}, which {who} declares {fields[field]}, not "
+                        f"a list, so it would run zero times: {fix}.")
+    return said
 
 
 # ── A decision on a typed answer that cannot follow it (F1558) ────────────────────────────────────────────────────────

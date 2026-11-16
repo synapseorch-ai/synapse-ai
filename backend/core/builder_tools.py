@@ -4770,6 +4770,11 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
             issues.append(f"Evaluator step '{sid}' has an empty route_map.")
         if stype == "tool" and not s.get("forced_tool"):
             issues.append(f"Tool step '{sid}' has no forced_tool.")
+        if stype == "tool" and str(s.get("forced_tool") or "").split("__")[-1] == "collect_data":
+            # An agent's way to ask in a chat: as a Tool step a run gets the form, never the answers (F1616).
+            from core.native_builder.build_plan import FORM_TOOL_SAID
+
+            issues.append(f"Tool step '{sid}': {FORM_TOOL_SAID}.")
         if stype == "workflow" and not s.get("workflow_id"):
             issues.append(f"Workflow step '{sid}' has no workflow_id: name the workflow it runs.")
         if stype == "human" and not s.get("human_prompt"):
@@ -4918,6 +4923,10 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
     # And a field of a key: one the steps writing it never write is always missing, so a condition on it always takes
     # its documented default (F1549: every approval routed "no").
     issues += _fields_never_written(steps, agents)
+    # A Loop over a whole answer object, or a field of it that is no list, ran zero times and said Completed (F1613).
+    from core.orchestration.step_answers import loops_over_an_answer
+
+    issues += loops_over_an_answer(steps)
     # A model step's declared answer (F1553): fields the run can hold a model to, and only where they are read.
     issues += _answer_field_problems(steps, agents)
     # What a run makes (F249): a result_key no step writes is never the result.

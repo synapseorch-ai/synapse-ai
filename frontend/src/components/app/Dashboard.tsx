@@ -47,6 +47,7 @@ import { usdCompact } from '@/lib/money';
 import { plainText } from '@/lib/plainText';
 import { OSS_RUN_HOST, ossRunRecord, ossRunRow } from '@/lib/runHost';
 import type { Orchestration } from '@/types/orchestration';
+import { oneAtATime, readJson } from './homeReads';
 
 /** The runs Home counts: the latest 200, the most the list route gives. */
 const RUNS_READ = 200;
@@ -123,10 +124,13 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
     const [records, setRecords] = useState<Record<string, { key: string; data: any | null }>>({});
     const reading = useRef(new Set<string>());
 
+    /** The runs read, one at a time (F1612): a poll of a stalled backend holds one request, never one every 10 s. */
+    const runsRead = useMemo(() => oneAtATime(() => readJson<any>(`/api/orchestrations/runs?limit=${RUNS_READ}`)), []);
+
     const refreshRuns = useCallback(() => {
-        fetch(`/api/orchestrations/runs?limit=${RUNS_READ}`)
-            .then(r => (r.ok ? r.json() : Promise.reject(new Error(`runs: ${r.status}`))))
-            .then(d => {
+        // Each Home read gives up after HOME_READ_TIMEOUT_MS (F1612), so a stalled one is said as unread below.
+        runsRead()
+            ?.then(d => {
                 if (!Array.isArray(d)) throw new Error('runs: not a list');
                 setRuns(d);
                 setRunsLoaded(true);
@@ -134,10 +138,10 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
             })
             // A failed read is not an empty list. After one that worked, what was read stays; before, it is said.
             .catch(() => setRunsUnread(true));
-    }, []);
+    }, [runsRead]);
 
     const refreshCounts = useCallback(() => {
-        const j = (url: string) => fetch(url).then(r => (r.ok ? r.json() : null)).catch(() => null);
+        const j = (url: string) => readJson<any>(url).catch(() => null);
         Promise.all([
             j('/api/usage/summary'), j('/api/orchestrations'), j('/api/agents'),
             j('/api/schedules'), j('/api/mcp/servers'), j('/api/personal-details'), j('/api/settings'),
@@ -197,8 +201,7 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
             const key = keyOf(r);
             if (records[r.run_id]?.key === key || reading.current.has(key)) continue;
             reading.current.add(key);
-            fetch(`/api/orchestrations/runs/${encodeURIComponent(r.run_id)}`)
-                .then(res => (res.ok ? res.json() : null))
+            readJson<any>(`/api/orchestrations/runs/${encodeURIComponent(r.run_id)}`)
                 .catch(() => null)
                 .then(data => setRecords(cur => ({ ...cur, [r.run_id]: { key, data } })))
                 .finally(() => reading.current.delete(key));
@@ -327,6 +330,8 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
             }
         >
             <div className="grid gap-7">
+                {/* One polite line while any of Home's reads is pending (F1612), not one per section. */}
+                <p role="status" className="sr-only">{(!runsLoaded && !runsUnread) || !loaded ? 'Loading your workspace…' : ''}</p>
                 {/* Synapse AI's ask line (ASSIST1): above Needs you, which stays first in what Home shows. */}
                 {loaded && runsLoaded && (
                     <div data-tour="home-ask">
@@ -350,6 +355,7 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
                 )}
 
                 {runsUnread && !runsLoaded && <Unread what="your runs" onRetry={refreshRuns} />}
+                {!runsUnread && !runsLoaded && <Loading what="your runs" />}
 
                 {showStart && (
                     <div data-tour="home-start">
@@ -476,7 +482,7 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
                                     ),
                                 } : null}
                             />
-                        ) : loaded ? <Unread what="your schedules" onRetry={refreshCounts} /> : null}
+                        ) : loaded ? <Unread what="your schedules" onRetry={refreshCounts} /> : <Loading what="your schedules" />}
                     </HomeSection>
                 </div>
 
@@ -498,7 +504,7 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
                         identity and the value is direct-labelled beside it. */}
                     <HomeSection id="models" title="Spend by model" link={{ href: '/usage', label: 'Usage' }}>
                         {summary === null ? (
-                            loaded ? <Unread what="usage" onRetry={refreshCounts} /> : null
+                            loaded ? <Unread what="usage" onRetry={refreshCounts} /> : <Loading what="usage" />
                         ) : models.length === 0 ? (
                             <p className="m-0 text-sm text-text-muted">No usage recorded yet</p>
                         ) : (
@@ -582,6 +588,12 @@ function usedOf(lists: { rubrics: unknown; bases: unknown; channels: unknown }):
 function anyKeyUsed(keys: unknown): boolean | undefined {
     if (!Array.isArray(keys)) return undefined;
     return keys.some((k: { last_used_at?: string | null } | null) => Boolean(k?.last_used_at));
+}
+
+/** A read Home is waiting for, said quietly where its section would speak (F1612); Unread takes its place if the
+ * read gives up (HOME_READ_TIMEOUT_MS). */
+function Loading({ what }: { what: string }) {
+    return <p className="m-0 text-sm text-text-muted">Loading {what}…</p>;
 }
 
 /** A list Home could not read, said as such where its section would speak (F1611), with a way to read it again. */

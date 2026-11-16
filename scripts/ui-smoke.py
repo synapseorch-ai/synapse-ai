@@ -12644,6 +12644,98 @@ async def check_homereadsbeforeitsays(browser) -> str:
 
 
 
+#: Home's reads held open, never answered until released (F1612), each with the words its section says meanwhile and
+#: once the read has waited too long.
+F1612_HELD = {
+    "runs": (r".*/api/orchestrations/runs(\?.*)?$", "Loading your runs…", "Could not load your runs."),
+    "schedules": (r".*/api/schedules(\?.*)?$", "Loading your schedules…", "Could not load your schedules."),
+    "usage": (r".*/api/usage/summary(\?.*)?$", "Loading usage…", "Could not load usage."),
+}
+#: What Home waits for a read before it says it could not load it (the app's HOME_READ_TIMEOUT_MS), and a margin.
+F1612_TIMEOUT_S = 15 + 3
+
+
+@check
+async def check_homestall(browser) -> str:
+    """Home never leaves a person guessing while a read is pending (F1612): with the runs, schedules and usage reads
+    held open (a stalled backend), each section says it is loading ("Loading your runs…"), never a claim of nothing,
+    and one status line says Home is loading; once a read has waited HOME_READ_TIMEOUT_MS (15 s) it is said as
+    unread ("Could not load your runs." with Try again), and Try again, once the backend answers, shows what is
+    there. The loading words light and dark at 1440 and 390; the wait run out at 1440. With SMOKE_SHOTS: each."""
+    shots = os.environ.get("SMOKE_SHOTS")
+    bad: list[str] = []
+    claims = (*F1611_UNKNOWN_UNTIL_READ, "Nothing runs on its own yet.", "No usage recorded yet")
+
+    async def said(page) -> str:
+        return " ".join((await page.locator("main").inner_text()).split())
+
+    for scheme in ("light", "dark"):
+        for width in ((1440, 900), (390, 844)):
+            tag = f"{scheme} {width[0]}"
+            release = asyncio.Event()
+            out_of_time = scheme == "light" and width[0] == 1440
+
+            async def held(route, *, name: str, release=release):
+                await release.wait()
+                body = ('{"total_cost": 0, "total_requests": 0, "total_tokens": 0, "by_model": []}'
+                        if name == "usage" else "[]")
+                try:
+                    await route.fulfill(status=200, content_type="application/json", body=body)
+                except Exception:  # noqa: BLE001 — the page gave up on it (its timeout): nothing to answer
+                    pass
+
+            async def before(ctx, *, held=held):
+                for name, (pattern, _, _) in F1612_HELD.items():
+                    await ctx.route(re.compile(pattern), lambda route, *, name=name: held(route, name=name))
+
+            ctx, page, _ = await _m2b_page(browser, "/dashboard", width=width, runs={}, theme=scheme, before=before)
+            try:
+                text = await said(page)
+                for name, (_, loading, _) in F1612_HELD.items():
+                    if loading not in text:
+                        bad.append(f"{tag}: {name} pending, its section does not say {loading!r}")
+                if found := [c for c in claims if c in text]:
+                    bad.append(f"{tag}: pending, Home claims {found}")
+                status = page.get_by_role("status").filter(has_text="Loading")
+                if not await status.count():
+                    bad.append(f"{tag}: no status line says Home is loading")
+                if shots:
+                    await page.screenshot(path=f"{shots}/f1612-loading-{scheme}-{width[0]}.png", full_page=True)
+                if not out_of_time:
+                    continue
+                await asyncio.sleep(F1612_TIMEOUT_S)
+                text = await said(page)
+                for name, (_, loading, unread) in F1612_HELD.items():
+                    if unread not in text:
+                        bad.append(f"{tag}: {name} held past the timeout, Home does not say {unread!r}")
+                    if loading in text:
+                        bad.append(f"{tag}: {name} held past the timeout, Home still says {loading!r}")
+                if shots:
+                    await page.screenshot(path=f"{shots}/f1612-timedout-{scheme}-{width[0]}.png", full_page=True)
+                # Try again first, then the backend answers: released first, the 10 s poll can read the runs before
+                # the press lands, and the line with its button is gone.
+                retry = page.get_by_role("alert").filter(has_text=F1611_UNREAD).get_by_role("button", name="Try again")
+                if not await retry.count():
+                    bad.append(f"{tag}: no Try again for the runs after the timeout")
+                    release.set()
+                else:
+                    await retry.click()
+                    release.set()
+                    try:
+                        await page.get_by_text("No runs yet", exact=True).first.wait_for(timeout=10_000)
+                    except Exception:  # noqa: BLE001 — said below
+                        bad.append(f"{tag}: Try again, once the backend answers, does not show the runs")
+                if shots:
+                    await page.screenshot(path=f"{shots}/f1612-retried-{scheme}-{width[0]}.png", full_page=True)
+            finally:
+                release.set()
+                await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("a stalled read says Loading in its section and one status line, then Could not load with Try again after "
+            "15 s, and Try again shows what is there; light and dark at 1440 and 390")
+
+
 async def _composer(page) -> str:
     """What the AI builder's composer holds, once its panel is open."""
     box = page.locator('[data-testid="assistant-panel"]').get_by_role("textbox", name="Message Synapse AI")

@@ -14,7 +14,7 @@
  */
 import type { StepConfig } from '@/types/orchestration';
 
-export type FieldCheck = { stepId: string; key: string; field: string | null; kind: 'field' | 'words'; message: string };
+export type FieldCheck = { stepId: string; key: string; field: string | null; kind: 'field' | 'words' | 'list'; message: string };
 type Agent = { id: string; type?: string };
 type AnyStep = StepConfig & Record<string, unknown>;
 
@@ -152,6 +152,37 @@ function wordsRead(expr: string, keys: Set<string>): string[] {
     return found;
 }
 
+/** The spellings a list answer field is written in: `output_fields._ANSWER_ALIASES`' lists. */
+const LIST_TYPES = new Set(['list', 'array', 'strings', 'list_of_text']);
+const RETRIEVE_TYPES: Record<string, string> = { context: 'string', chunks: 'list', citations: 'list', trace_id: 'string',
+    snapshot_ids: 'object' };
+const INGEST_TYPES: Record<string, string> = { kb_id: 'string', documents: 'list' };
+
+/** Each field of the step's answer with `list` for a list, or null when the step does not say
+ *  (`step_answers.typed_answer`): a model step with no declared fields answers text, a Tool whatever it answers. */
+function typedAnswer(step: AnyStep): Record<string, string> | null {
+    const typeOf = (f: unknown) => {
+        const t = String((f as { type?: unknown })?.type ?? '').trim().toLowerCase();
+        return LIST_TYPES.has(t) ? 'list' : t || 'string';
+    };
+    const named = (fields: unknown, keyed = false) => {
+        const out: Record<string, string> = {};
+        for (const f of Array.isArray(fields) ? fields : []) {
+            const n = names([f], keyed)[0];
+            if (n) out[n] = typeOf(f);
+        }
+        return out;
+    };
+    if (step.type === 'llm' || step.type === 'agent') {
+        const declared = named(step.output_fields);
+        return Object.keys(declared).length ? declared : null;
+    }
+    if (step.type === 'human') return named(step.human_fields, true);
+    if (step.type === 'retrieve') return RETRIEVE_TYPES;
+    if (step.type === 'ingest') return INGEST_TYPES;
+    return null;
+}
+
 export function fieldChecks(steps: StepConfig[], agents?: Agent[]): FieldCheck[] {
     const all = (steps || []).filter((s): s is AnyStep => !!s && typeof s === 'object') as AnyStep[];
     const writers = new Map<string, AnyStep[]>();
@@ -211,6 +242,34 @@ export function fieldChecks(steps: StepConfig[], agents?: Agent[]): FieldCheck[]
                     });
                 }
             }
+        }
+    }
+    // A Loop over a whole answer object, or a field of it that is no list (F1613): `step_answers.loops_over_an_answer`.
+    for (const s of all) {
+        if (s.type !== 'loop' || typeof s.loop_over !== 'string') continue;
+        const m = /^state\.([A-Za-z_]\w*)(?:\.([A-Za-z_]\w*))?$/.exec(unbraced(s.loop_over).trim());
+        if (!m || !writers.has(m[1])) continue;
+        const [, key, field] = m;
+        const ws = writers.get(key)!;
+        const typed = ws.map(typedAnswer);
+        if (typed.some((t) => t === null)) continue;
+        const fields: Record<string, string> = Object.assign({}, ...typed);
+        const lists = Object.keys(fields).filter((f) => fields[f] === 'list');
+        const w = ws[0];
+        const name = `“${w.name || w.id}”`;
+        const fix = lists.length === 1
+            ? `point it at state.${key}.${lists[0]}, its one list`
+            : lists.length
+                ? `point it at one of its lists: ${lists.map((f) => `state.${key}.${f}`).join(', ')}`
+                : 'none of its fields is a list, so a step before the loop makes the list';
+        if (!field) {
+            out.push({ stepId: s.id, key, field: null, kind: 'list',
+                message: `Goes through state.${key}, the whole answer ${name} gives, which is an object, not a list, so ` +
+                    `it would run zero times: ${fix}.` });
+        } else if (field in fields && fields[field] !== 'list') {
+            out.push({ stepId: s.id, key, field, kind: 'list',
+                message: `Goes through state.${key}.${field}, which ${name} declares ${fields[field]}, not a list, so ` +
+                    `it would run zero times: ${fix}.` });
         }
     }
     return out;

@@ -198,6 +198,10 @@ def _server(orch: dict, agents=None) -> set[tuple]:
     for i in verdict["issues"]:
         if m := re.match(r"Step '(\w+)' reads `(\w+)` from state\.(\w+)", i):
             out.add((m[1], m[3], m[2], "field"))
+    for i in verdict["issues"]:
+        # F1613: a Loop that goes through a whole answer object, or through a field of it that is no list.
+        if m := re.match(r"Loop '(\w+)' goes through state\.(\w+)(?:\.(\w+))?", i):
+            out.add((m[1], m[2], m[3], "list"))
     for w in verdict.get("warnings") or []:
         if WORDS in w and (m := re.match(r"Step '(\w+)' decides on \w+ step '\w+''s answer as text .*?state\.(\w+)",
                                          w)):
@@ -207,7 +211,27 @@ def _server(orch: dict, agents=None) -> set[tuple]:
 
 YES_NO = {"name": "approved", "type": "boolean", "label": "Approve?"}
 ASK = {"id": "ask", "name": "Ask", "type": "human", "human_prompt": "OK?", "output_key": "ask"}
+ITEMS = {"name": "items", "type": "list"}
+LINKS = {"name": "links", "type": "list"}
+NOTE = {"name": "note", "type": "string"}
+BODY = {"id": "body", "name": "Body", "type": "llm", "prompt_template": "One: {{ state.loop_item }}", "output_key": "body"}
+
+
+def _each(over: str) -> dict:
+    return {"id": "each", "name": "Each", "type": "loop", "loop_over": over, "loop_step_ids": ["body"],
+            "next_step_id": "after"}
+
+
 CASES = {
+    "loop_whole_one_list": (_orch(_classify(output_fields=[ITEMS, NOTE]), _each("state.classify"), BODY, AFTER), None),
+    "loop_whole_two_lists": (_orch(_classify(output_fields=[ITEMS, LINKS]), _each("state.classify"), BODY, AFTER),
+                             None),
+    "loop_field_not_a_list": (_orch(_classify(output_fields=[ITEMS, NOTE]), _each("state.classify.note"), BODY, AFTER),
+                              None),
+    "loop_list_field": (_orch(_classify(output_fields=[ITEMS, NOTE]), _each("state.classify.items"), BODY, AFTER),
+                        None),
+    "loop_tool": (_orch({"id": "classify", "name": "Classify", "type": "tool", "forced_tool": "read_csv",
+                         "output_key": "classify"}, _each("state.classify"), BODY, AFTER), None),
     "words": (_orch(_classify(), _gate(WORDY[0]), AFTER), None),
     "keyword": (_orch(_classify(), _gate(WORDY[2]), AFTER), None),
     "undeclared": (_orch(_classify(), _gate("state.classify.risky == True"), AFTER), None),
@@ -236,6 +260,14 @@ class TestTheEditorSaysWhatTheServerSays:
         orch, agents = CASES[case]
         editor = {(v["stepId"], v["key"], v.get("field"), v["kind"]) for v in _editor(orch, agents)}
         assert editor == _server(orch, agents), (case, editor, _server(orch, agents))
+
+    @pytest.mark.parametrize(("case", "field"), [("loop_whole_one_list", None), ("loop_whole_two_lists", None),
+                                                 ("loop_field_not_a_list", "note")])
+    def test_a_loop_that_cannot_go_through_its_list_is_said_by_both(self, case, field):
+        """F1613: a Loop over a whole answer object, or over a field of it that is no list, is one verdict on each
+        side (the same-verdicts rows hold them equal; this holds that there is one)."""
+        orch, agents = CASES[case]
+        assert ("each", "classify", field, "list") in _server(orch, agents), _server(orch, agents)
 
     def test_the_editor_shows_them_as_warnings(self):
         source = (ROOT / "frontend/src/components/orchestration/validate.ts").read_text()
