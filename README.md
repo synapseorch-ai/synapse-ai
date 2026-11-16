@@ -61,7 +61,7 @@ the steps local. [Models and providers →](https://docs.synapseorch.com/llm-pro
   <a href="https://docs.synapseorch.com"><strong>Documentation</strong></a> ·
   <a href="#how-it-compares"><strong>How it compares</strong></a> ·
   <a href="https://discord.gg/9UN45qyGh8"><strong>Discord</strong></a> ·
-  <a href="https://synapseorch.com/cloud"><strong>SynapseOrch Cloud</strong></a>
+  <a href="https://synapseorch.com/cloud/"><strong>SynapseOrch Cloud</strong></a>
 </p>
 
 ---
