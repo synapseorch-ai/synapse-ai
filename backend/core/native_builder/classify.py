@@ -151,10 +151,10 @@ _QUESTION_IF_ASKED = re.compile(r"^(?:is|are|was|were|did|does|do i|what|which|w
 _TELL_ME = re.compile(r"\b(?:tell me|explain|let me know)\b|^(?:what|which|why|who|how)\b")
 
 
-def _own_capability(message: str) -> str | None:
+def _own_capability(message: str, browser: bool | None = None) -> str | None:
     from core.native_builder.lookup import own_capability
 
-    return own_capability(message)
+    return own_capability(message, browser=browser)
 
 
 #: Connecting a named service, said as an instruction; and what makes it an automation instead.
@@ -282,8 +282,10 @@ def _findings(value: Any) -> bool:
 # ── the overrides ─────────────────────────────────────────────────────────────────────────────────────────────────
 
 def override(request: Request, *, message: str, state: dict, inventory: dict[str, list[str]],
-             connectable: set[str]) -> Routed:
-    """`request` corrected from what code knows, with the entry it goes to."""
+             connectable: set[str], browser_agent: bool | None = None) -> Routed:
+    """`request` corrected from what code knows, with the entry it goes to. `browser_agent` is whether a browser agent
+    may be offered here (`lookup.browser_agent_offered`, asked by the async caller, F1643); None reads only whether a
+    browser is installed."""
     text = _words(message)
     if state.get("export_source"):
         # Pasted export code is a new build, whatever it names or says (SAI2's review 1).
@@ -362,7 +364,7 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
     # here) is planned with it, never looked up outside as missing (F1629). Only a research ask that names no outside
     # service, and never a question: "what does this page say" is answered, not built.
     elif kind == "research" and not request.providers and not asked and not message.rstrip().endswith("?") and \
-            not _TELL_ME.search(text) and _own_capability(message):
+            not _TELL_ME.search(text) and _own_capability(message, browser_agent):
         kind, by = "build", "own_capability"
 
     needs = _needs(kind, request.needs, text, things)
@@ -524,7 +526,15 @@ async def _classified(request: Request, events: list[dict]) -> dict:
     state = run.shared_state if run is not None else {}
     message = str(state.get("user_message") or "")
     inventory = await _inventory()
-    routed = override(request, message=message, state=state, inventory=inventory, connectable=await _connectable())
+    # Whether a browser agent may be offered, asked of the host's plan here, once, for the one rule that reads it: a
+    # research ask the product meets (F1629, F1643).
+    browser_agent = None
+    if request.kind == "research":
+        from core.native_builder.lookup import browser_agent_offered
+
+        browser_agent = await browser_agent_offered()
+    routed = override(request, message=message, state=state, inventory=inventory, connectable=await _connectable(),
+                      browser_agent=browser_agent)
     from core.native_builder import change_tools as CT
 
     waiting = CT.staged_plan(state) if run is not None and routed.kind in ("build", "change") else None

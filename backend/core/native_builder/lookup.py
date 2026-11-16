@@ -29,6 +29,9 @@ from typing import Any
 # The research module, by its name: it imports builder_tools, which imports this module while it loads.
 import core.builder_research as research
 from core.builder_registry import register_builder_tool
+from core.log import get_logger
+
+_log = get_logger(__name__)
 
 #: Providers one look-up reads for, and a research's whole run (SAI2's probe: unbounded, six calls of five new names
 #: read 30 searches and 30 Registry pages); the rest are the research's. A failed source is tried once more.
@@ -378,8 +381,10 @@ async def finish_findings(args: dict, server_module: Any, events: list[dict]) ->
     nothing = {research._slug(p) for p in looked.get("unmatched") or [] if isinstance(p, str)}
     unnamed = isinstance(request, dict) and all(
         research._slug(p) in nothing for p in request.get("providers") or [] if isinstance(p, str))
-    # "Nothing here does this" is never said of a need the product itself meets (F1629).
-    unnamed = unnamed and not own_capability(str(state.get("user_message") or ""))
+    # "Nothing here does this" is never said of a need the product itself meets (F1629), as this workspace's plan
+    # allows (F1643).
+    unnamed = unnamed and not own_capability(str(state.get("user_message") or ""),
+                                              browser=await browser_agent_offered())
     reported = _obj(state.get("findings"))
     if isinstance(reported, dict) and reported.get("status") == "reported":
         return {**reported, "said": said(reported, unnamed)}
@@ -480,15 +485,42 @@ def _browser_installed() -> bool:
         return False
 
 
-def own_capability(need: str) -> str | None:
+#: How long the host's plan check may take before a browser agent is not offered (F1643).
+BROWSER_CHECK_SECONDS = 5.0
+
+
+async def browser_agent_offered() -> bool:
+    """Whether a browser agent may be offered as this workspace's own way in (F1643): a browser is installed here and,
+    where the host gates browser agents by plan (`builder_tools.set_browser_check`), the plan has them. Asked once, by
+    the async callers, and passed down. A check that fails or does not answer in time offers nothing: an offer that may
+    be refused is not made. With no host check, as on a self-hosted install, a browser here is enough."""
+    if not _browser_installed():
+        return False
+    import asyncio
+
+    from core import builder_tools
+
+    check = builder_tools._browser_check
+    if check is None:
+        return True
+    try:
+        reason = await asyncio.wait_for(check("agent"), BROWSER_CHECK_SECONDS)
+    except Exception as exc:  # noqa: BLE001 — any failure withholds the offer, never the turn
+        _log.warning("browser agent not offered: the host's plan check failed (%s)", type(exc).__name__)
+        return False
+    return not reason
+
+
+def own_capability(need: str, *, browser: bool | None = None) -> str | None:
     """What the product itself does for `need`, in a sentence for the plan, or None (F1629). A page behind a login is
-    a browser agent's, only where a browser is installed; reading or crawling a page is the web reader's. A need
-    neither covers (a booking, a message sent) is None: looked up as before."""
+    a browser agent's, only where one may be offered: `browser` is `browser_agent_offered()`'s answer, and None reads
+    whether a browser is installed here alone (F1643). Reading or crawling a page is the web reader's. A need neither
+    covers (a booking, a message sent) is None: looked up as before."""
     text = " ".join(str(need or "").lower().split())
     address = _a_web_address(text)
     on_the_web = bool(address or _WEB.search(text))
     if _LOGIN.search(text) and (address or _LOGIN_PLACE.search(text)):
-        if not _browser_installed():
+        if not (_browser_installed() if browser is None else browser):
             return None
         return ("This workspace's own browser agent can sign in and work through the page, with no outside service: "
                 "build it with a browser agent, which asks before it types or sends anything.")
