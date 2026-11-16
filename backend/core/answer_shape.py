@@ -17,6 +17,12 @@ A refusal of the format itself (not supported, too complex, a key setup that has
 once (`below`), and the provider writes a note the step says as a warning. A model's rung is never raised from a
 guess: a model joins the table when its provider's page, or a shape check, says it holds a schema.
 
+The shape check (2026-11-17, one small call each): Haiku 4.5 and Sonnet 4.6 answered inside the schema on the schema
+rung, Sonnet 4.6 with adaptive thinking's effort beside the format too, and Gemini 2.5 Flash on its own; Sonnet 5.5
+refused a forced `tool_choice` ("tool_choice: type "tool" and "any" are not supported for this model.", a 400), as the
+table holds; the forced-tool rung's one older id tried was no longer served (a 404), so that rung is unproven live and
+matters only for an older Claude still served somewhere.
+
 The Claude list is the structured-outputs page's own (read 2026-11-16): Fable 5, 5.1 and 5.2; Mythos 5, 5.1, 5.2 and
 Preview; Opus 5.5, 5, 4.8, 4.7, 4.6 and 4.5; Sonnet 5.5, 5, 4.6 and 4.5; Haiku 5.5 and 4.5. Prefixes, longest first
 where two could both match, so a model that ships in a family already here holds a schema the day it ships.
@@ -47,7 +53,7 @@ _CLI_SCHEMA = ("cli.claude", "cli.codex")
 
 #: Words in a refusal that name the format itself, never the key, the model or the request.
 _FORMAT_REFUSED = ("schema is too complex", "too complex", "output_config", "outputconfig", "textformat",
-                   "json_schema", "response_format", "structured output", "customer-managed", "cmek",
+                   "json_schema", "response_format", "structured output", "customer-managed", "cmek", "tool_choice",
                    "unknown option '--json-schema'", "unexpected argument '--output-schema'",
                    "unknown option: --json-schema", "unrecognized arguments: --output-schema")
 _NOT_SUPPORTED = ("not supported", "unsupported", "not available", "is not allowed", "unknown option",

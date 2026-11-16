@@ -160,6 +160,16 @@ class TestAFormatRefusalTakesTheNextRungOnce:
         assert json.loads(result.text) == ANSWER
         assert notes and "words" in notes[0] and "schema" in notes[0].lower(), notes
 
+    async def test_a_forced_tool_refused_is_asked_again_in_words(self, monkeypatch):
+        """Sonnet 5.5's own words for a forced tool, read on the shape check: a refusal of the format, so a step down."""
+        asked = _claude_answers(monkeypatch,
+                                _refused('tool_choice: type "tool" and "any" are not supported for this model.'),
+                                _text(json.dumps(ANSWER)))
+        notes: list[str] = []
+        result = await _claude("claude-3-5-haiku-20241022", notes=notes)
+        assert len(asked) == 2 and "tool_choice" not in asked[1] and "tools" not in asked[1]
+        assert json.loads(result.text) == ANSWER and notes
+
     async def test_only_once(self, monkeypatch):
         asked = _claude_answers(monkeypatch, _refused("Schema is too complex for compilation."),
                                 _refused("Schema is too complex for compilation."))
