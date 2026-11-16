@@ -41,6 +41,15 @@ class TestAnyOtherFailureIsSaidAsBefore:
         said = _said("state.totals.sum / state.totals.count > 1", state={"totals": {"sum": 5, "count": 0}})
         assert "could not be evaluated" in said and "empty" not in said, said
 
+    def test_a_division_by_zero_beside_a_blank_field(self):
+        said = _said("state.submit_form.category.strip() == 'x' or state.totals.sum / state.totals.count > 1",
+                     state={"submit_form": {"category": ""}, "totals": {"sum": 5, "count": 0}})
+        assert "could not be evaluated" in said and "empty" not in said, said
+
+    def test_text_that_is_not_blank_compared_with_a_number(self):
+        said = _said("state.submit_form.note > 3")
+        assert "empty" not in said and "state.submit_form.category" not in said, said
+
     def test_a_filled_form_decides(self):
         value, err = _route_expr("state.submit_form.amount > 500", {"submit_form": {"amount": 820}},
                                  "The If/Else condition")

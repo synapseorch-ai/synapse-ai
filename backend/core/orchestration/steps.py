@@ -3742,10 +3742,78 @@ def _route_expr(expr: str, state: dict, what: str, default=None):
             f"{what} uses something this engine will not run: {result.error}. "
             f"The step stops here rather than guess; change it, then Replay.")
     if result.error and not result.unwritten and expr and expr.strip():
+        empty = _empty_reads(expr, state, result.error)
+        if empty:
+            # A form sent with a field blank (F842) reaches a decision as nothing: say which value, never the
+            # evaluator's words about NoneType (F1631).
+            named = ", ".join(f"`{p}`" for p in empty)
+            one = len(empty) == 1
+            raise RuntimeError(
+                f"{what} needs {named}, which {'is' if one else 'are'} empty: nothing was given for "
+                f"{'it' if one else 'them'}. Fill {'it' if one else 'them'} in and Replay, or have the condition "
+                f"say what an empty value means.")
         raise RuntimeError(
             f"{what} could not be evaluated: {result.error}. "
             f"The step stops here rather than guess; change it, then Replay.")
     return result.value, result.error
+
+
+def _empty_reads(expr: str, state: dict, error: str) -> list[str]:
+    """The `state.…` paths an expression reads whose value is empty and whose emptiness the error is about: None where
+    the error speaks of a NoneType, text with nothing in it where the error shows `''`. Each is followed as far as the
+    state holds it, so `state.form.category.lower()` names `state.form.category` (F1631). An error of another kind
+    (a division by zero beside a blank field) names nothing."""
+    import ast
+    import json as _json
+
+    from core.expressions import _unbraced
+
+    try:
+        tree = ast.parse(_unbraced(expr), mode="eval")
+    except SyntaxError:
+        return []
+
+    def chain(node) -> list[str] | None:
+        parts: list[str] = []
+        while True:
+            if isinstance(node, ast.Attribute):
+                parts.append(node.attr)
+                node = node.value
+            elif isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant) and \
+                    isinstance(node.slice.value, (str, int)):
+                parts.append(str(node.slice.value))
+                node = node.value
+            elif isinstance(node, ast.Name) and node.id == "state":
+                return list(reversed(parts))
+            else:
+                return None
+
+    found: list[str] = []
+    for node in ast.walk(tree):
+        parts = chain(node)
+        if not parts:
+            continue
+        value: Any = state
+        path = ["state"]
+        for part in parts:
+            if isinstance(value, str) and value.strip().startswith(("{", "[")):
+                try:
+                    value = _json.loads(value)
+                except ValueError:
+                    break
+            if isinstance(value, dict) and part in value:
+                value = value[part]
+            elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
+                value = value[int(part)]
+            else:
+                break
+            path.append(part)
+        said = ".".join(path)
+        empty = (value is None and "NoneType" in error) or \
+            (isinstance(value, str) and not value.strip() and f"{value!r}" in error)
+        if len(path) > 1 and empty and said not in found:
+            found.append(said)
+    return found
 
 
 class IfElseStepExecutor:
