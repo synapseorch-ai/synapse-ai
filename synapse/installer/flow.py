@@ -139,6 +139,15 @@ class Installer:
             "upgrade" if self.existing.get("version") else "fresh")
         self.log.write(f"mode={mode} target={self.target} home={self.home}"
                        + (f" extras={','.join(self.extras)}" if self.extras else ""))
+        if self._index_has_not_caught_up():
+            # F1638: the index uv installs from has not caught up with this release yet. Said before anything is
+            # stopped, backed up or installed, so nothing changed.
+            from . import index
+
+            said = index.still_reaching(self.version, index.where("uv", os.environ, self.home / "runtime"))
+            self.log.write(f"index: {self.version} not listed yet; nothing changed")
+            self.term.write(f"\n  {said}\n\n")
+            return 1
 
         title = f"Synapse {self.version}".strip()
         if mode == "legacy":
@@ -315,6 +324,15 @@ class Installer:
             self.version = self.o.version or BUILT_FOR or _checkout_version()
             self.target = f"{PACKAGE}=={self.version}" if self.version else PACKAGE
 
+    def _index_has_not_caught_up(self) -> bool:
+        """The release's version is not listed yet by the index uv installs it from (F1638). False when the target is
+        a wheel or a package given by path, or when the index cannot be asked or does not answer in PEP 691 JSON."""
+        from . import index
+
+        if self.o.package or os.environ.get("SYNAPSE_PACKAGE") or not self.version:
+            return False
+        return index.serves(self.version, "uv", os.environ, self.home / "runtime") is False
+
     def _tool_root_guess(self) -> Path | None:
         python = self.existing.get("tool_python")
         return Path(python).parent.parent if python else None
@@ -411,7 +429,9 @@ class Installer:
         return PYTHON
 
     def _install_cmd(self) -> list:
-        cmd = [self.uv, "tool", "install", "--force", "--managed-python", "--python", PYTHON]
+        # The package's index page is read again (F1638): uv's own cache can hold the page from before the release.
+        cmd = [self.uv, "tool", "install", "--force", "--managed-python", "--python", PYTHON,
+               "--refresh-package", PACKAGE]
         knowledge = "knowledge" in self.extras
         if knowledge:
             # Knowledge runs no model on a GPU; PyPI's Linux torch is the CUDA

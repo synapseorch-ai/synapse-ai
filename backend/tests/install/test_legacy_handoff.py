@@ -147,7 +147,7 @@ def test_pip_keeps_its_extras_and_takes_pytorchs_cpu_build(monkeypatch):
 
     monkeypatch.setattr(cli, "_installed_extras", lambda: ["knowledge"])
     assert cli._pip_upgrade_args("2.1.0", []) == [
-        _sys.executable, "-m", "pip", "install", "--upgrade", "synapse-orch-ai[knowledge]==2.1.0",
+        _sys.executable, "-m", "pip", "install", "--upgrade", "--no-cache-dir", "synapse-orch-ai[knowledge]==2.1.0",
         "--extra-index-url", "https://download.pytorch.org/whl/cpu"]
     monkeypatch.setattr(cli, "_installed_extras", lambda: [])
     assert cli._pip_upgrade_args("2.1.0", ["telemetry"])[-1] == "synapse-orch-ai[telemetry]==2.1.0"
