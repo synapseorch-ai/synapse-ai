@@ -45,6 +45,16 @@ def _pip_upgrade(monkeypatch, tmp_path, capsys, *, running: bool, failing: str |
         return 0, ""
 
     monkeypatch.setattr(runner, "run", run)
+    real_subprocess_run = cli.subprocess.run
+
+    def status_only(cmd, *a, **kw):
+        """The upgrade's own status read after a start, answered here: never a real Synapse process."""
+        if [str(c) for c in cmd][-3:] == ["synapse", "status", "--json"]:
+            return cli.subprocess.CompletedProcess(cmd, 0, stdout='{"link": "http://localhost:3000/?token=tok"}\n',
+                                                   stderr="")
+        return real_subprocess_run(cmd, *a, **kw)
+
+    monkeypatch.setattr(cli.subprocess, "run", status_only)
     code = cli._upgrade_with_pip("2.0.15", "2.0.16")
     return code, capsys.readouterr().out, started
 
