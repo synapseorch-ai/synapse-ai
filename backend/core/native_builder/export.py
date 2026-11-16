@@ -133,10 +133,11 @@ _JOINS = re.compile(r"(?:[Oo]f|[Aa]nd|[Oo]r|[Tt]he|[Tt]o|[Ii]n|[Ff]or|[Oo]n|[Aa]
 
 def named_value(expr: str) -> str:
     """What a value read at run time becomes in an Agent's instructions (F1614): named by its own name, so a sentence
-    with two of them still reads. `${topic}`, `${state.topic}`, `${runContext.context.stateTopic}` and an f-string's
-    `{state.topic}` are each "the topic (given in the message)"; `{numKeywords}` is "the num keywords (given in the
-    message)". The path and the state or input prefix a value is read through are dropped. A call, an index or
-    anything else keeps `GIVEN`, as it always was."""
+    with two of them still reads. `topic`, `state.topic` and `runContext.context.stateTopic`, read inside a template
+    literal's `${…}` or an f-string's braces, are each "the topic (given in the message)"; `numKeywords` is "the num
+    keywords (given in the message)". The path and the state or input prefix a value is read through are dropped. A
+    call, an index or anything else keeps `GIVEN`, as it always was. (The braced forms are described, not written:
+    the older state form is never written in shipped code, F1252.)"""
     text = expr.strip()
     if not _PATH.fullmatch(text):
         return GIVEN
