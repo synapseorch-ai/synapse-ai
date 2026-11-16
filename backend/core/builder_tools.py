@@ -4365,6 +4365,104 @@ def step_successors(s: dict, by_id: dict) -> list[str]:
 _EXPRESSION_FIELDS = ("if_condition", "switch_expression", "loop_while_condition", "loop_break_condition", "loop_over")
 
 
+def _state_paths(code: str) -> list[tuple[str, list[str], bool]]:
+    """Every `state.…` read in `code` (a condition, a Loop's list) to its end: (key, the parts after it, whether it is
+    compared with a number). `state.k.a[0].b` is (k, [a, 0, b]); a method called on a read is no part of it."""
+    import ast
+
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+    parent: dict = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parent[child] = node
+
+    def chain(node) -> list[str] | None:
+        parts: list[str] = []
+        while True:
+            if isinstance(node, ast.Attribute):
+                parts.append(node.attr)
+                node = node.value
+            elif isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant) and \
+                    isinstance(node.slice.value, (str, int)) and not isinstance(node.slice.value, bool):
+                parts.append(str(node.slice.value))
+                node = node.value
+            elif isinstance(node, ast.Name) and node.id == "state":
+                return list(reversed(parts))
+            else:
+                return None
+
+    out: list[tuple[str, list[str], bool]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Attribute, ast.Subscript)):
+            continue
+        up = parent.get(node)
+        if isinstance(up, (ast.Attribute, ast.Subscript)) and up.value is node:
+            continue  # not the read's end
+        parts = chain(node)
+        if not parts:
+            continue
+        if isinstance(up, ast.Call) and up.func is node:
+            parts = parts[:-1]  # `state.k.f.lower()`: the method is no field
+            if not parts:
+                continue
+        numeric = isinstance(up, ast.Compare) and any(
+            isinstance(c, ast.Constant) and isinstance(c.value, (int, float)) and not isinstance(c.value, bool)
+            for c in (up.left, *up.comparators))
+        out.append((parts[0], parts[1:], numeric))
+    return out
+
+
+def _deep_reads(steps: list, keys: set[str]) -> dict[str, list[tuple[str, list[str], bool]]]:
+    """Each read of a key in `keys`, to its end (F1618): (the reading step, the parts after the key, compared with a
+    number), from templates and conditions, and from a Loop's body through its item, which is one of its list
+    (`state.<item>.b` in the body of a loop over `state.k.a` reads `k.a.0.b`)."""
+    from core.expressions import _unbraced
+    from core.templating import _OLD_STATE_REF, STATE_REF
+
+    items: dict[str, tuple[str, list[str]]] = {}
+    for s in steps:
+        if isinstance(s, dict) and s.get("type") == "loop" and isinstance(s.get("loop_over"), str):
+            found = _state_paths(_unbraced(s["loop_over"]))
+            if found and found[0][0] in keys:
+                items[str(s.get("loop_item_key") or "loop_item")] = (found[0][0], found[0][1])
+
+    out: dict[str, list[tuple[str, list[str], bool]]] = {}
+
+    def add(sid: str, head: str, parts: list[str], numeric: bool) -> None:
+        if head in items:
+            key, prefix = items[head]
+            head, parts = key, [*prefix, "0", *parts]
+        if head in keys and parts and (sid, parts, numeric) not in out.setdefault(head, []):
+            out[head].append((sid, parts, numeric))
+
+    for s in steps:
+        if not isinstance(s, dict):
+            continue
+        sid = str(s.get("id", "?"))
+        for f in _EXPRESSION_FIELDS:
+            if isinstance(s.get(f), str):
+                for head, parts, numeric in _state_paths(_unbraced(s[f])):
+                    add(sid, head, parts, numeric)
+
+        def walk(value: Any) -> None:
+            if isinstance(value, dict):
+                for v in value.values():
+                    walk(v)
+            elif isinstance(value, list):
+                for v in value:
+                    walk(v)
+            elif isinstance(value, str) and "state." in value:
+                for ref in [*STATE_REF.findall(value), *_OLD_STATE_REF.findall(value)]:
+                    head, *parts = ref.split(".")
+                    add(sid, head, [p for p in parts if p], False)
+
+        walk({k: v for k, v in s.items() if k != "transform_code" and k not in _EXPRESSION_FIELDS})
+    return out
+
+
 def _fields_never_written(steps: list, agents: dict | None = None) -> list[str]:
     """A read of a field that the steps writing its key never write (F1549, MIG1's bug A: a Human step with no fields,
     then an If/Else on `state.<its id>.approved`, routed every approval "no").
@@ -4390,13 +4488,44 @@ def _fields_never_written(steps: list, agents: dict | None = None) -> list[str]:
         return []
 
     issues: list[str] = []
+    # A model step's answer read in depth (F1618): checked to its end against what it declares, or, declaring
+    # nothing, given the whole shape its readers use, once. A read one level deep is told what it was told before.
+    from core.orchestration import output_fields as _answer
+
+    proposed_for: set[str] = set()
+    deep = _deep_reads(steps, set(known))
+    for key, reads_of in deep.items():
+        ws = known[key]
+        if len(ws) != 1 or ws[0].get("type") not in ("llm", "agent"):
+            continue
+        w = ws[0]
+        declared = step_answers.declared_fields(w)
+        names = {f["name"].strip() for f in declared}
+        if declared:
+            for sid, parts, _ in reads_of:
+                if len(parts) < 2 or parts[0] not in names:
+                    continue  # one level deep: as before
+                problem = _answer.path_problem(declared, parts)
+                said = f"Step '{sid}' reads `{'.'.join(parts)}` from state.{key}: {problem}."
+                if problem and said not in issues:
+                    issues.append(said)
+        elif any(len(parts) >= 2 for _, parts, _ in reads_of):
+            shape = _answer.proposed([parts for _, parts, _ in reads_of],
+                                     [parts for _, parts, numeric in reads_of if numeric])
+            readers = sorted({sid for sid, _, _ in reads_of})
+            paths = ", ".join(sorted({f"`{'.'.join(parts)}`" for _, parts, _ in reads_of}))
+            issues.append(f"Step{'s' if len(readers) > 1 else ''} {', '.join(repr(r) for r in readers)} read"
+                          f"{'' if len(readers) > 1 else 's'} state.{key} in depth ({paths}), which {w.get('type')} step "
+                          f"'{w.get('id', '?')}' declares nothing of: declare its output_fields as "
+                          f"{json.dumps(shape)}, and the run holds its model to them.")
+            proposed_for.add(key)
     for s in steps:
         if not isinstance(s, dict):
             continue
         reads: dict[str, list[str]] = {}
 
         def add(key: str, field: str) -> None:
-            if key in known and field not in reads.setdefault(key, []):
+            if key in known and key not in proposed_for and field not in reads.setdefault(key, []):
                 reads[key].append(field)
 
         for code in [*(_unbraced(s[f]) for f in _EXPRESSION_FIELDS if isinstance(s.get(f), str)),

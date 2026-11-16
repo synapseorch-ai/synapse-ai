@@ -220,6 +220,89 @@ def _said_lines(fields: Any, indent: str, lines: list[str]) -> None:
             _said_lines(inner, indent + "  ", lines)
 
 
+def path_problem(fields: Any, path: list[str]) -> str | None:
+    """Why `path` (the parts after the step's key: field names and list indexes) reads nothing an answer declaring
+    `fields` has, with its fix; None when it holds (F1618: every read checked to its end)."""
+    import difflib
+
+    group, field, trail = normalised(fields), None, []
+
+    def where() -> str:
+        named = [t for t in trail if not t.isdigit()]
+        return f"`{named[-1]}`'s fields" if named else "its output_fields"
+
+    for i, part in enumerate(path):
+        if field is not None:
+            kind = field_type(field.get("type"))
+            if kind == "list":
+                if not part.isdigit():
+                    name = ".".join(trail)
+                    return (f"`{name}` is a list: read one item of it (`{name}.0.{part}`), or loop over it and read "
+                            f"`{part}` of each")
+                trail.append(part)
+                of = field.get("of")
+                if isinstance(of, dict):
+                    group, field = normalised(of.get("fields")), None
+                    continue
+                if i + 1 < len(path):
+                    return f"`{'.'.join(trail)}` is one {of or 'text'} of a list, which has no fields: read it itself"
+                return None
+            if kind != "object":
+                return f"`{'.'.join(trail)}` is {type_words(field)}, which has no fields: read `{'.'.join(trail)}` itself"
+            group, field = normalised(field.get("fields")), None
+        names = [f["name"].strip() for f in group]
+        match = next((f for f in group if f["name"].strip() == part), None)
+        if match is None:
+            close = difflib.get_close_matches(part, names, n=1)
+            if close:
+                return (f"`{part}` is not one of {where()}: read `{'.'.join([*trail, close[0]])}` (did you mean "
+                        f"`{close[0]}`?), or declare `{part}` in {where()}")
+            listed = ", ".join(f"`{n}`" for n in names) or "none yet"
+            return f"`{part}` is not one of {where()} ({listed}): declare `{part}` in {where()}"
+        trail.append(part)
+        field = match
+    return None
+
+
+def proposed(paths: list[list[str]], numbers: Any = ()) -> list[dict[str, Any]]:
+    """The answer shape later steps read, from their paths (F1618): a field read by an index is a list, its item's
+    reads that list's fields; a field read by a field is a group; a field compared with a number (its path in
+    `numbers`) a number; any other read text. Never more than the reads say."""
+    tree: dict[str, dict] = {}
+    numbered = {tuple(p) for p in numbers}
+    for path in paths:
+        node, i, seen = tree, 0, []
+        while i < len(path):
+            part = path[i]
+            if part.isdigit():
+                i += 1
+                continue
+            entry = node.setdefault(part, {"list": False, "children": {}, "number": False})
+            seen.append(part)
+            if i + 1 < len(path) and path[i + 1].isdigit():
+                entry["list"] = True
+                i += 2
+            else:
+                i += 1
+            if i >= len(path) and tuple(path) in numbered:
+                entry["number"] = True
+            node = entry["children"]
+
+    def fields_of(node: dict) -> list[dict[str, Any]]:
+        out = []
+        for name, e in node.items():
+            if e["list"]:
+                out.append({"name": name, "type": "list", **({"of": {"fields": fields_of(e["children"])}}
+                                                             if e["children"] else {})})
+            elif e["children"]:
+                out.append({"name": name, "type": "object", "fields": fields_of(e["children"])})
+            else:
+                out.append({"name": name, "type": "number" if e["number"] else "text"})
+        return out
+
+    return fields_of(tree)
+
+
 def _number(value: Any) -> Any:
     if isinstance(value, bool):
         return None
