@@ -1336,6 +1336,12 @@ class ToolStepExecutor:
         if final_response is None and unavailable is not None:
             yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": str(unavailable)}
             raise unavailable
+        if final_response is None:
+            # What a person reads of the failure, without the host's folders (F1627): a Vault path as the Vault
+            # says it, the home folder as ~.
+            from core.host_paths import scrub
+
+            last_error = scrub(str(last_error))
         yield {
             "type": "final",
             "orch_step_id": step.id,
