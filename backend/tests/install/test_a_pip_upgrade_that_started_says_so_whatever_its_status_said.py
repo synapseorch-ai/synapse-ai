@@ -57,8 +57,9 @@ def _upgrade(monkeypatch, tmp_path, capsys, *, status, running=True, failing=Non
 
 
 def _installed_and_started(version: str) -> str:
-    return (f"Synapse {version} is installed and was started, but it didn't say where it is running. "
-            "Check it with: synapse status")
+    """Two lines, each inside 80 columns with the screen's two-space indent (a plain terminal prints them without it)."""
+    return (f"Synapse {version} is installed and was started,\n"
+            "but it didn't say where it is running. Check it with: synapse status")
 
 
 class TestNoUsableStatusIsNeverAFailure:
@@ -68,6 +69,7 @@ class TestNoUsableStatusIsNeverAFailure:
         code, out, _ = _upgrade(monkeypatch, tmp_path, capsys, status=status)
         assert code == 0, out
         assert _installed_and_started("2.0.16") in out and "Upgrade failed" not in out, out
+        assert all(len("  " + line) <= 80 for line in _installed_and_started("2.0.16").splitlines())
 
     def test_a_status_that_does_not_answer_in_time(self, monkeypatch, tmp_path, capsys):
         code, out, asked = _upgrade(monkeypatch, tmp_path, capsys,

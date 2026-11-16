@@ -1896,6 +1896,25 @@ def _pip_upgrade_args(target: str, extras=()) -> list:
     return args
 
 
+def _started_link(timeout: int = 60) -> str:
+    """The link a just-started Synapse reports (`status --json`), read as the installer reads its own CLI: the last
+    line that is JSON, within `timeout` seconds; "" when it says nothing usable (F1642)."""
+    import json as _json
+
+    try:
+        out = subprocess.run([sys.executable, "-P", "-m", "synapse", "status", "--json"],
+                             capture_output=True, text=True, timeout=timeout)
+    except (subprocess.SubprocessError, OSError):
+        return ""
+    for line in reversed((out.stdout or "").strip().splitlines()):
+        try:
+            report = _json.loads(line)
+        except ValueError:
+            continue
+        return str(report.get("link") or "") if isinstance(report, dict) else ""
+    return ""
+
+
 def _upgrade_with_pip(current: str, target: str, extras=()) -> int:
     """pip's upgrade, on the installer's screen: stop, back up, install, migrate, start."""
     from synapse.installer import backup
@@ -1918,6 +1937,7 @@ def _upgrade_with_pip(current: str, target: str, extras=()) -> int:
     log = Log(home / "logs" / "install.log")
     screen.open()
     link = ""
+    started = False
     was_running = False
     try:
         was_running = any(_is_running(p) for p in
@@ -1960,10 +1980,13 @@ def _upgrade_with_pip(current: str, target: str, extras=()) -> int:
         if was_running:
             screen.start("start")
             run([sys.executable, "-P", "-m", "synapse", "start", "--detach", "--no-browser"], log)
-            status = subprocess.run([sys.executable, "-P", "-m", "synapse", "status", "--json"],
-                                    capture_output=True, text=True)
-            import json as _json
-            link = (_json.loads(status.stdout.strip().splitlines()[-1]) or {}).get("link", "")
+            started = True
+            # The link is only for the last line: whatever the status read says, or fails to, the upgrade installed,
+            # updated the database and started (F1642), so nothing about that read can make it fail.
+            try:
+                link = _started_link()
+            except Exception:  # noqa: BLE001 — the read alone; the steps before it keep their own failures
+                link = ""
             screen.done("start")
         else:
             screen.skip("start")
@@ -1983,6 +2006,10 @@ def _upgrade_with_pip(current: str, target: str, extras=()) -> int:
     log.close()
     if link:
         screen.close(["", f"  Synapse {target} is running {term.g('arrow')} {link}", ""])
+    elif started:
+        # Started, but its status gave no link (F1642): said as two lines inside 80 columns.
+        screen.close(["", f"  Synapse {target} is installed and was started,",
+                      "  but it didn't say where it is running. Check it with: synapse status", ""])
     else:
         screen.close(["", f"  Synapse {target} is installed. Start it with: synapse start", ""])
     term.close()
