@@ -378,6 +378,8 @@ async def finish_findings(args: dict, server_module: Any, events: list[dict]) ->
     nothing = {research._slug(p) for p in looked.get("unmatched") or [] if isinstance(p, str)}
     unnamed = isinstance(request, dict) and all(
         research._slug(p) in nothing for p in request.get("providers") or [] if isinstance(p, str))
+    # "Nothing here does this" is never said of a need the product itself meets (F1629).
+    unnamed = unnamed and not own_capability(str(state.get("user_message") or ""))
     reported = _obj(state.get("findings"))
     if isinstance(reported, dict) and reported.get("status") == "reported":
         return {**reported, "said": said(reported, unnamed)}
@@ -417,6 +419,85 @@ async def finish_findings(args: dict, server_module: Any, events: list[dict]) ->
 #: What code saw, never "can't": it has not checked every tool here against the need (F998).
 SEEN_NOTHING = "I don't see anything in this workspace that does this today."
 
+# ── what the product itself does (F1629) ──────────────────────────────────────────────────────────────────────────────
+#
+# A need the product meets is planned with the product, never looked up outside as missing: reading or crawling a web
+# page is the workspace's own web reader (`scrape_url`, a tool step), and a page that needs a login or clicks is a
+# browser agent where a browser is installed. Anything else (booking, sending, paying) is looked up as before.
+
+#: Reading words: what the web reader does to a page.
+_READS = re.compile(r"\b(?:read|reads|reading|scrape|scrapes|scraping|crawl|crawls|crawling|fetch|fetches|extract|"
+                    r"extracts|summari[sz]e|summari[sz]es|collect|collects|pull|pulls)\b")
+#: A page on the web, said in words or by its address.
+_WEB = re.compile(r"\b(?:web ?pages?|websites?|web ?sites?|sites?|pages?|urls?|links?|sidebar|homepage|blog|"
+                  r"articles?)\b|https?://")
+#: A page behind a login, or one that needs clicks.
+_LOGIN = re.compile(r"\b(?:log ?in|logs ?in|logged in|sign ?in|signs ?in|signed in|login)\b")
+_LOGIN_PLACE = re.compile(r"\b(?:portal|dashboard|account|site|website|page)s?\b|https?://")
+
+
+def _a_web_address(text: str) -> str | None:
+    """The first web address a message gives (docs.example.com, https://…), never a file name (notes.md)."""
+    for domain in _DOMAIN.findall(text.lower()):
+        if domain.rsplit(".", 1)[-1] not in _FILE_ENDINGS and research._common_ending(domain):
+            return domain
+    return None
+
+
+def _browser_installed() -> bool:
+    """Playwright and its Chromium are on this computer: what a browser agent drives. Read from where Playwright keeps
+    its browsers (the setting, its variable, or its own default folder), never by starting one."""
+    import importlib.util
+    import os
+    import sys
+    from pathlib import Path
+
+    try:
+        if importlib.util.find_spec("playwright") is None:
+            return False
+        root = None
+        try:
+            from core.config import load_settings
+
+            root = load_settings().get("playwright_browsers_path")
+        except Exception:  # noqa: BLE001 — no settings: Playwright's own places
+            pass
+        root = root or os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+        if root == "0":  # the browsers inside the package
+            import playwright
+
+            folder = Path(playwright.__file__).parent / "driver" / "package" / ".local-browsers"
+        elif root:
+            folder = Path(root)
+        elif sys.platform == "win32":
+            folder = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "ms-playwright"
+        elif sys.platform == "darwin":
+            folder = Path.home() / "Library" / "Caches" / "ms-playwright"
+        else:
+            folder = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "ms-playwright"
+        return any(folder.glob("chromium*"))
+    except Exception:  # noqa: BLE001 — unreadable: not offered, looked up as before
+        return False
+
+
+def own_capability(need: str) -> str | None:
+    """What the product itself does for `need`, in a sentence for the plan, or None (F1629). A page behind a login is
+    a browser agent's, only where a browser is installed; reading or crawling a page is the web reader's. A need
+    neither covers (a booking, a message sent) is None: looked up as before."""
+    text = " ".join(str(need or "").lower().split())
+    address = _a_web_address(text)
+    on_the_web = bool(address or _WEB.search(text))
+    if _LOGIN.search(text) and (address or _LOGIN_PLACE.search(text)):
+        if not _browser_installed():
+            return None
+        return ("This workspace's own browser agent can sign in and work through the page, with no outside service: "
+                "build it with a browser agent, which asks before it types or sends anything.")
+    if on_the_web and _READS.search(text):
+        where = address or "the page"
+        return (f"This workspace's own web reader can open {where} and read it, with no outside service: build it "
+                "with a step that calls the web reader (scrape_url).")
+    return None
+
 
 def said(findings: dict, unnamed: bool = False) -> str:
     """The research's reply, in code's words, from the findings: one line per provider and what comes next. Nothing
@@ -441,8 +522,8 @@ def said(findings: dict, unnamed: bool = False) -> str:
     usable = any(o.get("how") in ("catalog_app", "mcp", "api") for o in options)
     nxt = ("Say \"build it\" and I'll draft a plan for you to approve; anything that books, pays or sends asks you "
            "first." if usable else
-           "Nothing here can do it for you directly. Say \"build it\" and I'll plan a workflow that finds the options "
-           "and leaves the booking or ordering to you.")
+           "Nothing here can do it for you directly. Say \"build it\" and I'll plan a workflow that does what can be "
+           "done here and leaves the rest to you.")
     return (SEEN_NOTHING + "\n\n" if unnamed else "") + "\n".join(f"- {line}" for line in lines) + "\n\n" + nxt
 
 

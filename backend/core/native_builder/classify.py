@@ -140,6 +140,16 @@ _QUESTION = re.compile(r"^(?:how do i|how can i|how to|how does|where do i|where
 #: accepted, send…" is a trigger, not a question (the combined-suite check, 10-27).
 _QUESTION_IF_ASKED = re.compile(r"^(?:is|are|was|were|did|does|do i|what|which|why|when|who|how many|how much|has|"
                                 r"have)\b")
+#: An ask to be told something, whatever it reads first: "read this page and tell me what it says" (F1629).
+_TELL_ME = re.compile(r"\b(?:tell me|explain|let me know)\b|^(?:what|which|why|who|how)\b")
+
+
+def _own_capability(message: str) -> str | None:
+    from core.native_builder.lookup import own_capability
+
+    return own_capability(message)
+
+
 #: Connecting a named service, said as an instruction; and what makes it an automation instead.
 _CONNECT_DO = re.compile(r"\b(?:connect|reconnect|hook up|hook into|link|plug in|sign in to)\b")
 _AUTOMATE = re.compile(r"\b(?:every|each|whenever|when|daily|weekly|automat\w*|workflow|build|create|schedule)\b")
@@ -337,6 +347,12 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
     elif kind == "answer" and request.providers and _USE.search(text) and not _CONNECT.search(text) and not all(
             _found(p, connectable) for p in request.providers):
         kind, by = "research", "provider_unknown"
+    # A thing to make that the product itself does (reading a web page, a page behind a login where a browser is
+    # here) is planned with it, never looked up outside as missing (F1629). Only a research ask that names no outside
+    # service, and never a question: "what does this page say" is answered, not built.
+    elif kind == "research" and not request.providers and not asked and not message.rstrip().endswith("?") and \
+            not _TELL_ME.search(text) and _own_capability(message):
+        kind, by = "build", "own_capability"
 
     needs = _needs(kind, request.needs, text, things)
     if kind == "answer" and by in _MAY_TALK and not things and not request.providers and _ABOUT_YOU.search(text):

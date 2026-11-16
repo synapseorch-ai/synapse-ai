@@ -120,7 +120,7 @@ def test_the_reply_says_each_verdict_in_its_words(how, words):
 def test_with_no_way_in_the_reply_offers_what_works_and_asks_for_nothing():
     said = lookup.said({"options": [
         {"provider": "OpenTable", "how": "none", "detail": "Its API is for approved partners only."}]})
-    assert "leaves the booking or ordering to you" in said
+    assert "does what can be done here and leaves the rest to you" in said  # fits any request (F1629)
     for asked in ("password", "your key", "card number", "booked", "paid"):
         assert asked not in said.lower()
 
