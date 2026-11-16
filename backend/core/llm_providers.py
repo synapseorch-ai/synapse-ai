@@ -1381,11 +1381,12 @@ def _read_cli_answer(base: str, cli_model: str, returncode: int | None, stdout: 
             denied = [str(d.get("tool_name") or d) for d in obj.get("permission_denials") or [] if d]
             if denied:
                 raise _refuse_own_tools(cli_model, denied)
+            if obj.get("structured_output") is not None:
+                # Asked with `--json-schema` (F1618): the answer in the declared shape, which the CLI gives in a turn
+                # of its own (`num_turns` 2, `stop_reason` "tool_use"), never the model reaching for a tool of its own.
+                return json.dumps(obj["structured_output"], ensure_ascii=False)
             if isinstance(obj.get("num_turns"), int) and obj["num_turns"] > 1:
                 raise _refuse_own_tools(cli_model, [f"{obj['num_turns']} turns"])
-            if obj.get("structured_output") is not None:
-                # Asked with `--json-schema` (F1618): the answer in the declared shape.
-                return json.dumps(obj["structured_output"], ensure_ascii=False)
             answer = obj.get("result")
             if isinstance(answer, str) and answer.strip():
                 return answer.strip()
