@@ -331,3 +331,23 @@ async def test_an_llm_step_says_when_its_answer_was_asked_in_words_after_a_refus
     events = [e async for e in engine.run("go", run_id="run_f1618b_note")]
     warned = [e["message"] for e in events if e.get("type") == "step_warning"]
     assert any("asked for in words" in w for w in warned), warned
+
+
+class TestTheClaudeCliAnswerInItsShape:
+    """What `claude -p --output-format json --json-schema` returns, read on the CLI check: the answer in
+    `structured_output`, after a turn of the CLI's own to give it (`num_turns` 2, `stop_reason` "tool_use")."""
+
+    def _said(self, **over):
+        out = {"type": "result", "subtype": "success", "is_error": False, "num_turns": 2, "stop_reason": "tool_use",
+               "permission_denials": [], "result": json.dumps(ANSWER), "structured_output": ANSWER}
+        out.update(over)
+        return json.dumps(out)
+
+    def test_the_structured_output_is_the_answer_whatever_its_turns(self):
+        text = llm._read_cli_answer("cli.claude", "cli.claude.claude-haiku-4-5", 0, self._said(), "", None)
+        assert json.loads(text) == ANSWER
+
+    def test_a_second_turn_with_no_structured_output_is_still_refused(self):
+        with pytest.raises(llm.LLMError):
+            llm._read_cli_answer("cli.claude", "cli.claude.claude-haiku-4-5", 0,
+                                 self._said(structured_output=None, stop_reason="end_turn"), "", None)
