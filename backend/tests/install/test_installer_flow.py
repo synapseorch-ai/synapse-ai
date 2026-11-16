@@ -46,6 +46,8 @@ elif args[:2] == ["setup", "--apply"]:
     with open(os.environ["FAKE_CALLS"] + ".apply", "w") as f:
         json.dump(data, f)
     print(json.dumps({"saved": sorted(data["settings"]), "ignored": [], "default_agent": "created"}))
+elif args[:1] == ["migrate"] and os.environ.get("FAKE_MIGRATE_FAIL"):
+    print(json.dumps({"database": "failed", "error": "a migration stopped"}))
 elif args[:1] == ["migrate"]:
     sources = [args[i + 1] for i, a in enumerate(args) if a == "--from"]
     for s in sources:
@@ -59,7 +61,7 @@ elif args[:1] == ["start"]:
     print("Synapse is running -> http://localhost:3000/?token=tok")
 elif args[:2] == ["status", "--json"]:
     print(json.dumps({"ready": True, "link": "http://localhost:3000/?token=tok",
-                      "backend": {"running": True}}))
+                      "backend": {"running": not os.environ.get("FAKE_NOT_RUNNING")}}))
 elif args[:1] == ["stop"]:
     pass
 elif args == ["setup", "--knowledge-models"]:
@@ -97,6 +99,11 @@ elif args[:2] == ["tool", "install"]:
             if not os.path.isfile(part):
                 print("error: File not found: `%s`" % part)
                 sys.exit(2)
+    if os.environ.get("FAKE_UV_FAIL") == "resolve":
+        print("  x No solution found when resolving tool dependencies:")
+        print("  `-> Because there is no version of synapse-orch-ai==2.0.1 and you require synapse-orch-ai==2.0.1, "
+              "we can conclude that your requirements are unsatisfiable.")
+        sys.exit(1)
     if os.environ.get("FAKE_UV_FAIL"):
         print("Resolved 181 packages in 1.2s")
         print("error: Failed to download `torch==2.9.0`: connection reset")
@@ -678,6 +685,73 @@ def test_the_install_reads_the_packages_index_page_again(world, monkeypatch):
     assert code == 0, out
     install = _tool_install(calls)
     assert install[install.index("--refresh-package") + 1] == "synapse-orch-ai", install
+
+
+#: What a failed upgrade says when it stopped a running Synapse (F1640): each line inside 80 columns.
+STILL_STOPPED = "Synapse was stopped for the upgrade and is still stopped."
+DATA_AS_IT_WAS = "Your data is as it was; start it again with: synapse start"
+START_IT = "Start it again with: synapse start"
+
+
+def _said_lines(out: str) -> list[str]:
+    return [line for line in out.splitlines() if STILL_STOPPED in line or START_IT.lower() in line.lower()]
+
+
+@pytest.mark.parametrize("failing", ["resolve", "download"])
+def test_a_failed_upgrade_that_stopped_synapse_says_it_is_still_stopped(world, monkeypatch, failing):
+    """F1640: the upgrade stopped a running Synapse, then its install failed (uv while resolving, or while
+    downloading). Nothing is started on a guess; the person is told it is still stopped, that the data is as it was
+    (no migration ran, the backup is taken), and how to start it."""
+    _existing(world)
+    _bundled_constraints(monkeypatch)
+    monkeypatch.setenv("FAKE_UV_FAIL", "resolve" if failing == "resolve" else "1")
+
+    code, out, calls = world["install"](upgrade=True, version_override="2.0.1")
+
+    assert code == 1, out
+    assert STILL_STOPPED in out and DATA_AS_IT_WAS in out, out
+    assert "start --detach" not in _names(calls)
+    assert all(len(line) <= 80 for line in _said_lines(out)), _said_lines(out)
+
+
+def test_a_failed_database_update_never_says_the_data_is_as_it_was(world, monkeypatch):
+    """F1640: the update of the database itself failed, so whether the data is as it was is not certain."""
+    _existing(world)
+    _bundled_constraints(monkeypatch)
+    monkeypatch.setenv("FAKE_MIGRATE_FAIL", "1")
+
+    code, out, calls = world["install"](upgrade=True, version_override="2.0.1")
+
+    assert code == 1, out
+    assert STILL_STOPPED in out and START_IT in out and "Your data is as it was" not in out, out
+
+
+def test_a_failed_upgrade_of_a_synapse_that_was_not_running_says_nothing_of_starting(world, monkeypatch):
+    _existing(world)
+    _bundled_constraints(monkeypatch)
+    monkeypatch.setenv("FAKE_NOT_RUNNING", "1")
+    monkeypatch.setenv("FAKE_UV_FAIL", "1")
+
+    code, out, _ = world["install"](upgrade=True, version_override="2.0.1")
+
+    assert code == 1 and STILL_STOPPED not in out, out
+
+
+def test_a_failed_fresh_install_says_nothing_of_starting(world, monkeypatch):
+    monkeypatch.setenv("FAKE_UV_FAIL", "1")
+
+    code, out, _ = world["install"]()
+
+    assert code == 1 and STILL_STOPPED not in out, out
+
+
+def test_an_upgrade_that_installs_says_nothing_of_being_stopped(world, monkeypatch):
+    _existing(world)
+    _bundled_constraints(monkeypatch)
+
+    code, out, _ = world["install"](upgrade=True, version_override="2.0.1")
+
+    assert code == 0 and STILL_STOPPED not in out, out
 
 
 def test_with_adds_an_extra_and_a_later_upgrade_keeps_it(world, monkeypatch):
