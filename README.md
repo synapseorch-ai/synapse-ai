@@ -10,7 +10,7 @@
   <a href="https://discord.gg/9UN45qyGh8"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
-**SynapseOrch builds and runs AI workflows that take a fixed path.** Describe a job in plain words and it shows you a
+**[SynapseOrch](https://synapseorch.com/) builds and runs AI workflows that take a fixed path.** Describe a job in plain words and it shows you a
 plan: the steps, the model for each, what a run should cost, and where a person signs off. Nothing is built until you
 approve it, and every run then follows that path. Models do the work inside the steps; they don't decide which step
 comes next.
