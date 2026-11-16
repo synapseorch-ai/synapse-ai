@@ -228,13 +228,17 @@ _WRITE_TOOL = types.Tool(
         "Write a text file into the vault: a CSV the vault draws as a chart, a report, a note. Creates it, or writes "
         "over a file this tool wrote before (a chart each run rewrites). Only .json, .md, .txt, .csv or .tsv, at most "
         "5 MB, never in a knowledge base's folder (change its documents with edit_knowledge_document) or the "
-        "engine's own folders. A board card's note can link it as @[path]."
+        "engine's own folders. A board card's note can link it as @[path]. With append: true it adds the text at "
+        "the end instead (one line break between), creating the file on the first run: the way to keep a log."
     ),
     inputSchema={
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Where in the vault, relative, e.g. 'reports/sales.csv'."},
-            "content": {"type": "string", "description": "The file's whole text."},
+            "content": {"type": "string", "description": "The file's whole text, or with append: true, the text to "
+                                                         "add at the end."},
+            "append": {"type": "boolean", "description": "Add the text at the end of the file instead of replacing "
+                                                         "it; creates the file if it is not there yet."},
         },
         "required": ["path", "content"],
     },
@@ -297,22 +301,84 @@ async def checked(path: str, content: Any) -> tuple[str, bytes]:
     return rel, data
 
 
-async def engine_writer(path: str, content: str) -> dict:
+#: How many times an add reads the file again after another write landed between its read and its own (F1626).
+_ADD_RETRIES = 1
+
+
+def _version(key: str) -> str | None:
+    """`key`'s stored version as the store answers it, verbatim (an object's ETag, quotes and all), or None (F1626)."""
+    version = getattr(_store(), "version", None)
+    return version(key) if version is not None else None
+
+
+async def _append(rel: str, text: str) -> list[types.TextContent]:
+    """`text` added at the end of the file at `rel`, one line break between, made when it is not there (F1626).
+
+    Through the host's writer, only over the version read (`if_match`, verbatim): a write that landed in between
+    makes it stale, and it reads again once and adds to that, the create race (two adds to a missing file) too. A
+    second clash is said, never a lost line."""
+    from core.storage import PreconditionFailed
+    from core.vault import mention_key
+
+    key = mention_key(rel)
+    for _attempt in range(_ADD_RETRIES + 1):
+        # The version around the read (F1626's follow-up): a write that lands while the text is read makes the two
+        # differ, and the add reads again, so the version written over is always the text's own.
+        seen = _version(key)
+        before, error = _get_text(rel)
+        if _version(key) != seen:
+            continue
+        if error and not error.startswith("Not found"):
+            return _err(error)
+        if before is None and seen is not None:
+            continue
+        joined = text if before is None else before + ("" if not before or before.endswith("\n") else "\n") + text
+        if len(joined.encode("utf-8")) > WRITE_MAX_BYTES:
+            return _err(f"A file written here is at most {WRITE_MAX_BYTES // (1024 * 1024)} MB.")
+        try:
+            # A file it read none of is written create-only (an explicit None), never over one made since.
+            return _ok(await _writer(rel, joined, if_match=seen if before is not None else None))
+        except PreconditionFailed:
+            continue
+    return _err(f"{rel} changed while I was adding to it: read it again.")
+
+
+#: `engine_writer`'s default: no `if_match` given, a plain write (F1626's follow-up). An explicit `None` is create-only.
+_PLAIN: Any = object()
+
+
+async def engine_writer(path: str, content: str, *, if_match: Any = _PLAIN) -> dict:
     """The engine's own write, for a host whose Vault is the engine's blob store: the host's room asked first
     (`step_refs`' write hook, which a host sets to its plan's cap), the file written, its followers told (Knowledge).
-    The blob store keeps no metadata, so this creates or writes over: a self-hosted Vault is the person's own."""
+    The blob store keeps no metadata, so this creates or writes over: a self-hosted Vault is the person's own.
+
+    The writer's contract (F1626), as a host's own writer keeps it: with a version in `if_match`, the write lands only
+    over that version (the store's `version`, verbatim); with `if_match=None`, only where there is no file (the caller
+    read none: a file made since is stale, never written over); with no keyword, a plain write, only over the version
+    it looked at itself, or where there was none. A write that meets another raises `PreconditionFailed`."""
     from core import step_refs, vault_events
+    from core.storage import PreconditionFailed
     from core.vault import mention_key
 
     key = mention_key(path)
     before = await asyncio.to_thread(_store().get, key)
+    seen = await asyncio.to_thread(_version, key)
+    if if_match is None and seen is not None:
+        raise PreconditionFailed(f"{path} was made after it was read: read it again.")
+    if if_match is not None and if_match is not _PLAIN and seen != if_match:
+        raise PreconditionFailed(f"{path} changed after it was read: read it again.")
     data = content.encode("utf-8")
     if step_refs._write_hook is not None:
         try:
             step_refs._write_hook(len(data) - len((before or "").encode("utf-8")))
         except Exception as exc:  # noqa: BLE001 — the host's refusal, in its words
             raise WriteRefused(str(exc)) from None
-    await asyncio.to_thread(_store().put, key, content)
+    store = _store()
+    if getattr(store, "version", None) is not None:
+        await asyncio.to_thread(lambda: store.put_bytes(key, data, content_type="text/plain; charset=utf-8",
+                                                        if_match=seen, if_none_match=seen is None))
+    else:
+        await asyncio.to_thread(store.put, key, content)
     await vault_events.notify_vault_change(path, "write", sha256=hashlib.sha256(data).hexdigest(), size=len(data),
                                            source="tool")
     return {"path": path, "size": len(data), "written_over": before is not None}
@@ -325,9 +391,18 @@ async def call(name: str, arguments: dict) -> list[types.TextContent]:
         if name == WRITE:
             if _writer is None:
                 return _err("Writing the vault is not offered here.")
+            from core.storage import PreconditionFailed
+
             try:
                 rel, data = await checked(arguments.get("path"), arguments.get("content"))
-                return _ok(await _writer(rel, data.decode("utf-8")))
+                if arguments.get("append"):
+                    return await _append(rel, data.decode("utf-8"))
+                try:
+                    return _ok(await _writer(rel, data.decode("utf-8")))
+                except PreconditionFailed:
+                    # Another write landed while this one did (F1626): said, never retried over content the caller
+                    # never saw.
+                    return _err(f"{rel} changed while I was writing it: read it again.")
             except WriteRefused as exc:
                 return _err(str(exc))
         if name == "list_files":

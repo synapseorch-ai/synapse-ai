@@ -503,29 +503,55 @@ async def _read_page(page, url: str, config: RunConfig) -> CrawlResult:
     return result
 
 
-#: Markers only a bot-check page carries, whatever its size.
-_CHALLENGE_MARKERS = (
-    ("captcha-delivery.com", "DataDome captcha"),
-    ("/cdn-cgi/challenge-platform/", "Cloudflare challenge"),
+#: Signs only a block page itself carries, whatever its status (F1633): a challenge's own options and its
+#: orchestration, a captcha's host or element, an incident page's words. Never a script a bot manager puts on every
+#: normal page, which called fully loaded pages blocked.
+_BLOCK_PAGE_SIGNS = (
+    ("window._cf_chl_opt", "Cloudflare challenge"),
     ("__cf_chl_f_tk=", "Cloudflare challenge"),
-    ("window._pxAppId", "PerimeterX block"),
+    ("captcha-delivery.com", "DataDome captcha"),
     ("captcha.px-cdn.net", "PerimeterX captcha"),
-    ("_Incapsula_Resource", "Imperva block"),
+    ('id="px-captcha"', "PerimeterX captcha"),
+    ("Incapsula incident ID", "Imperva block"),
     ("Pardon Our Interruption", "Akamai challenge"),
+)
+#: Cloudflare's challenge orchestration (`…/challenge-platform/h/b/orchestrate/chl_page/…`): a challenge page's own.
+#: Its JavaScript detections loader (`…/challenge-platform/scripts/jsd/main.js`) rides on every page of a zone with bot
+#: management and is no sign of a block.
+_CF_ORCHESTRATION = re.compile(r"/cdn-cgi/challenge-platform/(?:h/[a-z]/)?orchestrate/")
+#: What a bot manager puts on its normal pages too, or a challenge page shows with its refusing status: a sign of whose
+#: block it is, read as one only on a 403, 429 or 503.
+_VENDOR_SIGNS = (
+    ("/cdn-cgi/challenge-platform/", "Cloudflare challenge"),
+    ("<title>Just a moment", "Cloudflare challenge"),
+    ("challenges.cloudflare.com", "Cloudflare challenge"),
+    ("window._pxAppId", "PerimeterX block"),
+    ("client.perimeterx.net", "PerimeterX block"),
+    ("_Incapsula_Resource", "Imperva block"),
+    ("js.datadome.co", "DataDome block"),
+    ("/akam/", "Akamai block"),
 )
 
 
 def _refusal(response, html: str) -> str | None:
     """Why the page is a refusal rather than the page asked for, or None. The egress proxy's own refusal says so;
-    a 403, 429 or 503, or a bot check, is a failure as crawl4ai reported it, never a page of content: a reader
-    handed a block page as the site's words is misled."""
-    if response is not None and response.headers.get("x-synapse-egress") == "refused":
+    a 403, 429 or 503, Cloudflare's challenge header, or a block page's own signs is a failure as crawl4ai reported
+    it, never a page of content: a reader handed a block page as the site's words is misled. A page that loaded is
+    its content whatever bot manager's routine script it carries (F1633)."""
+    headers = getattr(response, "headers", None) or {}
+    if response is not None and headers.get("x-synapse-egress") == "refused":
         return "URL blocked: the egress proxy refused this address"
-    for marker, name in _CHALLENGE_MARKERS:
-        if marker in html:
+    if str(headers.get("cf-mitigated") or "").strip().lower() == "challenge":
+        return "Blocked by anti-bot protection: Cloudflare challenge"
+    for sign, name in _BLOCK_PAGE_SIGNS:
+        if sign in html:
             return f"Blocked by anti-bot protection: {name}"
+    if _CF_ORCHESTRATION.search(html):
+        return "Blocked by anti-bot protection: Cloudflare challenge"
     if response is not None and response.status in (403, 429, 503):
-        return f"Blocked by anti-bot protection: HTTP {response.status}"
+        whose = next((name for sign, name in _VENDOR_SIGNS if sign in html), None)
+        return (f"Blocked by anti-bot protection: {whose} (HTTP {response.status})" if whose
+                else f"Blocked by anti-bot protection: HTTP {response.status}")
     return None
 
 

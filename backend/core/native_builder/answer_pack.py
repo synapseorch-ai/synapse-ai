@@ -158,7 +158,7 @@ def failure_said(block: dict | None) -> str:
 def build_pack(*, routed: dict, workspace_name: str, profile: str, asker_name: str, asker_role: Role, last: str,
                capabilities: str, help_hits: list[dict], named: list[dict], connect: str = "",
                workflows: list[str] | None = None, failure: str = "", live_fact: str = "",
-               may_build: bool = True) -> str:
+               may_build: bool = True, vault: str = "") -> str:
     """The pack's text, section by section."""
     needs = routed.get("needs") or "none"
     described = describe_workspace(workspace_name, "" if profile.strip().startswith(_NOT_RECORDED) else profile)
@@ -183,6 +183,9 @@ def build_pack(*, routed: dict, workspace_name: str, profile: str, asker_name: s
     if connect:
         parts.append(connect)
     parts.append(capabilities.strip())
+    if vault:
+        # A Vault file they named, read for this answer whatever its route (F1623).
+        parts.append(vault)
     if live_fact:
         # The fact the talk step offers a workflow for (F1382); building one is a builder's, so a viewer is told who.
         said = f"What they asked for is outside this workspace and changes over time: {live_fact}."
@@ -207,6 +210,108 @@ def build_pack(*, routed: dict, workspace_name: str, profile: str, asker_name: s
                 f'- {n["kind"]} "{n["name"]}" ({n["id"]})' + (f" — {n['detail']}" if n.get("detail") else "")
                 for n in named))
     return "\n\n".join(p for p in parts if p)
+
+
+# ── the Vault files a message names (F1623) ──────────────────────────────────────────────────────────────────────
+
+#: How much of one Vault file a chat answer reads, and of all a message names (F1623): a chat turn pays for it, so
+#: less than a workflow step's `vault_threshold`; past it the pack says how long the file is and how much is there.
+CHAT_FILE_CHARS = 20_000
+CHAT_FILES_CHARS = 40_000
+#: How many Vault keys a bare name is looked for among, after the top of the Vault.
+_NAME_LOOKUP_KEYS = 2_000
+_MENTION = re.compile(r"@\[([^\]\n]+)\]")
+#: A file-like name in prose: a path of word characters, dots, slashes and dashes ending in an extension, never inside
+#: an address (`https://…`, `a@b.c`) and never a sentence's full stop.
+#: The extensions a name in prose must end in to be looked for: the Vault's text files and the binary kinds it knows,
+#: so "e.g." or a site's ".com" is never taken for a file.
+_TEXT_EXTENSIONS = ("md", "txt", "csv", "tsv", "json", "yaml", "yml", "xml", "html", "log")
+
+
+def _file_name_pattern() -> "re.Pattern[str]":
+    from core.vault import _BINARY_KINDS
+
+    exts = sorted({*_TEXT_EXTENSIONS, *(e.lstrip(".").lower() for e in _BINARY_KINDS)}, key=len, reverse=True)
+    return re.compile(r"(?<![\w@/:.-])((?:[\w-]+/)*[\w.-]*\w\.(?:" + "|".join(map(re.escape, exts))
+                      + r"))(?![\w/])", re.IGNORECASE)
+VAULT_LEAD = ("The Vault files the message names, read for this answer (read-only): answer from their text. Where one "
+              "was cut, say how much was read and offer a workflow that reads all of it; never say a file was read "
+              "that is not here.")
+
+
+def _names_in(message: str) -> list[str]:
+    """The Vault paths and file names a message names, in order, each once: `@[path]` mentions, then file-like names."""
+    names = [m.group(1).strip() for m in _MENTION.finditer(message)]
+    bare = _MENTION.sub(" ", message)
+    names += [m.group(1) for m in _file_name_pattern().finditer(bare) if "://" not in m.group(1)]
+    return list(dict.fromkeys(n for n in names if n))
+
+
+async def _which(name: str) -> tuple[str | None, list[str]]:
+    """`(the Vault path a name means, the paths it could mean)`: a Vault path as given; a bare name at the top of the
+    Vault first, then the one file anywhere with that name among the first keys; two or more are said, never picked."""
+    import asyncio
+
+    from core.storage import get_blob_store
+    from core.vault import VAULT_PREFIX, mention_key
+
+    store = get_blob_store()
+    key = mention_key(name)
+    if key is not None and await asyncio.to_thread(store.exists, key):
+        return name, [name]
+    if "/" in name or key is None:
+        return None, []
+    try:
+        keys = await asyncio.to_thread(store.list, VAULT_PREFIX)
+    except Exception:  # noqa: BLE001 — a Vault that cannot be listed has no name to look up
+        return None, []
+    cut = len(VAULT_PREFIX) + 1
+    found = [k[cut:] for k in keys[:_NAME_LOOKUP_KEYS] if k.rsplit("/", 1)[-1] == name]
+    return (found[0] if len(found) == 1 else None), found
+
+
+async def vault_said(message: str) -> str:
+    """The pack's section on the Vault files `message` names (F1623), or "" when it names none.
+
+    Read with the engine's own mention reader, as an agent chat's and a workflow step's mentions are: the blob store,
+    the workspace's scope, never written. Each file up to `CHAT_FILE_CHARS`, all of them up to `CHAT_FILES_CHARS`;
+    what is cut, binary, missing or shared by two files is said plainly."""
+    from core.vault import MentionReader, binary_kind
+
+    names = _names_in(message or "")
+    if not names:
+        return ""
+    reader = MentionReader()
+    room = CHAT_FILES_CHARS
+    lines: list[str] = []
+    for name in names:
+        path, could = await _which(name)
+        if path is None:
+            if len(could) > 1:
+                lines.append(f"- {name}: more than one file has that name ({', '.join(could)}); ask which one they "
+                             "mean.")
+            elif binary_kind(name) is None:
+                lines.append(f"- {name} isn't in the Vault.")
+            continue
+        kind = binary_kind(path)
+        if kind is not None:
+            lines.append(f"- {path} is {kind}, which can't be read in chat.")
+            continue
+        read = await reader.read(path)
+        if read.outcome != "inlined" or read.text is None:
+            lines.append(f"- {path} isn't in the Vault." if read.outcome == "missing"
+                         else f"- {path} can't be read in chat ({read.reason}).")
+            continue
+        if room <= 0:
+            lines.append(f"- {path} ({read.chars:,} characters) was not read: this message's files already fill what "
+                         "a chat answer reads.")
+            continue
+        shown = min(read.chars, CHAT_FILE_CHARS, room)
+        room -= shown
+        head = (f"{path} ({read.chars:,} characters)" if shown == read.chars
+                else f"{path}: {read.chars:,} characters; the first {shown:,} are here")
+        lines.append(f"### {head}\n{read.text[:shown]}")
+    return VAULT_LEAD + "\n\n" + "\n\n".join(lines) if lines else ""
 
 
 # ── the step ──────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -346,6 +451,11 @@ async def answer_pack(args: dict, server_module: Any, events: list[dict]) -> dic
     except Exception as exc:  # noqa: BLE001 — the answer goes on without the card, which it never promises
         _log.warning("answer pack: no connect card: %s", exc)
     named = await _named_things(message)
+    vault = ""
+    try:
+        vault = await vault_said(message)
+    except Exception as exc:  # noqa: BLE001 — the answer goes on without the file, and never says it read one
+        _log.warning("answer pack: the Vault files named were not read: %s", exc)
     from core.native_builder.classify import asks_why_it_failed
 
     failed = ""
@@ -366,7 +476,7 @@ async def answer_pack(args: dict, server_module: Any, events: list[dict]) -> dic
         named=named if needs == "workspace" else [], connect=connect,
         workflows=await _workflows_said(turn, named, server_module), failure=failed,
         live_fact=str(routed.get("live_fact") or "").strip() if routed.get("overridden_by") == "live_fact" else "",
-        may_build=state.get("may_change") is not False)
+        may_build=state.get("may_change") is not False, vault=vault)
     return {"needs": needs, "pack": pack}
 
 

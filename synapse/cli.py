@@ -1716,10 +1716,29 @@ def _install_method() -> str:
 RELEASES = "https://github.com/synapseorch-ai/synapse-ai/releases"
 
 
-def _latest_version() -> "str | None":
-    """The newest Synapse on PyPI, or None when PyPI cannot be reached."""
-    from synapse.installer import net
+def _index_cwd() -> Path:
+    """Where the install runs uv (the runtime folder), whose configuration files uv reads."""
+    from synapse.installer.home import home_dir
 
+    return (synapse_home() or home_dir()) / "runtime"
+
+
+def _index_tool(method: str) -> str:
+    """Which installer reads the index: pip for a pip install, uv for every other (the npm package's installer too)."""
+    return "pip" if method == "pip" else "uv"
+
+
+def _latest_version() -> "str | None":
+    """The newest Synapse the install's own index lists (F1638): the JSON page PyPI serves apart from that index can
+    name a release the index does not list yet. PyPI's JSON page when that index cannot be asked or does not answer in
+    PEP 691 JSON; None when neither answers."""
+    from synapse.installer import index, net
+
+    where = index.simple_index(_index_tool(_install_method()), os.environ, _index_cwd())
+    found = index.listed(where) if where is not None else None
+    newest = index.newest_final(found) if found else None
+    if newest:
+        return newest
     try:
         return net.get_json("https://pypi.org/pypi/synapse-orch-ai/json", timeout=15)["info"]["version"]
     except (net.HttpError, KeyError, TypeError):
@@ -1783,6 +1802,18 @@ def _upgrade_command(version: str = "", extras=()):
             print(f"Synapse {current} is up to date{', with ' + ', '.join(extras) if extras else ''}.")
             return
         target = current
+    if target != current:
+        # Before anything is stopped or backed up (F1638): an index that answered without the version has not caught
+        # up with the release yet. Said plainly, and nothing changes; an index that cannot be told goes on as before.
+        from synapse.installer import index
+
+        tool = _index_tool(method)
+        if index.serves(target, tool, os.environ, _index_cwd()) is False:
+            print(index.still_reaching(target, index.where(tool, os.environ, _index_cwd())))
+            sys.exit(1)
+        if method == "npm" and index.npm_has(_npm_version(target)) is False:
+            print(index.still_reaching(target, "npm"))
+            sys.exit(1)
     if method == "npm" and target != current:
         # The npm package decides which Synapse its `synapse` runs; upgrading
         # only the Python side would be undone at its next start.
@@ -1858,7 +1889,8 @@ def _pip_upgrade_args(target: str, extras=()) -> list:
     """pip has no receipt to keep the optional parts in: name them, the installed ones too."""
     parts = list(dict.fromkeys([*_installed_extras(), *extras]))
     requirement = f"synapse-orch-ai[{','.join(parts)}]=={target}" if parts else f"synapse-orch-ai=={target}"
-    args = [sys.executable, "-m", "pip", "install", "--upgrade", requirement]
+    # Not from pip's own cache (F1638): it can hold the index page from before the release.
+    args = [sys.executable, "-m", "pip", "install", "--upgrade", "--no-cache-dir", requirement]
     if "knowledge" in parts:
         args += ["--extra-index-url", _TORCH_CPU_INDEX]
     return args
@@ -1886,6 +1918,7 @@ def _upgrade_with_pip(current: str, target: str, extras=()) -> int:
     log = Log(home / "logs" / "install.log")
     screen.open()
     link = ""
+    was_running = False
     try:
         was_running = any(_is_running(p) for p in
                           (_read_pidfile(_pid_file(n)) for n in ("backend", "frontend")) if p)
@@ -1939,7 +1972,11 @@ def _upgrade_with_pip(current: str, target: str, extras=()) -> int:
         if failed:
             screen.fail(failed.key)
         tail = getattr(e, "tail", [])
-        screen.close(["", f"  Upgrade failed: {e}", *[f"    {line}" for line in tail[-6:]],
+        from synapse.installer.flow import still_stopped_lines
+
+        # A Synapse this upgrade stopped is still stopped, and is never started again on a guess (F1640).
+        stopped = still_stopped_lines(failed.key if failed else "", database_step="migrate") if was_running else []
+        screen.close(["", f"  Upgrade failed: {e}", *[f"    {line}" for line in tail[-6:]], *stopped,
                       f"  Full log: {log.path}", ""])
         log.close()
         return 1

@@ -50,6 +50,16 @@ def _vault():
     return get_vault()
 
 
+def _rel(target: Path) -> str:
+    """`target` by its Vault path, e.g. `reports/q1.md`: what every Vault tool answers with and says in a refusal, never
+    the host's absolute path (F1627: a person reads it on the run page). Every tool here reads it back, and the Python
+    sandbox has it under /data/."""
+    try:
+        return Path(target).resolve().relative_to(_vault_root().resolve()).as_posix()
+    except (ValueError, OSError):
+        return Path(target).name
+
+
 MAX_FILE_SIZE = 10 * 1024 * 1024   # 10 MB read cap
 DEFAULT_TIMEOUT = 30               # seconds
 MAX_TIMEOUT = 120
@@ -124,7 +134,7 @@ async def list_tools() -> list[Tool]:
             annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False),
             description=(
                 "Create a new file in the shared vault workspace. "
-                "Returns the absolute path for passing to other tools or the Python sandbox. "
+                "Returns the file's Vault path for passing to other tools (in the Python sandbox it is under /data/). "
                 "If no filename is given one is auto-generated."
             ),
             inputSchema={
@@ -162,7 +172,7 @@ async def list_tools() -> list[Tool]:
                     "path": {
                         "type": "string",
                         "description": (
-                            "Absolute path (as returned by vault_create / vault_write) "
+                            "Vault path (as returned by vault_create / vault_write; an absolute path inside the vault also works) "
                             "or a relative path inside the vault."
                         ),
                     },
@@ -175,7 +185,9 @@ async def list_tools() -> list[Tool]:
             annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
             description=(
                 "Write (overwrite) a file in the vault. Creates it if missing. "
-                "Returns the absolute path."
+                "With append: true, adds the content at the end instead (one line break between), creating the file "
+                "on the first run: the way to add a line or an entry to a log. "
+                "Returns the Vault path."
             ),
             inputSchema={
                 "type": "object",
@@ -186,7 +198,12 @@ async def list_tools() -> list[Tool]:
                     },
                     "content": {
                         "type": "string",
-                        "description": "Full file content to write.",
+                        "description": "Full file content to write, or with append: true, the text to add at the end.",
+                    },
+                    "append": {
+                        "type": "boolean",
+                        "description": "Add the content at the end of the file instead of replacing it; creates the "
+                                       "file if it is not there yet.",
                     },
                 },
                 "required": ["path", "content"],
@@ -198,7 +215,7 @@ async def list_tools() -> list[Tool]:
             description=(
                 "Patch an existing file. JSON files: deep-merges the provided object. "
                 "Text files: replaces first occurrence of `find` with `replace`. "
-                "Returns the absolute path and updated content."
+                "Returns the Vault path and updated content."
             ),
             inputSchema={
                 "type": "object",
@@ -382,7 +399,7 @@ def _handle_create(args: dict) -> list[TextContent]:
 
     vault = _vault()
     if vault.ensure_local(target).exists():
-        return _err(f"File already exists: {target}. Use vault_write to overwrite.")
+        return _err(f"File already exists: {_rel(target)}. Use vault_write to overwrite.")
 
     if target.suffix == ".json":
         try:
@@ -391,7 +408,7 @@ def _handle_create(args: dict) -> list[TextContent]:
             pass
 
     vault.write(target, content)
-    return _ok({"path": str(target), "size": len(content), "created": True})
+    return _ok({"path": _rel(target), "size": len(content), "created": True})
 
 
 def _handle_read(args: dict) -> list[TextContent]:
@@ -400,7 +417,7 @@ def _handle_read(args: dict) -> list[TextContent]:
         return _err("Invalid path or path escapes the vault")
     _vault().ensure_local(target)
     if not target.exists():
-        return _err(f"File not found: {target}")
+        return _err(f"File not found: {_rel(target)}")
     if target.is_dir():
         return _err("Path is a directory. Use vault_list instead.")
 
@@ -408,7 +425,7 @@ def _handle_read(args: dict) -> list[TextContent]:
     if size > MAX_FILE_SIZE:
         return _err(f"File too large ({size} bytes). Max is {MAX_FILE_SIZE}.")
 
-    return _ok({"path": str(target), "content": target.read_text(encoding="utf-8"), "size": size})
+    return _ok({"path": _rel(target), "content": target.read_text(encoding="utf-8"), "size": size})
 
 
 def _handle_write(args: dict) -> list[TextContent]:
@@ -417,6 +434,9 @@ def _handle_write(args: dict) -> list[TextContent]:
     if target is None:
         return _err("Invalid path or path escapes the vault")
 
+    if args.get("append"):
+        return _append(target, str(content or ""))
+
     if target.suffix == ".json":
         try:
             content = json.dumps(json.loads(content), indent=2)
@@ -424,7 +444,41 @@ def _handle_write(args: dict) -> list[TextContent]:
             pass
 
     _vault().write(target, content)
-    return _ok({"path": str(target), "size": len(content), "written": True})
+    return _ok({"path": _rel(target), "size": len(content), "written": True})
+
+
+#: How many times an add reads the file again after another write landed between its read and its own (F1626).
+_ADD_RETRIES = 1
+
+
+def _append(target: Path, text: str) -> list[TextContent]:
+    """`text` added at the end of `target`, one line break between, the file made when it is not there (F1626).
+
+    Written only over the version read, so an add another run made in between is never lost: on a clash it reads
+    again, once, and adds to that; a second clash is said, never a lost line.
+    """
+    from core.storage import PreconditionFailed
+
+    vault = _vault()
+    for _attempt in range(_ADD_RETRIES + 1):
+        # The version around the read (F1626's follow-up): a write that lands while the file is read makes the two
+        # differ, and the add reads again, so the version written over is always the bytes' own.
+        seen = vault.version(target)
+        data = vault.read(target)
+        if vault.version(target) != seen or (data is None) != (seen is None):
+            continue
+        try:
+            if data is not None:
+                before = data.decode("utf-8")
+                joined = before + ("" if not before or before.endswith("\n") else "\n") + text
+                vault.write(target, joined, if_match=seen)
+            else:
+                joined = text
+                vault.write(target, joined, if_none_match=True)
+        except PreconditionFailed:
+            continue
+        return _ok({"path": _rel(target), "size": len(joined), "written": True, "appended": True})
+    return _err(f"{target.name} changed while I was adding to it: read it again.")
 
 
 def _handle_patch(args: dict) -> list[TextContent]:
@@ -433,12 +487,28 @@ def _handle_patch(args: dict) -> list[TextContent]:
         return _err("Invalid path or path escapes the vault")
     vault = _vault()
     vault.ensure_local(target)
-    if not target.exists():
-        return _err(f"File not found: {target}")
-
-    content = target.read_text(encoding="utf-8")
     merge_data = args.get("merge")
     find_str = args.get("find")
+    if find_str == "":
+        # A replace of "" puts its text at the top of the file (F1626): never what a caller asked for.
+        return _err("Nothing to find: a patch replaces text it finds. To add at the end of a file, use vault_write "
+                    "with append: true.")
+    if not target.exists():
+        if merge_data is not None:
+            # Merging into nothing is the object itself (F1626): the file is made with it.
+            try:
+                made = json.loads(merge_data)
+            except json.JSONDecodeError:
+                return _err("merge value is not valid JSON")
+            if not isinstance(made, (dict, list)):
+                return _err("Cannot merge: give an object or an array")
+            content = json.dumps(made, indent=2)
+            vault.write(target, content)
+            return _ok({"path": _rel(target), "content": content, "patched": True, "created": True})
+        return _err(f"File not found: {_rel(target)}. It doesn't exist yet: to add to a file, use vault_write with "
+                    "append: true, which creates it.")
+
+    content = target.read_text(encoding="utf-8")
     replace_str = args.get("replace")
 
     if merge_data is not None:
@@ -460,7 +530,7 @@ def _handle_patch(args: dict) -> list[TextContent]:
 
         content = json.dumps(existing, indent=2)
         vault.write(target, content)
-        return _ok({"path": str(target), "content": content, "patched": True})
+        return _ok({"path": _rel(target), "content": content, "patched": True})
 
     elif find_str is not None:
         if replace_str is None:
@@ -469,7 +539,7 @@ def _handle_patch(args: dict) -> list[TextContent]:
             return _err(f"Text '{find_str[:80]}' not found in file")
         content = content.replace(find_str, replace_str, 1)
         vault.write(target, content)
-        return _ok({"path": str(target), "content": content, "patched": True})
+        return _ok({"path": _rel(target), "content": content, "patched": True})
 
     return _err("Provide either 'merge' (for JSON) or 'find'+'replace' (for text)")
 
@@ -496,7 +566,7 @@ def _handle_list(args: dict) -> list[TextContent]:
                 continue
             files.append({
                 "name": item.name,
-                "path": str(item),
+                "path": _rel(item),
                 "relative": str(item.relative_to(root)),
                 "size": item.stat().st_size,
             })
@@ -514,10 +584,10 @@ def _handle_delete(args: dict) -> list[TextContent]:
     vault = _vault()
     vault.ensure_local(target)
     if not target.exists():
-        return _err(f"File not found: {target}")
+        return _err(f"File not found: {_rel(target)}")
 
     vault.forget(target)
-    return _ok({"path": str(target), "deleted": True})
+    return _ok({"path": _rel(target), "deleted": True})
 
 
 # ── python executor ──────────────────────────────────────────────────────

@@ -2644,13 +2644,16 @@ def _team_block(agent_type: Any, team: Any, *, new: bool) -> tuple[dict | None, 
 async def _workspace_catalogue(server_module) -> list:
     """Every tool this workspace has, for the builder's discovery (`list_all_tools`, `get_tools_detail`).
 
-    Asked of the workspace, as `builder_guard`'s missing-tool check asks it (`{"tools": ["all"]}`), never of one
-    agent's list. It used to borrow the first non-system agent's: on a workspace whose first agent holds no tools,
+    Asked of the workspace, as `builder_guard`'s suggestions ask it (`catalogue_holder()`), never of one agent's
+    list. It used to borrow the first non-system agent's: on a workspace whose first agent holds no tools,
     the builder was told the workspace's own tools did not exist (F866, QA1c on production).
+
+    With each per-tool opt-in named beside `"all"` (`catalogue_holder`, F1625): the Vault's write where the host
+    serves it is the builder's to know of, though an agent holds it only by naming it.
     """
-    from core.tools import aggregate_all_tools
+    from core.tools import aggregate_all_tools, catalogue_holder
     from core.routes.tools import load_custom_tools
-    return (await aggregate_all_tools(server_module, {"tools": ["all"]}, await load_custom_tools()))[0]
+    return (await aggregate_all_tools(server_module, catalogue_holder(), await load_custom_tools()))[0]
 
 
 async def _steps_as_run_calls(orch: dict, server_module: Any) -> dict:
@@ -2974,9 +2977,14 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                     for t in tools_result.tools[:limit]
                 ]
             else:
+                from core.tools import named_only_offered
+
                 all_tools = await _workspace_catalogue(server_module)
+                named = await named_only_offered(server_module)
                 return [
-                    {"name": t.name, "description": (t.description or "")[:120]}
+                    {"name": t.name, "description": (t.description or "")[:120],
+                     # An agent holds it only by naming it in its tools (F1625).
+                     **({"named_only": True} if t.name in named else {})}
                     for t in all_tools[:limit]
                 ]
         except Exception as e:
@@ -3588,7 +3596,12 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         if knowledge_on and any(s.get("type") in KNOWLEDGE_STEP_TYPES for w in (orch, *called) for s in w.get("steps") or []):
             from core.knowledge import bases
             kbs = {kb.id: kb for kb in await bases.list_bases()}
-        verdict = _validate_orchestration(orch, agents=agents, kbs=kbs, knowledge_off=not knowledge_on)
+        # The tools this host serves only to who names them (F1625): a Tool step reaching one through its agent needs
+        # that agent to name it.
+        from core.tools import named_only_offered
+        named = await named_only_offered(server_module)
+        verdict = _validate_orchestration(orch, agents=agents, kbs=kbs, knowledge_off=not knowledge_on,
+                                          named_only=named)
         issues = [*verdict["issues"], *issues]
         # The inner workflows this build made are checked with it; the workspace's
         # own, which run today, only have to exist — never refused, never rewritten.
@@ -3596,7 +3609,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         ours = [child for child in called if run is not None and child.get("building_run") == run]
         for child in ours:
             child_verdict = _validate_orchestration(child, agents=agents, kbs=kbs, knowledge_off=not knowledge_on,
-                                                    allow_dead_ends=True)
+                                                    allow_dead_ends=True, named_only=named)
             issues += [f"In the inner workflow '{child.get('name')}' ({child['id']}): {i}"
                        for i in child_verdict["issues"]]
             verdict["warnings"] = [*verdict.get("warnings", []), *(
@@ -4619,7 +4632,7 @@ def _transform_reads_a_wrapper(step: dict, steps: list[dict]) -> list[str]:
 
 def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | None = None,
                             knowledge_off: bool = False, allow_dead_ends: bool = False,
-                            knowledge_later: bool = False) -> dict:
+                            knowledge_later: bool = False, named_only: frozenset[str] = frozenset()) -> dict:
     """Return {"ok": bool, "issues": [str, ...], "warnings": [str, ...]}: wiring
     problems, and what probably is not meant but runs (a prompt that reads a key
     before any step writes it, U74) — warnings never make `ok` false.
@@ -4646,6 +4659,8 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
         ingest's contract (F1549); a model step's declared output_fields, none
         for an llm step (or a plain agent's, agents known) without (F1553)
       - a model step's output_fields can be held to (F1553)
+      - a Tool step that reaches a tool the host serves only to who names it (`named_only`, e.g. the Vault's write
+        on the vault server) through its agent names it in that agent's tools (F1625)
       - a retrieve or ingest step's settings hold to the contract, the
         knowledge bases it names exist (`kbs`, when given) and are active, an
         ingest step reads a key something writes or the schema declares, and
@@ -4775,6 +4790,17 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
             from core.native_builder.build_plan import FORM_TOOL_SAID
 
             issues.append(f"Tool step '{sid}': {FORM_TOOL_SAID}.")
+        tool_called = str(s.get("forced_tool") or "").split("__")[-1]
+        if stype == "tool" and tool_called in named_only and s.get("agent_id") and agents is not None:
+            # A Tool step with an agent finds its tool through that agent's list (steps.py): one the host serves only
+            # to who names it, reached through an agent that names it not, is not found and the run stops (F1625).
+            agent = agents.get(s["agent_id"]) or {}
+            held = {str(t).split("__")[-1] for t in agent.get("tools") or [] if isinstance(t, str)}
+            if agent and tool_called not in held:
+                who = agent.get("name") or s["agent_id"]
+                issues.append(f"Tool step '{sid}' calls `{tool_called}` through agent '{who}', which holds it only by "
+                              f"naming it: add `{tool_called}` to {who}'s tools, or take the agent off the step (a "
+                              "Tool step with no agent names its own tool).")
         if stype == "workflow" and not s.get("workflow_id"):
             issues.append(f"Workflow step '{sid}' has no workflow_id: name the workflow it runs.")
         if stype == "human" and not s.get("human_prompt"):

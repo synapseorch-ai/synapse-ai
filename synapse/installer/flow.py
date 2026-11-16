@@ -50,6 +50,22 @@ IS_WIN = sys.platform == "win32"
 EXTRAS = ("knowledge", "telemetry")
 
 
+
+#: What a failed upgrade says when it had stopped a running Synapse (F1640). A restart cannot be certain to match how
+#: it ran (in a terminal, in the background, by the login service), so it is never started on a guess.
+STILL_STOPPED = "Synapse was stopped for the upgrade and is still stopped."
+DATA_AS_IT_WAS = "Your data is as it was; start it again with: synapse start"
+START_IT = "Start it again with: synapse start"
+
+
+def still_stopped_lines(failed_step: str, *, database_step: str) -> list[str]:
+    """The lines said after a failed upgrade that stopped a running Synapse, each inside 80 columns (F1640). Never for a
+    failed stop (it may still run) or a failed start (its own words say what happened). That the data is as it was is
+    said only when the failed step came before the database update, so no migration ran and the backup was taken."""
+    if failed_step in ("stop", "start"):
+        return []
+    return ["", "  " + STILL_STOPPED, "  " + (START_IT if failed_step == database_step else DATA_AS_IT_WAS)]
+
 @dataclass
 class Options:
     yes: bool = False             # ask nothing; take the defaults
@@ -137,8 +153,18 @@ class Installer:
             self._include_legacy_root(Path(self.o.legacy_root))
         mode = "legacy" if self.legacy.data_dirs or self.legacy.installs else (
             "upgrade" if self.existing.get("version") else "fresh")
+        self.mode = mode
         self.log.write(f"mode={mode} target={self.target} home={self.home}"
                        + (f" extras={','.join(self.extras)}" if self.extras else ""))
+        if self._index_has_not_caught_up():
+            # F1638: the index uv installs from has not caught up with this release yet. Said before anything is
+            # stopped, backed up or installed, so nothing changed.
+            from . import index
+
+            said = index.still_reaching(self.version, index.where("uv", os.environ, self.home / "runtime"))
+            self.log.write(f"index: {self.version} not listed yet; nothing changed")
+            self.term.write(f"\n  {said}\n\n")
+            return 1
 
         title = f"Synapse {self.version}".strip()
         if mode == "legacy":
@@ -315,6 +341,15 @@ class Installer:
             self.version = self.o.version or BUILT_FOR or _checkout_version()
             self.target = f"{PACKAGE}=={self.version}" if self.version else PACKAGE
 
+    def _index_has_not_caught_up(self) -> bool:
+        """The release's version is not listed yet by the index uv installs it from (F1638). False when the target is
+        a wheel or a package given by path, or when the index cannot be asked or does not answer in PEP 691 JSON."""
+        from . import index
+
+        if self.o.package or os.environ.get("SYNAPSE_PACKAGE") or not self.version:
+            return False
+        return index.serves(self.version, "uv", os.environ, self.home / "runtime") is False
+
     def _tool_root_guess(self) -> Path | None:
         python = self.existing.get("tool_python")
         return Path(python).parent.parent if python else None
@@ -411,7 +446,9 @@ class Installer:
         return PYTHON
 
     def _install_cmd(self) -> list:
-        cmd = [self.uv, "tool", "install", "--force", "--managed-python", "--python", PYTHON]
+        # The package's index page is read again (F1638): uv's own cache can hold the page from before the release.
+        cmd = [self.uv, "tool", "install", "--force", "--managed-python", "--python", PYTHON,
+               "--refresh-package", PACKAGE]
         knowledge = "knowledge" in self.extras
         if knowledge:
             # Knowledge runs no model on a GPU; PyPI's Linux torch is the CUDA
@@ -776,6 +813,8 @@ class Installer:
         lines += ["", "  " + t.style(f"{what} failed: {failure.message}", "red")]
         for line in failure.tail[-6:]:
             lines.append("    " + t.style(line, "dim"))
+        if getattr(self, "mode", "") == "upgrade" and self.s.was_running:
+            lines += still_stopped_lines(failure.step, database_step="setup")
         lines += ["", "  " + self._safe_line(),
                   "  " + t.style(f"Full log: {_tilde(self.log.path)}", "dim")]
         if self.o.method != "npm" and not self.o.upgrade:

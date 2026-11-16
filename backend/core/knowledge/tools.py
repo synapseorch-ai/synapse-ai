@@ -304,6 +304,15 @@ async def _search(args: dict, *, bases: list, turn: KnowledgeTurn, origin: Any, 
         "latency_ms": latency_ms,
     }
     if not response.hits:
+        from core.knowledge.workflow_steps import indexing_said
+
+        if still := await indexing_said(chosen):
+            # Nothing found while a base is still indexing is never "the bases do not cover it" (F1630).
+            observation = (f'\n[Turn {transcript_turn} — Observation] {SEARCH_TOOL} found nothing for '
+                           f'"{sanitize(_one_line(query, 200))}" yet. {sanitize(still)} Say that; do not say '
+                           f"the knowledge bases do not cover it.\n")
+            turn.last_search = (key, Result(observation, event, "Still indexing"))
+            return turn.last_search[1]
         observation = (f'\n[Turn {transcript_turn} — Observation] {SEARCH_TOOL} found nothing for '
                        f'"{sanitize(_one_line(query, 200))}" in {names}. Try other words or a wider filter, '
                        f"or say the knowledge bases do not cover it.\n")

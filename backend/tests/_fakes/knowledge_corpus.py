@@ -50,6 +50,9 @@ async def index_fixture(kb: KnowledgeBase, fixture: str, n: int, path: str, meta
         kb=kb, doc_id=doc_id, doc_version=1, sha256=doc.source.sha256, path=path, source="upload",
         parsed=doc, snapshot_id=await serving_snapshot(kb),
         attribution=Attribution(kb_id=kb.id, doc_id=doc_id), metadata=metadata or {}))
+    async with session() as s:
+        # Indexed, as the job leaves it: a document left "indexing" reads as a base still on its way in (F1630).
+        (await s.get(KnowledgeDocumentDB, doc_id)).status = "indexed"
     return doc_id
 
 

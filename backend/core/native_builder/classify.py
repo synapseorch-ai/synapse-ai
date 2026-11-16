@@ -74,6 +74,39 @@ def new_beside_open(text: str, state: dict) -> bool:
     return bool(_NEW_JOB.search(text))
 
 
+#: Words a new workflow uses another with (F1628): "runs my X", "calls X", "starts after X", "uses the X workflow".
+_USES = (r"\b(?:runs?|running|calls?|calling|starts?|starting|triggers?|triggering|uses?|using|after|follows?|"
+         r"following|kicks? off)")
+_FILLER = r"(?:\s+(?:my|our|the|a|an|each|every))?"
+#: A new one asked for, before what it uses: "every Monday run X" schedules the open one, and is not new.
+_A_NEW_ONE = re.compile(r"\b(?:a|an|another|new)\s+(?:workflow|flow|automation|agent|assistant|bot)\b")
+
+
+#: The ways a request beside an open workflow is built new: it plans from nothing, never from the open one.
+_BUILT_NEW_BESIDE = ("new_beside_open", "new_past_cap", "new_using_open", "import_described")
+
+
+def _import_described(message: str) -> bool:
+    """The import starter's line with something under it that is not Agents SDK code (F1637)."""
+    from core.native_builder.export import lead_only, lead_present, read_export
+
+    return lead_present(message) and not lead_only(message) and read_export(message) is None
+
+
+def new_using_open(text: str, state: dict) -> bool:
+    """A new job that names the open workflow as what it runs, calls or follows (F1628): built new, never a change to
+    the open one. English, by its words: the message starts as a whole job (F1605's words) and the open workflow's
+    name comes right after a word that uses it, after the new one is asked for. "make X run every Monday" and "every
+    Monday run X" name it as what to change or schedule, and stay as they were."""
+    if state.get("current_orchestration_source") != "viewing":
+        return False
+    name = _words(str(state.get("current_orchestration_name") or ""))
+    if not name or _EDIT_FIRST.match(text) or not _NEW_JOB.search(text):
+        return False
+    new_one, uses = _A_NEW_ONE.search(text), re.search(rf"{_USES}{_FILLER}\s+{re.escape(name)}\b", text)
+    return bool(new_one and uses and new_one.start() < uses.start())
+
+
 def open_or_new(text: str, state: dict) -> bool:
     """A message beside an open workflow that neither refers to it nor starts as an edit of it, and that the job-shape
     words cannot place (any language): asked once whether it changes the open one or is new,
@@ -114,6 +147,16 @@ _QUESTION = re.compile(r"^(?:how do i|how can i|how to|how does|where do i|where
 #: accepted, send…" is a trigger, not a question (the combined-suite check, 10-27).
 _QUESTION_IF_ASKED = re.compile(r"^(?:is|are|was|were|did|does|do i|what|which|why|when|who|how many|how much|has|"
                                 r"have)\b")
+#: An ask to be told something, whatever it reads first: "read this page and tell me what it says" (F1629).
+_TELL_ME = re.compile(r"\b(?:tell me|explain|let me know)\b|^(?:what|which|why|who|how)\b")
+
+
+def _own_capability(message: str) -> str | None:
+    from core.native_builder.lookup import own_capability
+
+    return own_capability(message)
+
+
 #: Connecting a named service, said as an instruction; and what makes it an automation instead.
 _CONNECT_DO = re.compile(r"\b(?:connect|reconnect|hook up|hook into|link|plug in|sign in to)\b")
 _AUTOMATE = re.compile(r"\b(?:every|each|whenever|when|daily|weekly|automat\w*|workflow|build|create|schedule)\b")
@@ -260,7 +303,11 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
     also = request.also
     # Why something failed is said before it is fixed (F1378, prod-07): the answer reads the failed run, and the fix
     # waits for after it. The quick model's order of the two asks never decides it.
-    if state.get(OFFER_TAKEN_KEY):
+    if _import_described(message):
+        # The import line with something under it that is not code (the person's words, or the screenshot ask) is a
+        # new build, whatever the quick model read (F1637): the line asks for one, and no workflow here is meant.
+        kind, by = "build", "import_described"
+    elif state.get(OFFER_TAKEN_KEY):
         # A yes to the offer to set up the workflow for a live fact (F1382): its ask is this turn's message.
         kind, by = "build", "offer_taken"
     elif kind in ("change", "build") and by is None and _CAUSE.search(text):
@@ -277,6 +324,9 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
             things.get("schedule") or things.get("agent")
             or any(w in text.split() for k in ("schedule", "agent") if inventory.get(k) for w in _KINDS[k])):
         kind, by = "change", "named_change"
+    # A new workflow that runs, calls or follows the open one is a new build, though it names it (F1628).
+    elif kind in ("change", "build") and new_using_open(text, state):
+        kind, by = "build", "new_using_open"
     # A new request typed beside an open workflow is a new build, whatever the quick model read (F1605): "this" and
     # "it" mean the open one only when the message is about it.
     elif kind in ("change", "build") and not things and new_beside_open(text, state):
@@ -308,6 +358,12 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
     elif kind == "answer" and request.providers and _USE.search(text) and not _CONNECT.search(text) and not all(
             _found(p, connectable) for p in request.providers):
         kind, by = "research", "provider_unknown"
+    # A thing to make that the product itself does (reading a web page, a page behind a login where a browser is
+    # here) is planned with it, never looked up outside as missing (F1629). Only a research ask that names no outside
+    # service, and never a question: "what does this page say" is answered, not built.
+    elif kind == "research" and not request.providers and not asked and not message.rstrip().endswith("?") and \
+            not _TELL_ME.search(text) and _own_capability(message):
+        kind, by = "build", "own_capability"
 
     needs = _needs(kind, request.needs, text, things)
     if kind == "answer" and by in _MAY_TALK and not things and not request.providers and _ABOUT_YOU.search(text):
@@ -322,7 +378,7 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
     not_it = source == "built" or source in ("named", "picked") and _words(
         state.get("current_orchestration_name") or "") in {_words(r) for r in things.get("recording") or []}
     route = _entry(kind, text, {**state, "current_orchestration_source": ""}
-                   if (by == "recording_named" and not_it) or by in ("new_beside_open", "new_past_cap") else state)
+                   if (by == "recording_named" and not_it) or by in _BUILT_NEW_BESIDE else state)
     if by == "open_or_new":
         route = "step_turn_said"
     if route == "step_answer" and kind == "build":

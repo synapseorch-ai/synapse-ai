@@ -366,7 +366,11 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
         request = request.model_copy(update={"model": following["model"]})
     if following["images"] and not engine.images:
         engine.images = list(following["images"])
-    export = export_state(request.message)
+    # The import line with a screenshot and nothing under it is an ask to rebuild what the screenshot shows (F1637),
+    # from this message's own images only: read here, since the turn's reader never sees the images.
+    from core.native_builder.export import screenshot_ask
+
+    export = export_state(screenshot_ask(request.message, has_images=bool(request.images)))
     message = export["user_message"]
     # The findings card the previous turn ended in, if it did (F766): its "go ahead and build it" goes to the build,
     # which plans from them instead of researching again.

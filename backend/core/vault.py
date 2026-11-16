@@ -506,6 +506,17 @@ class MentionReader:
             self._reads[key] = mention
         return replace(mention)
 
+    async def read(self, rel: str) -> Mention:
+        """One Vault path, read as a mention of it is (F1623: Synapse AI's chat reads a file the person names): its
+        whole text, or why not (binary, missing, not a Vault path). Never writes; cached for the reader's life."""
+        rel = unicodedata.normalize("NFC", (rel or "").strip())
+        key = mention_key(rel)
+        if key is None:
+            return Mention(f"@[{rel}]", rel, None, "invalid", reason="not a vault path")
+        if key not in self._reads:
+            self._reads[key] = await self._read(f"@[{rel}]", rel, key)
+        return self._reads[key]
+
     async def _read(self, raw: str, rel: str, key: str) -> Mention:
         from core.storage import get_blob_store
 

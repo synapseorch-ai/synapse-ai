@@ -55,8 +55,10 @@ IMPORT_LEAD = "Rebuild this OpenAI Agent Builder workflow here. Its export (Code
 #: Its words as the line starts, older shapes too ("… workflow here:"), whatever follows on the line.
 _LEAD = re.compile(r"\s*Rebuild this OpenAI Agent Builder workflow here\b[^\n]*")
 #: What is said when the starter came with nothing under it (F1607): no plan, no workflow here touched.
-EXPORT_MISSING = ("Nothing was pasted under the line, so there is no export to rebuild yet. In OpenAI Agent Builder, open "
-                  "the workflow, choose Code → Agents SDK, copy all of it, and paste it here under the line.")
+#: True before and after Agent Builder closes (F1636): a saved export is still one, and the person's own words always do.
+EXPORT_MISSING = ("Nothing was pasted under the line, so there is no export to rebuild yet. Paste the workflow's Agents "
+                  "SDK code under the line (the Code → Agents SDK export from Agent Builder, or a copy you saved), or "
+                  "describe the workflow in your own words and I'll plan it from that.")
 
 
 def lead_present(message: str) -> bool:
@@ -82,6 +84,20 @@ def lead_only(message: str) -> bool:
     """The import starter's line with nothing under it (F1607)."""
     m = _LEAD.match(message or "")
     return bool(m) and not (message or "")[m.end():].strip()
+
+
+#: What the line asks when a screenshot came with it and nothing was written under it (F1637): the planner sees the
+#: image, as it sees any the person sends, and rebuilds what it shows.
+SCREENSHOT_ASK = "The workflow is shown in the attached screenshot: rebuild what it shows."
+
+
+def screenshot_ask(message: str, *, has_images: bool) -> str:
+    """The import starter's line sent with a screenshot and nothing under it, as an ask to rebuild what the screenshot
+    shows (F1637); any other message as it came. Someone with no export who brings a picture of the workflow is never
+    told to paste code they do not have."""
+    if has_images and lead_only(message):
+        return f"{(message or '').strip()}\n\n{SCREENSHOT_ASK}"
+    return message
 
 
 def read_export(message: str) -> ExportRead | None:
