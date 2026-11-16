@@ -199,7 +199,9 @@ from core.native_builder import prompt_lint, seed
 #: ("explain"), and the planner's definition asks for an unparsed reply again shorter (parse_retry), 6f6c9024… (on F1605's f76f03e6).
 #: F1626: plan_steps.md's `tool` bullet says to add a line to a Vault file with `vault_write` and `"append": true`,
 #: which creates the file on the first run, never a read of it first, 07a155b1… (on F1600 hardening's 6f6c9024).
-BUNDLE_SHA256 = "07a155b1490866a285e3b86faf61d833ae4695c5e93a89a05b4b15eb3f4a1a01"
+#: F1623: the talk step may answer from a Vault file the pack holds, which they asked about (the pack reads the
+#: files a message names), c316956a… (on 2.0.14's 07a155b1).
+BUNDLE_SHA256 = "c316956ae403440c12054428283cb0dd26f8d4c0d5fc229ba0f0e246f4635e0d"
 
 
 def _sha(definitions) -> str:
