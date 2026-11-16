@@ -19701,6 +19701,207 @@ async def check_answerfields(browser) -> str:
     return "an LLM step's answer fields read as Yes / No and One of (good, poor), light and dark, wide and phone"
 
 
+#: An answer nested to the depth a declaration may reach (F1618): a list of groups, a group in it, a group in that,
+#: and a field that may be empty at the fourth level.
+ANSWERJSON_FIELDS = [
+    {"name": "leads", "type": "list", "of": {"fields": [
+        {"name": "email", "type": "string"},
+        {"name": "company", "type": "object", "fields": [
+            {"name": "name", "type": "string"},
+            {"name": "address", "type": "object", "fields": [
+                {"name": "city", "type": "string", "may_be_empty": True}]}]}]}},
+    {"name": "total", "type": "number"}]
+#: A schema with two parts outside the answer's subset: each is named, and nothing of it is taken.
+ANSWERJSON_REFUSED = {"type": "object", "properties": {"name": {"type": "string", "minLength": 2},
+                                                       "tags": {"$ref": "#/$defs/tags"}},
+                      "required": ["name", "tags"], "$defs": {"tags": {"type": "array"}}}
+ANSWERJSON_SCHEMA = {"type": "object", "properties": {"risky": {"type": "boolean"}, "why": {"type": "string"}},
+                     "required": ["risky", "why"], "additionalProperties": False}
+ANSWERJSON_EXAMPLE = {"leads": [{"email": "ana@example.com", "score": 0.9}], "total": 1}
+ANSWERJSON_TAKEN = [{"name": "leads", "type": "list", "of": {"fields": [{"name": "email", "type": "string"},
+                                                                        {"name": "score", "type": "number"}]}},
+                    {"name": "total", "type": "number"}]
+#: The controls a person reaches with Tab alone, each by its accessible name.
+ANSWERJSON_REACHED = ("Answer field 1.2.2.1 type", "Answer field 1.2.2.1 may be empty", "Add a field to address",
+                      "Paste an example", "Paste a JSON Schema", "What the model is asked for")
+ANSWERJSON_FOCUS = """() => { const el = document.activeElement; if (!el) return '';
+  return (el.getAttribute('aria-label') || el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 60); }"""
+
+
+@check
+async def check_answerjson(browser) -> str:
+    """A model step's answer fields take a nested shape and show what the model is asked for (F1618, commit d).
+
+    The rows go four levels down: a List of groups, a Group in it, a Group in that, and a field that may be empty at
+    the fourth level, where Group and List of groups are offered but disabled. "What the model is asked for" shows the
+    schema the run sends, read-only. "Paste a JSON Schema" names each part outside the subset and offers nothing to
+    take; a schema inside it is shown before it is taken. "Paste an example" turns a JSON value into fields, and Save
+    sends them. Every type the editor offered before is still offered. Light and dark at 1440 and 390: AA contrast in
+    the panel in each state, and every control reached with Tab alone. `SMOKE_SHOTS`, when set, keeps a shot of each
+    state.
+    """
+    oid = f"orch_uismoke_answerjson_{int(time.time())}"
+    api("/api/orchestrations", "POST", {
+        "id": oid, "name": "UI smoke answer shape", "entry_step_id": "find", "steps": [
+            {"id": "find", "name": "Find Leads", "type": "llm", "prompt_template": "Find the leads in the notes.",
+             "output_key": "find", "output_fields": ANSWERJSON_FIELDS, "next_step_id": "end",
+             "position_x": 0, "position_y": 0},
+            {"id": "end", "name": "End", "type": "end", "position_x": 320, "position_y": 0},
+        ]})
+    scoped = CONTRAST.replace("document.querySelectorAll('*')",
+                              "(document.querySelector('[data-testid=\"answer-fields\"]') || document)"
+                              ".querySelectorAll('*')")
+    assert scoped != CONTRAST, "the contrast script no longer reads every element"
+    problems: list[str] = []
+    shots = os.environ.get("SMOKE_SHOTS")
+    sizes = ((1440, 900), (390, 844))
+    runs = [(scheme, size) for scheme in ("light", "dark") for size in sizes]
+    try:
+        for n, (scheme, size) in enumerate(runs):
+            tag = f"{scheme} {size[0]}"
+            ctx = await browser.new_context(viewport={"width": size[0], "height": size[1]}, color_scheme=scheme)
+            await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{scheme}')}}catch(e){{}}")
+            page = await ctx.new_page()
+            saved: list[dict] = []
+            page.on("request", lambda r: saved.append(json.loads(r.post_data or "{}"))
+                    if r.method == "POST" and urllib.parse.urlsplit(r.url).path == "/api/orchestrations" else None)
+
+            async def shot(state: str) -> None:
+                if shots:
+                    await page.screenshot(path=os.path.join(shots, f"answerjson-{state}-{scheme}-{size[0]}.png"),
+                                          full_page=False)
+
+            async def contrast(state: str) -> None:
+                faint = await page.evaluate(scoped)
+                if faint:
+                    problems.append(f"{tag} {state}: under AA in the panel: {faint[:3]}")
+
+            try:
+                await open_step(page, oid, "Find Leads")
+                panel = page.get_by_test_id("answer-fields")
+                await panel.wait_for(timeout=15_000)
+                await panel.scroll_into_view_if_needed()
+
+                # The rows, four levels down.
+                want = {"1": "List of groups", "1.2": "Group", "1.2.2": "Group", "1.2.2.1": "Text", "2": "Number"}
+                said = {}
+                for path in want:
+                    box = panel.get_by_role("combobox", name=f"Answer field {path} type")
+                    said[path] = (await box.inner_text()).strip() if await box.count() else None
+                if said != want:
+                    problems.append(f"{tag}: the rows read {said}, not {want}")
+                    continue
+                if not await panel.get_by_role("checkbox", name="Answer field 1.2.2.1 may be empty").is_checked():
+                    problems.append(f"{tag}: the fourth level's field does not say it may be empty")
+                deepest = panel.get_by_role("combobox", name="Answer field 1.2.2.1 type")
+                await deepest.scroll_into_view_if_needed()
+                await shot("rows")
+                await contrast("rows")
+
+                # At the fourth level a group is offered, disabled; every type offered before still is.
+                await deepest.click()
+                await page.get_by_role("listbox").wait_for(timeout=5_000)
+                offered = {}
+                for option in await page.get_by_role("option").all():
+                    label = (await option.inner_text()).strip().splitlines()[0].strip()
+                    offered[label] = (await option.get_attribute("aria-disabled") == "true"
+                                      or await option.get_attribute("data-disabled") is not None)
+                for label in ("Yes / No", "One of", "Text", "Number", "List"):
+                    if offered.get(label) is not False:
+                        problems.append(f"{tag}: '{label}' is not offered at the fourth level: {offered}")
+                for label in ("Group", "List of groups"):
+                    if offered.get(label) is not True:
+                        problems.append(f"{tag}: '{label}' is not offered disabled at the fourth level: {offered}")
+                await shot("deepest")
+                await page.keyboard.press("Escape")
+                await asyncio.sleep(0.3)
+
+                # Every control reached with Tab alone, from the first row's name.
+                await panel.get_by_role("textbox", name="Answer field 1 name").focus()
+                reached = set()
+                for _ in range(90):
+                    await page.keyboard.press("Tab")
+                    reached.add(await page.evaluate(ANSWERJSON_FOCUS))
+                missed = [c for c in ANSWERJSON_REACHED if c not in reached]
+                if missed:
+                    problems.append(f"{tag}: Tab never reaches {missed}")
+
+                # What the model is asked for: the schema the run sends, read-only.
+                await panel.get_by_text("What the model is asked for", exact=True).click()
+                asked = panel.get_by_label("The answer's JSON Schema")
+                await asked.wait_for(timeout=5_000)
+                try:
+                    schema = json.loads(await asked.inner_text())
+                    city = (schema["properties"]["leads"]["items"]["properties"]["company"]["properties"]["address"]
+                            ["properties"]["city"])
+                    if city != {"anyOf": [{"type": "string"}, {"type": "null"}]} or schema.get("additionalProperties") is not False:
+                        problems.append(f"{tag}: what the model is asked for reads {schema}")
+                except (ValueError, KeyError, TypeError) as exc:
+                    problems.append(f"{tag}: what the model is asked for is not the schema ({exc!r})")
+                if await asked.evaluate("el => el.isContentEditable || ['TEXTAREA','INPUT'].includes(el.tagName)"):
+                    problems.append(f"{tag}: what the model is asked for can be typed in")
+                await asked.scroll_into_view_if_needed()
+                await shot("asked")
+                await contrast("asked")
+                await panel.get_by_text("What the model is asked for", exact=True).click()
+
+                # A JSON Schema with parts outside the subset: each named, nothing to take.
+                await panel.get_by_role("button", name="Paste a JSON Schema").click()
+                await panel.get_by_role("textbox", name="JSON Schema").fill(json.dumps(ANSWERJSON_REFUSED, indent=1))
+                await panel.get_by_role("button", name="Read it").click()
+                refused = " ".join((await panel.get_by_test_id("answer-paste-refused").inner_text()).split())
+                if not all(w in refused for w in ("`name`", "minLength", "`tags`", "$ref")):
+                    problems.append(f"{tag}: the refused schema reads {refused!r}")
+                if await panel.get_by_role("button", name="Use these fields").count():
+                    problems.append(f"{tag}: a refused schema still offers fields to take")
+                await panel.get_by_test_id("answer-paste-refused").scroll_into_view_if_needed()
+                await shot("schema-refused")
+                await contrast("schema-refused")
+                # One inside the subset: shown before it is taken.
+                await panel.get_by_role("textbox", name="JSON Schema").fill(json.dumps(ANSWERJSON_SCHEMA))
+                await panel.get_by_role("button", name="Read it").click()
+                preview = " ".join((await panel.get_by_test_id("answer-paste-preview").inner_text()).split())
+                if "risky" not in preview or "why" not in preview:
+                    problems.append(f"{tag}: the schema's preview reads {preview!r}")
+                await shot("schema-preview")
+                await contrast("schema-preview")
+                await panel.get_by_role("button", name="Cancel").click()
+                if (await panel.get_by_role("combobox", name="Answer field 1 type").inner_text()).strip() != "List of groups":
+                    problems.append(f"{tag}: Cancel changed the fields")
+
+                # An example, opened from the keyboard, taken, and sent by Save.
+                await panel.get_by_role("button", name="Paste an example").focus()
+                await page.keyboard.press("Enter")
+                await panel.get_by_role("textbox", name="Example answer").fill(json.dumps(ANSWERJSON_EXAMPLE, indent=1))
+                await panel.get_by_role("button", name="Read it").click()
+                preview = " ".join((await panel.get_by_test_id("answer-paste-preview").inner_text()).split())
+                if "a list of groups" not in preview or "score" not in preview:
+                    problems.append(f"{tag}: the example's preview reads {preview!r}")
+                await panel.get_by_test_id("answer-paste-preview").scroll_into_view_if_needed()
+                await shot("example-preview")
+                await contrast("example-preview")
+                await panel.get_by_role("button", name="Use these fields").click()
+                took = (await panel.get_by_role("combobox", name="Answer field 1.2 type").inner_text()).strip()
+                if took != "Number":
+                    problems.append(f"{tag}: the example's leads.score reads {took!r}, not Number")
+                if n == len(runs) - 1:
+                    saved.clear()
+                    await page.get_by_role("button", name=re.compile(r"^Save(?: Unsaved changes)?$")).first.click()
+                    await asyncio.sleep(1.5)
+                    step = {s.get("id"): s for s in ((saved[-1] if saved else {}).get("steps") or [])}.get("find", {})
+                    if step.get("output_fields") != ANSWERJSON_TAKEN:
+                        problems.append(f"{tag}: Save sent {step.get('output_fields')}, not {ANSWERJSON_TAKEN}")
+            finally:
+                await ctx.close()
+    finally:
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return ("answer fields go four levels down with groups disabled at the fourth, show what the model is asked for, "
+            "name each refused part of a pasted schema and take an example; AA and Tab-reachable, light and dark at "
+            "1440 and 390")
+
+
 @check
 async def check_wordswarning(browser) -> str:
     """A condition deciding on a model's own words is warned on its step, with its fix, and a field a model step does
