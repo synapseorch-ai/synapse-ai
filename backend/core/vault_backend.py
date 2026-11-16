@@ -118,6 +118,13 @@ class LocalVault:
             pass
         _announce(self.root, path, "write", content)
 
+    def read(self, path: Path) -> bytes | None:
+        """The file's bytes, or None when it is not there (F1626's follow-up: an add reads through the backend)."""
+        try:
+            return Path(path).read_bytes() if Path(path).is_file() else None
+        except OSError:
+            return None
+
     def version(self, path: Path) -> str | None:
         """The file's version as `write(if_match=…)` compares it: its content's hash, None when it is not there."""
         from core.storage.base import content_version
@@ -195,6 +202,11 @@ class S3Vault:
         if if_match is None and not if_none_match:
             self._store.put(self._key(path), content)
         _announce(self.root, path, "write", content)
+
+    def read(self, path: Path) -> bytes | None:
+        """The object's bytes from the store, never the working copy, which another replica's write leaves stale
+        (F1626's follow-up: an add reads what it writes over)."""
+        return self._store.get_bytes(self._key(path))
 
     def version(self, path: Path) -> str | None:
         """The object's version as the store answers it (its ETag, verbatim), None when there is none (F1626)."""

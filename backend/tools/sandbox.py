@@ -461,12 +461,17 @@ def _append(target: Path, text: str) -> list[TextContent]:
 
     vault = _vault()
     for _attempt in range(_ADD_RETRIES + 1):
-        vault.ensure_local(target)
+        # The version around the read (F1626's follow-up): a write that lands while the file is read makes the two
+        # differ, and the add reads again, so the version written over is always the bytes' own.
+        seen = vault.version(target)
+        data = vault.read(target)
+        if vault.version(target) != seen or (data is None) != (seen is None):
+            continue
         try:
-            if target.exists():
-                before = target.read_text(encoding="utf-8")
+            if data is not None:
+                before = data.decode("utf-8")
                 joined = before + ("" if not before or before.endswith("\n") else "\n") + text
-                vault.write(target, joined, if_match=vault.version(target))
+                vault.write(target, joined, if_match=seen)
             else:
                 joined = text
                 vault.write(target, joined, if_none_match=True)

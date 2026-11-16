@@ -322,28 +322,40 @@ async def _append(rel: str, text: str) -> list[types.TextContent]:
 
     key = mention_key(rel)
     for _attempt in range(_ADD_RETRIES + 1):
+        # The version around the read (F1626's follow-up): a write that lands while the text is read makes the two
+        # differ, and the add reads again, so the version written over is always the text's own.
+        seen = _version(key)
         before, error = _get_text(rel)
+        if _version(key) != seen:
+            continue
         if error and not error.startswith("Not found"):
             return _err(error)
-        seen = _version(key) if before is not None else None
+        if before is None and seen is not None:
+            continue
         joined = text if before is None else before + ("" if not before or before.endswith("\n") else "\n") + text
         if len(joined.encode("utf-8")) > WRITE_MAX_BYTES:
             return _err(f"A file written here is at most {WRITE_MAX_BYTES // (1024 * 1024)} MB.")
         try:
-            return _ok(await _writer(rel, joined, if_match=seen))
+            # A file it read none of is written create-only (an explicit None), never over one made since.
+            return _ok(await _writer(rel, joined, if_match=seen if before is not None else None))
         except PreconditionFailed:
             continue
     return _err(f"{rel} changed while I was adding to it: read it again.")
 
 
-async def engine_writer(path: str, content: str, *, if_match: str | None = None) -> dict:
+#: `engine_writer`'s default: no `if_match` given, a plain write (F1626's follow-up). An explicit `None` is create-only.
+_PLAIN: Any = object()
+
+
+async def engine_writer(path: str, content: str, *, if_match: Any = _PLAIN) -> dict:
     """The engine's own write, for a host whose Vault is the engine's blob store: the host's room asked first
     (`step_refs`' write hook, which a host sets to its plan's cap), the file written, its followers told (Knowledge).
     The blob store keeps no metadata, so this creates or writes over: a self-hosted Vault is the person's own.
 
-    The writer's contract (F1626), as a host's own writer keeps it: with `if_match`, the write lands only over that
-    version (the store's `version`, verbatim), and otherwise raises `PreconditionFailed`; with none, only over the
-    version it looked at itself, or where there was none, so a write that meets another is stale, never lost."""
+    The writer's contract (F1626), as a host's own writer keeps it: with a version in `if_match`, the write lands only
+    over that version (the store's `version`, verbatim); with `if_match=None`, only where there is no file (the caller
+    read none: a file made since is stale, never written over); with no keyword, a plain write, only over the version
+    it looked at itself, or where there was none. A write that meets another raises `PreconditionFailed`."""
     from core import step_refs, vault_events
     from core.storage import PreconditionFailed
     from core.vault import mention_key
@@ -351,7 +363,9 @@ async def engine_writer(path: str, content: str, *, if_match: str | None = None)
     key = mention_key(path)
     before = await asyncio.to_thread(_store().get, key)
     seen = await asyncio.to_thread(_version, key)
-    if if_match is not None and seen != if_match:
+    if if_match is None and seen is not None:
+        raise PreconditionFailed(f"{path} was made after it was read: read it again.")
+    if if_match is not None and if_match is not _PLAIN and seen != if_match:
         raise PreconditionFailed(f"{path} changed after it was read: read it again.")
     data = content.encode("utf-8")
     if step_refs._write_hook is not None:
