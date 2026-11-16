@@ -165,6 +165,34 @@ def context_text(query: str, hits: list, names: list[str], budget: int) -> str:
     return "\n".join(lines)
 
 
+#: A document in one of these is still being read in: a search cannot find it yet.
+_ON_THE_WAY_IN = ("queued", "parsing", "indexing")
+
+
+async def indexing_said(kbs: list) -> str | None:
+    """Which searched bases still have documents on their way in (queued, parsing or indexing), and how many, for a
+    search that found nothing (F1630): the Retrieve step's and the agent's search's words. None when every document
+    is at rest, or none can be read."""
+    from core.knowledge import documents
+
+    said: list[str] = []
+    for kb in kbs:
+        waiting: list = []
+        try:
+            # Only the documents on their way in are read, never a whole base.
+            for status in _ON_THE_WAY_IN:
+                waiting += [r for r in await documents.list_for(kb.id, status=status) if r.status == status]
+        except Exception:  # noqa: BLE001 — a base whose documents cannot be read is said as before
+            continue
+        if waiting:
+            n = len(waiting)
+            said.append(f"{kb.name} is still indexing {n} document{'' if n == 1 else 's'} "
+                        f"({', '.join(sorted({r.status for r in waiting}))})")
+    if not said:
+        return None
+    return "; ".join(said) + ": nothing could be searched there yet. Run it again in a minute."
+
+
 async def retrieve(config: RetrieveStepConfig, query: str, *, origin: Origin, step_id: str, step_name: str,
                    settings: Any = None) -> Retrieved:
     """Search as the step says. `query` is the step's template already rendered against the run's state."""
@@ -200,8 +228,14 @@ async def retrieve(config: RetrieveStepConfig, query: str, *, origin: Origin, st
     budget = max((kb.retrieval.max_context_tokens for kb in searched), default=4000)
     names = [kb.name for kb in searched] or list(config.kb_ids)
     citations: list[Citation] = [hit.citation for hit in response.hits]
+    context = context_text(query, response.hits, names, budget)
+    if not response.hits and (still := await indexing_said(searched)):
+        # Nothing found while a base is still indexing is not "nothing matched" (F1630): said, for the next step
+        # and the run page.
+        context = still
+        warnings.append(still)
     output = RetrieveStepOutput(
-        context=context_text(query, response.hits, names, budget), chunks=response.hits, citations=citations,
+        context=context, chunks=response.hits, citations=citations,
         trace_id=response.query_id, snapshot_ids=snapshot_ids)
     event = {
         "type": KNOWLEDGE_RETRIEVE, "orch_step_id": step_id, "step_name": step_name, "query_id": response.query_id,
