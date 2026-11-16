@@ -67,3 +67,29 @@ def test_every_link_we_ship_to_a_page_of_the_site_takes_its_final_slash():
                 continue
             found += [f"{path}:{n}: {link}" for link in no_slash_links(line)]
     assert not found, "add the final slash:\n" + "\n".join(found)
+
+
+def _first_text_line(markdown: str) -> str:
+    """The README's first line of prose: past the logo, the badges, headings and blank lines."""
+    for line in markdown.splitlines():
+        bare = line.strip()
+        if not bare or bare.startswith(("<", "#", "[![", "![", "|", ">")):
+            continue
+        return bare
+    return ""
+
+
+def test_the_readmes_first_line_links_the_brand_to_the_site():
+    """The line GitHub's page and search show first for the repository: the brand links to the site, slash and all."""
+    first = _first_text_line((ROOT / "README.md").read_text(encoding="utf-8"))
+    assert "](https://synapseorch.com/)" in first, first
+
+
+@pytest.mark.parametrize("readme, linked", [
+    ('<p align="center"><img src="x.png"></p>\n\n[![badge](b.svg)](x)\n\n**[SynapseOrch](https://synapseorch.com/) '
+     'builds things.**\n', True),
+    ("# Title\n\n**SynapseOrch builds things.**\n", False),
+    ("**[SynapseOrch](https://synapseorch.com/cloud/) builds things.**\n", False),
+])
+def test_the_first_line_is_read_past_the_logo_and_badges(readme, linked):
+    assert ("](https://synapseorch.com/)" in _first_text_line(readme)) is linked
