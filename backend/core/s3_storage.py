@@ -72,14 +72,37 @@ class SynapseS3:
                 return None
             raise
 
-    def upload_bytes(self, rel_key: str, data: bytes, content_type: Optional[str] = None) -> None:
-        """Upload bytes as one object."""
-        self._s3.put_object(
-            Bucket=self.bucket,
-            Key=self.full_key(rel_key),
-            Body=data,
-            ContentType=content_type or "application/octet-stream",
-        )
+    def upload_bytes(self, rel_key: str, data: bytes, content_type: Optional[str] = None, *,
+                     if_match: Optional[str] = None, if_none_match: bool = False) -> None:
+        """Upload bytes as one object. With `if_match`, only over that ETag; with `if_none_match`, only where there
+        is no object; `core.storage.PreconditionFailed` otherwise, nothing written (F1626: S3's conditional PUT)."""
+        conditions = {**({"IfMatch": if_match} if if_match is not None else {}),
+                      **({"IfNoneMatch": "*"} if if_none_match else {})}
+        try:
+            self._s3.put_object(
+                Bucket=self.bucket,
+                Key=self.full_key(rel_key),
+                Body=data,
+                ContentType=content_type or "application/octet-stream",
+                **conditions,
+            )
+        except Exception as exc:
+            if conditions and _precondition_failed(exc):
+                from core.storage.base import PreconditionFailed
+
+                raise PreconditionFailed(f"{rel_key} changed after it was read") from None
+            raise
+
+    def etag(self, rel_key: str) -> Optional[str]:
+        """The object's ETag exactly as S3 answers it, quotes and all, or None when there is none: what a conditional
+        PUT's If-Match compares (F1626). `head()` strips the quotes for its other readers; this never does."""
+        try:
+            resp = self._s3.head_object(Bucket=self.bucket, Key=self.full_key(rel_key))
+        except Exception as exc:
+            if _not_found(exc):
+                return None
+            raise
+        return resp.get("ETag") or None
 
     def download_bytes(self, rel_key: str) -> Optional[bytes]:
         """Download an object's bytes. None if the key doesn't exist."""
@@ -211,6 +234,15 @@ class SynapseS3:
             return {"ok": True}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+
+
+def _precondition_failed(exc: Exception) -> bool:
+    """A conditional PUT S3 refused: its version was not the one given (412), or another conditional write on the
+    same key was in flight (409)."""
+    response = getattr(exc, "response", None) or {}
+    code = str((response.get("Error") or {}).get("Code") or "")
+    status = (response.get("ResponseMetadata") or {}).get("HTTPStatusCode")
+    return code in ("PreconditionFailed", "ConditionalRequestConflict") or status in (409, 412)
 
 
 def _not_found(exc: Exception) -> bool:

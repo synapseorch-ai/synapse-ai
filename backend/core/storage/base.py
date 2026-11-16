@@ -41,6 +41,61 @@ class BlobStat:
     etag: str | None = None
 
 
+class PreconditionFailed(Exception):
+    """A write made only over the version its caller read (F1626) found another: the blob changed since, or one now
+    exists where none did. The caller reads again; nothing was written."""
+
+
+def content_version(data: bytes) -> str:
+    """The version of a blob with no ETag of its own (a local file): its content's hash (F1626).
+
+    Never a modification time and size: two writes of one length inside the filesystem's time resolution (a
+    coarse-time mount) would share one, and an add made over the other would lose a line.
+    """
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+class write_lock:
+    """One writer at a time for one target, across this computer's processes (the API, the sandbox's tool server)
+    (F1626): a lock file in the system's temp folder named by the target's path, never inside the store or the Vault,
+    so no listing ever shows one."""
+
+    def __init__(self, target: Path):
+        name = hashlib.sha256(str(Path(target).resolve()).encode("utf-8")).hexdigest()[:32]
+        folder = Path(tempfile.gettempdir()) / "synapse-write-locks"
+        folder.mkdir(parents=True, exist_ok=True)
+        self.path = folder / f"{name}.lock"
+        self._fh = None
+
+    def __enter__(self):
+        self._fh = open(self.path, "a+b")
+        try:
+            import fcntl
+
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+        except ImportError:  # Windows: msvcrt's lock on the file's first byte
+            import msvcrt
+
+            self._fh.seek(0)
+            msvcrt.locking(self._fh.fileno(), msvcrt.LK_LOCK, 1)
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            try:
+                import fcntl
+
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+            except ImportError:
+                import msvcrt
+
+                self._fh.seek(0)
+                msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
+        finally:
+            self._fh.close()
+        return False
+
+
 class BlobStore(Protocol):
     """Content addressed by key, scoped to the current tenant.
 
@@ -58,7 +113,16 @@ class BlobStore(Protocol):
 
     def list(self, prefix: str = "") -> list[str]: ...
 
-    def put_bytes(self, key: str, data: bytes, *, content_type: str | None = None) -> None: ...
+    def put_bytes(self, key: str, data: bytes, *, content_type: str | None = None,
+                  if_match: str | None = None, if_none_match: bool = False) -> None:
+        """Write `data`. With `if_match`, only over that version; with `if_none_match`, only where there is none;
+        `PreconditionFailed` otherwise, nothing written (F1626)."""
+        ...
+
+    def version(self, key: str) -> str | None:
+        """The blob's version as `put_bytes(if_match=…)` compares it, or None when there is none (F1626): an object
+        store's own ETag verbatim, quotes and all; a local file's content hash."""
+        ...
 
     def get_bytes(self, key: str) -> bytes | None: ...
 
@@ -174,8 +238,23 @@ class LocalBlobStore:
             str(p.relative_to(tenant_root)) for p in base.rglob("*") if p.is_file()
         )
 
-    def put_bytes(self, key: str, data: bytes, *, content_type: str | None = None) -> None:
-        self.put_stream(key, (data,))
+    def put_bytes(self, key: str, data: bytes, *, content_type: str | None = None,
+                  if_match: str | None = None, if_none_match: bool = False) -> None:
+        if if_match is None and not if_none_match:
+            self.put_stream(key, (data,))
+            return
+        # Only over the version read (F1626): the look and the write under one lock, so nothing lands between.
+        with write_lock(self._resolved(key)):
+            now = self.version(key)
+            if if_none_match and now is not None:
+                raise PreconditionFailed(f"{key} exists now")
+            if if_match is not None and now != if_match:
+                raise PreconditionFailed(f"{key} changed after it was read")
+            self.put_stream(key, (data,))
+
+    def version(self, key: str) -> str | None:
+        data = self.get_bytes(key)
+        return content_version(data) if data is not None else None
 
     def get_bytes(self, key: str) -> bytes | None:
         target = self._resolved(key)

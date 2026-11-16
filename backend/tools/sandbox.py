@@ -175,6 +175,8 @@ async def list_tools() -> list[Tool]:
             annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
             description=(
                 "Write (overwrite) a file in the vault. Creates it if missing. "
+                "With append: true, adds the content at the end instead (one line break between), creating the file "
+                "on the first run: the way to add a line or an entry to a log. "
                 "Returns the absolute path."
             ),
             inputSchema={
@@ -186,7 +188,12 @@ async def list_tools() -> list[Tool]:
                     },
                     "content": {
                         "type": "string",
-                        "description": "Full file content to write.",
+                        "description": "Full file content to write, or with append: true, the text to add at the end.",
+                    },
+                    "append": {
+                        "type": "boolean",
+                        "description": "Add the content at the end of the file instead of replacing it; creates the "
+                                       "file if it is not there yet.",
                     },
                 },
                 "required": ["path", "content"],
@@ -417,6 +424,9 @@ def _handle_write(args: dict) -> list[TextContent]:
     if target is None:
         return _err("Invalid path or path escapes the vault")
 
+    if args.get("append"):
+        return _append(target, str(content or ""))
+
     if target.suffix == ".json":
         try:
             content = json.dumps(json.loads(content), indent=2)
@@ -427,18 +437,63 @@ def _handle_write(args: dict) -> list[TextContent]:
     return _ok({"path": str(target), "size": len(content), "written": True})
 
 
+#: How many times an add reads the file again after another write landed between its read and its own (F1626).
+_ADD_RETRIES = 1
+
+
+def _append(target: Path, text: str) -> list[TextContent]:
+    """`text` added at the end of `target`, one line break between, the file made when it is not there (F1626).
+
+    Written only over the version read, so an add another run made in between is never lost: on a clash it reads
+    again, once, and adds to that; a second clash is said, never a lost line.
+    """
+    from core.storage import PreconditionFailed
+
+    vault = _vault()
+    for _attempt in range(_ADD_RETRIES + 1):
+        vault.ensure_local(target)
+        try:
+            if target.exists():
+                before = target.read_text(encoding="utf-8")
+                joined = before + ("" if not before or before.endswith("\n") else "\n") + text
+                vault.write(target, joined, if_match=vault.version(target))
+            else:
+                joined = text
+                vault.write(target, joined, if_none_match=True)
+        except PreconditionFailed:
+            continue
+        return _ok({"path": str(target), "size": len(joined), "written": True, "appended": True})
+    return _err(f"{target.name} changed while I was adding to it: read it again.")
+
+
 def _handle_patch(args: dict) -> list[TextContent]:
     target = _resolve(args.get("path", ""))
     if target is None:
         return _err("Invalid path or path escapes the vault")
     vault = _vault()
     vault.ensure_local(target)
-    if not target.exists():
-        return _err(f"File not found: {target}")
-
-    content = target.read_text(encoding="utf-8")
     merge_data = args.get("merge")
     find_str = args.get("find")
+    if find_str == "":
+        # A replace of "" puts its text at the top of the file (F1626): never what a caller asked for.
+        return _err("Nothing to find: a patch replaces text it finds. To add at the end of a file, use vault_write "
+                    "with append: true.")
+    if not target.exists():
+        if merge_data is not None:
+            # Merging into nothing is the object itself (F1626): the file is made with it.
+            try:
+                made = json.loads(merge_data)
+            except json.JSONDecodeError:
+                return _err("merge value is not valid JSON")
+            if not isinstance(made, (dict, list)):
+                return _err("Cannot merge: give an object or an array")
+            content = json.dumps(made, indent=2)
+            vault.write(target, content)
+            return _ok({"path": str(target), "content": content, "patched": True, "created": True})
+        return _err(f"File not found: {target}. It doesn't exist yet: to add to a file, use vault_write with "
+                    "append: true, which creates it.")
+
+    content = target.read_text(encoding="utf-8")
     replace_str = args.get("replace")
 
     if merge_data is not None:

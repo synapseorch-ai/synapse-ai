@@ -56,8 +56,17 @@ class S3BlobStore:
         cut = tenant_key("")
         return key[len(cut):] if key.startswith(cut) else key
 
-    def put_bytes(self, key: str, data: bytes, *, content_type: str | None = None) -> None:
-        self.client.upload_bytes(tenant_key(key), data, content_type)
+    def put_bytes(self, key: str, data: bytes, *, content_type: str | None = None,
+                  if_match: str | None = None, if_none_match: bool = False) -> None:
+        if if_match is None and not if_none_match:
+            self.client.upload_bytes(tenant_key(key), data, content_type)
+            return
+        # Only over the version read (F1626): S3's own conditional PUT, so nothing lands between.
+        self.client.upload_bytes(tenant_key(key), data, content_type, if_match=if_match, if_none_match=if_none_match)
+
+    def version(self, key: str) -> str | None:
+        """The object's ETag verbatim, quotes and all (F1626): what a conditional write, ours or a host's, compares."""
+        return self.client.etag(tenant_key(key))
 
     def get_bytes(self, key: str) -> bytes | None:
         return self.client.download_bytes(tenant_key(key))

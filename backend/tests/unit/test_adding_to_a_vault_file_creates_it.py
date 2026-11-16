@@ -169,6 +169,8 @@ def cloud(monkeypatch):
     async def writer(path, content, *, if_match=None):
         calls.append({"path": path, "content": content, "if_match": if_match})
         outcome = plan.pop(0) if plan else None
+        if callable(outcome):  # another run's write, landing as this one is made
+            outcome = outcome()
         if isinstance(outcome, Exception):
             raise outcome
         key = mention_key(path)
@@ -215,7 +217,7 @@ class TestCloudsVaultAddsToAFile:
             store.files[key] = ("zero\nother", '"b"')
             return PreconditionFailed("changed after it was read")
 
-        plan.append(other_run_lands())
+        plan.append(other_run_lands)
         out = _cloud_said(await vault_tools.call("vault_write", {"path": "logs/x.md", "content": "one", "append": True}))
         assert "error" not in out, out
         assert [c["if_match"] for c in calls] == ['"a"', '"b"']
@@ -234,7 +236,7 @@ class TestCloudsVaultAddsToAFile:
             store.files[key] = ("theirs", '"t"')
             return PreconditionFailed("made by another run")
 
-        plan.append(other_made_it())
+        plan.append(other_made_it)
         out = _cloud_said(await vault_tools.call("vault_write", {"path": "logs/new.md", "content": "mine", "append": True}))
         assert "error" not in out, out
         assert [c["if_match"] for c in calls] == [None, '"t"'] and calls[-1]["content"] == "theirs\nmine"

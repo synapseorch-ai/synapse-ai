@@ -93,7 +93,23 @@ class LocalVault:
     def __init__(self, root: Path):
         self.root = Path(root)
 
-    def write(self, path: Path, content: str) -> None:
+    def write(self, path: Path, content: str, *, if_match: str | None = None, if_none_match: bool = False) -> None:
+        """Write `path`. With `if_match`, only over that version (`version`); with `if_none_match`, only where there
+        is no file; `PreconditionFailed` otherwise, nothing written (F1626). The look and the write share one lock."""
+        if if_match is None and not if_none_match:
+            self._write(path, content)
+            return
+        from core.storage.base import PreconditionFailed, write_lock
+
+        with write_lock(path):
+            now = self.version(path)
+            if if_none_match and now is not None:
+                raise PreconditionFailed(f"{Path(path).name} exists now")
+            if if_match is not None and now != if_match:
+                raise PreconditionFailed(f"{Path(path).name} changed after it was read")
+            self._write(path, content)
+
+    def _write(self, path: Path, content: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         try:
@@ -101,6 +117,15 @@ class LocalVault:
         except OSError:
             pass
         _announce(self.root, path, "write", content)
+
+    def version(self, path: Path) -> str | None:
+        """The file's version as `write(if_match=…)` compares it: its content's hash, None when it is not there."""
+        from core.storage.base import content_version
+
+        try:
+            return content_version(Path(path).read_bytes()) if Path(path).is_file() else None
+        except OSError:
+            return None
 
     def ensure_local(self, path: Path) -> Path:
         return Path(path)
@@ -147,7 +172,7 @@ class S3Vault:
 
     # ── operations ───────────────────────────────────────────────────────────
 
-    def write(self, path: Path, content: str) -> None:
+    def write(self, path: Path, content: str, *, if_match: str | None = None, if_none_match: bool = False) -> None:
         """Write through to the object store, and fail if that does not work.
 
         Deliberately not fire-and-forget. The caller is about to hand the model
@@ -156,14 +181,25 @@ class S3Vault:
         when the pod is replaced.
         """
         path = Path(path)
+        if if_match is not None or if_none_match:
+            # Only over the version read (F1626): the store's conditional write first, so a stale one changes nothing
+            # here either.
+            self._store.put_bytes(self._key(path), content.encode("utf-8"), content_type="text/plain; charset=utf-8",
+                                  if_match=if_match, if_none_match=if_none_match)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         try:
             path.chmod(0o644)
         except OSError:
             pass
-        self._store.put(self._key(path), content)
+        if if_match is None and not if_none_match:
+            self._store.put(self._key(path), content)
         _announce(self.root, path, "write", content)
+
+    def version(self, path: Path) -> str | None:
+        """The object's version as the store answers it (its ETag, verbatim), None when there is none (F1626)."""
+        version = getattr(self._store, "version", None)
+        return version(self._key(path)) if version is not None else None
 
     def ensure_local(self, path: Path) -> Path:
         """Materialise one file if this pod does not have it yet."""
