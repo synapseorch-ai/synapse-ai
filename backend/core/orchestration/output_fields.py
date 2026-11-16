@@ -26,9 +26,19 @@ from typing import Any
 
 from core.orchestration.human_fields import ALIASES, FIELD_TYPES, BadAnswer, as_flag, check_value, field_options
 
-#: Every type an answer field can be: the Human step's, and a list of text.
-ANSWER_TYPES = (*FIELD_TYPES, "list")
-_ANSWER_ALIASES = {**ALIASES, "array": "list", "strings": "list", "list_of_text": "list"}
+#: Every type an answer field can be: the Human step's, a list (of text unless it says `of`), and a group of fields
+#: (`object`, F1618).
+ANSWER_TYPES = (*FIELD_TYPES, "list", "object")
+_ANSWER_ALIASES = {**ALIASES, "array": "list", "strings": "list", "list_of_text": "list", "group": "object"}
+#: How deep a declaration may nest, how many fields it may hold in all, and how many may be empty (F1618): a schema an
+#: editor and a model can still read, and a provider's own limit on fields that may be empty (16 per request).
+MAX_LEVELS = 4
+MAX_FIELDS = 60
+MAX_MAY_BE_EMPTY = 16
+#: What a list may be of, besides groups (`{"fields": [...]}`).
+_LIST_OF = {"text": "string", "string": "string", "number": "number", "boolean": "boolean"}
+#: How many problems a repair or a failure names before saying how many more.
+_NAMED = 5
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 #: How much of an answer a failure quotes.
 _QUOTED = 200
@@ -60,28 +70,74 @@ def names(fields: Any) -> tuple[str, ...]:
 
 def declaration_problems(fields: Any) -> list[str]:
     """What keeps a declaration from being held: a name a condition cannot read, one twice, a type this table does
-    not know, a choice with nothing to choose from."""
+    not know, a choice with nothing to choose from, a group with no fields, a list of no kind; and past the limits,
+    deeper than four levels, more than 60 fields, or more than 16 that may be empty (F1618)."""
     problems: list[str] = []
+    counts = {"fields": 0, "empty": 0, "deep": False}
+    _problems_in(fields, 1, "", problems, counts)
+    if counts["deep"]:
+        problems.append(f"the answer nests deeper than {_words(MAX_LEVELS)} levels: flatten a group into its parent")
+    if counts["fields"] > MAX_FIELDS:
+        problems.append(f"the answer has {counts['fields']} fields; at most {MAX_FIELDS}: keep the ones a later step reads")
+    if counts["empty"] > MAX_MAY_BE_EMPTY:
+        problems.append(f"{counts['empty']} fields may be empty; at most {MAX_MAY_BE_EMPTY}: make the rest always given")
+    return problems
+
+
+def _words(n: int) -> str:
+    return {4: "four"}.get(n, str(n))
+
+
+def _problems_in(fields: Any, level: int, prefix: str, problems: list[str], counts: dict) -> None:
     seen: set[str] = set()
+    if level > MAX_LEVELS:
+        counts["deep"] = True
     for f in fields if isinstance(fields, list) else []:
         if not isinstance(f, dict) or not isinstance(f.get("name"), str) or not f["name"].strip():
             problems.append("a field with no name: give each a `name`")
             continue
         name = f["name"].strip()
+        where = f"{prefix}{name}"
         if not _NAME.match(name):
-            problems.append(f"`{name}` is not a name a later step can read as state.<key>.<name>: use letters, "
+            problems.append(f"`{where}` is not a name a later step can read as state.<key>.<name>: use letters, "
                             "digits and _ (e.g. `is_risky`)")
         if name in seen:
-            problems.append(f"`{name}` is declared twice")
+            problems.append(f"`{where}` is declared twice")
         seen.add(name)
+        if f.get("may_be_empty"):
+            counts["empty"] += 1
         kind = field_type(f.get("type"))
         if kind is None:
-            problems.append(f"`{name}` has type '{f.get('type')}', which is not a type: use one of "
-                            "text, number, boolean (a yes or no), choice (with options) or list")
+            problems.append(f"`{where}` has type '{f.get('type')}', which is not a type: use one of text, number, "
+                            "boolean (a yes or no), choice (with options), list, or object (a group with its own "
+                            "fields)")
+            counts["fields"] += 1
         elif kind == "choice" and not field_options(f):
-            problems.append(f'`{name}` is a choice with no options: give it "options": ["…", "…"], one of which '
+            problems.append(f'`{where}` is a choice with no options: give it "options": ["…", "…"], one of which '
                             "the model picks")
-    return problems
+            counts["fields"] += 1
+        elif kind == "object":
+            inner = f.get("fields")
+            if not isinstance(inner, list) or not inner:
+                problems.append(f'`{where}` is a group with no fields: give it "fields": [...]')
+            else:
+                _problems_in(inner, level + 1, f"{where}.", problems, counts)
+        elif kind == "list":
+            of = f.get("of")
+            if isinstance(of, dict):
+                inner = of.get("fields")
+                if not isinstance(inner, list) or not inner:
+                    problems.append(f'`{where}` is a list of groups with no fields: give its "of" "fields": [...]')
+                else:
+                    _problems_in(inner, level + 1, f"{where}[].", problems, counts)
+            elif of is not None and str(of).strip().lower() not in _LIST_OF:
+                problems.append(f"`{where}` is a list of '{of}', which is not a kind: use text, number, boolean, or "
+                                '{"fields": [...]} for a list of groups')
+                counts["fields"] += 1
+            else:
+                counts["fields"] += 1
+        else:
+            counts["fields"] += 1
 
 
 def _schema_of(field: dict[str, Any]) -> dict[str, Any]:
@@ -93,19 +149,33 @@ def _schema_of(field: dict[str, Any]) -> dict[str, Any]:
     elif kind == "choice" and field_options(field):
         out = {"type": "string", "enum": field_options(field)}
     elif kind == "list":
-        out = {"type": "array", "items": {"type": "string"}}
+        of = field.get("of")
+        if isinstance(of, dict):
+            out = {"type": "array", "items": _object_schema(of.get("fields"))}
+        else:
+            out = {"type": "array", "items": {"type": _LIST_OF.get(str(of or "text").strip().lower(), "string")}}
+    elif kind == "object":
+        out = _object_schema(field.get("fields"))
     else:
         out = {"type": "string"}
+    if field.get("may_be_empty"):
+        # Itself or nothing (F1618): still required, as a strict schema wants every field.
+        out = {"anyOf": [out, {"type": "null"}]}
     if str(field.get("description") or "").strip():
         out["description"] = str(field["description"]).strip()
     return out
 
 
-def json_schema(fields: Any) -> dict[str, Any]:
-    """The one object a provider's JSON schema mode is asked for: every field, no other (OpenAI strict's shape)."""
+def _object_schema(fields: Any) -> dict[str, Any]:
     declared = normalised(fields)
     return {"type": "object", "properties": {f["name"].strip(): _schema_of(f) for f in declared},
             "required": [f["name"].strip() for f in declared], "additionalProperties": False}
+
+
+def json_schema(fields: Any) -> dict[str, Any]:
+    """The one object a provider's JSON schema mode is asked for: every field, no other (OpenAI strict's shape), and
+    each group's own fields the same way to its depth (F1618)."""
+    return _object_schema(fields)
 
 
 def type_words(field: dict[str, Any]) -> str:
@@ -117,7 +187,13 @@ def type_words(field: dict[str, Any]) -> str:
     if kind == "choice" and field_options(field):
         return "one of " + ", ".join(json.dumps(o) for o in field_options(field))
     if kind == "list":
-        return "a list of text"
+        of = field.get("of")
+        if isinstance(of, dict):
+            return "a list of groups, each with: " + ", ".join(names(of.get("fields")))
+        return {"number": "a list of numbers", "boolean": "a list of true or false"}.get(
+            str(of or "").strip().lower(), "a list of text")
+    if kind == "object":
+        return "a group with: " + ", ".join(names(field.get("fields")))
     if kind == "date":
         return "a date, YYYY-MM-DD"
     return "text"
@@ -127,10 +203,21 @@ def instruction(fields: Any) -> str:
     """What the step's prompt adds: the one object it answers, each field with its type in words."""
     lines = ["## YOUR ANSWER",
              "Answer with one JSON object and nothing else, with exactly these fields:"]
+    _said_lines(fields, "", lines)
+    return "\n".join(lines)
+
+
+def _said_lines(fields: Any, indent: str, lines: list[str]) -> None:
+    """Each field with its type in words, and a group's own fields under it (F1618)."""
     for f in normalised(fields):
         about = str(f.get("description") or "").strip()
-        lines.append(f"- `{f['name'].strip()}`: {type_words(f)}" + (f" — {about}" if about else ""))
-    return "\n".join(lines)
+        empty = " (or null when there is none)" if f.get("may_be_empty") else ""
+        lines.append(f"{indent}- `{f['name'].strip()}`: {type_words(f)}{empty}" + (f" — {about}" if about else ""))
+        kind = field_type(f.get("type"))
+        inner = (f.get("fields") if kind == "object"
+                 else (f.get("of") or {}).get("fields") if kind == "list" and isinstance(f.get("of"), dict) else None)
+        if inner:
+            _said_lines(inner, indent + "  ", lines)
 
 
 def _number(value: Any) -> Any:
@@ -184,14 +271,15 @@ def _typed(field: dict[str, Any], value: Any) -> tuple[bool, Any]:
     return True, str(value) if not isinstance(value, str) else value
 
 
-def _not_its_type(field: dict[str, Any], value: Any) -> str:
+def _not_its_type(field: dict[str, Any], value: Any, path: str | None = None) -> str:
     shown = json.dumps(value, ensure_ascii=False, default=str)
     shown = shown if len(shown) <= 80 else shown[:80] + "…"
-    return f"`{field['name'].strip()}` is {shown}, not {type_words(field)}"
+    return f"`{path or field['name'].strip()}` is {shown}, not {type_words(field)}"
 
 
 def read(fields: Any, text: Any) -> tuple[dict[str, Any] | None, list[str]]:
-    """The declared object out of `text`, each field typed, or (None, what is missing or not of its type)."""
+    """The declared object out of `text`, each field typed to its depth, or (None, what is missing or not of its type,
+    each named by its path: `leads[2].email`, F1618)."""
     from core.orchestration.steps import extract_all_json
 
     declared = normalised(fields)
@@ -207,19 +295,72 @@ def read(fields: Any, text: Any) -> tuple[dict[str, Any] | None, list[str]]:
     best = max(found, key=lambda obj: sum(1 for n in wanted if n in obj), default=None)
     if best is None:
         return None, ["no JSON object with " + ", ".join(f"`{n}`" for n in wanted)]
-    answer: dict[str, Any] = {}
     problems: list[str] = []
+    answer = _read_fields(declared, best, "", problems)
+    return (None, problems) if problems else (answer, [])
+
+
+_NOT_READ = object()
+
+
+def _read_fields(declared: list[dict[str, Any]], obj: dict, prefix: str, problems: list[str]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
     for f in declared:
         name = f["name"].strip()
-        if name not in best:
-            problems.append(f"`{name}` is missing")
+        path = f"{prefix}{name}"
+        if name not in obj:
+            problems.append(f"`{path}` is missing")
             continue
-        ok, value = _typed(f, best[name])
-        if not ok:
-            problems.append(_not_its_type(f, best[name]))
-            continue
-        answer[name] = value
-    return (None, problems) if problems else (answer, [])
+        value = _read_value(f, obj[name], path, problems)
+        if value is not _NOT_READ:
+            out[name] = value
+    return out
+
+
+def _read_value(f: dict[str, Any], value: Any, path: str, problems: list[str]) -> Any:
+    if value is None and f.get("may_be_empty"):
+        return None
+    kind = field_type(f.get("type")) or "string"
+    if kind == "object":
+        if not isinstance(value, dict):
+            problems.append(_not_its_type(f, value, path))
+            return _NOT_READ
+        return _read_fields(normalised(f.get("fields")), value, f"{path}.", problems)
+    if kind == "list" and isinstance(f.get("of"), dict):
+        items = value if isinstance(value, list) else [value] if isinstance(value, dict) else None
+        if items is None:
+            problems.append(_not_its_type(f, value, path))
+            return _NOT_READ
+        inner = normalised(f["of"].get("fields"))
+        read_items = []
+        for i, item in enumerate(items):
+            if not isinstance(item, dict):
+                problems.append(f"`{path}[{i}]` is {json.dumps(item, ensure_ascii=False, default=str)[:80]}, not a group")
+                continue
+            read_items.append(_read_fields(inner, item, f"{path}[{i}].", problems))
+        return read_items
+    if kind == "list" and str(f.get("of") or "").strip().lower() in ("number", "boolean"):
+        items = value if isinstance(value, list) else [value]
+        each = {"name": f.get("name", ""), "type": str(f["of"]).strip().lower()}
+        read_items = []
+        for i, item in enumerate(items):
+            ok, typed = _typed(each, item)
+            if not ok:
+                problems.append(_not_its_type(each, item, f"{path}[{i}]"))
+                continue
+            read_items.append(typed)
+        return read_items
+    ok, typed = _typed(f, value)
+    if not ok:
+        problems.append(_not_its_type(f, value, path))
+        return _NOT_READ
+    return typed
+
+
+def _named(problems: list[str]) -> str:
+    """The problems a repair or a failure names: five at most, then how many more (F1618)."""
+    shown = "; ".join(problems[:_NAMED])
+    return shown + (f"; and {len(problems) - _NAMED} more" if len(problems) > _NAMED else "")
 
 
 def _quote(text: Any) -> str:
@@ -230,13 +371,13 @@ def _quote(text: Any) -> str:
 def repair_prompt(prompt: str, answer: Any, problems: list[str], fields: Any) -> str:
     """The step's own prompt, its own answer, and what that answer lacks: asked once more of the same model."""
     return (f"{prompt}\n\n---\n\nYou answered:\n\n{str(answer or '').strip()}\n\n---\n\n"
-            f"That answer cannot be read as the object asked for: {'; '.join(problems)}. "
+            f"That answer cannot be read as the object asked for: {_named(problems)}. "
             "Answer again, from the same task, with only the JSON object.\n\n" + instruction(fields))
 
 
 def missing(step_name: str, problems: list[str], answer: Any) -> str:
     """Why the step fails: what is missing, that it was asked once more, the repair, then what it answered."""
-    return (f"'{step_name}' did not answer its answer fields ({'; '.join(problems)}), asked twice. The step stops "
+    return (f"'{step_name}' did not answer its answer fields ({_named(problems)}), asked twice. The step stops "
             "rather than guess: change its prompt or its answer fields, then Replay. It answered: "
             f"“{_quote(answer)}”")
 
