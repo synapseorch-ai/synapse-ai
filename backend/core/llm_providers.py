@@ -279,7 +279,7 @@ def _retry_without_reasoning(payload: dict, resp) -> bool:
     return True
 
 
-def _retry_without_response_format(payload: dict, resp) -> bool:
+def _retry_without_response_format(payload: dict, resp, notes: list | None = None, provider: str = "The provider") -> bool:
     """Drop a JSON schema answer format after a 400 that complained about it (F1553).
 
     A step that declares its answer's fields asks the provider for that shape where it has a JSON schema mode, but
@@ -298,12 +298,40 @@ def _retry_without_response_format(payload: dict, resp) -> bool:
         return False
     payload.pop("response_format", None)
     _log.debug("provider refused response_format — retrying without it")
+    _stepped_down(notes, provider, (resp.text or "")[:160])
     return True
 
 
 def json_schema_format(schema: dict) -> dict:
     """OpenAI's structured-output `response_format` for `schema` (F1553): strict, so every field comes back."""
     return {"type": "json_schema", "json_schema": {"name": "answer", "schema": schema, "strict": True}}
+
+
+#: The one tool a forced-tool answer is given (F1618): its input is the answer.
+ANSWER_TOOL = "answer"
+
+
+def _stepped_down(notes: list | None, provider: str, why: str) -> None:
+    """A provider asked for a declared answer in words after its schema mode was refused: noted for the step (F1618)."""
+    if notes is not None:
+        from core import answer_shape
+
+        notes.append(answer_shape.stepped_down(provider, why))
+
+
+def _hold_claude_answer(kwargs: dict, rung: str, schema: dict) -> None:
+    """A Claude request holding a declared answer by its rung (F1618): `output_config.format` beside any effort, or one
+    `answer` tool the call must use, with thinking off (a forced tool and thinking don't go together)."""
+    from core import answer_shape
+
+    if rung == answer_shape.SCHEMA:
+        kwargs["output_config"] = {**(kwargs.get("output_config") or {}),
+                                   "format": {"type": "json_schema", "schema": schema}}
+    elif rung == answer_shape.FORCED_TOOL:
+        kwargs["tools"] = [{"name": ANSWER_TOOL, "description": "Give the answer, in exactly this shape.",
+                            "input_schema": schema}]
+        kwargs["tool_choice"] = {"type": "tool", "name": ANSWER_TOOL}
+        kwargs.pop("thinking", None)
 
 
 def _retry_without_fields(payload: dict, resp, fields: dict | None) -> bool:
@@ -1158,6 +1186,8 @@ async def call_cli_provider(
     timeout: float | None = None,
     effort: str | None = None,
     tools: list[dict] | None = None,
+    response_schema: dict | None = None,
+    answer_notes: list | None = None,
 ) -> tuple[str, int, int]:
     """Run an installed CLI for its model alone, and return its answer.
 
@@ -1202,19 +1232,33 @@ async def call_cli_provider(
     root = os.environ.get("SYNAPSE_CLI_WORKDIR_ROOT")
     workdir = _inv.new_workdir(Path(root) if root else None)
     try:
-        inv = _inv.build_cli_invocation(base, variant, workdir=workdir, system_prompt=sys_prompt,
-                                        prompt=full_prompt, effort=effort, codex_catalog=catalog,
-                                        github_token=token, tools=tools)
-        # Fed from a file (like `< file`), keeping the prompt out of the process list.
-        stdin_path = None
-        if inv.stdin is not None:
-            stdin_path = workdir / "stdin.txt"
-            stdin_path.write_text(inv.stdin, encoding="utf-8")
+        # A step's declared answer as this CLI's own schema flag, where it has one (F1618).
+        schema = response_schema if isinstance(response_schema, dict) and response_schema else None
         deadline = cli_deadline() if timeout is None else float(timeout)
-        _log.debug(f"🖥️  CLI provider '{cli_model}' — spawning {binary} in {inv.cwd}")
-        # Off the loop, its deadline held by its own thread, its whole group killed at the deadline or a cancel (F1320).
-        run = await _run_cli([executable, *inv.argv[1:]], stdin_path=str(stdin_path) if stdin_path else None,
-                             cwd=str(inv.cwd), env=inv.env, deadline=deadline)
+
+        async def _spawn(with_schema: dict | None):
+            inv = _inv.build_cli_invocation(base, variant, workdir=workdir, system_prompt=sys_prompt,
+                                            prompt=full_prompt, effort=effort, codex_catalog=catalog,
+                                            github_token=token, tools=tools, response_schema=with_schema)
+            # Fed from a file (like `< file`), keeping the prompt out of the process list.
+            stdin_path = None
+            if inv.stdin is not None:
+                stdin_path = workdir / "stdin.txt"
+                stdin_path.write_text(inv.stdin, encoding="utf-8")
+            _log.debug(f"🖥️  CLI provider '{cli_model}' — spawning {binary} in {inv.cwd}")
+            # Off the loop, its deadline held by its own thread, its whole group killed at the deadline or a cancel
+            # (F1320).
+            return inv, await _run_cli([executable, *inv.argv[1:]], stdin_path=str(stdin_path) if stdin_path else None,
+                                       cwd=str(inv.cwd), env=inv.env, deadline=deadline)
+
+        inv, run = await _spawn(schema)
+        if (schema is not None and not run.timed_out and run.returncode not in (0, None)
+                and _inv.schema_flag(base)
+                and _inv.schema_flag(base) in (run.stderr + run.stdout).decode("utf-8", errors="replace")
+                and _CLI_UNKNOWN_FLAG.search((run.stderr + run.stdout).decode("utf-8", errors="replace"))):
+            # A CLI too old for its schema flag (F1618): asked once more without it, in words alone.
+            _stepped_down(answer_notes, _CLI_LABELS[base], f"{_inv.schema_flag(base)} unknown to this version")
+            inv, run = await _spawn(None)
         if run.timed_out:
             raise LLMError(
                 f"CLI provider '{cli_model}' timed out: the model didn't answer within {_within(deadline)}, so "
@@ -1339,6 +1383,9 @@ def _read_cli_answer(base: str, cli_model: str, returncode: int | None, stdout: 
                 raise _refuse_own_tools(cli_model, denied)
             if isinstance(obj.get("num_turns"), int) and obj["num_turns"] > 1:
                 raise _refuse_own_tools(cli_model, [f"{obj['num_turns']} turns"])
+            if obj.get("structured_output") is not None:
+                # Asked with `--json-schema` (F1618): the answer in the declared shape.
+                return json.dumps(obj["structured_output"], ensure_ascii=False)
             answer = obj.get("result")
             if isinstance(answer, str) and answer.strip():
                 return answer.strip()
@@ -1462,7 +1509,8 @@ def _read_cli_answer(base: str, cli_model: str, returncode: int | None, stdout: 
 # ────────────────────────────────────────────────────────────────────────────────
 
 async def call_openai(model, messages, api_key, tools=None, images=None, prompt_cache: bool = True,
-                      reasoning=None, max_tokens: int | None = None, response_schema: dict | None = None):
+                      reasoning=None, max_tokens: int | None = None, response_schema: dict | None = None,
+                      answer_notes: list | None = None):
     """Call OpenAI with 5-attempt exponential backoff retry loop.
 
     OpenAI prompt caching is automatic for stable prefixes ≥1024 tokens; we
@@ -1524,7 +1572,7 @@ async def call_openai(model, messages, api_key, tools=None, images=None, prompt_
                     continue
             if resp.status_code == 400 and _retry_without_reasoning(payload, resp):
                 continue
-            if resp.status_code == 400 and _retry_without_response_format(payload, resp):
+            if resp.status_code == 400 and _retry_without_response_format(payload, resp, answer_notes, "OpenAI"):
                 continue
             resp.raise_for_status()
             _log.debug(f"✅ OpenAI call complete (attempt {attempt})")
@@ -1741,7 +1789,8 @@ async def _anthropic_create(client, kwargs: dict):
 
 async def call_anthropic(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True,
                          prompt_blocks: list[str] | None = None, volatile_tail: str | None = None,
-                         max_tokens: int | None = None, reasoning=None):
+                         max_tokens: int | None = None, reasoning=None, response_schema: dict | None = None,
+                         answer_notes: list | None = None):
     """Call Anthropic using the official SDK with native tool calling.
 
     Args:
@@ -1838,10 +1887,27 @@ async def call_anthropic(model, messages, system, api_key, tools=None, images=No
             # refuses a budget that is not strictly below it.
             kwargs["thinking"] = {"type": "enabled", "budget_tokens": reasoning.budget}
 
-    # Decorate with prompt cache markers when enabled and the prefix is large enough.
-    if prompt_cache:
+    # A step's declared answer (F1618), held by the strongest form this model has (`core.answer_shape`'s table). Only
+    # on a call with no tools of its own, which an LLM step's and a repair's always are.
+    from core import answer_shape as _shape
+
+    shape_rung = None
+    plain_kwargs = None
+    if isinstance(response_schema, dict) and response_schema and not anthropic_tools:
+        import copy as _copy
+
+        shape_rung = _shape.rung("anthropic", model)
+        plain_kwargs = _copy.deepcopy(kwargs)
+        _hold_claude_answer(kwargs, shape_rung, response_schema)
+
+    def _decorated(call_kwargs: dict) -> dict:
+        # Prompt cache markers when enabled and the prefix is large enough.
+        if not prompt_cache:
+            return call_kwargs
         from core.cache.prompt_cache import decorate_anthropic_kwargs
-        kwargs = decorate_anthropic_kwargs(kwargs, str(system).strip() if system else None)
+        return decorate_anthropic_kwargs(call_kwargs, str(system).strip() if system else None)
+
+    kwargs = _decorated(kwargs)
 
     client = anthropic.AsyncAnthropic(
         api_key=api_key,
@@ -1871,6 +1937,13 @@ async def call_anthropic(model, messages, system, api_key, tools=None, images=No
         except anthropic.APIStatusError as e:
             last_error = f"API error {e.status_code}: {str(e)[:200]}"
             _log.warning(f"❌ Anthropic API error {e.status_code} on attempt {attempt}/{MAX_RETRIES}: {str(e)[:500]}")
+            if e.status_code == 400 and shape_rung in (_shape.SCHEMA, _shape.FORCED_TOOL) and _shape.refused(str(e)):
+                # The answer's format itself refused (F1618): asked once more in words alone, as the step's prompt
+                # already asks; the engine reads and repairs the answer either way. Never twice.
+                _stepped_down(answer_notes, "Claude", str(e))
+                shape_rung = _shape.PROMPT
+                kwargs = _decorated(plain_kwargs)
+                continue
             # Retry on transient/rate-limit errors (429 rate limit, 499 client disconnect, 5xx server errors, 529 overloaded)
             if attempt < MAX_RETRIES and e.status_code in (429, 499, 500, 502, 503, 529):
                 _retry_notice("Anthropic", f"answered {e.status_code}", attempt, MAX_RETRIES, backoff)
@@ -1899,6 +1972,13 @@ async def call_anthropic(model, messages, system, api_key, tools=None, images=No
     from core.cache.prompt_cache import extract_anthropic_cache_tokens
     cache_read, cache_write = extract_anthropic_cache_tokens(response)
     stop_reason = _normalise_stop_reason(getattr(response, "stop_reason", None))
+    if shape_rung == _shape.FORCED_TOOL:
+        # The forced `answer` tool's input is the answer (F1618).
+        given = next((b for b in (response.content or []) if getattr(b, "type", "") == "tool_use"
+                      and getattr(b, "name", "") == ANSWER_TOOL), None)
+        if given is not None:
+            return LLMResult(json.dumps(given.input or {}, ensure_ascii=False), input_tokens, output_tokens,
+                             cache_read, cache_write, _normalise_stop_reason("end_turn"), (), "")
     try:
         _text, _reasoning = _extract_anthropic_response(response)
     except EmptyAnswer as empty:
@@ -2457,14 +2537,24 @@ def _gemini_client_for(api_key: str | None, *, timeout_ms: int, base_url: str | 
 
 def _gemini_schema(schema: dict | None) -> dict | None:
     """A declared answer's schema as Gemini takes it (F1553): its properties and required fields, without OpenAI's
-    `additionalProperties`, which Gemini's schema subset may not read."""
+    `additionalProperties`, which Gemini's schema subset may not read, at any depth (F1618: groups and lists of
+    groups)."""
     if not isinstance(schema, dict):
         return None
-    return {k: v for k, v in schema.items() if k != "additionalProperties"}
+
+    def without(node):
+        if isinstance(node, dict):
+            return {k: without(v) for k, v in node.items() if k != "additionalProperties"}
+        if isinstance(node, list):
+            return [without(v) for v in node]
+        return node
+
+    return without(schema)
 
 
 async def call_gemini(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True,
-                     max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS, reasoning=None, response_schema: dict | None = None):
+                     max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS, reasoning=None, response_schema: dict | None = None,
+                     answer_notes: list | None = None):
     """Call Gemini using the google-genai SDK with native function calling.
 
     Gemini implicit caching (Gemini 2.5 and newer) auto-applies on the server
@@ -2585,6 +2675,7 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
                 # read of the answer hold the step to its fields either way.
                 shaped = False
                 config = _build_config(with_tools=True)
+                _stepped_down(answer_notes, "Gemini", str(e))
                 continue
             # Out of credit (a 402, or a 429 naming its prepayment) never clears
             # on a retry either (F275).
@@ -2874,7 +2965,8 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
                              reasoning=None, max_tokens: int | None = None, *, chat_url: str | None = None,
                              label: str = "V1-compatible", reasoning_body: dict | None = None,
                              prompt_blocks: list[str] | None = None, volatile_tail: str | None = None,
-                             cache_markers: bool = False):
+                             cache_markers: bool = False, response_schema: dict | None = None,
+                             answer_notes: list | None = None):
     """Call any OpenAI v1-compatible endpoint with 5-attempt exponential backoff.
 
     Used for both cloud OpenAI-compatible providers (OpenRouter, Together, etc.)
@@ -2951,6 +3043,9 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
+    elif response_schema:
+        # A step's declared answer (F1618): only the model gateway sends one, which passes it on to its model.
+        payload["response_format"] = json_schema_format(response_schema)
 
     endpoint = chat_url or f"{_normalize_v1_base_url(base_url)}/v1/chat/completions"
     headers = {}
@@ -2975,7 +3070,8 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
                     await asyncio.sleep(backoff)
                     continue
             if resp.status_code == 400 and (_retry_without_reasoning(payload, resp)
-                                            or _retry_without_fields(payload, resp, reasoning_body)):
+                                            or _retry_without_fields(payload, resp, reasoning_body)
+                                            or _retry_without_response_format(payload, resp, answer_notes, label)):
                 continue
             resp.raise_for_status()
             _log.debug(f"✅ {label} call complete (attempt {attempt})")
@@ -3046,7 +3142,8 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
 
 async def call_model_gateway(model, messages, system, settings, tools=None, images=None, prompt_cache: bool = True,
                              reasoning=None, max_tokens: int | None = None, *, prompt_blocks: list[str] | None = None,
-                             volatile_tail: str | None = None):
+                             volatile_tail: str | None = None, response_schema: dict | None = None,
+                             answer_notes: list | None = None):
     """Call the configured model gateway (synapse.* models).
 
     A first-class provider like `call_openai`, except the endpoint belongs to
@@ -3082,6 +3179,8 @@ async def call_model_gateway(model, messages, system, settings, tools=None, imag
             max_tokens=max_tokens,
             **({"prompt_blocks": prompt_blocks, "volatile_tail": volatile_tail, "cache_markers": True}
                if prompt_blocks else {}),
+            # A step's declared answer (F1618), in OpenAI's strict form, which the gateway passes on to its model.
+            **({"response_schema": response_schema, "answer_notes": answer_notes} if response_schema else {}),
         )
     except LLMError as e:
         # Any refusal the gateway made itself (a 4xx) says why in a sentence:
@@ -3179,7 +3278,7 @@ def _converse_streamed(client, **kwargs) -> dict:
 async def _bedrock_converse_direct(
     region: str, api_key: str, model_id: str,
     messages: list, system_blocks: list, max_tokens: int,
-    additional: dict | None = None,
+    additional: dict | None = None, extra: dict | None = None,
 ) -> dict:
     """Call Bedrock Converse via boto3 with UNSIGNED auth + before-send bearer injection.
 
@@ -3229,6 +3328,7 @@ async def _bedrock_converse_direct(
                 system=system_blocks,
                 inferenceConfig={'maxTokens': max_tokens},
                 **({'additionalModelRequestFields': additional} if additional else {}),
+                **(extra or {}),
             )
         except botocore.exceptions.ClientError as e:
             # Re-raised as it came: the error code is what `call_bedrock` decides
@@ -3392,7 +3492,8 @@ def _bedrock_needs_profile(model_id: str, settings: dict) -> str:
 
 
 async def call_bedrock(model_id, messages, system, region, settings, images=None, prompt_cache: bool = True,
-                       max_tokens: int | None = None, reasoning=None):
+                       max_tokens: int | None = None, reasoning=None, response_schema: dict | None = None,
+                       answer_notes: list | None = None):
     """Call AWS Bedrock with 5-attempt exponential backoff retry loop.
 
     Prefers the Converse API (standardized); falls back to InvokeModel only for a
@@ -3487,6 +3588,27 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
         from core.cache.prompt_cache import decorate_bedrock_system_blocks
         system_blocks = decorate_bedrock_system_blocks(system_blocks, str(system) if system else None)
 
+    # A step's declared answer (F1618), held by Converse's own field: `outputConfig.textFormat` with the schema as a JSON
+    # string, or, for an older Claude with no schema mode, one `answer` tool through `toolConfig` with thinking off.
+    from core import answer_shape as _shape
+
+    shape_rung = (_shape.rung("bedrock", model_id) if isinstance(response_schema, dict) and response_schema else None)
+
+    def _shape_fields() -> dict:
+        if shape_rung == _shape.SCHEMA:
+            return {"outputConfig": {"textFormat": {"type": "json_schema", "structure": {"jsonSchema": {
+                "schema": json.dumps(response_schema), "name": ANSWER_TOOL}}}}}
+        if shape_rung == _shape.FORCED_TOOL:
+            return {"toolConfig": {"tools": [{"toolSpec": {
+                "name": ANSWER_TOOL, "description": "Give the answer, in exactly this shape.",
+                "inputSchema": {"json": response_schema}}}], "toolChoice": {"tool": {"name": ANSWER_TOOL}}}}
+        return {}
+
+    def _additional_fields() -> dict:
+        if shape_rung == _shape.FORCED_TOOL:
+            return {k: v for k, v in _additional.items() if k not in ("thinking", "reasoning_config")}
+        return _additional
+
     async def _converse_call():
         from core.model_wait import restart_stream, streaming_wanted
         streamed = streaming_wanted()
@@ -3499,7 +3621,8 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
                 messages=normalized_messages,
                 system=system_blocks,
                 inferenceConfig={"maxTokens": max_tokens},
-                **({"additionalModelRequestFields": _additional} if _additional else {}),
+                **({"additionalModelRequestFields": _additional_fields()} if _additional_fields() else {}),
+                **_shape_fields(),
             )
             # Streamed when the answer is (U72), read whole into converse's shape.
             return _converse_streamed(bedrock, **kwargs) if streamed else bedrock.converse(**kwargs)
@@ -3540,7 +3663,7 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
                         resp = await _bedrock_converse_direct(
                             effective_region, bedrock_api_key, invocation_model_id,
                             normalized_messages, system_blocks, max_tokens,
-                            _additional or None,
+                            _additional_fields() or None, _shape_fields() or None,
                         )
                     else:
                         resp = await _converse_call()
@@ -3555,6 +3678,12 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
                 except Exception as converse_err:
                     msg_str = str(converse_err)
                     code, message = _bedrock_error(converse_err)
+                    if (shape_rung in (_shape.SCHEMA, _shape.FORCED_TOOL) and code == "ValidationException"
+                            and _shape.refused(message or msg_str)):
+                        # The answer's format itself refused (F1618): asked once more in words alone; never twice.
+                        _stepped_down(answer_notes, "Bedrock", message or msg_str)
+                        shape_rung = _shape.PROMPT
+                        continue
                     # Before `_converse_unsupported`: this refusal's text says
                     # "supported", which would send it to the InvokeModel fallback.
                     if "on-demand throughput" in msg_str:
@@ -3609,6 +3738,13 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
         # `inputTokens` is the uncached part already: input = inputTokens + read + write (measured on
         # Nova Lite, F381 — subtracting the read again recorded 0 input tokens on every hit).
         raw_stop = (converse_resp or {}).get("stopReason")
+        if shape_rung == _shape.FORCED_TOOL:
+            # The forced `answer` tool's input is the answer (F1618).
+            given = next((b["toolUse"] for b in (msg.get("content") or []) if isinstance(b, dict)
+                          and isinstance(b.get("toolUse"), dict) and b["toolUse"].get("name") == ANSWER_TOOL), None)
+            if given is not None:
+                return LLMResult(json.dumps(given.get("input") or {}, ensure_ascii=False), inp, out, cache_read,
+                                 cache_write, _normalise_stop_reason("end_turn"), (), "")
         try:
             text, _reasoning = _extract_bedrock_content(msg, raw_stop)
         except EmptyAnswer as empty:
@@ -3851,9 +3987,12 @@ class ChatCall(NamedTuple):
     prompt_blocks: list[str] | None
     volatile_tail: str | None
     reasoning_effort: str | None
-    #: The JSON schema a step's declared answer is (F1553), for an adapter whose provider has a schema mode (OpenAI,
-    #: Gemini, Ollama); None for every other call.
+    #: The JSON schema a step's declared answer is (F1553), sent in the strongest form its model holds
+    #: (`core.answer_shape`, F1618); None for every other call.
     response_schema: dict | None = None
+    #: Where a provider that asked for the answer in words after a refusal of its schema mode says so (F1618), for the
+    #: step to say as a warning; None when nobody listens.
+    answer_notes: list | None = None
 
     def messages(self) -> list[dict]:
         """The history and this turn's message — a new list for each call."""
@@ -3880,7 +4019,7 @@ async def _chat_openai(call: ChatCall, spec) -> LLMResult:
         prompt_cache=call.prompt_cache,
         reasoning=call.reasoning,
         **call.cap_kwargs(),
-        **({"response_schema": call.response_schema} if call.response_schema else {}),
+        **({"response_schema": call.response_schema, "answer_notes": call.answer_notes} if call.response_schema else {}),
     )
 
 
@@ -3897,6 +4036,7 @@ async def _chat_anthropic(call: ChatCall, spec) -> LLMResult:
         max_tokens=call.max_out,
         prompt_blocks=call.prompt_blocks,
         volatile_tail=call.volatile_tail,
+        **({"response_schema": call.response_schema, "answer_notes": call.answer_notes} if call.response_schema else {}),
     )
 
 
@@ -3911,7 +4051,7 @@ async def _chat_gemini(call: ChatCall, spec) -> LLMResult:
         prompt_cache=call.prompt_cache,
         reasoning=call.reasoning,
         max_tokens=call.max_out,
-        **({"response_schema": call.response_schema} if call.response_schema else {}),
+        **({"response_schema": call.response_schema, "answer_notes": call.answer_notes} if call.response_schema else {}),
     )
 
 
@@ -3931,6 +4071,7 @@ async def _chat_bedrock(call: ChatCall, spec) -> LLMResult:
         prompt_cache=call.prompt_cache,
         reasoning=call.reasoning,
         max_tokens=call.max_out,
+        **({"response_schema": call.response_schema, "answer_notes": call.answer_notes} if call.response_schema else {}),
     ))[:8]
     # Bedrock's invoke_model fallback path returns zero tokens; estimate from text.
     if input_tokens == 0 and output_tokens == 0:
@@ -3994,6 +4135,7 @@ async def _chat_model_gateway(call: ChatCall, spec) -> LLMResult:
         reasoning=call.reasoning,
         **call.cap_kwargs(),
         **({"prompt_blocks": call.prompt_blocks, "volatile_tail": call.volatile_tail} if call.prompt_blocks else {}),
+        **({"response_schema": call.response_schema, "answer_notes": call.answer_notes} if call.response_schema else {}),
     )
 
 
@@ -4058,6 +4200,7 @@ async def _chat_cli(call: ChatCall, spec) -> LLMResult:
         messages=messages,
         effort=call.reasoning_effort,
         tools=call.tools,
+        **({"response_schema": call.response_schema, "answer_notes": call.answer_notes} if call.response_schema else {}),
     )
     return LLMResult(text, input_tokens, output_tokens)
 
@@ -4362,6 +4505,7 @@ async def _chat_ollama(call: ChatCall, spec) -> LLMResult:
                     # An Ollama too old for a schema: asked once more without it; the prompt and the engine's read
                     # of the answer hold the step to its fields either way.
                     _generate_body.pop("format", None)
+                    _stepped_down(call.answer_notes, "Ollama", str(getattr(response, "text", "") or "")[:160])
                     response = await _ollama_post(client, f"{_ollama_base}/api/generate", _generate_body,
                                                   field="response")
                 if (refused := _ollama_refusal(response, _ollama_base)) is not None:
@@ -4475,6 +4619,8 @@ async def _generate_response_once(
     # The JSON schema of a step's declared answer (F1553): sent to a provider with a schema mode; every provider
     # gets the shape in the prompt, and the engine reads and repairs the answer either way.
     response_schema: dict | None = None,
+    # Where a provider notes that it asked for that answer in words after a refusal of its schema mode (F1618).
+    answer_notes: list | None = None,
 ):
     """
     Unified LLM dispatch. Routes to the provider for `mode`/`current_model`,
@@ -4586,6 +4732,7 @@ async def _generate_response_once(
         reasoning=_reasoning_plan, max_out=_max_out, sent_cap=_sent_cap, agent_cap=max_output_tokens,
         prompt_blocks=prompt_blocks, volatile_tail=volatile_tail, reasoning_effort=reasoning_effort,
         response_schema=response_schema if isinstance(response_schema, dict) else None,
+        answer_notes=answer_notes if isinstance(answer_notes, list) else None,
     )
     spec = _providers.branch_for(mode, current_model)
     if spec is None:

@@ -3479,7 +3479,9 @@ class LLMStepExecutor:
         fields = _answer.normalised(step.output_fields)
         if fields:
             prompt = f"{prompt}\n\n{_answer.instruction(fields)}"
-        shaped = {"response_schema": _answer.json_schema(fields)} if fields else {}
+        # Where a provider that asked for it in words after a refusal of its schema mode says so (F1618).
+        shape_notes: list[str] = []
+        shaped = {"response_schema": _answer.json_schema(fields), "answer_notes": shape_notes} if fields else {}
 
         yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": prompt,
                "system_prompt_extra": system_prompt_extra,
@@ -3535,6 +3537,9 @@ class LLMStepExecutor:
             response = _wait.result
             if len(_used) > 1:
                 yield {"type": "step_warning", "orch_step_id": step.id, "message": _used[1]}
+            for note in shape_notes:
+                yield {"type": "step_warning", "orch_step_id": step.id, "message": note}
+            shape_notes.clear()
         except Exception as e:
             from core.llm_providers import LLMError
             if isinstance(e, LLMError):
@@ -3566,6 +3571,9 @@ class LLMStepExecutor:
                 async for _wait_event in _rwait.events():
                     yield _wait_event
                 response = _rwait.result
+                for note in shape_notes:
+                    yield {"type": "step_warning", "orch_step_id": step.id, "message": note}
+                shape_notes.clear()
                 output, again = _answer.read(fields, response)
                 if again:
                     raise RuntimeError(_answer.missing(step.name, again, response))

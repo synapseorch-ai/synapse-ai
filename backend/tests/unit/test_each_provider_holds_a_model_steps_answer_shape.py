@@ -274,21 +274,21 @@ class TestACliIsSentItsOwnFlag:
                                     environ={"PATH": "/usr/bin"}, response_schema=schema).argv
 
     def test_claude_takes_json_schema_inline(self, tmp_path):
-        argv = self._argv("claude", tmp_path)
+        argv = self._argv("cli.claude", tmp_path)
         assert json.loads(argv[argv.index("--json-schema") + 1]) == LEADS
 
     def test_codex_takes_an_output_schema_file(self, tmp_path):
-        argv = self._argv("codex", tmp_path)
+        argv = self._argv("cli.codex", tmp_path)
         path = argv[argv.index("--output-schema") + 1]
         assert json.loads(open(path, encoding="utf-8").read()) == LEADS and path.startswith(str(tmp_path))
 
-    @pytest.mark.parametrize("base", ["gemini", "copilot"])
+    @pytest.mark.parametrize("base", ["cli.gemini", "cli.copilot"])
     def test_a_cli_with_no_flag_is_asked_in_words(self, base, tmp_path):
         argv = self._argv(base, tmp_path)
         assert "--json-schema" not in argv and "--output-schema" not in argv
 
     def test_no_declaration_adds_no_flag(self, tmp_path):
-        argv = self._argv("claude", tmp_path, schema=None)
+        argv = self._argv("cli.claude", tmp_path, schema=None)
         assert "--json-schema" not in argv
 
 
