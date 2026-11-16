@@ -50,6 +50,22 @@ IS_WIN = sys.platform == "win32"
 EXTRAS = ("knowledge", "telemetry")
 
 
+
+#: What a failed upgrade says when it had stopped a running Synapse (F1640). A restart cannot be certain to match how
+#: it ran (in a terminal, in the background, by the login service), so it is never started on a guess.
+STILL_STOPPED = "Synapse was stopped for the upgrade and is still stopped."
+DATA_AS_IT_WAS = "Your data is as it was; start it again with: synapse start"
+START_IT = "Start it again with: synapse start"
+
+
+def still_stopped_lines(failed_step: str, *, database_step: str) -> list[str]:
+    """The lines said after a failed upgrade that stopped a running Synapse, each inside 80 columns (F1640). Never for a
+    failed stop (it may still run) or a failed start (its own words say what happened). That the data is as it was is
+    said only when the failed step came before the database update, so no migration ran and the backup was taken."""
+    if failed_step in ("stop", "start"):
+        return []
+    return ["", "  " + STILL_STOPPED, "  " + (START_IT if failed_step == database_step else DATA_AS_IT_WAS)]
+
 @dataclass
 class Options:
     yes: bool = False             # ask nothing; take the defaults
@@ -137,6 +153,7 @@ class Installer:
             self._include_legacy_root(Path(self.o.legacy_root))
         mode = "legacy" if self.legacy.data_dirs or self.legacy.installs else (
             "upgrade" if self.existing.get("version") else "fresh")
+        self.mode = mode
         self.log.write(f"mode={mode} target={self.target} home={self.home}"
                        + (f" extras={','.join(self.extras)}" if self.extras else ""))
         if self._index_has_not_caught_up():
@@ -796,6 +813,8 @@ class Installer:
         lines += ["", "  " + t.style(f"{what} failed: {failure.message}", "red")]
         for line in failure.tail[-6:]:
             lines.append("    " + t.style(line, "dim"))
+        if getattr(self, "mode", "") == "upgrade" and self.s.was_running:
+            lines += still_stopped_lines(failure.step, database_step="setup")
         lines += ["", "  " + self._safe_line(),
                   "  " + t.style(f"Full log: {_tilde(self.log.path)}", "dim")]
         if self.o.method != "npm" and not self.o.upgrade:

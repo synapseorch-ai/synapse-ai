@@ -1918,6 +1918,7 @@ def _upgrade_with_pip(current: str, target: str, extras=()) -> int:
     log = Log(home / "logs" / "install.log")
     screen.open()
     link = ""
+    was_running = False
     try:
         was_running = any(_is_running(p) for p in
                           (_read_pidfile(_pid_file(n)) for n in ("backend", "frontend")) if p)
@@ -1971,7 +1972,11 @@ def _upgrade_with_pip(current: str, target: str, extras=()) -> int:
         if failed:
             screen.fail(failed.key)
         tail = getattr(e, "tail", [])
-        screen.close(["", f"  Upgrade failed: {e}", *[f"    {line}" for line in tail[-6:]],
+        from synapse.installer.flow import still_stopped_lines
+
+        # A Synapse this upgrade stopped is still stopped, and is never started again on a guess (F1640).
+        stopped = still_stopped_lines(failed.key if failed else "", database_step="migrate") if was_running else []
+        screen.close(["", f"  Upgrade failed: {e}", *[f"    {line}" for line in tail[-6:]], *stopped,
                       f"  Full log: {log.path}", ""])
         log.close()
         return 1
