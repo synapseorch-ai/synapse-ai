@@ -110,6 +110,8 @@ _LLAMA4 = "https://www.llama.com/docs/model-cards-and-prompt-formats/llama4/"
 _HF = "https://huggingface.co/"
 _MISTRAL = "https://docs.mistral.ai/getting-started/models/models_overview/"
 _GEMMA3 = "https://ai.google.dev/gemma/docs/core/model_card_3"
+#: Ollama's library: each tag page says which model a tag is, and which is its `:latest`.
+_OLLAMA = "https://ollama.com/library/"
 
 ROWS: tuple[Row, ...] = (
     # Anthropic: Fable and Mythos above Opus, Opus above Sonnet, Sonnet above Haiku; none of them small.
@@ -206,6 +208,29 @@ ROWS: tuple[Row, ...] = (
            source=_HF + "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF"),
     _sized("llama-3_3-nemotron-super-49b", "nemotron", 49.0, dense=None,
            source=_HF + "nvidia/Llama-3_3-Nemotron-Super-49B-v1"),
+    # Ollama's own spellings of the common local models (F1598), each tag as its tags page names it, and its
+    # `:latest` where that is the same model (a name alone is its `:latest`, `_ids`). Sizes are the cards' (the rows
+    # above): the dense ones of 9B or less are not for building, so Synapse AI's picker leaves them out.
+    *(_sized(p, "llama", 8.0, dense=True, source=_OLLAMA + "llama3.1/tags")
+      for p in ("llama3.1:8b", "llama3.1:latest")),
+    *(_sized(p, "llama", 3.0, dense=True, source=_OLLAMA + "llama3.2/tags")
+      for p in ("llama3.2:3b", "llama3.2:latest")),
+    _sized("llama3.2:1b", "llama", 1.0, dense=True, source=_OLLAMA + "llama3.2/tags"),
+    *(_sized(p, "gemma", 4.0, dense=None, source=_OLLAMA + "gemma3/tags") for p in ("gemma3:4b", "gemma3:latest")),
+    _sized("gemma3:1b", "gemma", 1.0, dense=None, source=_OLLAMA + "gemma3/tags"),
+    _sized("gemma3:270m", "gemma", 0.27, dense=None, source=_OLLAMA + "gemma3/tags"),
+    _sized("gemma3:12b", "gemma", 12.0, dense=None, source=_OLLAMA + "gemma3/tags"),
+    *(_sized(p, "qwen3", 8.2, dense=True, source=_OLLAMA + "qwen3/tags") for p in ("qwen3:8b", "qwen3:latest")),
+    _sized("qwen3:4b", "qwen3", 4.0, dense=True, source=_OLLAMA + "qwen3/tags"),
+    _sized("qwen3:1.7b", "qwen3", 1.7, dense=True, source=_OLLAMA + "qwen3/tags"),
+    _sized("qwen3:0.6b", "qwen3", 0.6, dense=True, source=_OLLAMA + "qwen3/tags"),
+    _sized("qwen3:30b", "qwen3", 30.5, 3.3, dense=False, source=_OLLAMA + "qwen3/tags"),
+    *(_sized(p, "phi", 3.8, dense=True, source=_OLLAMA + "phi4-mini/tags")
+      for p in ("phi4-mini:3.8b", "phi4-mini:latest")),
+    *(_sized(p, "mistral", 7.0, dense=True, source=_OLLAMA + "mistral/tags")
+      for p in ("mistral:7b", "mistral:latest", "mistral:instruct", "mistral:text", "mistral:v0.")),
+    *(_sized(p, "gpt-oss", 21.0, 3.6, dense=False, source=_OLLAMA + "gpt-oss/tags")
+      for p in ("gpt-oss:20b", "gpt-oss:latest")),
 )
 
 #: Models their provider deprecated, for a workspace's own key, from each provider's deprecations page; the product's
@@ -221,6 +246,8 @@ _DATED = re.compile(r"-\d{4}-?\d{2}-?\d{2}$")
 
 def _ids(model_id: str) -> list[str]:
     model_id = (model_id or "").strip().lower()
+    if model_id.startswith("ollama.") and ":" not in model_id:
+        model_id += ":latest"  # Ollama's name alone is its `:latest` tag (F1598)
     return [model_id, *(model_id[n + 1:] for n, c in enumerate(model_id) if c in "./")] if model_id else []
 
 

@@ -250,8 +250,10 @@ LONG_WINDOW = 128_000
 #: the engine sends it and holds it under this (`test_self_hosted_synapse_ai_runs_only_on_a_model_that_can_hold_it`).
 SYNAPSE_AI_MIN_WINDOW = LONG_WINDOW
 #: A local model that reads that much, named where Synapse AI refuses a smaller one and in the first-run step's Ollama
-#: tip (Naveen 11-14: "suggest a 128K local model"): Llama 3.1 8B reads 131,072 tokens.
-SYNAPSE_AI_LOCAL_MODEL = "llama3.1"
+#: tip, so a person without one is told one that runs Synapse AI: gpt-oss:20b reads 128K, and is not a dense model of
+#: 9B or less, which Synapse AI's picker leaves out (F1598); its download and the memory it runs in are said beside it.
+SYNAPSE_AI_LOCAL_MODEL = "gpt-oss:20b"
+SYNAPSE_AI_LOCAL_MODEL_SIZE = "about a 14 GB download; it runs in 16 GB of memory"
 
 #: Where to change Synapse AI's model, by what chose it: a pick in its model menu, the Builder model setting, or the
 #: everyday model a turn takes when no Builder model is set. Cloud's words are the same (`model_windows.WHERE`).
@@ -305,7 +307,7 @@ async def synapse_ai_refusal(model: str | None, *, source: str, floor: int = SYN
     return (f"{name or model} reads up to {tokens_short(tokens)} tokens at once, and Synapse AI needs a model that "
             f"reads at least {tokens_short(floor)} to read what it builds with, so it would be refused at its first "
             f"step. {SYNAPSE_AI_WHERE[source]} With Ollama, {SYNAPSE_AI_LOCAL_MODEL} reads "
-            f"{tokens_short(floor)}: ollama pull {SYNAPSE_AI_LOCAL_MODEL}.")
+            f"{tokens_short(floor)} ({SYNAPSE_AI_LOCAL_MODEL_SIZE}): ollama pull {SYNAPSE_AI_LOCAL_MODEL}.")
 
 #: The pools a pick looks in, in order (Naveen, 10-30): the workspace's own keys, then the platform's models.
 POOLS = (("key", "from your own keys"), ("managed", "from the platform's models"))
