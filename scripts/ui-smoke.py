@@ -1631,6 +1631,55 @@ async def check_plancardrole(browser) -> str:
 
 
 @check
+async def check_toolpolicycheck(browser) -> str:
+    """An agent's rule for one tool can be "Ask unless it only reads" (F1679): the builder saves it for a tool whose
+    app wasn't connected when it was built, and the agent editor shows it chosen, says what it does, and offers it beside
+    Allow, Ask first and Block. Light and dark at 1600, and at phone width with no row past the sheet. With SMOKE_SHOTS,
+    the Tool Policy section is saved."""
+    shots = os.environ.get("SMOKE_SHOTS")
+    aid, name, tool = "agent_uismoke_f1679", "UI smoke Ask unless it reads", "scrape_url"
+    api(f"/api/agents/{aid}", "DELETE")
+    api("/api/agents", "POST", {**_agent(aid, name), "tools": [tool], "tool_policy": {f"tool:{tool}": "check"}})
+    bad: list[str] = []
+    try:
+        for scheme, (w, h) in (("light", WIDE), ("dark", WIDE), ("light", (390, 844))):
+            ctx = await browser.new_context(viewport={"width": w, "height": h}, color_scheme=scheme)
+            await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{scheme}')}}catch(e){{}}")
+            page = await ctx.new_page()
+            try:
+                await page.goto(f"{APP}/agents", wait_until="domcontentloaded")
+                await asyncio.sleep(SETTLE)
+                await page.get_by_text(name, exact=True).first.click()
+                await page.get_by_role("button", name=re.compile(r"^Tool Policy", re.I)).first.click()
+                chosen = page.get_by_role("button", name=f"Ask unless it only reads: {tool}")
+                await chosen.wait_for(timeout=10_000)
+                if await chosen.get_attribute("aria-pressed") != "true":
+                    bad.append(f"{scheme} {w}: 'Ask unless it only reads' is not the chosen rule for {tool}")
+                for other in ("Allow", "Ask first", "Block"):
+                    if not await page.get_by_role("button", name=f"{other}: {tool}").count():
+                        bad.append(f"{scheme} {w}: no {other!r} beside it")
+                meaning = page.get_by_test_id("one-tool-check-meaning")
+                if not await meaning.count() or "only reads" not in (await meaning.first.inner_text()):
+                    bad.append(f"{scheme} {w}: what it does is not said under the rule")
+                over = await page.evaluate("() => document.documentElement.scrollWidth - window.innerWidth")
+                if w < 600 and over > 1:
+                    bad.append(f"phone: the page runs {over}px past the sheet")
+                if shots:
+                    # The "For one tool" block itself, scrolled to: the editor scrolls inside its pane.
+                    block = page.get_by_text("For one tool", exact=True).first.locator("xpath=..")
+                    await block.scroll_into_view_if_needed()
+                    await asyncio.sleep(0.3)
+                    await block.screenshot(path=os.path.join(shots, f"toolpolicycheck-{scheme}-{w}.png"))
+            finally:
+                await ctx.close()
+    finally:
+        api(f"/api/agents/{aid}", "DELETE")
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "'Ask unless it only reads' is chosen, offered beside the others and said, light, dark and at phone width"
+
+
+@check
 async def check_runfollow(browser) -> str:
     """The run log follows the newest line, and leaves a reader who scrolled up alone.
 
