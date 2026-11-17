@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 
 from core.orchestration.human_fields import ALIASES, FIELD_TYPES, BadAnswer, as_flag, check_value, field_options
 
@@ -355,9 +356,12 @@ def _typed(field: dict[str, Any], value: Any) -> tuple[bool, Any]:
     return True, str(value) if not isinstance(value, str) else value
 
 
-def _not_its_type(field: dict[str, Any], value: Any, path: str | None = None) -> str:
-    shown = json.dumps(value, ensure_ascii=False, default=str)
-    shown = shown if len(shown) <= 80 else shown[:80] + "…"
+def _not_its_type(field: dict[str, Any], value: Any, path: str | None = None, quote: Quote | None = None) -> str:
+    if quote is not None:
+        shown = quote(value)
+    else:
+        shown = json.dumps(value, ensure_ascii=False, default=str)
+        shown = shown if len(shown) <= 80 else shown[:80] + "…"
     return f"`{path or field['name'].strip()}` is {shown}, not {type_words(field)}"
 
 
@@ -386,42 +390,78 @@ def read(fields: Any, text: Any) -> tuple[dict[str, Any] | None, list[str]]:
 
 _NOT_READ = object()
 
+#: How a value a problem names is shown: its JSON, as a person may read it.
+Quote = Callable[[Any], str]
 
-def _read_fields(declared: list[dict[str, Any]], obj: dict, prefix: str, problems: list[str]) -> dict[str, Any]:
+
+@dataclass(frozen=True)
+class _Holding:
+    """How an answer is held where it is not a model's (F1620): a tool's. `quote` shows a value a problem names;
+    `absent_when_empty` lets a field that may be empty be absent too, as a tool's declaration leaves a field it does
+    not require out; `presence_only` holds a declaration known at its first level to its fields being there."""
+
+    quote: Quote | None = None
+    absent_when_empty: bool = True
+    presence_only: bool = False
+
+
+def held(fields: Any, value: Any, *, quote: Quote, first_level: bool = False) -> list[str]:
+    """What a tool's answer lacks of what its tool declares (F1620): each declared field missing, or not of its type,
+    named by its path to its depth (`leads[2].email`), as a model's answer is read (`read`); a field it does not
+    require may be absent or empty. A declaration known at its first level only (`first_level`) is held to its fields
+    being there. An answer that is no JSON object is one problem. Each value a problem names is shown by `quote`."""
+    obj = value
+    if isinstance(value, (str, bytes)):
+        try:
+            obj = json.loads(value)
+        except ValueError:
+            obj = None
+    if not isinstance(obj, dict):
+        return [f"the answer is {quote(value)}, not an object"]
+    problems: list[str] = []
+    _read_fields(normalised(fields), obj, "", problems, _Holding(quote=quote, presence_only=first_level))
+    return problems
+
+
+def _read_fields(declared: list[dict[str, Any]], obj: dict, prefix: str, problems: list[str],
+                 how: _Holding | None = None) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for f in declared:
         name = f["name"].strip()
         path = f"{prefix}{name}"
         if name not in obj:
-            problems.append(f"`{path}` is missing")
+            if not (how is not None and how.absent_when_empty and f.get("may_be_empty")):
+                problems.append(f"`{path}` is missing")
             continue
-        value = _read_value(f, obj[name], path, problems)
+        value = _read_value(f, obj[name], path, problems, how)
         if value is not _NOT_READ:
             out[name] = value
     return out
 
 
-def _read_value(f: dict[str, Any], value: Any, path: str, problems: list[str]) -> Any:
+def _read_value(f: dict[str, Any], value: Any, path: str, problems: list[str], how: _Holding | None = None) -> Any:
+    quote = how.quote if how is not None else None
     if value is None and f.get("may_be_empty"):
         return None
     kind = field_type(f.get("type")) or "string"
     if kind == "object":
         if not isinstance(value, dict):
-            problems.append(_not_its_type(f, value, path))
+            problems.append(_not_its_type(f, value, path, quote))
             return _NOT_READ
-        return _read_fields(normalised(f.get("fields")), value, f"{path}.", problems)
+        return _read_fields(normalised(f.get("fields")), value, f"{path}.", problems, how)
     if kind == "list" and isinstance(f.get("of"), dict):
         items = value if isinstance(value, list) else [value] if isinstance(value, dict) else None
         if items is None:
-            problems.append(_not_its_type(f, value, path))
+            problems.append(_not_its_type(f, value, path, quote))
             return _NOT_READ
         inner = normalised(f["of"].get("fields"))
         read_items = []
         for i, item in enumerate(items):
             if not isinstance(item, dict):
-                problems.append(f"`{path}[{i}]` is {json.dumps(item, ensure_ascii=False, default=str)[:80]}, not a group")
+                shown = quote(item) if quote is not None else json.dumps(item, ensure_ascii=False, default=str)[:80]
+                problems.append(f"`{path}[{i}]` is {shown}, not a group")
                 continue
-            read_items.append(_read_fields(inner, item, f"{path}[{i}].", problems))
+            read_items.append(_read_fields(inner, item, f"{path}[{i}].", problems, how))
         return read_items
     if kind == "list" and str(f.get("of") or "").strip().lower() in ("number", "boolean"):
         items = value if isinstance(value, list) else [value]
@@ -430,13 +470,15 @@ def _read_value(f: dict[str, Any], value: Any, path: str, problems: list[str]) -
         for i, item in enumerate(items):
             ok, typed = _typed(each, item)
             if not ok:
-                problems.append(_not_its_type(each, item, f"{path}[{i}]"))
+                problems.append(_not_its_type(each, item, f"{path}[{i}]", quote))
                 continue
             read_items.append(typed)
         return read_items
+    if how is not None and how.presence_only:
+        return value
     ok, typed = _typed(f, value)
     if not ok:
-        problems.append(_not_its_type(f, value, path))
+        problems.append(_not_its_type(f, value, path, quote))
         return _NOT_READ
     return typed
 

@@ -111,7 +111,10 @@ def tool_answers(tools: list[dict[str, Any]], custom: set[str] | frozenset[str] 
             out[name] = {"owner": owner, "fields": fields}
         elif (named := answer_fields(name, [{"name": name, "outputSchema": schema}])) is not None and \
                 name not in ANSWERS:
-            out[name] = {"owner": owner, "first_level": True, "fields": [{"name": f} for f in named]}
+            # A field the schema does not require may be left out of the answer, as `from_json_schema` reads it.
+            required = set(schema["required"]) if isinstance(schema.get("required"), list) else set()
+            out[name] = {"owner": owner, "first_level": True, "fields": [
+                {"name": f, **({} if f in required else {"may_be_empty": True})} for f in named]}
     return out
 
 
