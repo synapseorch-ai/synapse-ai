@@ -807,6 +807,40 @@ def _instructions_whole(plan: O.Plan, state: dict, notes: list[str]) -> tuple[O.
     return out, errors
 
 
+#: A plan sent back once for an llm step reading a page, a crawl or a file (F1677): a second plan in the run is built,
+#: and its validator says the warning instead, so this is never a loop.
+LONG_FETCH_SENT_BACK = "_long_fetch_sent_back"
+
+
+def _llm_reads_a_long_fetch(plan: O.Plan, state: dict) -> list[str]:
+    """An llm step that reads what a Tool step fetches with a page, crawl or file reader, or a Loop over one collects
+    (F1677): such a value can be a file only an agent step can read. Sent back once a run, with the fix."""
+    from core.orchestration.state_reads import LONG_READERS, tool_part
+    from core.templating import STATE_REF, one_form
+
+    if state.get(LONG_FETCH_SENT_BACK):
+        return []
+    steps = [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)]
+    fetches = {s.id: s for s in steps if s.type == "tool" and s.tool and tool_part(s.tool) in LONG_READERS}
+    for s in steps:
+        if s.type == "loop" and any(b in fetches for b in (s.body or [])):
+            fetches.setdefault(s.id, s)
+    errors: list[str] = []
+    for s in steps:
+        if s.type != "llm":
+            continue
+        reads = {m.group(1).split(".")[0] for m in STATE_REF.finditer(one_form(s.prompt or ""))}
+        reads |= {k for k in ((s.config or {}).get("input_keys") or []) if isinstance(k, str)}
+        for key in sorted(reads & fetches.keys()):
+            errors.append(f"step '{s.id}' is an llm step and reads '{key}', which '{fetches[key].id}' fetches: a page, "
+                          "a crawl or a file can run past the spill line and is then a file, which an llm step can't "
+                          f"read. Make '{s.id}' an agent step, which can read the file, or have it read only the part "
+                          "it needs")
+    if errors:
+        state[LONG_FETCH_SENT_BACK] = True
+    return errors
+
+
 async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, state: dict | None = None,
                   without: list[str] | None = None, alone: list[str] | None = None) -> Examined:
     """The planner's Plan held to every rule, as data: `errors` the planner can fix, `missing` the tools nothing here
@@ -885,6 +919,7 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     errors += await _given_server_left_out(plan, state)
     errors += addresses_as_given(plan, ws, state)
     errors += await _agent_switches(plan, ws, server_module)
+    errors += _llm_reads_a_long_fetch(plan, state)
     # Its eval (F1255, D340 F): only where this host offers Evals' tools (cloud withholds them until its own Evals
     # host is in: D3ASM), else left out and said, never a save that fails; then held to the Evals forms' own rules.
     eval_notes = _without_unreachable_eval(plan)

@@ -205,7 +205,9 @@ from core.native_builder import prompt_lint, seed
 #: groups (`list` with `"of": {"fields": …}`), with one example and how a later step reads it, 0e53888e… (on c316956a).
 #: F1689: reporter.json opens as Synapse AI, never names a role or a part of how it is built, and says a change is
 #: asked for and a plan drafted to check, never that it can't be done, 26c6cde2… (on F1618's 0e53888e).
-BUNDLE_SHA256 = "26c6cde2f7a75b5823f2529951f17f1ac68c10af292bae304f18f0190ccc3dda"
+#: F1677: plan_steps.md's `llm` bullet says an llm step never reads a page, a crawl or a file a Tool step fetched, and
+#: to use an agent step there, c6c7e724… (on F1689's 26c6cde2).
+BUNDLE_SHA256 = "c6c7e7241cd3d3303f65e157d0ed13499d4f5dbbb43b6ecec675b856cada616b"
 
 
 def _sha(definitions) -> str:

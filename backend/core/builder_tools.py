@@ -5464,9 +5464,13 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
 
     # A prompt that reads a key before any step writes it reads it empty there
     # (U74): said, never refused — a feedback loop's first pass is a real pattern.
+    # An LLM step reading a page, a crawl or a file a Tool step fetched (F1677): said with its fix, never refused.
+    from core.orchestration.state_reads import reads_a_long_fetch
+
     return {"ok": not issues, "issues": issues,
             "warnings": [*unset_reads(orch), *_decisions_on_words(steps, agents),
-                         *step_answers_never_followed(steps), *tool_warnings, *field_warnings]}
+                         *step_answers_never_followed(steps), *tool_warnings, *field_warnings,
+                         *reads_a_long_fetch(steps)]}
 
 
 def _parse_json_field(value: Any, fallback: Any) -> Any:
