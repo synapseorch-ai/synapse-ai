@@ -97,6 +97,31 @@ def html_to_markdown(html: str | bytes, *, url: str | None = None) -> HtmlExtrac
     return HtmlExtract(markdown=lines, hidden_removed=hidden, comments_removed=len(comments), links=links, **meta)
 
 
+#: A skip or jump link's own words: an accessibility aid that leads past a page's navigation, never its content.
+_SKIP_LINK = re.compile(r"(?:skip|jump)\s+(?:to\s+)?(?:the\s+)?(?:main\s+)?"
+                        r"(?:content|navigation|nav|menu|search|footer|main)", re.IGNORECASE)
+_MARKDOWN_LINK = re.compile(r"\[(?P<words>[^\]]*)\]\([^)]*\)")
+_RULE_ONLY = re.compile(r"[-*_=\s]*")
+
+
+def has_real_text(markdown: str) -> bool:
+    """Whether a page's extract holds any real text once skip and jump links are set aside (F1660).
+
+    A page that renders with JavaScript gives a fetcher little more than its "Skip to main content" link; kept, that
+    link became the page's whole indexed content. The measure is what is left, never a count of characters: one short
+    line of real text is real text, and a heading that only starts like a skip link ("Skip to content: how skip links
+    help") is a heading."""
+    for raw in markdown.splitlines():
+        line = raw.strip().lstrip("#>*-+ ").strip()
+        if _RULE_ONLY.fullmatch(line):
+            continue
+        link = _MARKDOWN_LINK.fullmatch(line)
+        words = (link.group("words") if link else line).strip().rstrip(".")
+        if not _SKIP_LINK.fullmatch(words):
+            return True
+    return False
+
+
 def read_html(data: bytes, ctx: ReadContext) -> ParsedDocument:
     from core.knowledge.parse import decode
 

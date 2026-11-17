@@ -288,7 +288,9 @@ async def _knowledge(fetcher, site: dict) -> Row:
         if links.noindex:
             row.outcome, row.reason = "excluded", "noindex"
             return row
-        if not extract.markdown.strip():
+        from core.knowledge.parse.html import has_real_text
+
+        if not has_real_text(extract.markdown):  # the product's own rule (F1660): a lone skip link is no content
             row.outcome, row.reason = "empty", "The page has no readable text"
             return row
         row.outcome, row.text = "content", extract.markdown

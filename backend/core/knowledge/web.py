@@ -1444,7 +1444,9 @@ async def _page(c: _Crawl, url: str, *, links_needed: bool) -> PageLinks | None:
             elif named:
                 await _outcome(c, url, "skipped", "excluded", "The page asks not to be indexed (noindex).")
             return links
-        if not extract.markdown.strip():
+        from core.knowledge.parse.html import has_real_text
+
+        if not has_real_text(extract.markdown):  # a lone skip link is no content (F1660): the page needs JavaScript
             c.counts["skipped"] += 1
             c.keep(held)
             if held is None and named:
