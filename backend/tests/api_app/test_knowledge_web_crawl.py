@@ -1318,3 +1318,31 @@ class TestAPageWithNoRealText:
         await drain(jobs)
         [row] = (await docs(kb["id"])).values()
         assert row.status == "indexed" and row.sha256
+
+
+class TestASignInWall:
+    """A page that answers 401, or lands on a sign-in page, is never indexed as the page asked for (F1632)."""
+
+    async def test_a_page_that_lands_on_a_sign_in_page_is_not_indexed(self, on, site, jobs, indexer):
+        _Site.pages["/account"] = (302, {"Location": "/login?return_to=%2Faccount"}, b"")
+        _Site.pages["/login?return_to=%2Faccount"] = html("Sign in", "Enter your password.")
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/account", kind="page")
+        [row] = (await docs(kb["id"])).values()
+        assert (row.status, row.sha256) == ("failed", None)
+        assert (row.error or "").startswith("Needs a sign-in:"), row.error
+
+    async def test_a_401_says_it_needs_a_sign_in(self, on, site, jobs, indexer):
+        _Site.pages["/members"] = (401, {"WWW-Authenticate": 'Basic realm="members"'}, b"")
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/members", kind="page")
+        [row] = (await docs(kb["id"])).values()
+        assert row.status == "failed" and (row.error or "").startswith("Needs a sign-in:"), row.error
+
+    async def test_a_sign_in_page_asked_for_by_its_own_address_is_indexed(self, on, site, jobs, indexer):
+        _Site.pages["/login"] = html("Sign in", "Enter your password.")
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/login", kind="page")
+        await drain(jobs)
+        [row] = (await docs(kb["id"])).values()
+        assert row.status == "indexed" and row.sha256
