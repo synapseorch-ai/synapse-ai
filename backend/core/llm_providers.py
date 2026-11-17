@@ -1259,6 +1259,12 @@ async def call_cli_provider(
             # A CLI too old for its schema flag (F1618): asked once more without it, in words alone.
             _stepped_down(answer_notes, _CLI_LABELS[base], f"{_inv.schema_flag(base)} unknown to this version")
             inv, run = await _spawn(None)
+        elif schema is not None and not run.timed_out and _schema_answer_unfit(base, run.stdout):
+            # An answer that did not fit the declared shape in the one turn the CLI has (F1665): asked once more in
+            # words, as a refused format is, and read as words are. A second turn is no fix: the CLI would make the
+            # model invent a value to fit.
+            _stepped_down(answer_notes, _CLI_LABELS[base], "its answer did not fit the declared shape in its one turn")
+            inv, run = await _spawn(None)
         if run.timed_out:
             raise LLMError(
                 f"CLI provider '{cli_model}' timed out: the model didn't answer within {_within(deadline)}, so "
@@ -1327,6 +1333,21 @@ def _cli_failure(base: str, cli_model: str, text: str, *, auth: bool = False) ->
         said = f"CLI provider '{cli_model}' is not signed in. {_CLI_SIGN_IN[base]}, then retry."
         return LLMError(f"{said}\nDetails: {tail[-300:]}", said=said)  # its Details are the CLI's (F1502)
     return LLMError(f"CLI provider '{cli_model}' failed: {tail[-400:]}")
+
+
+def _schema_answer_unfit(base: str, stdout: bytes) -> bool:
+    """Whether a claude CLI call sent a declared shape ended out of turns with no structured answer and no tool
+    denied (F1665). It has no tool of its own (`--tools ""`), so the only turn it can have wanted is the CLI asking the
+    model again because its answer did not fit the shape. Without a schema the same end is the model reaching for a
+    turn of its own (F1320), which the caller never asks this of."""
+    if base != "cli.claude":
+        return False
+    try:
+        obj = json.loads(_ANSI_ESCAPE.sub("", stdout.decode("utf-8", errors="replace")).strip())
+    except ValueError:
+        return False
+    return (isinstance(obj, dict) and obj.get("subtype") == "error_max_turns"
+            and obj.get("structured_output") is None and not obj.get("permission_denials"))
 
 
 def _refuse_own_tools(cli_model: str, tools: list[str], said: str = "") -> LLMError:
