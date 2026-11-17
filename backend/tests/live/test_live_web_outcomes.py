@@ -143,3 +143,18 @@ def test_a_page_robots_allows_is_fetched():
     assert live_web.robots_skip(rules, "https://example.com/privately-public") is None
     assert live_web.robots_skip(rules, "https://example.com/") is None
     assert live_web.robots_skip(Robots.allow_all(), "https://example.com/private/page") is None
+
+
+def test_a_block_the_crawler_reported_is_a_block():
+    outcome, reason, _ = _scrape({"success": False,
+                                  "error": "Crawl failed: Blocked by anti-bot protection: Cloudflare challenge"})
+    assert (outcome, reason) == ("blocked", "Crawl failed: Blocked by anti-bot protection: Cloudflare challenge")
+
+
+@pytest.mark.parametrize("error", [
+    "Crawl failed: net::ERR_NAME_NOT_RESOLVED at https://example.invalid/",
+    "Crawl failed: Timeout 30000ms exceeded; the page said Blocked by anti-bot protection",
+    "Crawl failed: ",
+])
+def test_a_crawl_failure_that_is_not_a_block_stays_an_error(error):
+    assert _scrape({"success": False, "error": error})[0] == "error"

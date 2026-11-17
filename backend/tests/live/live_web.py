@@ -122,8 +122,11 @@ def scrape_outcome(texts: list[str]) -> tuple[str, str, str]:
     if answer.get("success"):
         return "content", "", str(answer.get("markdown") or "")
     reason = str(answer.get("error") or "")
+    # The scraper passes the crawler's own failure on as "Crawl failed: <the crawler's words>", a block among them.
+    # Only a failed answer's error field is read, never the page's text.
+    words = reason.removeprefix("Crawl failed: ")
     for start, outcome in _SCRAPE_REASONS:
-        if reason.startswith(start):
+        if words.startswith(start):
             return outcome, reason, ""
     return "error", reason, ""
 
@@ -380,4 +383,4 @@ async def run(sites: list[dict], *, previous: dict[tuple[str, str], str], workdi
 def run_info(vantage: str | None = None) -> dict:
     return {"started": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "vantage": vantage or os.environ.get("SYNAPSE_LIVE_VANTAGE", "local"),
-            "ref": os.environ.get("GITHUB_SHA", ""), "min_gap_s": MIN_GAP_S}
+            "ref": os.environ.get("SYNAPSE_LIVE_REF") or os.environ.get("GITHUB_SHA", ""), "min_gap_s": MIN_GAP_S}
