@@ -350,6 +350,30 @@ def _answer_repair(step: StepConfig, run: OrchestrationRun, fields: list[dict], 
     )
 
 
+#: An answer far shorter than what its tools returned (F1677): under this many characters…
+SHORT_ANSWER = 2_000
+#: …against at least this many from its tools, and a tenth of it or less.
+GATHERED_MIN = 20_000
+
+
+def _handed_on_short(step: Any, engine: Any, answer: Any, gathered: int, fields: Any) -> str | None:
+    """The warning for an Agent step that hands a later step far less than its tools found (F1677): a site reader whose
+    tools fetched 160K answered with a status line, and the next step read only that. Never for a step that declares its
+    answer's fields (short by design), an answer saved as a file, or one nothing later reads. It never stops the run."""
+    from core.orchestration.state_reads import read_by_another
+    from core.step_refs import is_ref
+
+    if not step.output_key or fields or is_ref(answer) or gathered < GATHERED_MIN:
+        return None
+    said = answer if isinstance(answer, str) else json.dumps(answer, default=str)
+    if len(said) >= SHORT_ANSWER or len(said) * 10 > gathered:
+        return None
+    if not read_by_another(step.output_key, engine.orch.steps, but=step.id):
+        return None
+    return (f"Step '{step.name}' answered in {len(said)} characters, but its tools returned {gathered:,}: the next step "
+            "reads only the answer. Ask its agent to answer with what it found, or fetch it with a Tool step.")
+
+
 class AgentStepExecutor:
     """Run a sub-agent's ReAct loop. Reuses the existing engine.
 
@@ -477,6 +501,7 @@ class AgentStepExecutor:
                       f"(attempt {resume_attempt}, turn {saved_progress.get('turn')})")
 
         final_response = None
+        gathered = 0  # what its tools returned this turn, whole (F1677)
         no_answer: dict | None = None
         _log_status = "completed"
         execution_events: list[dict] = []
@@ -660,6 +685,7 @@ class AgentStepExecutor:
                     continue
                 yield {**event, "orch_step_id": step.id, "step_name": step.name}
                 if event.get("type") == "final":
+                    gathered = int(event.get("gathered_chars") or 0)
                     # A finish tool's result is the output as the object it is (E2); otherwise the reply's text.
                     finish = event.get("finish")
                     final_response = finish["result"] if isinstance(finish, dict) else event.get("response", "")
@@ -720,6 +746,8 @@ class AgentStepExecutor:
         # not on step progress).
         run.step_progress.pop(step.id, None)
 
+        if warned := _handed_on_short(step, engine, final_response, gathered, fields):
+            yield {"type": "step_warning", "orch_step_id": step.id, "message": warned}
         if step.output_key:
             run.shared_state[step.output_key] = final_response
 

@@ -1124,6 +1124,15 @@ def build_origin_aware_context(
         f"You are currently executing step **\"{step_name}\"** (execution #{transition.execution_number}).",
         f"Your output will be stored as: `{output_key}`",
     ]
+    # An Agent step's output is its final answer, nothing else (F1677): one that a later step reads is told so, as a
+    # site reader that fetched 160K and answered with a status line left the next step to guess.
+    from core.orchestration.state_reads import read_by_another
+
+    if getattr(step.type, "value", step.type) == "agent" and read_by_another(output_key, engine.orch.steps,
+                                                                             but=step.id):
+        sys_lines.append(f"A later step reads `{output_key}`, and your final answer is all it gets: put what you "
+                         "found in the answer itself (or name the file you saved it to), never only a status such as "
+                         "\"done\".")
     if transition.origin_type == "evaluator":
         sys_lines.append(
             f"You are revising your previous output based on evaluator feedback "

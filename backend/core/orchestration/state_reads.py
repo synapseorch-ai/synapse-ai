@@ -132,6 +132,20 @@ _CODE_ITEM = re.compile(r"\bstate\[\s*(['\"])([^'\"]+)\1\s*\]")
 _DICT_NAMES = frozenset(dir(dict))
 
 
+def read_by_another(key: str | None, steps: object, *, but: str) -> bool:
+    """Whether a step other than `but` reads `key` (F1677): by its input keys, a `{{ state.key }}` in its prompt, or a
+    Transform's code or a Loop's list."""
+    if not key:
+        return False
+    for step in steps or []:
+        d = step.model_dump(mode="json") if hasattr(step, "model_dump") else step
+        if not isinstance(d, dict) or d.get("id") == but:
+            continue
+        if key in (d.get("input_keys") or []) or key in prompt_reads(d) or key in hard_reads(d):
+            return True
+    return False
+
+
 def guarded(code: str, key: str) -> bool:
     """The code asks whether `key` is there before it reads it, or writes it itself first."""
     k = re.escape(key)
