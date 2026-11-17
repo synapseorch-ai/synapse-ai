@@ -1293,7 +1293,9 @@ def _answers_read_past(plan: O.Plan, ws: Workspace, readers: set[str]) -> tuple[
                 step["output_key"] = step["id"]
             saved.append(step)
         firsts: dict[tuple[str, str, str], list] = {}
-        for m in tool_answer_misses(saved, answers):
+        # Held to the Tool step a run brings to each read, from the plan's first step, as the validator holds them
+        # (F1621).
+        for m in tool_answer_misses(saved, answers, saved[0]["id"] if saved else None):
             if m.reader not in readers:
                 continue
             if m.first:

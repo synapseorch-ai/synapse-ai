@@ -14,7 +14,7 @@
  */
 import type { StepConfig } from '@/types/orchestration';
 
-export type FieldCheck = { stepId: string; key: string; field: string | null; kind: 'field' | 'words' | 'list'; message: string };
+export type FieldCheck = { stepId: string; key: string; field: string | null; kind: 'field' | 'words' | 'list' | 'way'; message: string };
 type Agent = { id: string; type?: string };
 type AnyStep = StepConfig & Record<string, unknown>;
 
@@ -183,23 +183,229 @@ function typedAnswer(step: AnyStep): Record<string, string> | null {
     return null;
 }
 
-export function fieldChecks(steps: StepConfig[], agents?: Agent[]): FieldCheck[] {
+// ── The ways a run takes (F1621): `core/orchestration/state_reads.py`'s walk, for the editor ────────────────────────
+
+type Steps = Map<string, StepConfig>;
+
+/** The steps each branch runs, as the engine resolves them: a branch listing one
+ *  step follows its next-step chain up to the Parallel's own next step. */
+export function branchChains(parallel: StepConfig, byId: Steps): string[][] {
+    return (parallel.parallel_branches || []).map((branch) => {
+        if (branch.length !== 1) return [...branch];
+        const chain = [branch[0]];
+        let current = branch[0];
+        for (;;) {
+            const nxt = byId.get(current)?.next_step_id;
+            if (!nxt || nxt === parallel.next_step_id || chain.includes(nxt)) break;
+            chain.push(nxt);
+            current = nxt;
+        }
+        return chain;
+    });
+}
+
+/** The keys a step writes: its output key, and a Loop's or a nested Parallel's body. */
+export function containerWrites(id: string, byId: Steps, seen: Set<string>): Set<string> {
+    const step = byId.get(id);
+    const keys = new Set<string>();
+    if (!step || seen.has(id)) return keys;
+    seen.add(id);
+    if (step.output_key) keys.add(step.output_key);
+    const inner = step.type === 'loop' ? (step.loop_step_ids || [])
+        : step.type === 'parallel' ? branchChains(step, byId).flat() : [];
+    for (const sub of inner) for (const k of containerWrites(sub, byId, seen)) keys.add(k);
+    return keys;
+}
+
+/** What a step writes itself (not its body): its output key, a Loop's index and item, a Human step's answer. */
+export function ownWrites(step: StepConfig): Set<string> {
+    const keys = new Set<string>(step.output_key ? [step.output_key] : []);
+    if (step.type === 'loop') {
+        keys.add(step.loop_index_key || 'loop_index');
+        if (step.loop_over) keys.add(step.loop_item_key || 'loop_item');
+    }
+    if (step.type === 'human') keys.add('human_response');
+    return keys;
+}
+
+/** The steps a run can reach before any step writes `key`. A Loop's body is taken to run; a Parallel runs every
+ *  branch before it goes on, so a branch step never goes on to the join (F1621): the Parallel does. */
+export function firstUnwritten(key: string, entry: string | null | undefined, byId: Steps): Set<string> {
+    const inLoop = new Map<string, string | null>();
+    const inBranch = new Map<string, string | null>();
+    for (const s of byId.values()) {
+        if (s.type === 'loop') {
+            const body = (s.loop_step_ids || []).filter((b) => byId.has(b));
+            body.forEach((sid, i) => inLoop.set(sid, body[i + 1] ?? null));
+        } else if (s.type === 'parallel') {
+            for (const chain of branchChains(s, byId)) {
+                chain.forEach((sid, i) => { if (!inBranch.has(sid)) inBranch.set(sid, chain[i + 1] ?? null); });
+            }
+        }
+    }
+    const reached = new Set<string>();
+    const queue = entry && byId.has(entry) ? [entry] : [];
+    while (queue.length) {
+        const sid = queue.pop()!;
+        if (reached.has(sid)) continue;
+        reached.add(sid);
+        const step = byId.get(sid)!;
+        if (ownWrites(step).has(key)) continue;
+        const targets: (string | null | undefined)[] = [];
+        if (step.type === 'loop') targets.push((step.loop_step_ids || []).filter((b) => byId.has(b))[0]);
+        else if (step.type === 'parallel') targets.push(...branchChains(step, byId).map((c) => c[0]));
+        const container = step.type === 'loop' || step.type === 'parallel';
+        if (!container || !containerWrites(sid, byId, new Set()).has(key)) {
+            if (inLoop.has(sid)) targets.push(inLoop.get(sid));
+            else targets.push(
+                inBranch.has(sid) ? inBranch.get(sid) : step.next_step_id, step.if_true_step_id, step.if_false_step_id,
+                step.switch_default_step_id, step.on_exhausted_step_id, ...Object.values(step.route_map || {}),
+                ...Object.values(step.switch_cases || {}),
+            );
+        }
+        for (const t of targets) if (t && byId.has(t) && !reached.has(t)) queue.push(t);
+    }
+    return reached;
+}
+
+/** A step and every step inside it: a Loop's body, a Parallel's branches. */
+function contained(id: string, byId: Steps, seen: Set<string>): Set<string> {
+    const step = byId.get(id);
+    const found = new Set<string>();
+    if (!step || seen.has(id)) return found;
+    seen.add(id);
+    found.add(id);
+    const inner = step.type === 'loop' ? (step.loop_step_ids || [])
+        : step.type === 'parallel' ? branchChains(step, byId).flat() : [];
+    for (const sub of inner) for (const k of contained(sub, byId, seen)) found.add(k);
+    return found;
+}
+
+/** One workflow's ways from its entry: for each key, the writers a run can bring to each step (`state_reads.Walk`).
+ *  A Loop's body runs in order and round again; a value written in a Parallel's branch goes on to its join, and one
+ *  written before it goes past only when no branch writes the key again. */
+export class Walk {
+    private readonly byId: Steps;
+    private readonly cache = new Map<string, Map<string, Set<string>>>();
+    private shape: { bodyNext: Map<string, string[]>; branchNext: Map<string, [string | null, string]>;
+        members: Map<string, Set<string>> } | null = null;
+
+    private readonly entry: string | null | undefined;
+
+    constructor(steps: StepConfig[], entry: string | null | undefined) {
+        this.byId = new Map(steps.filter((s) => s && s.id).map((s) => [s.id, s]));
+        this.entry = entry;
+    }
+
+    reaching(key: string): Map<string, Set<string>> {
+        let found = this.cache.get(key);
+        if (found) return found;
+        found = new Map();
+        for (const writer of this.byId.values()) {
+            if (!ownWrites(writer).has(key)) continue;
+            const seen = new Set<string>();
+            const queue = this.on(writer.id, key, writer.id);
+            while (queue.length) {
+                const sid = queue.pop()!;
+                if (seen.has(sid)) continue;
+                seen.add(sid);
+                if (!found.has(sid)) found.set(sid, new Set());
+                found.get(sid)!.add(writer.id);
+                if (!ownWrites(this.byId.get(sid)!).has(key)) queue.push(...this.on(sid, key, writer.id));
+            }
+        }
+        this.cache.set(key, found);
+        return found;
+    }
+
+    /** The writers of `key` a read in `sid` is judged by: those a run can bring to it, or all of them when none can. */
+    judgedBy<T extends { id: string }>(sid: string, key: string, candidates: T[]): T[] {
+        if (!this.entry || !this.byId.has(this.entry)) return candidates;
+        const reach = this.reaching(key).get(sid);
+        const picked = reach ? candidates.filter((w) => reach.has(w.id)) : [];
+        return picked.length ? picked : candidates;
+    }
+
+    private on(sid: string, key: string, origin: string): string[] {
+        const { bodyNext, branchNext, members } = this.structure();
+        const step = this.byId.get(sid)!;
+        let targets: (string | null | undefined)[];
+        if (bodyNext.has(sid)) targets = bodyNext.get(sid)!;
+        else if (step.type === 'loop') {
+            const body = (step.loop_step_ids || []).filter((b) => this.byId.has(b));
+            targets = body.length ? [body[0]] : [step.next_step_id];
+        } else if (step.type === 'parallel') {
+            targets = branchChains(step, this.byId).filter((c) => c.length).map((c) => c[0]);
+            if (!containerWrites(sid, this.byId, new Set()).has(key)) targets.push(step.next_step_id);
+        } else {
+            let nxt: string | null | undefined = step.next_step_id;
+            const inBranch = branchNext.get(sid);
+            if (inBranch) {
+                nxt = inBranch[0] ?? (members.get(inBranch[1])?.has(origin) ? this.byId.get(inBranch[1])?.next_step_id : null);
+            }
+            targets = [nxt, step.if_true_step_id, step.if_false_step_id, step.switch_default_step_id,
+                step.on_exhausted_step_id, ...Object.values(step.route_map || {}), ...Object.values(step.switch_cases || {})];
+        }
+        return [...new Set(targets.filter((t): t is string => !!t && this.byId.has(t)))];
+    }
+
+    private structure() {
+        if (this.shape) return this.shape;
+        const bodyNext = new Map<string, string[]>();
+        const branchNext = new Map<string, [string | null, string]>();
+        const members = new Map<string, Set<string>>();
+        for (const step of this.byId.values()) {
+            if (step.type === 'loop') {
+                const body = (step.loop_step_ids || []).filter((b) => this.byId.has(b));
+                body.forEach((sid, i) => bodyNext.set(sid, i + 1 < body.length ? [body[i + 1]]
+                    : [body[0], ...(step.next_step_id ? [step.next_step_id] : [])]));
+            } else if (step.type === 'parallel') {
+                const inside = new Set<string>();
+                for (const chain of branchChains(step, this.byId)) {
+                    const known = chain.filter((c) => this.byId.has(c));
+                    known.forEach((sid, i) => {
+                        if (!branchNext.has(sid)) branchNext.set(sid, [known[i + 1] ?? null, step.id]);
+                        for (const k of contained(sid, this.byId, new Set())) inside.add(k);
+                    });
+                }
+                members.set(step.id, inside);
+            }
+        }
+        this.shape = { bodyNext, branchNext, members };
+        return this.shape;
+    }
+}
+
+export function fieldChecks(steps: StepConfig[], agents?: Agent[], entry?: string | null): FieldCheck[] {
     const all = (steps || []).filter((s): s is AnyStep => !!s && typeof s === 'object') as AnyStep[];
     const writers = new Map<string, AnyStep[]>();
     for (const s of all) for (const key of keysWritten(s)) writers.set(key, [...(writers.get(key) || []), s]);
-    const known = new Map<string, AnyStep[]>();
-    for (const [key, ws] of writers) if (ws.every((w) => answerFields(w, agents) !== null)) known.set(key, ws);
+    // From the entry, each read is judged by the writers a run can bring to it (F1621); without it, by them all.
+    const walk = entry ? new Walk(all, entry) : null;
+    const knownFor = (sid: string, key: string): AnyStep[] | null => {
+        const every = writers.get(key);
+        if (!every) return null;
+        const ws = walk ? walk.judgedBy(sid, key, every) : every;
+        return ws.every((w) => answerFields(w, agents) !== null) ? ws : null;
+    };
     const out: FieldCheck[] = [];
 
     for (const s of all) {
+        const known = new Map<string, AnyStep[]>();
+        for (const key of writers.keys()) {
+            const ws = knownFor(s.id, key);
+            if (ws) known.set(key, ws);
+        }
         const reads = new Map<string, string[]>();
+        const decided = new Set<string>();  // read in a condition or code: missing, it changes the run
         const add = (key: string, field: string) => {
             if (!known.has(key)) return;
             const list = reads.get(key) || [];
             if (!list.includes(field)) reads.set(key, [...list, field]);
         };
-        for (const f of CONDITIONS) if (typeof s[f] === 'string') codeReads(unbraced(s[f] as string), new Set(known.keys()), add);
-        if (typeof s.transform_code === 'string') codeReads(s.transform_code, new Set(known.keys()), add);
+        const addDecided = (key: string, field: string) => { add(key, field); decided.add(`${key}.${field}`); };
+        for (const f of CONDITIONS) if (typeof s[f] === 'string') codeReads(unbraced(s[f] as string), new Set(known.keys()), addDecided);
+        if (typeof s.transform_code === 'string') codeReads(s.transform_code, new Set(known.keys()), addDecided);
         const rest: Record<string, unknown> = {};
         for (const [k, v] of Object.entries(s)) if (k !== 'transform_code' && !CONDITIONS.includes(k)) rest[k] = v;
         templateReads(rest, new Set(known.keys()), add);
@@ -207,7 +413,22 @@ export function fieldChecks(steps: StepConfig[], agents?: Agent[]): FieldCheck[]
             const ws = known.get(key)!;
             const has = [...new Set(ws.flatMap((w) => answerFields(w, agents) || []))];
             for (const field of fields) {
-                if (has.includes(field)) continue;
+                if (has.includes(field)) {
+                    // Some of the writers a run brings here write it and the rest never do (F1621).
+                    const lacking = ws.filter((w) => !(answerFields(w, agents) || []).includes(field));
+                    if (lacking.length && walk && decided.has(`${key}.${field}`) && walk.reaching(key).get(s.id)?.size) {
+                        const having = ws.filter((w) => !lacking.includes(w));
+                        const named = (group: AnyStep[]) => ticked(group.map((w) => w.name || w.id));
+                        out.push({
+                            stepId: s.id, key, field, kind: 'way',
+                            message: `Reads “${field}” from state.${key}, which ${named(having)} write${having.length === 1 ? 's' : ''} ` +
+                                `but ${named(lacking)} never write${lacking.length === 1 ? 's' : ''}: on a way through ` +
+                                `${named(lacking)} it finds nothing. Give ${named(lacking)} the field too, or read it ` +
+                                `only after ${named(having)}.`,
+                        });
+                    }
+                    continue;
+                }
                 const why = ws.length === 1
                     ? repair(ws[0], key, field, has)
                     : `the steps that write it (${ticked(ws.map((w) => w.name || w.id))}) never write it: ` +
@@ -250,12 +471,19 @@ export function fieldChecks(steps: StepConfig[], agents?: Agent[]): FieldCheck[]
         const m = /^state\.([A-Za-z_]\w*)(?:\.([A-Za-z_]\w*))?$/.exec(unbraced(s.loop_over).trim());
         if (!m || !writers.has(m[1])) continue;
         const [, key, field] = m;
-        const ws = writers.get(key)!;
+        const ws = walk ? walk.judgedBy(s.id, key, writers.get(key)!) : writers.get(key)!;
         const typed = ws.map(typedAnswer);
         if (typed.some((t) => t === null)) continue;
-        const fields: Record<string, string> = Object.assign({}, ...typed);
+        let fields: Record<string, string> = Object.assign({}, ...typed);
+        let w = ws[0];
+        if (walk && field) {
+            // Each way's own writer: the first declaring the field as no list is the way the loop fails on (F1621).
+            const i = typed.findIndex((t) => !!t && field in t && t[field] !== 'list');
+            if (i < 0) continue;
+            w = ws[i];
+            fields = { ...typed[i] };
+        }
         const lists = Object.keys(fields).filter((f) => fields[f] === 'list');
-        const w = ws[0];
         const name = `“${w.name || w.id}”`;
         const fix = lists.length === 1
             ? `point it at state.${key}.${lists[0]}, its one list`

@@ -13,7 +13,7 @@ import type { Orchestration, StepConfig, StepIssue } from '@/types/orchestration
 import { BUILTIN_STATE_KEYS } from './graph';
 import { normalizeStateType } from './stateTypes';
 import { answerValueChecks, humanFieldNameIssues, humanFieldOptions, humanFieldType } from './humanFields';
-import { fieldChecks } from './fieldChecks';
+import { branchChains, containerWrites, fieldChecks, firstUnwritten, ownWrites } from './fieldChecks';
 
 export interface ValidationResult {
     byStep: Record<string, StepIssue[]>;
@@ -355,7 +355,7 @@ function checkOrchestration(orch: Orchestration, agents?: { id: string; type?: s
     // --- What a step reads out of another's answer (F1549, F1553), said as the server says it ---
     // A field its writer never writes, a field a model step does not declare, a decision on a model's own words.
     // Warnings: the run goes on as it does today, and the server's check says the same (`fieldChecks.ts`).
-    for (const check of fieldChecks(orch.steps, agents)) add(check.stepId, warning(check.message));
+    for (const check of fieldChecks(orch.steps, agents, orch.entry_step_id)) add(check.stepId, warning(check.message));
     // A condition on a Yes / No or One of answer that cannot follow it (F1558): the server says the same.
     for (const check of answerValueChecks(orch.steps)) add(check.stepId, warning(check.message));
 
@@ -416,42 +416,12 @@ function reachableFrom(starts: string[], byId: Map<string, StepConfig>, withStar
     return reached;
 }
 
-/** The steps each branch runs, as the engine resolves them: a branch listing one
- *  step follows its next-step chain up to the Parallel's own next step. */
-function branchChains(parallel: StepConfig, byId: Map<string, StepConfig>): string[][] {
-    return (parallel.parallel_branches || []).map((branch) => {
-        if (branch.length !== 1) return [...branch];
-        const chain = [branch[0]];
-        let current = branch[0];
-        for (;;) {
-            const nxt = byId.get(current)?.next_step_id;
-            if (!nxt || nxt === parallel.next_step_id || chain.includes(nxt)) break;
-            chain.push(nxt);
-            current = nxt;
-        }
-        return chain;
-    });
-}
-
-/** The keys a step writes: its output key, and a Loop's or a nested Parallel's body. */
-function keysWritten(id: string, byId: Map<string, StepConfig>, seen: Set<string>): Set<string> {
-    const step = byId.get(id);
-    const keys = new Set<string>();
-    if (!step || seen.has(id)) return keys;
-    seen.add(id);
-    if (step.output_key) keys.add(step.output_key);
-    const inner = step.type === 'loop' ? (step.loop_step_ids || [])
-        : step.type === 'parallel' ? branchChains(step, byId).flat() : [];
-    for (const sub of inner) for (const k of keysWritten(sub, byId, seen)) keys.add(k);
-    return keys;
-}
-
 /** One sentence per key two or more branches of `parallel` write (mirrors branch_keys.py). */
 function sharedBranchKeys(parallel: StepConfig, byId: Map<string, StepConfig>): string[] {
     const owners = new Map<string, Map<number, string[]>>();
     branchChains(parallel, byId).forEach((chain, index) => {
         for (const sid of chain) {
-            for (const key of keysWritten(sid, byId, new Set())) {
+            for (const key of containerWrites(sid, byId, new Set())) {
                 const byBranch = owners.get(key) ?? new Map<number, string[]>();
                 byBranch.set(index, [...(byBranch.get(index) ?? []), byId.get(sid)?.name || sid]);
                 owners.set(key, byBranch);
@@ -488,49 +458,6 @@ function promptReads(step: StepConfig): Set<string> {
         for (const m of text.matchAll(/\{\{\s*state\.([A-Za-z_]\w*)|\{state\.(\w+)\}/g)) keys.add(m[1] || m[2]);
     }
     return keys;
-}
-
-/** What a step writes itself (not its body): its output key, a Loop's index and item, a Human step's answer. */
-function ownWrites(step: StepConfig): Set<string> {
-    const keys = new Set<string>(step.output_key ? [step.output_key] : []);
-    if (step.type === 'loop') {
-        keys.add(step.loop_index_key || 'loop_index');
-        if (step.loop_over) keys.add(step.loop_item_key || 'loop_item');
-    }
-    if (step.type === 'human') keys.add('human_response');
-    return keys;
-}
-
-/** The steps a run can reach before any step writes `key` (a Loop's body is taken to run; a Parallel's every branch). */
-function firstUnwritten(key: string, entry: string | null | undefined, byId: Map<string, StepConfig>): Set<string> {
-    const inLoop = new Map<string, string | null>();
-    for (const s of byId.values()) {
-        if (s.type !== 'loop') continue;
-        const body = (s.loop_step_ids || []).filter((b) => byId.has(b));
-        body.forEach((sid, i) => inLoop.set(sid, body[i + 1] ?? null));
-    }
-    const reached = new Set<string>();
-    const queue = entry && byId.has(entry) ? [entry] : [];
-    while (queue.length) {
-        const sid = queue.pop()!;
-        if (reached.has(sid)) continue;
-        reached.add(sid);
-        const step = byId.get(sid)!;
-        if (ownWrites(step).has(key)) continue;
-        const targets: (string | null | undefined)[] = [];
-        if (step.type === 'loop') targets.push((step.loop_step_ids || []).filter((b) => byId.has(b))[0]);
-        else if (step.type === 'parallel') targets.push(...branchChains(step, byId).map((c) => c[0]));
-        const container = step.type === 'loop' || step.type === 'parallel';
-        if (!container || !keysWritten(sid, byId, new Set()).has(key)) {
-            if (inLoop.has(sid)) targets.push(inLoop.get(sid));
-            else targets.push(
-                step.next_step_id, step.if_true_step_id, step.if_false_step_id, step.switch_default_step_id,
-                step.on_exhausted_step_id, ...Object.values(step.route_map || {}), ...Object.values(step.switch_cases || {}),
-            );
-        }
-        for (const t of targets) if (t && byId.has(t) && !reached.has(t)) queue.push(t);
-    }
-    return reached;
 }
 
 /** `[stepId, sentence]` for each prompt that reads a key before any step writes it. */
