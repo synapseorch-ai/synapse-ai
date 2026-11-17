@@ -39,7 +39,9 @@ KEEP_DAYS = 14
 _CACHE_S = 60
 
 #: Models their provider retired for new callers, known before any call fails (F1299): `{model: {provider, reason,
-#: since}}`, the reason the provider's own sentence. Offered nowhere for that provider; still priced.
+#: since}}`, the reason the provider's own words. Offered nowhere for that provider; still priced. One its provider
+#: shut down for everyone (`shut_down`, F1648) is never called either: a saved step on it is refused with those words
+#: (`shut_down_said`), or answers from a same-provider stand-in where one fits (F1369).
 RETIRED: dict[str, dict[str, str]] = {
     "gemini-2.5-flash-lite": {
         "provider": "gemini", "since": "2026-10-29",
@@ -49,6 +51,24 @@ RETIRED: dict[str, dict[str, str]] = {
     "gpt-4.1-nano": {
         "provider": "openai", "since": "2026-11-04",
         "reason": "The model `gpt-4.1-nano` has been deprecated.",
+    },
+    # Google's deprecations page (aistudio.google.com/docs/deprecations, read 2026-11-17): shut down, replaced by
+    # gemini-3.1-flash-lite.
+    "gemini-3.1-flash-lite-preview": {
+        "provider": "gemini", "since": "2026-05-25", "shut_down": True,
+        "reason": "Gemini 3.1 Flash-Lite Preview (Shut down): its shutdown date was May 25, 2026, and its replacement "
+                  "is gemini-3.1-flash-lite.",
+    },
+    # DeepSeek's changelog (api-docs.deepseek.com/updates, 2026-04-24, read 2026-11-17).
+    "deepseek-chat": {
+        "provider": "deepseek", "since": "2026-07-24", "shut_down": True,
+        "reason": "The two legacy API model names, deepseek-chat and deepseek-reasoner, will be discontinued in three "
+                  "months (2026-07-24).",
+    },
+    "deepseek-reasoner": {
+        "provider": "deepseek", "since": "2026-07-24", "shut_down": True,
+        "reason": "The two legacy API model names, deepseek-chat and deepseek-reasoner, will be discontinued in three "
+                  "months (2026-07-24).",
     },
 }
 
@@ -81,6 +101,18 @@ def said_stand_in(refused: str, used: str) -> None:
     if said is not None:
         said.append(f"`{refused}` is no longer served by its provider, so this step used `{used}` instead, from the "
                     "same provider and keys. Set the model on the step or its agent to keep that one.")
+
+
+def shut_down_said(model: str | None) -> str | None:
+    """Why a call on `model` is never sent, or None (F1648): its provider shut it down for everyone (`RETIRED`'s
+    `shut_down`), said with the provider's own words and the date. A model refused only to new callers is still called
+    for a workspace that has it."""
+    if not model:
+        return None
+    for listed, row in RETIRED.items():
+        if row.get("shut_down") and same_model(listed, model):
+            return f"{listed}: this model has been retired by its provider on {row['since']}. {row['reason']}"
+    return None
 
 
 def retired_for(provider: str) -> dict[str, dict]:

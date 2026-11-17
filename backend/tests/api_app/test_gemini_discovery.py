@@ -65,18 +65,21 @@ def gemini_account(monkeypatch):
     install_httpx(monkeypatch, handler)
 
 
-#: Google still lists it, and refuses it to new callers (F1299, `model_availability.RETIRED`): left out, saying why.
-RETIRED = "gemini-2.5-flash-lite"
+#: Google still lists them, and refuses one to new callers (F1299) and shut the other down (F1648)
+#: (`model_availability.RETIRED`): each left out, saying why in Google's words.
+RETIRED = ("gemini-2.5-flash-lite", "gemini-3.1-flash-lite-preview")
 
 
 async def test_every_chat_model_is_listed_and_nothing_else(client, gemini_account):
     gemini = (await client.get("/api/models")).json()["providers"]["gemini"]
 
-    assert sorted(gemini["models"]) == sorted(m for m in CHAT if m != RETIRED)
+    assert sorted(gemini["models"]) == sorted(m for m in CHAT if m not in RETIRED)
     # Every chat model Google returned is accounted for: listed, or left out with the provider's own why.
     left = gemini.get("unavailable") or []
-    assert [x["model"] for x in left] == [RETIRED], left
-    assert "no longer available to new users" in left[0]["reason"]
+    from core.model_availability import RETIRED as SHIPPED
+
+    assert {x["model"]: x["reason"] for x in left} == {m: SHIPPED[m]["reason"] for m in RETIRED}, left
+    assert "no longer available to new users" in SHIPPED["gemini-2.5-flash-lite"]["reason"]
     assert sorted([*gemini["models"], *(x["model"] for x in left)]) == sorted(CHAT)
     assert "gemini-embedding-001" in gemini["embedding_models"]
 

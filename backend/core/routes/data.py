@@ -217,7 +217,9 @@ async def get_models(refresh: bool = False):
     OPENAI_FALLBACK = ["gpt-4o", "gpt-4-turbo", "gpt-4o-mini"]
     BEDROCK_FALLBACK = ["bedrock.anthropic.claude-3-5-sonnet-20240620-v1:0", "bedrock.anthropic.claude-3-sonnet-20240229-v1:0"]
     GROK_FALLBACK = ["grok-3", "grok-3-mini", "grok-2-1212", "grok-2-vision-1212"]
-    DEEPSEEK_FALLBACK = ["deepseek-chat", "deepseek-reasoner"]
+    # DeepSeek's own names today (api-docs.deepseek.com, read 2026-11-17); its legacy deepseek-chat and
+    # deepseek-reasoner were discontinued on 2026-07-24 and are retired (F1648), so no fallback offers them.
+    DEEPSEEK_FALLBACK = ["deepseek-flash", "deepseek-v4-pro"]
 
     # --- Check API keys ---
     gemini_key = (settings.get("gemini_key") or "").strip()

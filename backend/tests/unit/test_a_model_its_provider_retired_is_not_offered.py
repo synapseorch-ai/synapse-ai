@@ -80,8 +80,9 @@ class TestTheMark:
 
 
 # The mark's own cases, through the choices: a model the product does not know is retired, so only a failed call
-# leaves it out. gemini-2.5-flash-lite is now always left out (F1299, `RETIRED`), and is no longer this case.
-LEARNED = "gemini-3.1-flash-lite-preview"
+# leaves it out. gemini-2.5-flash-lite is now always left out (F1299, `RETIRED`), and so is
+# gemini-3.1-flash-lite-preview, shut down (F1648): neither is this case.
+LEARNED = "gemini-3.1-flash-lite"
 LEARNED_GONE = GEMINI_GONE.replace("models/gemini-2.5-flash-lite is", f"models/{LEARNED} is")
 
 
