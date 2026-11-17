@@ -110,7 +110,11 @@ class TestItIsOfferedNowhere:
         from core.providers import registry
 
         async def refused(call, spec):
-            raise LLMError(LEARNED_GONE)
+            # Only the gone model is refused as gone. A same-provider stand-in tried after it (F1369, within its price
+            # band) fails for another reason, so it is never marked gone with it.
+            if call.model == LEARNED:
+                raise LLMError(LEARNED_GONE)
+            raise LLMError("Gemini LLM Error: 503 UNAVAILABLE")
 
         spec = types.SimpleNamespace(id="gemini", mode="cloud", chat=refused, error="Gemini LLM Error")
         # `llm_providers._providers` is the registry module itself.
