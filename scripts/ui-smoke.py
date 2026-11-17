@@ -15736,7 +15736,7 @@ async def check_f1598picker(browser) -> str:
       is left out. The panel's Default row, which runs on that saved model, says so too.
     - The Default model keeps every model, Gemma included, with no rating.
     - Every picker, an agent's Model and a step's Model override too, shows each model's line: context, cost tier and
-      price.
+      price. Those two also say how to choose for the job.
     - The open list reads at AA, the tag included.
 
     Light and dark at 1440 and 390 (the agent and the step at 1440). `SMOKE_SHOTS`, when set, keeps a shot of each.
@@ -15850,6 +15850,8 @@ async def check_f1598picker(browser) -> str:
                         model = page.locator('button[aria-label="Model"]').first
                         await model.wait_for(timeout=10_000)
                         await asyncio.sleep(1.0)
+                        if not await page.get_by_text("Choose for the job this agent does", exact=False).count():
+                            bad.append(f"{tag}: the agent's Model does not say how to choose")
                         names, texts, _ = await opened(page, model)
                         if not set(_F1598_MODELS_LIST) <= set(names) or not any(_F1598_SONNET_LINE in t for t in texts):
                             bad.append(f"{tag}: the agent's Model lists {texts}")
@@ -15859,6 +15861,8 @@ async def check_f1598picker(browser) -> str:
                         await open_step(page, oid, "Write")
                         override = page.locator('button[aria-label="Model override"]').first
                         await override.wait_for(timeout=10_000)
+                        if not await page.get_by_text("Choose for the job this step does", exact=False).count():
+                            bad.append(f"{tag}: the step's Model override does not say how to choose")
                         names, texts, _ = await opened(page, override)
                         if not set(_F1598_MODELS_LIST) <= set(names) or not any(_F1598_SONNET_LINE in t for t in texts):
                             bad.append(f"{tag}: the step's Model override lists {texts}")

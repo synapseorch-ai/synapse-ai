@@ -234,3 +234,22 @@ class TestEveryPickerReadsIt:
 
     def test_the_agents_screen_hands_the_facts_on(self):
         assert "modelFacts={models}" in (SRC / "components/settings/AgentsScreen.tsx").read_text()
+
+
+class TestTheAgentAndStepPickersSayChooseForTheJob:
+    """An agent's Model and a step's Model override keep every model, and say how to choose among them: a larger
+    context, a stronger model or a smaller, cheaper one, by the job. The words live beside the step editor, which cloud
+    takes as it is, so both products say the same."""
+
+    WORDS = ("a larger context for long documents or many pages", "a stronger model for careful judgement or writing",
+             "a smaller, cheaper one for short, simple steps")
+
+    def test_the_words(self):
+        source = (SRC / "components/orchestration/modelChoice.ts").read_text()
+        assert "export function chooseForTheJob(" in source
+        assert all(w in source for w in self.WORDS), source
+
+    @pytest.mark.parametrize("path, call", [("components/settings/AgentsTab.tsx", "chooseForTheJob('agent')"),
+                                            ("components/orchestration/panel/steps.tsx", "chooseForTheJob('step')")])
+    def test_each_picker_says_them(self, path, call):
+        assert call in (SRC / path).read_text(), path
