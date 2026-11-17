@@ -210,11 +210,9 @@ def loops_over_an_answer(steps: list) -> list[str]:
     A field the writers never declare is that check's to say."""
     from core.expressions import _unbraced
 
-    writers: dict[str, list[dict]] = {}
-    for s in steps:
-        if isinstance(s, dict):
-            for key in keys_written(s):
-                writers.setdefault(key, []).append(s)
+    from core.orchestration.state_reads import writers as _writers
+
+    writers = _writers(steps)
     said: list[str] = []
     for s in steps:
         if not (isinstance(s, dict) and s.get("type") == "loop" and isinstance(s.get("loop_over"), str)):
@@ -278,11 +276,9 @@ def _typed(step: dict[str, Any]) -> list[dict[str, Any]] | None:
 def fielded(steps: list) -> dict[str, tuple[dict[str, Any], dict[str, dict[str, Any]]]]:
     """Each key every step writing which declares its fields: (its first writer, {field: {kind, options}}). A field's
     kind is kept only where every writer that has the field gives it one (a choice's options are each one's)."""
-    writers: dict[str, list[dict]] = {}
-    for s in steps:
-        if isinstance(s, dict):
-            for key in keys_written(s):
-                writers.setdefault(key, []).append(s)
+    from core.orchestration.state_reads import writers as _writers
+
+    writers = _writers(steps)
     out: dict[str, tuple[dict[str, Any], dict[str, dict[str, Any]]]] = {}
     for key, ws in writers.items():
         typed = [_typed(w) for w in ws]

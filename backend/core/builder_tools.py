@@ -4535,11 +4535,9 @@ def tool_answer_misses(steps: list, tool_answers: dict[str, dict] | None) -> lis
 
     if not tool_answers:
         return []
-    writers: dict[str, list[dict]] = {}
-    for s in steps:
-        if isinstance(s, dict):
-            for key in step_answers.keys_written(s):
-                writers.setdefault(key, []).append(s)
+    from core.orchestration.state_reads import writers as _writers
+
+    writers = _writers(steps)
     known = {key: (ws[0], ws[0]["forced_tool"], tool_answers[ws[0]["forced_tool"]]) for key, ws in writers.items()
              if len(ws) == 1 and ws[0].get("type") == "tool" and ws[0].get("forced_tool") in tool_answers}
     if not known:
@@ -4601,11 +4599,9 @@ def _fields_never_written(steps: list, agents: dict | None = None) -> list[str]:
     from core.orchestration import step_answers
     from core.templating import _OLD_STATE_REF, STATE_REF
 
-    writers: dict[str, list[dict]] = {}
-    for s in steps:
-        if isinstance(s, dict):
-            for key in step_answers.keys_written(s):
-                writers.setdefault(key, []).append(s)
+    from core.orchestration.state_reads import writers as _writers
+
+    writers = _writers(steps)
     known = {key: ws for key, ws in writers.items()
              if all(step_answers.answer_fields(w, agents) is not None for w in ws)}
     if not known:
@@ -4713,11 +4709,9 @@ def _decisions_on_words(steps: list, agents: dict | None = None) -> list[str]:
     from core.orchestration import output_fields as _answer
     from core.orchestration import step_answers
 
-    writers: dict[str, list[dict]] = {}
-    for s in steps:
-        if isinstance(s, dict):
-            for key in step_answers.keys_written(s):
-                writers.setdefault(key, []).append(s)
+    from core.orchestration.state_reads import writers as _writers
+
+    writers = _writers(steps)
     texts = {key: ws for key, ws in writers.items()
              if all(w.get("type") in ("llm", "agent") and step_answers.answer_fields(w, agents) == () for w in ws)}
     if not texts:
@@ -5142,25 +5136,11 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
     # conditioning is not the validator's concern — an unset read gets the
     # schema default, or reads empty in a prompt with none (U74), which is the
     # intended pattern for optional branch outputs and iterative refinement loops.
-    FREE_KEYS = {"user_input", "user_query"}
-    writable: set[str] = set(FREE_KEYS)
-    for s in steps:
-        ok = s.get("output_key")
-        if ok:
-            writable.add(ok)
-        # `output_key` is not the only way a key reaches shared state (F123).
-        # Every loop writes its iteration's index before the body runs (F212),
-        # and a **for-each** loop its item too (`steps.py`, under
-        # `if mode == "foreach"`); a count or while loop has no item, so a body
-        # reading `loop_item` there is still told so.
-        if s.get("type") == "loop":
-            writable.add(s.get("loop_index_key") or "loop_index")
-            if s.get("loop_over"):
-                writable.add(s.get("loop_item_key") or "loop_item")
-        # And the engine writes a human answer to `human_response` as well as
-        # to the step's own output_key, so evaluators that check it still work.
-        if s.get("type") == "human":
-            writable.add("human_response")
+    # `output_key` is not the only way a key reaches shared state (F123): a Loop's index and a for-each's item, and a
+    # Human step's `human_response` too (`state_reads.writable`).
+    from core.orchestration.state_reads import writable as _writable
+
+    writable = _writable(steps)
     for s in steps:
         sid = s.get("id", "?")
         for k in s.get("input_keys") or []:
