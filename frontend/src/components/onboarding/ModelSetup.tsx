@@ -401,7 +401,7 @@ function TwoWays({ path, checking, onKey, onOllama, onCheck }: {
                     {/* A model that reads 128K, the least Synapse AI runs on (F1592): qwen3 reads 40K. Not a dense model of
                         9B or less, which Synapse AI's picker leaves out (F1598): gpt-oss:20b, a mixture of experts. */}
                     <li>
-                        In a terminal, pull a model: <code className="font-code text-text">ollama pull gpt-oss:20b</code>{' '}
+                        In a terminal, pull a model: <code className="whitespace-nowrap font-code text-text">ollama pull gpt-oss:20b</code>{' '}
                         (about a 14 GB download; it runs in 16 GB of memory and reads 128K)
                     </li>
                     <li>
