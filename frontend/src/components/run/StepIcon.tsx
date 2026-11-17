@@ -1,6 +1,8 @@
 /*
  * A step type's icon on its role's ground: cyan for a model, amber for a person,
  * grey for logic (D211). The icons are the canvas's (`STEP_TYPE_META.icon`).
+ * A run's screens give the role the step had in that run (F1656); without one,
+ * the ground is its type's.
  */
 import {
     ArrowLeftRight, BookOpenText, Bot, Braces, Code, FileInput, FileText, GitBranch, GitFork, GitMerge, Globe,
@@ -32,11 +34,16 @@ const KIND_ICONS: Record<string, React.FC<{ className?: string }>> = {
     team: Users, one_at_a_time: Users, workflow: Workflow,
 };
 
-export function StepIcon({ type, kind, className }: { type: string; kind?: string; className?: string }) {
+export function StepIcon({ type, kind, role, className }: {
+    type: string;
+    kind?: string;
+    role?: StepRole;
+    className?: string;
+}) {
     const Icon = type === 'nested' ? Workflow
         : (type === 'agent' && kind && KIND_ICONS[kind]) || ICONS[STEP_TYPE_META[type as StepType]?.icon ?? ''] || Bot;
     return (
-        <span aria-hidden className={cn('inline-flex size-6 shrink-0 items-center justify-center rounded-md', GROUND[roleOf(type)], className)}>
+        <span aria-hidden className={cn('inline-flex size-6 shrink-0 items-center justify-center rounded-md', GROUND[role ?? roleOf(type)], className)}>
             <Icon className="size-3.5" />
         </span>
     );

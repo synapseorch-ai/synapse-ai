@@ -11,7 +11,7 @@
  * What lives here:
  * - the shapes (`RunRow` for a list, `RunRecord` for one run, `NestedRun`)
  * - each step type's role: a model call (cyan), logic (grey) or a person (amber),
- *   the colour rule of D211
+ *   the colour rule of D211; a step that ran, by what it did (F1656)
  * - a workflow's path order, the order a person reads its steps in
  * - the timeline's rows, from the step history's real starts and durations
  * - the "Followed the saved workflow" line
@@ -218,8 +218,9 @@ export type StepRole = 'model' | 'logic' | 'person';
 
 /**
  * Each step type's role, by what the engine does in it. A Tool step asks a model
- * for the call's arguments; Retrieve embeds its query. Ingest only queues the
- * records — indexing happens later, outside the run — so it is logic.
+ * for the call's arguments, unless they are set on the step (`stepRole`);
+ * Retrieve embeds its query. Ingest only queues the records — indexing happens
+ * later, outside the run — so it is logic.
  */
 const ROLE: Record<StepType, StepRole> = {
     agent: 'model', llm: 'model', tool: 'model', evaluator: 'model', retrieve: 'model',
@@ -234,6 +235,48 @@ const ROLE: Record<StepType, StepRole> = {
 
 export function roleOf(type: string | undefined | null): StepRole {
     return (type && ROLE[type as StepType]) || 'logic';
+}
+
+/**
+ * What a step's config does (F1656): its type's role, except that a Tool step
+ * whose arguments are set on it asks no model, as the engine runs it (E1). A
+ * step that has not run is drawn by this, and so is a run list's path, which
+ * knows no spend.
+ */
+export function stepRole(type: string | undefined | null, step?: { tool_arguments?: unknown } | null): StepRole {
+    if (type === 'tool' && step?.tool_arguments !== undefined && step?.tool_arguments !== null) return 'logic';
+    return roleOf(type);
+}
+
+/**
+ * Steps that run other steps: the calls inside their window are their steps'
+ * (a Workflow step's entry is swept its child run's calls, for its cost; F284),
+ * and those steps show their own (E3).
+ */
+const RUNS_STEPS = new Set(['parallel', 'loop', 'workflow']);
+
+/**
+ * Who did one history entry's work, by what it did (F1656): a model when the
+ * entry spent tokens, else logic. A Human step is a person's whatever its window
+ * holds, and a step that runs steps is logic. A Retrieve step keeps its type: its
+ * query's embedding is never logged as a call, so no spend is no evidence. An
+ * entry with no finished record (running, waiting, failed, cancelled), or a run
+ * whose record carries no spend at all, is drawn by its config (`stepRole`).
+ */
+export function entryRole(
+    run: Pick<RunRecord, 'history' | 'stepUsage' | 'entryUsage'>,
+    index: number,
+    type: string,
+    step?: { tool_arguments?: unknown } | null,
+): StepRole {
+    const byConfig = stepRole(type, step);
+    if (byConfig === 'person') return 'person';
+    if (RUNS_STEPS.has(type)) return 'logic';
+    const usage = entrySpend(run, index).usage;
+    if (usage && usage.tokens > 0) return 'model';
+    const finished = (run.history[index]?.status || 'completed') === 'completed';
+    const spendKnown = run.stepUsage !== undefined || run.entryUsage !== undefined;
+    return finished && spendKnown && type !== 'retrieve' ? 'logic' : byConfig;
 }
 
 export const ROLE_LABEL: Record<StepRole, string> = {
@@ -329,7 +372,7 @@ export function glyphOf(workflow: Orchestration | undefined, run: Pick<RunRow, '
     return pathOrder(workflow)
         .filter((id) => byId.get(id)?.type !== 'end')
         .map((id) => {
-            const bar: GlyphBar = { id, role: roleOf(byId.get(id)?.type) };
+            const bar: GlyphBar = { id, role: stepRole(byId.get(id)?.type, byId.get(id)) };
             if (id === run.currentStepId) {
                 if (bucket === 'failed') bar.mark = 'failed';
                 else if (bucket === 'needs') bar.mark = 'waiting';
@@ -384,7 +427,7 @@ export function nestedStepId(parentRunId: string, childRunId: string): string | 
  * `now`.
  */
 export function timelineRows(
-    run: Pick<RunRecord, 'id' | 'startedAt' | 'endedAt' | 'status' | 'currentStepId' | 'history'>,
+    run: Pick<RunRecord, 'id' | 'startedAt' | 'endedAt' | 'status' | 'currentStepId' | 'history' | 'stepUsage' | 'entryUsage'>,
     workflow: Orchestration | null | undefined,
     children: NestedRun[],
     now: number,
@@ -422,7 +465,7 @@ export function timelineRows(
             stepId: h.step_id,
             name: h.step_name || step?.name || h.step_id,
             type,
-            role: roleOf(type),
+            role: entryRole(run, index, type, step),
             status: h.status || 'completed',
             start: Math.max(0, (begin - origin) / 1000),
             duration,
@@ -442,7 +485,7 @@ export function timelineRows(
         const type = step?.type ?? '';
         rows.push({
             key: 'current', stepId: run.currentStepId, name: step?.name || run.currentStepId, type,
-            role: roleOf(type), status: run.status === 'paused' ? 'paused' : 'running',
+            role: stepRole(type, step), status: run.status === 'paused' ? 'paused' : 'running',
             start: Math.max(0, (begin - origin) / 1000), duration: null,
             depth: depths.get(run.currentStepId) ?? 0, order: history.length,
         });
@@ -527,7 +570,7 @@ export type StepperRow = {
  * out; a step that ran but is no longer in the workflow is added where it ran.
  */
 export function stepperRows(
-    run: Pick<RunRecord, 'status' | 'waitingForHuman' | 'currentStepId' | 'history'>,
+    run: Pick<RunRecord, 'status' | 'waitingForHuman' | 'currentStepId' | 'history' | 'stepUsage' | 'entryUsage'>,
     workflow: Orchestration | null | undefined,
 ): StepperRow[] {
     const steps = new Map((workflow?.steps ?? []).map((s) => [s.id, s]));
@@ -556,7 +599,8 @@ export function stepperRows(
         }
         const n = times.get(id) ?? 0;
         return {
-            stepId: id, name: entry?.step_name || step?.name || id, type, role: roleOf(type), state,
+            stepId: id, name: entry?.step_name || step?.name || id, type,
+            role: i === undefined ? stepRole(type, step) : entryRole(run, i, type, step), state,
             depth: depths.get(id) ?? 0, index: i, times: n > 1 ? n : undefined,
         };
     });

@@ -12117,6 +12117,121 @@ async def check_runpath(browser) -> str:
     return "followed line, timeline with branches indented and model bars cyan, a step opens, Result first, 4 reads"
 
 
+# A Tool step whose arguments are set on it asks no model (E1), then a Transform; the second workflow adds an LLM step.
+_ROLE_SET_ARGS = {"tool_name": "http_get", "tool_arguments": {"url": "https://example.com/forecast?city=Harbor"}}
+_ROLE_FORECAST = {
+    "id": "orch_smoke_role", "name": "Smoke forecast", "description": "", "trigger": "manual",
+    "entry_step_id": "fetch", "max_total_turns": 100, "timeout_minutes": 30, "updated_at": _m2b_at(-86400),
+    "state_schema": {},
+    "steps": [
+        {"id": "fetch", "name": "Fetch the forecast", "type": "tool", **_ROLE_SET_ARGS, "next_step_id": "shape",
+         "output_key": "forecast"},
+        {"id": "shape", "name": "Shape the answer", "type": "transform", "next_step_id": "end", "output_key": "answer"},
+        {"id": "end", "name": "End", "type": "end"}]}
+_ROLE_NOTE = {
+    **_ROLE_FORECAST, "id": "orch_smoke_role_note", "name": "Smoke forecast note",
+    "steps": [
+        {**_ROLE_FORECAST["steps"][0]},
+        {**_ROLE_FORECAST["steps"][1], "next_step_id": "write"},
+        {"id": "write", "name": "Write the note", "type": "llm", "output_key": "note", "next_step_id": "end"},
+        {"id": "end", "name": "End", "type": "end"}]}
+_ROLE_SPENT = {"turns": 1, "models": ["openai.gpt-4.1-mini"], "tools": [], "tokens": 220, "input_tokens": 200,
+               "output_tokens": 20, "cost_usd": 0.0002, "context_peak_chars": 900, "latency_seconds": 0.7}
+
+
+def _role_run(rid: str, orch: dict, status: str, history: list, step_usage: dict, entry_usage: list) -> dict:
+    return {"run_id": rid, "orchestration_id": orch["id"], "status": status, "session_id": None,
+            "started_at": _m2b_at(0), "ended_at": _m2b_at(4), "current_step_id": history[-1]["step_id"],
+            "waiting_for_human": False, "total_tokens_used": sum(u["tokens"] for u in step_usage.values()),
+            "total_cost_usd": 0, "tasks": [], "shared_state": {},
+            "error": "Transform error: the forecast had no rows" if status == "failed" else None,
+            "step_history": history, "step_usage": step_usage, "entry_usage": entry_usage}
+
+
+_ROLE_RUNS = {
+    # Called no model: "0 tokens", and the record carries no call at all, as both products send it.
+    "run_smoke_role_none": _role_run("run_smoke_role_none", _ROLE_FORECAST, "completed", [
+        _m2b_entry("fetch", "Fetch the forecast", "tool", 0, 1.2, output_key="forecast"),
+        _m2b_entry("shape", "Shape the answer", "transform", 1.2, 0.3, output_key="answer")], {}, []),
+    # Its LLM step spent tokens: that bar alone is a model's.
+    "run_smoke_role_note": _role_run("run_smoke_role_note", _ROLE_NOTE, "completed", [
+        _m2b_entry("fetch", "Fetch the forecast", "tool", 0, 1.2, output_key="forecast"),
+        _m2b_entry("shape", "Shape the answer", "transform", 1.2, 0.3, output_key="answer"),
+        _m2b_entry("write", "Write the note", "llm", 1.5, 0.7, output_key="note")],
+        {"write": _ROLE_SPENT}, [None, None, _ROLE_SPENT]),
+    # Failed at its Transform: the stepper, where the LLM step not reached is drawn by its config.
+    "run_smoke_role_fail": _role_run("run_smoke_role_fail", _ROLE_NOTE, "failed", [
+        _m2b_entry("fetch", "Fetch the forecast", "tool", 0, 1.2, output_key="forecast"),
+        _m2b_entry("shape", "Shape the answer", "transform", 1.2, 0.3, "failed",
+                   error="Transform error: the forecast had no rows")], {}, []),
+}
+
+
+async def _role_routes(ctx) -> None:
+    for orch in (_ROLE_FORECAST, _ROLE_NOTE):
+        await ctx.route(f"**/api/orchestrations/{orch['id']}", _answer(orch))
+
+
+@check
+async def check_runrole(browser) -> str:
+    """A run draws a step as "Called a model" only when it called one (F1656). A Tool step whose arguments are set on
+    it asks no model: a run of it and a Transform draws no bar in the machine colour, and the legend says
+    "Called a model (none in this run)"; with an LLM step that spent tokens, that bar alone is the machine colour; a
+    failed run's stepper grounds the Tool step's icon as logic and the LLM step it never reached as a model's. Light
+    and dark at 1440; `SMOKE_SHOTS` keeps each page."""
+    shots = os.environ.get("SMOKE_SHOTS")
+    bad: list[str] = []
+    for theme in ("light", "dark"):
+        for rid, machine_bars in (("run_smoke_role_none", 0), ("run_smoke_role_note", 1)):
+            ctx, page, _ = await _m2b_page(browser, f"/runs/{rid}", runs=_ROLE_RUNS, theme=theme, before=_role_routes)
+            try:
+                timeline = page.get_by_role("table", name="Steps on a timeline")
+                await timeline.wait_for(timeout=20_000)
+                colours = await page.evaluate("""() => {
+                    const cs = getComputedStyle(document.documentElement);
+                    const bars = [...document.querySelectorAll('[aria-label="Steps on a timeline"] [role=cell] > span.absolute.top-1')];
+                    const probe = document.createElement('i'); document.body.append(probe);
+                    const resolve = (v) => { probe.style.color = v; return getComputedStyle(probe).color; };
+                    const out = { machine: resolve(cs.getPropertyValue('--machine')), bars: bars.map(b => getComputedStyle(b).backgroundColor) };
+                    probe.remove(); return out; }""")
+                got = colours["bars"].count(colours["machine"])
+                if len(colours["bars"]) != machine_bars + 2 or got != machine_bars:
+                    bad.append(f"{theme} {rid}: {got} of {len(colours['bars'])} bars in the machine colour, "
+                               f"not {machine_bars} of {machine_bars + 2}")
+                none_said = await page.get_by_text("Called a model (none in this run)").count()
+                if bool(none_said) != (machine_bars == 0):
+                    bad.append(f"{theme} {rid}: the legend {'says' if none_said else 'does not say'} "
+                               "'Called a model (none in this run)'")
+                if shots:
+                    await asyncio.sleep(0.6)
+                    await page.screenshot(path=os.path.join(shots, f"runrole-{rid.rsplit('_', 1)[-1]}-{theme}.png"),
+                                          full_page=True)
+            finally:
+                await ctx.close()
+        ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_role_fail", runs=_ROLE_RUNS, theme=theme,
+                                       before=_role_routes)
+        try:
+            steps = page.get_by_role("list", name="Steps")
+            await steps.wait_for(timeout=20_000)
+            grounds = await steps.locator(":scope > li").evaluate_all(
+                """(rows) => rows.map((li) => {
+                    const icon = li.querySelector('span[aria-hidden]');
+                    const c = icon ? icon.className : '';
+                    return c.includes('bg-machine-subtle') ? 'model' : c.includes('bg-person-subtle') ? 'person'
+                        : c.includes('bg-surface-2') ? 'logic' : c; })""")
+            if grounds != ["logic", "logic", "model"]:
+                bad.append(f"{theme}: the failed run's stepper grounds read {grounds}, not logic, logic, model")
+            if shots:
+                await asyncio.sleep(0.6)
+                await page.screenshot(path=os.path.join(shots, f"runrole-fail-{theme}.png"), full_page=True)
+        finally:
+            await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("a set-arguments Tool step and a Transform draw no model bar, the legend says none; an LLM step that "
+            "spent is the one model bar; the stepper grounds the Tool step as logic; light and dark")
+
+
 @check
 async def check_runfailure(browser) -> str:
     """A failed run leads with one plain sentence and the fix (M2b): the Python step's line, Open in editor and
