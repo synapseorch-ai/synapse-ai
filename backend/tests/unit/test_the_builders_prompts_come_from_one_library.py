@@ -203,7 +203,9 @@ from core.native_builder import prompt_lint, seed
 #: files a message names), c316956a… (on 2.0.14's 07a155b1).
 #: F1618: plan_steps.md's `llm` bullet names a nested answer once, a group (`"object"` with `fields`) or a list of
 #: groups (`list` with `"of": {"fields": …}`), with one example and how a later step reads it, 0e53888e… (on c316956a).
-BUNDLE_SHA256 = "0e53888e753c54b1c035e661e2d082111b93821415e5ccb1c0c3f080690d6baf"
+#: F1689: reporter.json opens as Synapse AI, never names a role or a part of how it is built, and says a change is
+#: asked for and a plan drafted to check, never that it can't be done, 26c6cde2… (on F1618's 0e53888e).
+BUNDLE_SHA256 = "26c6cde2f7a75b5823f2529951f17f1ac68c10af292bae304f18f0190ccc3dda"
 
 
 def _sha(definitions) -> str:
