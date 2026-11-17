@@ -12154,6 +12154,76 @@ async def check_runfailure(browser) -> str:
     return "the plain sentence and its fix lead; the traceback waits behind Technical details; the turn limit in words"
 
 
+def _waiting_orchestration(oid: str, name: str) -> dict:
+    """A Human step with no fields, then a Print: a run of it waits for its answer, then finishes at once."""
+    return {
+        "id": oid, "name": name, "description": "Temporary fixture created by scripts/ui-smoke.py (F1662).",
+        "trigger": "manual", "state_schema": {}, "entry_step_id": f"{oid}_ask",
+        "steps": [
+            {"id": f"{oid}_ask", "name": "Go on?", "type": "human", "human_prompt": "Shall the run go on?",
+             "output_key": "answer", "next_step_id": f"{oid}_done"},
+            {"id": f"{oid}_done", "name": "Done", "type": "print", "print_content": "done", "output_key": "done",
+             "next_step_id": f"{oid}_end"},
+            {"id": f"{oid}_end", "name": "End", "type": "end", "next_step_id": None},
+        ],
+    }
+
+
+def _answer_waiting_run(run_id: str, text: str) -> None:
+    """Answer a waiting run's question through the API and read its stream to the end (the run finishes)."""
+    req = urllib.request.Request(
+        f"{API}/api/orchestrations/runs/{run_id}/human-input", method="POST",
+        data=json.dumps({"response": text}).encode(),
+        headers={"Content-Type": "application/json", "X-Synapse-Internal": TOKEN})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        r.read()
+
+
+@check
+async def check_runpagequiet(browser) -> str:
+    """The run page reads a run as its stream moves (F1662): while its events stream follows a live run, the page
+    does not also read the run every few seconds, and it still shows the run's end, carried by the stream. With the
+    stream broken, the page reads the run on its own clock again and still reaches the end. `SMOKE_SHOTS` keeps
+    each page after the answer."""
+    shots = os.environ.get("SMOKE_SHOTS")
+    problems: list[str] = []
+    for broken in (False, True):
+        stamp = int(time.time())
+        oid = f"orch_uismoke_quiet_{stamp}_{int(broken)}"
+        api("/api/orchestrations", "POST", _waiting_orchestration(oid, f"ui-smoke run page quiet {stamp}"))
+        run_id = run_to_end(oid)
+        ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+        if broken:
+            await ctx.route("**/events/stream*", lambda route: route.abort())
+        page = await ctx.new_page()
+        reads: list[float] = []
+        page.on("request", lambda r: reads.append(time.time()) if r.method == "GET" and urllib.parse.urlsplit(
+            r.url).path == f"/api/orchestrations/runs/{run_id}" else None)
+        which = "with the stream broken" if broken else "with the stream following"
+        try:
+            await page.goto(f"{APP}/runs/{run_id}", wait_until="domcontentloaded")
+            await page.locator("main h1").first.wait_for(timeout=30_000)
+            if not broken:
+                await asyncio.sleep(22)
+                if len(reads) > 2:
+                    problems.append(f"{len(reads)} reads of the waiting run in 22 s {which}, not at most 2")
+            await asyncio.to_thread(_answer_waiting_run, run_id, "yes")
+            try:
+                await page.get_by_text("Completed", exact=True).first.wait_for(timeout=6_000 if not broken else 15_000)
+            except Exception:
+                problems.append(f"the page never showed the run Completed {which}")
+            if shots:
+                name = f"runpagequiet-{'broken' if broken else 'following'}.png"
+                await page.screenshot(path=os.path.join(shots, name))
+        finally:
+            await ctx.close()
+            drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return ("a waiting run's page is read at most twice in 22 s while its stream follows, and shows Completed when "
+            "answered; with the stream broken it reads on its own clock and still shows Completed")
+
+
 @check
 async def check_runanswer(browser) -> str:
     """A waiting run is answered on its page (M2b): its steps as a stepper with the waiting step marked, the
