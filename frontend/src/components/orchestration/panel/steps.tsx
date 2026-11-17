@@ -24,6 +24,7 @@ import { PythonEditor } from './PythonEditor';
 import { agentEditHref, agentKind, agentOptions, KIND_WORD, memberNames, teamSettings, type KindAgent } from '../agentKind';
 import { HUMAN_FIELD_TYPES, branchCondition, branchFields, branchPicked, humanFieldOptions, humanFieldType, isApproval, nextHumanFieldName, type BranchField } from '../humanFields';
 import { type AnswerField } from '../answerFields';
+import { chooseForTheJob } from '../modelChoice';
 import { nextFreeName } from '../nextName';
 import { AnswerFieldsEditor } from './answerFieldsEditor';
 import { argumentRows, withArgument, type ToolWithSchema } from '../toolArguments';
@@ -432,7 +433,7 @@ function LlmSection({ step, update, availableModels, modelHints, showVaultHints 
                 />
             </Field>
             <AnswerFields step={step} update={update} />
-            <Field label="Model override">
+            <Field label="Model override" hint={chooseForTheJob('step')}>
                 <ModelSelect value={step.model} onChange={(model) => update({ model })} availableModels={availableModels} hints={modelHints} />
             </Field>
             <HistoryToggle step={step} update={update} />
@@ -583,7 +584,7 @@ function ToolPromptFields({
                     placeholder="Search for relevant data about {{ state.user_input }}"
                 />
             </Field>
-            <Field label="Model override">
+            <Field label="Model override" hint={chooseForTheJob('step')}>
                 <ModelSelect value={step.model} onChange={(model) => update({ model })} availableModels={availableModels} hints={modelHints} />
             </Field>
             <HistoryToggle step={step} update={update} />
@@ -661,7 +662,7 @@ function EvaluatorSection({ step, update, otherSteps, availableModels, modelHint
                     placeholder={'e.g. The person replied: {{ state.approval }}. Route to approved if they agreed.'}
                 />
             </Field>
-            <Field label="Model override">
+            <Field label="Model override" hint={chooseForTheJob('step')}>
                 <ModelSelect value={step.model} onChange={(model) => update({ model })} availableModels={availableModels} hints={modelHints} />
             </Field>
             <div>

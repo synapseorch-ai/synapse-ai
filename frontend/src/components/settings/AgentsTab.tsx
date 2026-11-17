@@ -30,6 +30,7 @@ import { cn } from '@/lib/cn';
 import { ifMatch, problemLabel, saveProblem, type SaveProblem } from '@/components/orchestration/saveConflict';
 import { SaveConflictDialog } from '@/components/orchestration/workbench/SaveConflictDialog';
 import { modelOptions, withHints, withUnreachable, type ModelWindows } from '@/lib/models';
+import { chooseForTheJob } from '@/components/orchestration/modelChoice';
 
 /** The longest name the server accepts (core/models.py `AGENT_NAME_MAX`, F217). */
 const AGENT_NAME_MAX = 100;
@@ -799,7 +800,7 @@ export const AgentsTab = ({
                                                             ...withUnreachable(modelOptions(providers ?? {}), draftAgent.model || undefined),
                                                         ], modelFacts)}
                                                     />
-                                                    <p className="mt-1 text-xs text-text-faint">Override the default model for this agent. Leave empty to use the system default.</p>
+                                                    <p className="mt-1 text-xs text-text-faint">Override the default model for this agent. Leave empty to use the system default. {chooseForTheJob('agent')}</p>
                                                 </div>
                                             </div>
 
