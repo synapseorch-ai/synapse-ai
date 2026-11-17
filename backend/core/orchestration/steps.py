@@ -2367,6 +2367,37 @@ class MergeStepExecutor:
         }
 
 
+def _unbraced_loop_source(expr: str | None) -> str:
+    """A Loop's list as written, without its braces: `state.finder.keywords`."""
+    from core.expressions import _unbraced
+
+    return _unbraced(expr or "").strip() or "its list"
+
+
+def _note_a_zero_run(step: StepConfig, run: OrchestrationRun, engine: "OrchestrationEngine", body_ids: list[str],
+                     iterations_run: int, why: str) -> None:
+    """A Loop that ran zero times hands on nothing from before as its results (F1622): each body step's key is set to
+    `[]` (the shape it holds after iterations, with none), and each of its keys is noted with why, for the readers that
+    say it in words (`context.ran_zero`). A run of the same Loop with iterations takes its keys off the note."""
+    from .context import LOOP_RAN_ZERO
+
+    body_keys = [s.output_key for sid in body_ids if (s := engine.step_map.get(sid)) is not None and s.output_key]
+    notes = dict(run.shared_state.get(LOOP_RAN_ZERO) or {})
+    for key in [*body_keys, *([step.output_key] if step.output_key else [])]:
+        notes.pop(key, None)
+    if iterations_run == 0:
+        said = f"the Loop '{step.name}' ran 0 times: {why}"
+        for key in body_keys:
+            run.shared_state[key] = []
+            notes[key] = said
+        if step.output_key:
+            notes[step.output_key] = said
+    if notes:
+        run.shared_state[LOOP_RAN_ZERO] = notes
+    else:
+        run.shared_state.pop(LOOP_RAN_ZERO, None)
+
+
 def _loop_source_name(expr: str) -> str:
     """What a Loop goes through, as a person reads it: `state.keyword_researcher` is `keyword_researcher`."""
     from core.expressions import _unbraced
@@ -2487,6 +2518,9 @@ class LoopStepExecutor:
             items: list | None = None
             #: More work than the cap allows, said before anything runs (F254).
             over_cap: str | None = None
+            #: Why it would run zero times, said to the steps after it (F1622).
+            zero_why: str | None = None
+            source = _unbraced_loop_source(step.loop_over)
             if step.loop_over:
                 mode = "foreach"
                 # The resolved collection is snapshotted into the progress record
@@ -2499,6 +2533,7 @@ class LoopStepExecutor:
                         yield {"type": "step_warning", "orch_step_id": step.id,
                                "message": f"loop_over '{step.loop_over}' failed to evaluate: {err}"}
                         resolved = []
+                        zero_why = f"its list ({source}) could not be read"
                     if isinstance(resolved, (list, tuple)):
                         items = list(resolved)
                         # An empty source is a legitimate answer, so the run
@@ -2511,6 +2546,7 @@ class LoopStepExecutor:
                             yield {"type": "step_warning", "orch_step_id": step.id,
                                    "message": f"loop_over '{step.loop_over}' is an "
                                               f"empty list — zero iterations"}
+                            zero_why = zero_why or f"its list ({source}) was empty"
                     elif resolved is None:
                         # Unset: what a branch that did not run leaves (U74), so the loop runs zero times and the
                         # run carries on, said in words a person reads on the run (F1613).
@@ -2518,6 +2554,7 @@ class LoopStepExecutor:
                                "message": f"The Loop '{step.name}' ran 0 times: "
                                           f"{_loop_source_name(step.loop_over)} was never set on this path."}
                         items = []
+                        zero_why = f"{source} was never set on this path"
                     else:
                         # Anything else is no list, and going through it zero times read as work done: the run said
                         # Completed and the steps after it summed up nothing (F1613). It fails here, as a list over
@@ -2857,6 +2894,10 @@ class LoopStepExecutor:
                 run.shared_state[step.output_key] = {
                     name: run.shared_state[key] for name, key in promoted.items()
                 }
+            _note_a_zero_run(step, run, engine, body_ids, iterations_run, zero_why or {
+                "condition_false": "its condition was false from the start",
+                "condition_error": "its condition could not be evaluated",
+            }.get(stopped_reason, f"its list ({source}) was empty" if step.loop_over else "it had nothing to go through"))
 
             yield {"type": "loop_complete", "orch_step_id": step.id,
                    "iterations_completed": iterations_run,
@@ -2895,7 +2936,7 @@ def render_state_refs(text: str, state: dict, variables: dict | None = None, sec
     from core.secret_scrub import held_secrets
     from core.step_refs import MissingOutput, for_person, is_ref
 
-    from .context import _not_there
+    from .context import _not_there, ran_zero
 
     if not isinstance(text, str) or "{{" not in text:
         return text
@@ -2908,6 +2949,8 @@ def render_state_refs(text: str, state: dict, variables: dict | None = None, sec
         if parts[0] not in ("state", "global") or len(parts) < 2:
             return match.group(0)
         if parts[0] == "state":
+            if said := ran_zero(state, parts[1]):
+                return f"(nothing: {said})"
             top = state.get(parts[1])
             if top is None or (len(parts) > 2 and not is_ref(top) and top in ("", {}, [])):
                 return f"(no value yet: no step has written state.{parts[1]})"

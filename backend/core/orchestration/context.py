@@ -619,6 +619,18 @@ def _format_tool_calls(tool_calls: list[dict]) -> str:
     return "\n".join(lines)
 
 
+#: The keys a Loop that ran zero times left, each with why (F1622): its body steps' keys (set to `[]`, the shape
+#: they hold after iterations, with none) and its own output. A model's prompt, a step's context and a person's text read
+#: such a key as the sentence; a condition, code and set arguments read the data. Private (`_loop_`), never public.
+LOOP_RAN_ZERO = "_loop_ran_zero__notes"
+
+
+def ran_zero(state: dict, key: str) -> str | None:
+    """Why `key` holds nothing, when a Loop that ran zero times left it so and nothing has written it since."""
+    said = (state.get(LOOP_RAN_ZERO) or {}).get(key) if isinstance(state, dict) else None
+    return said if said and state.get(key) in ([], {}) else None
+
+
 def _format_context_value(
     key: str,
     val,
@@ -717,6 +729,8 @@ def _fill_task_template(template: str, shared_state: dict, global_variables: dic
     def _sub(match: re.Match) -> str:
         reference = match.group(1)
         parts = reference.split(".")
+        if parts[0] == "state" and len(parts) > 1 and not as_values and (said := ran_zero(shared_state, parts[1])):
+            return f"(nothing: {said})"
         if parts[0] == "state" and len(parts) > 1:
             top = shared_state.get(parts[1])
             if top is None or (len(parts) > 2 and top in ("", {}, [])):
@@ -985,6 +999,9 @@ def build_origin_aware_context(
     # Explicitly declared input_keys (skip user_input — shown under MAIN GOAL)
     for key in (step.input_keys or []):
         if key not in run.shared_state or key == "user_input":
+            continue
+        if said := ran_zero(run.shared_state, key):
+            context_parts.append(f"### {key}\nNothing: {said}.")
             continue
         val = run.shared_state[key]
         label = key
