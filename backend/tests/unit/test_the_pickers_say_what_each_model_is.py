@@ -170,6 +170,44 @@ class TestSynapseAIsPickers:
         assert [o["value"] for o in got] == ["rec1", "nfb", "other", "unranked", "rec2"]
 
 
+class TestADefaultRowSaysWhatItResolvesTo:
+    """A "Default (…)" or "Same as default model (…)" row in Synapse AI's pickers runs Synapse AI on the model it
+    names. Where that model is not for building, or too small, the row says so as the model's own row would, never
+    offering quietly what the list leaves out."""
+
+    def test_one_not_for_building_says_so(self, node):
+        got = node(f"return M.synapseAIDefaultHint('nfb', {json.dumps(SAID)});")
+        assert got == "Not offered for building with Synapse AI: pick a Recommended model"
+
+    def test_one_too_small_says_what_it_reads(self, node):
+        got = node(f"return M.synapseAIDefaultHint('tiny', {json.dumps(SAID)});")
+        assert got == "reads up to 32K tokens; Synapse AI needs 128K"
+
+    @pytest.mark.parametrize("model", ["rec1", "other", "unranked", ""])
+    def test_one_that_builds_or_is_not_known_says_nothing(self, node, model):
+        assert node(f"return M.synapseAIDefaultHint({json.dumps(model)}, {json.dumps(SAID)}) ?? null;") is None
+
+    @pytest.mark.parametrize("path, pattern", [
+        ("components/app/BuilderPanel.tsx", r"synapseAIDefaultHint\(builderModel \|\| workspaceModel"),
+        ("components/settings/ModelsTab.tsx", r"synapseAIDefaultHint\(selectedModel"),
+        ("components/onboarding/ModelSetup.tsx", r"synapseAIDefaultHint\(everyday"),
+    ])
+    def test_each_of_synapse_ais_default_rows_reads_it(self, path, pattern):
+        assert re.search(pattern, (SRC / path).read_text()), path
+
+
+def test_a_synapse_ai_turn_on_a_model_not_for_building_runs_on_it():
+    """The person chose it, so it is theirs: Synapse AI runs on it, and the row says plainly that it is not offered for
+    building. Only a window too small for its prompt is refused, as before (a model the person names is never
+    replaced by a pick)."""
+    import asyncio
+
+    from core.native_builder import models_menu as MM
+
+    assert asyncio.run(MM.synapse_ai_refusal("gemma-3-4b-it", source="builder_model")) is None
+    assert asyncio.run(MM.synapse_ai_refusal("mistral.mistral-large-2402-v1:0", source="builder_model"))
+
+
 class TestEveryPickerReadsIt:
     @pytest.mark.parametrize("path, count", [
         ("components/settings/ModelsTab.tsx", 3), ("components/app/BuilderPanel.tsx", 1),

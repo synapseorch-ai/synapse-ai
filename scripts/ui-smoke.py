@@ -15733,7 +15733,7 @@ async def check_f1598picker(browser) -> str:
     - Settings → Models' Builder model and Synapse AI's panel list "Recommended for building" first, each with the
       word "Recommended", then "Other models" in the engine's order. Gemma 3 4B, not for building, is left out. The
       Builder model, saved on it, keeps it as the one row saying why, and the note at the foot of the list says what
-      is left out.
+      is left out. The panel's Default row, which runs on that saved model, says so too.
     - The Default model keeps every model, Gemma included, with no rating.
     - Every picker, an agent's Model and a step's Model override too, shows each model's line: context, cost tier and
       price.
@@ -15831,8 +15831,11 @@ async def check_f1598picker(browser) -> str:
                     await pill.wait_for(timeout=10_000)
                     await asyncio.sleep(0.6)
                     names, texts, heads = await opened(page, pill)
-                    if "gemma-3-4b-it" in names or not {"claude-opus-4-6", "gpt-4.1"} <= set(names):
+                    if "gemma-3-4b-it" in names[1:] or not {"claude-opus-4-6", "gpt-4.1"} <= set(names):
                         bad.append(f"{tag}: the panel lists {names}")
+                    # Its Default runs Synapse AI on the saved Builder model, Gemma: the row says it is not offered.
+                    if not texts[0].startswith("Default (gemma-3-4b-it)") or "Not offered for building" not in texts[0]:
+                        bad.append(f"{tag}: the panel's Default row reads {texts[0]!r}")
                     if [h.lower() for h in heads] != ["recommended for building", "other models"]:
                         bad.append(f"{tag}: the panel's headings read {heads}")
                     await readable(page, f"{tag} panel")
