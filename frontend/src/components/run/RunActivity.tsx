@@ -72,12 +72,20 @@ export function useRunTeamHandlers(runId: string, onChanged?: () => void): LaneH
     }, [team, host.canAnswer, host.canControl, runId, onChanged, stopping]);
 }
 
+/** The events that move a run's record (F1662): a step starting or ending, a question for a person, its end. */
+const MOVES = new Set(['step_start', 'step_complete', 'step_error', 'loop_complete', 'human_input_required',
+    'orchestration_complete', 'orchestration_error']);
+/** How long a burst of moves is let pass before the run is read once. */
+const MOVED_MS = 500;
+
 export function RunActivity({
     runId,
     status,
     stepErrors = {},
     emptyNote = 'No events were recorded for this run.',
     onChanged,
+    onMoved,
+    onFollowing,
 }: {
     runId: string;
     status: string;
@@ -87,6 +95,11 @@ export function RunActivity({
     emptyNote?: string;
     /** Read the run again: a member's question answered in its line moves a paused run on. */
     onChanged?: () => void;
+    /** Read the run again as its stream moves it (F1662): a step starting or ending, a question, its end. One read
+     *  per burst, after its last event. */
+    onMoved?: () => void;
+    /** Whether this stream is following the live run (F1662), so the page need not read it on its own clock. */
+    onFollowing?: (following: boolean) => void;
 }) {
     const host = useRunHost();
     const teamHandlers = useRunTeamHandlers(runId, onChanged);
@@ -105,16 +118,28 @@ export function RunActivity({
     // A ref, so a new object from a re-render does not restart the stream.
     const errorsRef = React.useRef(stepErrors);
     React.useEffect(() => { errorsRef.current = stepErrors; }, [stepErrors]);
+    const movedRef = React.useRef(onMoved);
+    const followingRef = React.useRef(onFollowing);
+    React.useEffect(() => { movedRef.current = onMoved; followingRef.current = onFollowing; }, [onMoved, onFollowing]);
 
     React.useEffect(() => {
         const controller = new AbortController();
         let cancelled = false;
+        // One read per burst of moves, after its last event: a timer started by the first fires once the burst has
+        // passed, so the run's final state is always read (F1662).
+        let moved: number | null = null;
         const fold = (event: unknown) => {
-            if (!cancelled) setState((prev) => applyRunEvent(prev, withStepError(event, errorsRef.current)));
+            if (cancelled) return;
+            setState((prev) => applyRunEvent(prev, withStepError(event, errorsRef.current)));
+            if (MOVES.has(String((event as { type?: unknown })?.type)) && moved === null && movedRef.current) {
+                moved = window.setTimeout(() => { moved = null; if (!cancelled) movedRef.current?.(); }, MOVED_MS);
+            }
         };
+        const live = isLive(status);
         (async () => {
+            if (live) followingRef.current?.(true);
             try {
-                await host.events(runId, isLive(status), fold, controller.signal);
+                await host.events(runId, live, fold, controller.signal);
                 if (!cancelled) setEnded(true);
             } catch (e) {
                 if (!cancelled && (e as Error)?.name !== 'AbortError') {
@@ -122,9 +147,16 @@ export function RunActivity({
                 }
             } finally {
                 if (!cancelled) setLoading(false);
+                // Ended or broken: the page reads the run on its own clock again.
+                if (live) followingRef.current?.(false);
             }
         })();
-        return () => { cancelled = true; controller.abort(); };
+        return () => {
+            cancelled = true;
+            controller.abort();
+            if (moved !== null) window.clearTimeout(moved);
+            if (live) followingRef.current?.(false);
+        };
     }, [host, runId, status]);
 
     // Follow the newest entry only while the reader is at the bottom.

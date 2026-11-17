@@ -68,7 +68,7 @@ function SectionHead({ title, aside }: { title: string; aside?: ReactNode }) {
 }
 
 export function RunDetail({
-    run, workflow, nested, onChanged, notices, extra, activityNote,
+    run, workflow, nested, onChanged, onFollowing, notices, extra, activityNote,
 }: {
     run: RunRecord;
     /**
@@ -81,6 +81,8 @@ export function RunDetail({
     nested: NestedRun[];
     /** Read the run again (after an answer, a cancel, a replay). */
     onChanged: () => void;
+    /** Whether the run's events stream follows it (F1662): the page reads it on its own clock only when not. */
+    onFollowing?: (following: boolean) => void;
     /** The product's notes above the facts (cloud: the run's place in line). */
     notices?: ReactNode;
     /** The product's last sections (cloud: Full transcript; OSS: Full log). */
@@ -237,7 +239,8 @@ export function RunDetail({
                 <section className="grid gap-3">
                     {/* Keyed on status: an answer, a cancel or a replay moves the run on, and both
                         sources replay from the first event — a fresh mount starts the log empty. */}
-                    <RunActivity key={`${run.id}:${run.status}`} runId={run.id} status={run.status} stepErrors={stepErrors} emptyNote={activityNote} onChanged={onChanged} />
+                    <RunActivity key={`${run.id}:${run.status}`} runId={run.id} status={run.status} stepErrors={stepErrors}
+                        emptyNote={activityNote} onChanged={onChanged} onMoved={onChanged} onFollowing={onFollowing} />
                     <NestedRuns runs={nested} />
                 </section>
 
