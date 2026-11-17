@@ -101,7 +101,7 @@ SHAPES: dict[str, dict[str, list[str]]] = {
     "plan": {"keys": ["items", "note"],
              "item": ["plan", "monthly_credits", "runs_at_once", "credits_left", "model_wallet_left_usd"]},
     "models": {"keys": ["default_model", "builder_model", "builder_model_for_quick_steps", "providers_with_a_key",
-                        "note", "models_you_can_pick?", "cli_not_signed_in?"]},
+                        "note", "models_you_can_pick?", "clis_signed_in?", "cli_not_signed_in?"]},
     "agents": {"keys": ["items"], "item": ["name", "type", "model", "tools"]},
     "workflows": {"keys": ["items", "count"], "item": ["name", "steps", "scheduled"]},
     "tool": {"keys": ["name", "kind", "description", "inputs", "note", "code?", "code_cut?", "reads_variables?",
@@ -564,15 +564,31 @@ async def _models(args: dict) -> dict:
         from core.providers import cli_status
 
         not_signed: dict[str, str] = {}
+        signed: list[str] = []
         for provider in list(found):
             st = cli_status.known(provider) if provider in cli_status.PROVIDERS else None
             if st is not None and st.signed_in is False:
                 not_signed[st.label] = st.sign_in_hint or "Sign in to it first."
                 found = {k: v for k, v in found.items() if k != provider}
+            elif st is not None and st.signed_in:
+                signed.append(st.label)
         if found:
             out["models_you_can_pick"] = found
+        # What to do with the lists is said with them (F1683): asked which models it can use, Synapse AI said a
+        # signed-in Claude Code's models were there "if you have a Claude CLI session signed in", and named none of
+        # the CLIs that were not.
+        said = [out["note"]]
+        if found:
+            said.append("Every model in models_you_can_pick can be used here now.")
+        if signed:
+            out["clis_signed_in"] = signed
+            said.append("Each CLI in clis_signed_in is signed in here: say its models can be used, never as if a "
+                        "sign-in might be missing.")
         if not_signed:
             out["cli_not_signed_in"] = not_signed
+            said.append("Asked which models can be used, name every CLI in cli_not_signed_in as installed here but "
+                        "not signed in, each with its sign-in line, and offer none of its models until it is.")
+        out["note"] = " ".join(said)
     return out
 
 
