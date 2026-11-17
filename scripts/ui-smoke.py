@@ -1523,6 +1523,65 @@ RUNLOG_POSITION = r"""() => {
 }"""
 
 
+#: What the builder refuses an image with on a model that cannot see one, as this edition's proxy wraps it (F1666).
+REFUSAL_SAID = ("cli.claude.claude-sonnet-4-6 cannot see images. Pick a different builder model, or send the message "
+                "without them.")
+
+
+@check
+async def check_builderrefusal(browser) -> str:
+    """The panel says the builder's own reason for refusing a message (F1666), never "could not be reached".
+
+    The builder's POST is stubbed, so no model is called: first a refusal with its reason, as the proxy wraps it (a
+    422 `{"error": "Backend Error 422: {\\"detail\\": …}"}`), which the panel must say in its words; then a 500, which
+    still says the builder could not be reached. Light and dark at 1440; `SMOKE_SHOTS`, when set, keeps a shot of each.
+    """
+    shots = os.environ.get("SMOKE_SHOTS")
+    problems: list[str] = []
+    for scheme in ("light", "dark"):
+        ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]}, color_scheme=scheme)
+        await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{scheme}')}}catch(e){{}}")
+        page = await ctx.new_page()
+        answer = {"status": 422, "body": json.dumps({"error": "Backend Error 422: " + json.dumps({"detail": REFUSAL_SAID})})}
+        try:
+            await page.route("**/api/builder/chat", lambda route: route.fulfill(
+                status=answer["status"], content_type="application/json", body=answer["body"]))
+            await page.route("**/api/builder/conversation", lambda route: route.fulfill(
+                status=200, content_type="application/json", body='{"conversation": null}'))
+            await page.goto(f"{APP}/dashboard", wait_until="domcontentloaded")
+            await asyncio.sleep(SETTLE + 1.0)
+            await _build_with_ai(page)
+            panel = page.locator('[data-testid="assistant-panel"]')
+            await panel.wait_for(timeout=15_000)
+
+            async def say(text: str) -> str:
+                box = panel.locator("textarea").last
+                await box.fill(text)
+                await box.press("Enter")
+                await asyncio.sleep(2.0)
+                return await panel.inner_text()
+
+            said = await say("Build what this picture shows.")
+            if REFUSAL_SAID not in said:
+                problems.append(f"{scheme}: the refusal's reason is not said: {said[-300:]!r}")
+            if "could not be reached (422)" in said:
+                problems.append(f"{scheme}: a refusal with a reason still reads 'could not be reached (422)'")
+            if shots:
+                await panel.screenshot(path=os.path.join(shots, f"builderrefusal-reason-{scheme}-1440.png"))
+            answer.update(status=500, body=json.dumps({"error": "Backend Error 500: Internal Server Error"}))
+            said = await say("And this one?")
+            if "The builder could not be reached (500)." not in said:
+                problems.append(f"{scheme}: a 500 does not say the builder could not be reached: {said[-300:]!r}")
+            if shots:
+                await panel.screenshot(path=os.path.join(shots, f"builderrefusal-500-{scheme}-1440.png"))
+        finally:
+            await ctx.close()
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "a refusal with a reason is said in its words and a 500 could not be reached, light and dark"
+
+
+
 @check
 async def check_runfollow(browser) -> str:
     """The run log follows the newest line, and leaves a reader who scrolled up alone.
