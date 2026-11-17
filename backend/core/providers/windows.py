@@ -85,14 +85,31 @@ WINDOWS: tuple[tuple[str, int], ...] = (
 )
 
 
+#: A host's own window for a family it serves (F1649): `(host, family prefix, tokens, the page it was read from)`. A
+#: host serves a model at its own window, often less than its maker's: Groq serves Qwen 3.8 27B at 131,072 tokens,
+#: where Alibaba's own API reads 983,616. Read for that host's ids (`<host>.<model>`), and winning whenever it is less
+#: than the family's row; a host that serves more leaves the family's, so a budget never plans past what fits.
+HOST_WINDOWS: tuple[tuple[str, str, int, str], ...] = (
+    ("groq", "qwen3.8", 131_072, "https://console.groq.com/docs/model/qwen/qwen3.8-27b"),
+)
+
+
 def window_tokens(model_id: str) -> int | None:
-    """`model_id`'s input window in tokens, or None when it is not known."""
+    """`model_id`'s input window in tokens, or None when it is not known: its family's row (the longest prefix of its
+    id or an id its provider's prefix leaves), and its host's own row where that host serves less (`HOST_WINDOWS`)."""
     model_id = (model_id or "").strip().lower()
     if not model_id:
         return None
     ids = [model_id, *(model_id[n + 1:] for n, c in enumerate(model_id) if c in "./")]
     found = [(len(prefix), tokens) for prefix, tokens in WINDOWS for i in ids if i.startswith(prefix.lower())]
-    return max(found)[1] if found else None
+    family = max(found)[1] if found else None
+    host, dot, _ = model_id.partition(".")
+    served = [(len(prefix), tokens) for name, prefix, tokens, _ in HOST_WINDOWS if dot and host == name
+              for i in ids[1:] if i.startswith(prefix.lower())]
+    if not served:
+        return family
+    own = max(served)[1]
+    return own if family is None else min(own, family)
 
 
 # ── a host's word (F1591) ───────────────────────────────────────────────────────────────────────────────────────────
