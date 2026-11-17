@@ -4403,10 +4403,9 @@ async def generate_response_ex(prompt_msg, sys_prompt, mode, current_model, curr
     if unknown:
         raise LLMError(unknown, code=UNKNOWN_MODEL)
     try:
-        # A model its provider shut down is never called (F1648): refused in the provider's words, as a model that is
-        # gone, so a same-provider stand-in may answer below (F1369).
-        if (retired := _model_availability.shut_down_said(current_model)) is not None:
-            raise LLMError(retired, status=404, code=PROVIDER_REFUSED, said=retired)
+        # A model its provider shut down is said on the step, in the provider's words, and still called (F1648): a
+        # provider can go on serving a retired id. One it then refuses as gone takes the gone path below (F1369).
+        _model_availability.said_retired(current_model)
         return await _generate_response_once(prompt_msg, sys_prompt, mode, current_model, current_settings,
                                              *args, **kwargs)
     except LLMError as failed:

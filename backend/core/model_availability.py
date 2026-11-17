@@ -104,15 +104,25 @@ def said_stand_in(refused: str, used: str) -> None:
 
 
 def shut_down_said(model: str | None) -> str | None:
-    """Why a call on `model` is never sent, or None (F1648): its provider shut it down for everyone (`RETIRED`'s
-    `shut_down`), said with the provider's own words and the date. A model refused only to new callers is still called
-    for a workspace that has it."""
+    """What a step on `model` is told, or None (F1648): its provider shut it down for everyone (`RETIRED`'s
+    `shut_down`), said with the provider's own words and the date. A model refused only to new callers is not."""
     if not model:
         return None
     for listed, row in RETIRED.items():
         if row.get("shut_down") and same_model(listed, model):
-            return f"{listed}: this model has been retired by its provider on {row['since']}. {row['reason']}"
+            return (f"`{listed}` was retired by its provider on {row['since']}. {row['reason']} Choose another model "
+                    "for this step before the provider stops serving it.")
     return None
+
+
+def said_retired(model: str | None) -> None:
+    """Say on the step, once, that its model was retired by its provider (F1648), with the step's other model notes
+    (`noting_stand_ins`). The call itself still goes out: a provider can go on serving a retired id, and a call it
+    then refuses as gone takes the gone path like any other (F1369, F1650)."""
+    said = _STAND_INS.get()
+    line = shut_down_said(model)
+    if said is not None and line is not None and line not in said:
+        said.append(line)
 
 
 def retired_for(provider: str) -> dict[str, dict]:
