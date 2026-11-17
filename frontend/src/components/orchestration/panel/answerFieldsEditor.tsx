@@ -1,3 +1,5 @@
+'use client';
+
 /**
  * The answer-field editor (F1618): rows to four levels, "Paste an example", "Paste a JSON Schema", and the schema the
  * fields compile to. A model step's Answer fields (`steps.tsx`) and a custom tool's "What it answers" (F1620) are this
