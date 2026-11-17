@@ -229,7 +229,10 @@ ROWS: tuple[Row, ...] = (
       for p in ("phi4-mini:3.8b", "phi4-mini:latest")),
     *(_sized(p, "mistral", 7.0, dense=True, source=_OLLAMA + "mistral/tags")
       for p in ("mistral:7b", "mistral:latest", "mistral:instruct", "mistral:text", "mistral:v0.")),
-    *(_sized(p, "gpt-oss", 21.0, 3.6, dense=False, source=_OLLAMA + "gpt-oss/tags")
+    # The first-run tip's words trace here: 14 GB and 128K on its tags page; 16 GB of memory on its card ("run within
+    # 16GB of memory") and Ollama's page ("as little as 16GB memory").
+    *(_sized(p, "gpt-oss", 21.0, 3.6, dense=False,
+             source=f"{_OLLAMA}gpt-oss/tags and {_OLLAMA}gpt-oss and {_HF}openai/gpt-oss-20b")
       for p in ("gpt-oss:20b", "gpt-oss:latest")),
 )
 
