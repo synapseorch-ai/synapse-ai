@@ -254,12 +254,35 @@ async def clear(model: str) -> bool:
 
 async def note_failure(model: str | None, err: BaseException, *, provider: str | None = None,
                        settings: dict | None = None) -> None:
-    """Called with every failed model call: marks the model when the provider said it is gone, never a local one."""
+    """Called with every failed model call: marks the model when the provider said it is gone, never a local one, and
+    only when the error names that model (F1650): an error naming another model, or none, marks nothing."""
     if not model or is_local(provider, settings):
         return
     reason = model_gone(err)
-    if reason:
+    if reason and names_model(str(getattr(err, "detail", None) or err or ""), model):
         await mark(model, reason)
+
+
+#: A word of an error's text that could be a model's id: letters, digits and the marks ids are written with.
+_ID_WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@-]*")
+
+
+def _bare(model_id: str) -> str:
+    """A model's id without its path or provider prefixes: `models/x` and `gemini.x` are `x`, `groq.openai/x` is `x`,
+    `us.anthropic.x` is `x`. A version's dot is never a prefix's (`gpt-4.1-nano` stays whole)."""
+    bare = model_id.lower().rsplit("/", 1)[-1]
+    while True:
+        head, dot, rest = bare.partition(".")
+        if not (dot and head.isalpha() and rest):
+            return bare
+        bare = rest
+
+
+def names_model(text: str, model: str) -> bool:
+    """Whether an error's text names `model`, in any of its provider's spellings (`models/x`, `gemini.x`, `x`): one of
+    its words is the model, its path and provider prefixes aside, whole, never a part of a longer id."""
+    want = _bare(model)
+    return bool(want) and any(_bare(word.rstrip(".:,;")) == want for word in _ID_WORD.findall(text or ""))
 
 
 async def note_success(model: str | None) -> None:
