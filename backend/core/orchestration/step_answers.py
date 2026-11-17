@@ -80,6 +80,34 @@ def answer_fields(step: dict[str, Any], agents: dict | None = None) -> tuple[str
     return None
 
 
+#: A page read's fields that are not text, by name: the rest of its answer is text (`structure.ANSWERS`).
+_PAGE_FIELD_TYPES = {"success": "boolean", "wait_missed": "boolean", "count": "number", "scrolls_executed": "number"}
+
+
+def tool_answers(tools: list[dict[str, Any]], custom: set[str] | frozenset[str] = frozenset()) -> dict[str, dict]:
+    """What each tool here declares it answers, as answer fields, with who owns the declaration (F1620): `custom` for a
+    tool named in `custom` (the person's own HTTP or Python tool, its output schema theirs to edit), `mcp` for any other
+    tool's `outputSchema` (its server's word), and `page` for the built-in page reads (ours, `structure.ANSWERS`). A
+    tool that declares nothing, or whose declaration has a part outside the answer's subset, is not known and is left
+    out: its answer is never checked."""
+    from core.native_builder.structure import ANSWER_LISTS, ANSWERS
+    from core.orchestration.output_fields import from_json_schema
+
+    out: dict[str, dict] = {}
+    for name, has in ANSWERS.items():
+        lists = set(ANSWER_LISTS.get(name, ()))
+        out[name] = {"owner": "page", "fields": [
+            {"name": f, "type": "list" if f in lists else _PAGE_FIELD_TYPES.get(f, "string")} for f in has]}
+    for tool in tools:
+        name, schema = tool.get("name"), tool.get("outputSchema")
+        if not isinstance(name, str) or not name or not isinstance(schema, dict):
+            continue
+        fields, refused = from_json_schema(schema)
+        if fields and not refused:
+            out[name] = {"owner": "custom" if name in custom else "mcp", "fields": fields}
+    return out
+
+
 def keys_written(step: dict[str, Any]) -> list[str]:
     """The state keys the step writes its answer to (a Human step's to `human_response` too)."""
     key = step.get("output_key") or (HUMAN_RESPONSE if step.get("type") == "human" else None)

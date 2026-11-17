@@ -4463,6 +4463,69 @@ def _deep_reads(steps: list, keys: set[str]) -> dict[str, list[tuple[str, list[s
     return out
 
 
+def _tool_answer_reads(steps: list, tool_answers: dict[str, dict] | None) -> tuple[list[str], list[str]]:
+    """Every read of a Tool step's answer, checked to its end against what its tool declares (F1620; F1616(b): a field
+    read that the tool never answers failed only when the run reached it). `tool_answers` is
+    `step_answers.tool_answers`: each tool's declared fields and who owns them.
+
+    Read in a template, a condition and a Loop's body through its item (`_deep_reads`), and a Transform's code (first
+    level, `compile.field_reads`). A custom tool's or a page read's declaration makes a read past it an issue, with its
+    fix; an MCP tool's a warning, as its server's own word can be wrong and a build is never stopped by what the person
+    cannot fix. A page read is checked at its first level only, as its lists' items are not known. Returns (issues,
+    warnings)."""
+    from core.native_builder.compile import TEXT_METHODS, field_reads
+    from core.orchestration import output_fields as _answer
+    from core.orchestration import step_answers
+
+    if not tool_answers:
+        return [], []
+    writers: dict[str, list[dict]] = {}
+    for s in steps:
+        if isinstance(s, dict):
+            for key in step_answers.keys_written(s):
+                writers.setdefault(key, []).append(s)
+    known = {key: (ws[0], ws[0]["forced_tool"], tool_answers[ws[0]["forced_tool"]]) for key, ws in writers.items()
+             if len(ws) == 1 and ws[0].get("type") == "tool" and ws[0].get("forced_tool") in tool_answers}
+    if not known:
+        return [], []
+    reads = {key: list(found) for key, found in _deep_reads(steps, set(known)).items()}
+    for s in steps:
+        if isinstance(s, dict) and isinstance(s.get("transform_code"), str):
+            for key, fields in field_reads(s["transform_code"], set(known)).items():
+                for field in fields:
+                    entry = (str(s.get("id", "?")), [field], False)
+                    if entry not in reads.setdefault(key, []):
+                        reads[key].append(entry)
+    issues: list[str] = []
+    warnings: list[str] = []
+    for key, found in reads.items():
+        writer, name, answer = known[key]
+        has = [f["name"] for f in answer["fields"]]
+        for sid, parts, _ in found:
+            if not parts or parts[0] in TEXT_METHODS or parts[0].lstrip("-").isdigit():
+                continue
+            where = (f"Step '{sid}' reads `{'.'.join(parts)}` from state.{key}, the answer of tool step "
+                     f"'{writer.get('id', '?')}' (`{name}`)")
+            if answer["owner"] == "page":
+                if parts[0] in has:
+                    continue
+                said = (f"{where}, an answer with no such field: `{name}` answers an object with "
+                        f"{', '.join(f'`{f}`' for f in has)}. Read a field it has (a page's text is in `markdown`, "
+                        "and so is an API's JSON fetched as a page: parse it there).")
+            else:
+                problem = _answer.path_problem(answer["fields"], parts, root="the tool's declared fields")
+                if not problem:
+                    continue
+                if answer["owner"] == "mcp":
+                    warnings.append(f"{where}: {problem}. `{name}`'s own declaration does not list it, so this is "
+                                    "said, never refused: the run reads whatever the tool answers.")
+                    continue
+                said = f"{where}: {problem}, which is the tool's output schema in its settings."
+            if said not in issues:
+                issues.append(said)
+    return issues, warnings
+
+
 def _fields_never_written(steps: list, agents: dict | None = None) -> list[str]:
     """A read of a field that the steps writing its key never write (F1549, MIG1's bug A: a Human step with no fields,
     then an If/Else on `state.<its id>.approved`, routed every approval "no").
@@ -4761,7 +4824,8 @@ def _transform_reads_a_wrapper(step: dict, steps: list[dict]) -> list[str]:
 
 def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | None = None,
                             knowledge_off: bool = False, allow_dead_ends: bool = False,
-                            knowledge_later: bool = False, named_only: frozenset[str] = frozenset()) -> dict:
+                            knowledge_later: bool = False, named_only: frozenset[str] = frozenset(),
+                            tool_answers: dict[str, dict] | None = None) -> dict:
     """Return {"ok": bool, "issues": [str, ...], "warnings": [str, ...]}: wiring
     problems, and what probably is not meant but runs (a prompt that reads a key
     before any step writes it, U74) — warnings never make `ok` false.
@@ -5078,6 +5142,10 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
     # And a field of a key: one the steps writing it never write is always missing, so a condition on it always takes
     # its documented default (F1549: every approval routed "no").
     issues += _fields_never_written(steps, agents)
+    # A field of a Tool step's answer that its tool does not declare (F1620): an issue for a tool the person or the
+    # product owns, a warning for an MCP tool's own word.
+    tool_issues, tool_warnings = _tool_answer_reads(steps, tool_answers)
+    issues += tool_issues
     # A Loop over a whole answer object, or a field of it that is no list, ran zero times and said Completed (F1613).
     from core.orchestration.step_answers import loops_over_an_answer
 
@@ -5230,7 +5298,7 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
     # (U74): said, never refused — a feedback loop's first pass is a real pattern.
     return {"ok": not issues, "issues": issues,
             "warnings": [*unset_reads(orch), *_decisions_on_words(steps, agents),
-                         *step_answers_never_followed(steps)]}
+                         *step_answers_never_followed(steps), *tool_warnings]}
 
 
 def _parse_json_field(value: Any, fallback: Any) -> Any:

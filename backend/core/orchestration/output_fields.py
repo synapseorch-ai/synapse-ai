@@ -220,16 +220,17 @@ def _said_lines(fields: Any, indent: str, lines: list[str]) -> None:
             _said_lines(inner, indent + "  ", lines)
 
 
-def path_problem(fields: Any, path: list[str]) -> str | None:
+def path_problem(fields: Any, path: list[str], root: str = "its output_fields") -> str | None:
     """Why `path` (the parts after the step's key: field names and list indexes) reads nothing an answer declaring
-    `fields` has, with its fix; None when it holds (F1618: every read checked to its end)."""
+    `fields` has, with its fix; None when it holds (F1618: every read checked to its end). `root` names where the
+    answer's top fields are declared: a model step's output_fields, or a tool's declared fields (F1620)."""
     import difflib
 
     group, field, trail = normalised(fields), None, []
 
     def where() -> str:
         named = [t for t in trail if not t.isdigit()]
-        return f"`{named[-1]}`'s fields" if named else "its output_fields"
+        return f"`{named[-1]}`'s fields" if named else root
 
     for i, part in enumerate(path):
         if field is not None:
