@@ -158,3 +158,34 @@ def test_a_block_the_crawler_reported_is_a_block():
 ])
 def test_a_crawl_failure_that_is_not_a_block_stays_an_error(error):
     assert _scrape({"success": False, "error": error})[0] == "error"
+
+
+EITHER = {"outcome": ["content", "blocked"], "contains": "DDoS", "reason_has": "anti-bot"}
+
+
+def _cdn_row(outcome, text="", reason=""):
+    return Row("cdn-page", "https://example.com/", "scrape", "", outcome, reason=reason, text=text)
+
+
+def test_a_page_that_may_be_challenged_passes_either_way():
+    assert live_web.judge(_cdn_row("content", text="What is a DDoS attack?"), EITHER, {}).verdict == "pass"
+    assert live_web.judge(_cdn_row("blocked", reason="Blocked by anti-bot protection: Cloudflare challenge"),
+                          EITHER, {}).verdict == "pass"
+
+
+@pytest.mark.parametrize("row", [
+    _cdn_row("content", text="A page about something else"),   # content, but not the page
+    _cdn_row("blocked", reason="Crawl failed: Timeout"),          # said blocked, for another reason
+    _cdn_row("error", reason="Crawl failed: net::ERR_NAME_NOT_RESOLVED"),
+    _cdn_row("not_found"),
+])
+def test_either_way_still_fails_what_is_neither(row):
+    assert live_web.judge(row, EITHER, {}).verdict == "fail"
+
+
+def test_an_unknown_outcome_in_a_list_is_refused(tmp_path):
+    odd = tmp_path / "odd.json"
+    odd.write_text(json.dumps({"sites": [{"id": "x", "url": "https://example.com/",
+                                          "expect": {"scrape": {"outcome": ["content", "fine"]}}}]}))
+    with pytest.raises(ValueError, match="unknown outcome"):
+        live_web.load_sites(odd)

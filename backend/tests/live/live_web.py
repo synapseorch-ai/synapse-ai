@@ -97,8 +97,12 @@ def load_sites(path: str | os.PathLike | None = None) -> list[dict]:
         for fetcher, want in (site.get("expect") or {}).items():
             if fetcher not in FETCHERS:
                 raise ValueError(f"{site['id']}: unknown fetcher {fetcher!r}")
-            if isinstance(want, dict) and want.get("outcome") not in OUTCOMES:
-                raise ValueError(f"{site['id']}/{fetcher}: unknown outcome {want.get('outcome')!r}")
+            if isinstance(want, dict):
+                accepted = want.get("outcome")
+                accepted = accepted if isinstance(accepted, list) and accepted else [accepted]
+                for one in accepted:
+                    if one not in OUTCOMES:
+                        raise ValueError(f"{site['id']}/{fetcher}: unknown outcome {one!r}")
             if not isinstance(want, dict) and want not in ("record", "skip"):
                 raise ValueError(f"{site['id']}/{fetcher}: an expectation is an object, 'record' or 'skip'")
     return sites
@@ -167,13 +171,18 @@ def judge(row: Row, want: Any, previous: dict[tuple[str, str], str]) -> Row:
     if want == "record":
         row.verdict = "new" if before is None else ("recorded" if before == row.outcome else "changed")
         return row
-    ok = row.outcome == want.get("outcome")
+    # An outcome is one name, or a list of names any of which passes: for a page whose answer depends on where the
+    # fetch comes from (a CDN that challenges some addresses and not others). Then `contains` is checked only when
+    # the page came back as content, and `reason_has` only when it did not.
+    accepted = want.get("outcome")
+    either = isinstance(accepted, list)
+    ok = row.outcome in accepted if either else row.outcome == accepted
     contains = want.get("contains")
-    if ok and contains is not None:
+    if ok and contains is not None and (not either or row.outcome == "content"):
         row.contains_ok = contains.lower() in row.text.lower()
         ok = row.contains_ok
     reason_has = want.get("reason_has")
-    if ok and reason_has is not None:
+    if ok and reason_has is not None and (not either or row.outcome != "content"):
         ok = reason_has.lower() in row.reason.lower()
     row.verdict = "pass" if ok else "fail"
     return row
