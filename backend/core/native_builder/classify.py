@@ -83,7 +83,7 @@ _A_NEW_ONE = re.compile(r"\b(?:a|an|another|new)\s+(?:workflow|flow|automation|a
 
 
 #: The ways a request beside an open workflow is built new: it plans from nothing, never from the open one.
-_BUILT_NEW_BESIDE = ("new_beside_open", "new_past_cap", "new_using_open", "import_described")
+_BUILT_NEW_BESIDE = ("new_beside_open", "new_past_cap", "new_using_open", "new_using_named", "import_described")
 
 
 def _import_described(message: str) -> bool:
@@ -105,6 +105,24 @@ def new_using_open(text: str, state: dict) -> bool:
         return False
     new_one, uses = _A_NEW_ONE.search(text), re.search(rf"{_USES}{_FILLER}\s+{re.escape(name)}\b", text)
     return bool(new_one and uses and new_one.start() < uses.start())
+
+
+def new_using_named(text: str, names: list[str]) -> bool:
+    """A new job that names a workflow here as what it runs, calls or follows, open or not (F1673, F1628's rule for
+    every workflow the message names): built new, planned from nothing, never a change to the one it names. The same
+    words as F1628: the message starts as a whole job, is no edit, and asks for the new one before the word that uses
+    the named one. "change X so it runs Y afterwards" is an edit of X, and "every Monday run my X" schedules X."""
+    if _EDIT_FIRST.match(text) or not _NEW_JOB.search(text):
+        return False
+    new_one = _A_NEW_ONE.search(text)
+    if not new_one:
+        return False
+    for raw in names:
+        name = _words(str(raw or ""))
+        uses = re.search(rf"{_USES}{_FILLER}\s+{re.escape(name)}\b", text) if name else None
+        if uses and new_one.start() < uses.start():
+            return True
+    return False
 
 
 def open_or_new(text: str, state: dict) -> bool:
@@ -329,6 +347,9 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
     # A new workflow that runs, calls or follows the open one is a new build, though it names it (F1628).
     elif kind in ("change", "build") and new_using_open(text, state):
         kind, by = "build", "new_using_open"
+    # The same for a workflow the message only names, open or not (F1673): built new, planned from nothing.
+    elif kind in ("change", "build") and new_using_named(text, things.get("orchestration") or []):
+        kind, by = "build", "new_using_named"
     # A new request typed beside an open workflow is a new build, whatever the quick model read (F1605): "this" and
     # "it" mean the open one only when the message is about it.
     elif kind in ("change", "build") and not things and new_beside_open(text, state):
