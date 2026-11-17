@@ -51,3 +51,28 @@ def test_a_corrected_row_names_the_page_it_was_read_from(model, inp, out, cached
 def test_a_row_the_page_agrees_with_or_no_longer_lists_is_as_it_was(model, inp, out):
     row = RATES[model]
     assert (row["input_per_1m"], row["output_per_1m"]) == (inp, out), row
+
+
+def test_the_live_flash_lite_id_is_on_the_rate_card_at_its_price():
+    """Google shut the preview id down (May 25, 2026) and serves Gemini 3.1 Flash-Lite as `gemini-3.1-flash-lite`,
+    Stable (aistudio.google.com/docs/models and /docs/deprecations, read 2026-11-17)."""
+    row = RATES["gemini-3.1-flash-lite"]
+    assert (row["provider"], row["input_per_1m"], row["output_per_1m"]) == ("gemini", 0.25, 1.5), row
+    preview = SOURCE[max(0, SOURCE.index('"gemini-3.1-flash-lite-preview"') - 400):
+                     SOURCE.index('"gemini-3.1-flash-lite-preview"')]
+    assert "shut down" in preview.lower() and "2026-05-25" in preview, preview[-300:]
+
+
+def test_mistral_large_4_is_the_standing_price_not_a_sale():
+    """The launch's "50% off for 2 weeks" ended in October; the GA page of November 5, 2026 shows $0.7 and $2.1 with no
+    sale, so the row is its standing price and says so."""
+    near = SOURCE[max(0, SOURCE.index('"mistral.mistral-large-4"') - 400):SOURCE.index('"mistral.mistral-large-4"')]
+    assert "2026-11-05" in near and "sale" not in near.split("2026-11-05")[-1].lower(), near[-300:]
+
+
+def test_deepseeks_legacy_names_say_when_deepseek_said_they_end():
+    """DeepSeek's changelog (2026-04-24) said `deepseek-chat` and `deepseek-reasoner` would be discontinued on
+    2026-07-24, mapped meanwhile to deepseek-v4-flash's two modes. Its pages do not say they are gone, so the rows stay,
+    and say so."""
+    near = SOURCE[max(0, SOURCE.index('"deepseek-chat"') - 400):SOURCE.index('"deepseek-chat"')]
+    assert "2026-07-24" in near and "discontinued" in near, near[-300:]
