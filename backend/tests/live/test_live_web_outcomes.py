@@ -113,11 +113,33 @@ def test_a_site_list_with_a_repeated_id_or_unknown_outcome_is_refused(tmp_path):
 
 
 def test_the_public_sample_loads_and_fetches_nothing_robots_refuses():
-    """A page the knowledge fetch expects robots.txt to refuse is fetched by no other fetcher either."""
+    """A page whose robots.txt the knowledge fetch expects to refuse it, or not to read, is fetched by no other fetcher
+    either."""
     sites = live_web.load_sites()
     assert sites
     for site in sites:
-        if (live_web.wanted(site, "knowledge") or {}).get("outcome") == "robots":
+        knowledge = live_web.wanted(site, "knowledge")
+        if isinstance(knowledge, dict) and knowledge.get("outcome") in ("robots", "robots_unreadable"):
             for other in ("scrape", "browser"):
                 want = live_web.wanted(site, other)
                 assert want is None or want.get("outcome") == "not_run_robots", (site["id"], other)
+
+
+def test_the_reason_nothing_was_fetched_says_which_robots_answer_it_was():
+    from core.knowledge.fetch import Robots
+
+    url = "https://example.com/private/page"
+    rules = Robots.parse("User-agent: *\nDisallow: /private/\n")
+    assert live_web.robots_skip(rules, url) == "robots.txt does not allow this page, so the harness fetched nothing"
+    assert "could not be read" in live_web.robots_skip(Robots.unreachable(), url)
+    assert "refused outright" in live_web.robots_skip(None, url)
+
+
+def test_a_page_robots_allows_is_fetched():
+    from core.knowledge.fetch import Robots
+
+    rules = Robots.parse("User-agent: *\nDisallow: /private/\n")
+    # Near misses: a path that only starts like the disallowed one, and a host with no rules at all.
+    assert live_web.robots_skip(rules, "https://example.com/privately-public") is None
+    assert live_web.robots_skip(rules, "https://example.com/") is None
+    assert live_web.robots_skip(Robots.allow_all(), "https://example.com/private/page") is None

@@ -39,7 +39,8 @@ from typing import Any
 
 FETCHERS = ("knowledge", "scrape", "browser")
 
-#: Every outcome a row can have. ``not_run_robots`` is the harness's own: robots.txt says no, so nothing was fetched.
+#: Every outcome a row can have. ``not_run_robots`` is the harness's own: robots.txt says no, could not be read, or the
+#: host was refused, so nothing was fetched (``robots_skip`` says which).
 OUTCOMES = frozenset({
     "content", "blocked", "robots", "robots_unreadable", "not_found", "http_error", "empty", "unsupported",
     "too_large", "egress", "excluded", "error", "not_run_robots",
@@ -218,6 +219,20 @@ class _Gap:
         self.last = time.monotonic()
 
 
+def robots_skip(robots, url: str) -> str | None:
+    """Why the scraper and the browser fetch nothing for ``url``, or None when they may. ``robots`` is the knowledge
+    fetch's own reading of the host's robots.txt, or None when the host was refused outright. An unread robots.txt
+    counts as a no (RFC 9309: an unreachable one means "disallow everything"), but is said apart from a real no: a
+    site that never answers the bot's robots.txt read is not a site that forbids the page."""
+    if robots is None:
+        return "the host was refused outright, so the harness fetched nothing"
+    if robots.unreachable_:
+        return "robots.txt could not be read, which counts as a no, so the harness fetched nothing"
+    if not robots.allows(url):
+        return "robots.txt does not allow this page, so the harness fetched nothing"
+    return None
+
+
 async def _knowledge(fetcher, site: dict) -> Row:
     """The crawl's page step for one named URL (``core.knowledge.web._page``), minus the writing."""
     from core import safe_fetch
@@ -330,18 +345,16 @@ async def run(sites: list[dict], *, previous: dict[tuple[str, str], str], workdi
                 await session.start(pw)
             for site in sites:
                 try:
-                    robots = await fetcher.robots(site["url"])
-                    allowed = (not robots.unreachable_) and robots.allows(site["url"])
+                    skip = robots_skip(await fetcher.robots(site["url"]), site["url"])
                 except Exception:  # noqa: BLE001 — a host refused outright: the knowledge row says why
-                    allowed = False
+                    skip = robots_skip(None, site["url"])
                 for name in FETCHERS:
                     want = wanted(site, name)
                     if want is None:
                         continue
                     started = time.monotonic()
-                    if name != "knowledge" and not allowed:
-                        row = Row(site["id"], site["url"], name, "", "not_run_robots",
-                                  reason="robots.txt does not allow this page, so the harness fetched nothing")
+                    if name != "knowledge" and skip:
+                        row = Row(site["id"], site["url"], name, "", "not_run_robots", reason=skip)
                     else:
                         await pace.wait()
                         if name == "knowledge":
