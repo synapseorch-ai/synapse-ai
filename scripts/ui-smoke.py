@@ -1718,6 +1718,216 @@ async def check_toolglobals(browser) -> str:
             + (f"; {added} declared through the picker" if added else "; no variable to pick here"))
 
 
+# ── a tool's answer ──────────────────────────────────────────────────────────
+
+#: A tool's declared answer inside the answer's subset, two levels deep, as the server compiles it (F1620).
+TOOLANSWER_SCHEMA = {
+    "type": "object", "properties": {
+        "leads": {"type": "array", "items": {"type": "object", "properties": {
+            "email": {"type": "string"}, "score": {"anyOf": [{"type": "number"}, {"type": "null"}]}},
+            "required": ["email", "score"], "additionalProperties": False}},
+        "total": {"type": "number"}},
+    "required": ["leads", "total"], "additionalProperties": False}
+#: One with parts outside the subset: kept as it is, shown read-only, each part named.
+TOOLANSWER_OUTSIDE = {"type": "object", "properties": {"id": {"oneOf": [{"type": "string"}, {"type": "number"}]},
+                                                       "name": {"type": "string", "minLength": 2}},
+                      "required": ["id", "name"]}
+#: Pasted into a tool that declares nothing, and taken.
+TOOLANSWER_PASTED = {"type": "object", "properties": {"risky": {"type": "boolean"}}, "required": ["risky"],
+                     "additionalProperties": False}
+_TOOLANSWER_HTTP = {"description": "finds this week's leads", "tool_type": "http", "method": "GET",
+                    "url": "https://example.com/leads", "inputSchema": {"type": "object", "properties": {}},
+                    "headers": {}}
+TOOLANSWER_TOOLS = {
+    "rows": {"name": "uismoke_answer_rows", "generalName": "UI smoke answer rows", **_TOOLANSWER_HTTP,
+             "outputSchema": TOOLANSWER_SCHEMA},
+    "kept": {"name": "uismoke_answer_kept", "generalName": "UI smoke answer kept", **_TOOLANSWER_HTTP,
+             "outputSchema": TOOLANSWER_OUTSIDE},
+    "none": {"name": "uismoke_answer_none", "generalName": "UI smoke answer none", **_TOOLANSWER_HTTP},
+    "python": {"name": "uismoke_answer_py", "generalName": "UI smoke answer python", "tool_type": "python",
+               "description": "counts the leads", "code": "print('{\"leads\": [], \"total\": 0}')\n",
+               "inputSchema": {"type": "object", "properties": {}}, "schemaParams": [], "globals": [],
+               "outputSchema": TOOLANSWER_SCHEMA},
+}
+#: The controls a person reaches with Tab alone in the section, each by its accessible name.
+TOOLANSWER_REACHED = ("Answer field 2 type", "Answer field 2 may be empty", "Add a field", "Paste an example",
+                      "Paste a JSON Schema", "Its output schema")
+
+
+@check
+async def check_toolanswer(browser) -> str:
+    """A custom tool's output schema is edited as answer fields, and kept as it is given (F1620, part 3).
+
+    The tool editor showed no output schema at all. Its "What it answers" section now has F1618 d's rows: a tool whose
+    schema is inside the answer's subset shows its fields, and Save sends that schema unchanged until a field is
+    changed; one with a part outside the subset is shown read-only with each part named, and Save sends it unchanged;
+    one that declares nothing sends no schema, and a pasted JSON Schema taken there is saved. A Python tool's Save
+    keeps its schema too (it sent none before, so one set through the API was erased). Every other option of the
+    editor is still there. Light and dark at 1440 and 390: AA contrast in the section, every control reached with Tab
+    alone. `SMOKE_SHOTS`, when set, keeps a shot of each state.
+    """
+    for tool in TOOLANSWER_TOOLS.values():
+        api("/api/tools/custom", "POST", tool)
+    scoped = CONTRAST.replace("document.querySelectorAll('*')",
+                              "(document.querySelector('[data-testid=\"tool-answer\"]') || document)"
+                              ".querySelectorAll('*')")
+    assert scoped != CONTRAST, "the contrast script no longer reads every element"
+    problems: list[str] = []
+    shots = os.environ.get("SMOKE_SHOTS")
+    runs = [(scheme, size) for scheme in ("light", "dark") for size in ((1440, 900), (390, 844))]
+
+    def same(a, b) -> bool:
+        return json.dumps(a) == json.dumps(b)
+
+    try:
+        for n, (scheme, size) in enumerate(runs):
+            tag = f"{scheme} {size[0]}"
+            ctx = await browser.new_context(viewport={"width": size[0], "height": size[1]}, color_scheme=scheme)
+            await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{scheme}')}}catch(e){{}}")
+            page = await ctx.new_page()
+            saved: list[dict] = []
+            page.on("request", lambda r: saved.append(json.loads(r.post_data or "{}"))
+                    if r.method == "POST" and urllib.parse.urlsplit(r.url).path == "/api/tools/custom" else None)
+
+            async def shot(state: str) -> None:
+                if shots:
+                    await page.screenshot(path=os.path.join(shots, f"toolanswer-{state}-{scheme}-{size[0]}.png"),
+                                          full_page=False)
+
+            async def contrast(state: str) -> None:
+                faint = await page.evaluate(scoped)
+                if faint:
+                    problems.append(f"{tag} {state}: under AA in the section: {faint[:3]}")
+
+            async def open_tool(which: str):
+                await page.goto(f"{APP}/tools", wait_until="domcontentloaded")
+                await asyncio.sleep(SETTLE)
+                await page.locator(f'[data-tool-row="{TOOLANSWER_TOOLS[which]["name"]}"] > button:first-child'
+                                   ).first.click()
+                section = page.get_by_test_id("tool-answer")
+                await section.wait_for(timeout=15_000)
+                await section.scroll_into_view_if_needed()
+                return section
+
+            async def save() -> dict:
+                before = len(saved)
+                await page.get_by_role("button", name=re.compile(r"^save", re.I)).first.click()
+                await asyncio.sleep(2.0)
+                return saved[-1] if len(saved) > before else {"<no save>": True}
+
+            try:
+                # Inside the subset: its rows, and Save sends it unchanged.
+                section = await open_tool("rows")
+                said = {}
+                for path, want in (("1", "List of groups"), ("1.1", "Text"), ("1.2", "Number"), ("2", "Number")):
+                    box = section.get_by_role("combobox", name=f"Answer field {path} type")
+                    said[path] = (await box.inner_text()).strip() if await box.count() else None
+                if said != {"1": "List of groups", "1.1": "Text", "1.2": "Number", "2": "Number"}:
+                    problems.append(f"{tag}: the rows read {said}")
+                if not await section.get_by_role("checkbox", name="Answer field 1.2 may be empty").is_checked():
+                    problems.append(f"{tag}: `score` does not say it may be empty")
+                if not await page.get_by_label("What it needs (JSON schema)").count():
+                    problems.append(f"{tag}: the input schema's editor is gone")
+                await shot("rows")
+                await contrast("rows")
+                # Every control reached with Tab alone, from the first row's name.
+                await section.get_by_role("textbox", name="Answer field 1 name").focus()
+                reached = set()
+                for _ in range(60):
+                    await page.keyboard.press("Tab")
+                    reached.add(await page.evaluate(ANSWERJSON_FOCUS))
+                missed = [c for c in TOOLANSWER_REACHED if c not in reached]
+                if missed:
+                    problems.append(f"{tag}: Tab never reaches {missed}")
+                await section.get_by_text("Its output schema", exact=True).click()
+                shown = section.get_by_label("The tool's output schema")
+                await shown.wait_for(timeout=5_000)
+                if not same(json.loads(await shown.inner_text()), TOOLANSWER_SCHEMA):
+                    problems.append(f"{tag}: its output schema reads {await shown.inner_text()!r}")
+                await shot("schema")
+                await contrast("schema")
+                if n == 0:
+                    sent = await save()
+                    if not same(sent.get("outputSchema"), TOOLANSWER_SCHEMA):
+                        problems.append(f"untouched Save sent outputSchema={sent.get('outputSchema', '<absent>')}")
+                    # A field added is saved with the rest.
+                    section = await open_tool("rows")
+                    await section.get_by_role("button", name="Add a field", exact=True).click()
+                    name = section.get_by_role("textbox", name="Answer field 3 name")
+                    await name.fill("notes")
+                    await name.press("Tab")
+                    sent = await save()
+                    props = (sent.get("outputSchema") or {}).get("properties") or {}
+                    if list(props) != ["leads", "total", "notes"]:
+                        problems.append(f"Save after adding `notes` sent properties {list(props)}")
+
+                # Outside the subset: read-only, each part named, saved unchanged.
+                section = await open_tool("kept")
+                kept = section.get_by_test_id("tool-answer-kept")
+                words = " ".join((await kept.inner_text()).split()) if await kept.count() else ""
+                if not all(w in words for w in ("`id`", "oneOf", "`name`", "minLength")):
+                    problems.append(f"{tag}: the kept schema reads {words!r}")
+                if await section.get_by_role("combobox", name="Answer field 1 type").count():
+                    problems.append(f"{tag}: a schema outside the subset is shown as rows")
+                await shot("kept")
+                await contrast("kept")
+                if n == 0:
+                    sent = await save()
+                    if not same(sent.get("outputSchema"), TOOLANSWER_OUTSIDE):
+                        problems.append(f"Save of the kept schema sent {sent.get('outputSchema', '<absent>')}")
+
+                # None: no rows, no schema sent; a pasted JSON Schema taken there is saved.
+                section = await open_tool("none")
+                if await section.get_by_role("combobox", name="Answer field 1 type").count():
+                    problems.append(f"{tag}: a tool that declares nothing shows rows")
+                await shot("none")
+                await contrast("none")
+                if n == 0:
+                    sent = await save()
+                    if sent.get("outputSchema") not in (None,) or "<no save>" in sent:
+                        problems.append(f"Save of a tool that declares nothing sent {sent}")
+                    section = await open_tool("none")
+                    await section.get_by_role("button", name="Paste a JSON Schema").click()
+                    await section.get_by_role("textbox", name="JSON Schema").fill(json.dumps(TOOLANSWER_PASTED))
+                    await section.get_by_role("button", name="Read it").click()
+                    await section.get_by_role("button", name="Use these fields").click()
+                    await asyncio.sleep(0.5)
+                    await shot("pasted")
+                    sent = await save()
+                    if not same(sent.get("outputSchema"), TOOLANSWER_PASTED):
+                        problems.append(f"Save after a pasted schema sent {sent.get('outputSchema', '<absent>')}")
+
+                # A Python tool: the same section, and Save keeps its schema.
+                section = await open_tool("python")
+                if not await section.get_by_role("combobox", name="Answer field 1 type").count():
+                    problems.append(f"{tag}: a Python tool's section shows no rows")
+                await shot("python")
+                await contrast("python")
+                if n == 0:
+                    sent = await save()
+                    if not same(sent.get("outputSchema"), TOOLANSWER_SCHEMA):
+                        problems.append(f"a Python tool's Save sent outputSchema={sent.get('outputSchema', '<absent>')}")
+            finally:
+                await ctx.close()
+    finally:
+        stored = {t.get("name"): t for t in api("/api/tools/custom")}
+        for tool in TOOLANSWER_TOOLS.values():
+            try:
+                api(f"/api/tools/custom/{tool['name']}", "DELETE")
+            except Exception:
+                pass
+    held = stored.get(TOOLANSWER_TOOLS["kept"]["name"], {}).get("outputSchema")
+    if not same(held, TOOLANSWER_OUTSIDE):
+        problems.append(f"the kept schema is stored as {held}")
+    if not same(stored.get(TOOLANSWER_TOOLS["python"]["name"], {}).get("outputSchema"), TOOLANSWER_SCHEMA):
+        problems.append("a Python tool's Save erased its output schema")
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return ("rows for a schema inside the subset, saved unchanged and with a field added; one outside it kept "
+            "read-only and saved unchanged; none sends none, and a pasted schema is saved; a Python tool keeps its "
+            "schema; light and dark at 1440 and 390, AA and Tab")
+
+
 # ── scale ────────────────────────────────────────────────────────────────────
 
 #: Settings the scale layer reads from the environment only. The screen may
