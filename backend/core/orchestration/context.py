@@ -631,6 +631,20 @@ def ran_zero(state: dict, key: str) -> str | None:
     return said if said and state.get(key) in ([], {}) else None
 
 
+#: What an input key held of a long value before F1678; it never holds less, on a window whose read share is smaller.
+INPUT_KEY_MIN = 5_000
+
+
+def _input_share() -> int:
+    """What a step's input key holds of a long value (F1678): its model's read share, which its step set while it
+    builds the prompt (`step_refs.reading`) and to which a saved output its prompt references is inlined; the vault's
+    read cap otherwise. Never under `INPUT_KEY_MIN`, so a small window's step reads no less than it did."""
+    from core.step_refs import read_cap_now
+    from core.vault import READ_CAP
+
+    return max(INPUT_KEY_MIN, read_cap_now() or READ_CAP)
+
+
 def _format_context_value(
     key: str,
     val,
@@ -1010,7 +1024,9 @@ def build_origin_aware_context(
         )
         if producer and producer.agent_id and producer.agent_id in engine.agent_names:
             label = f"{engine.agent_names[producer.agent_id]} → {key}"
-        context_parts.append(_format_context_value(key, val, label))
+        # Up to its model's read share, as a saved output its prompt references is (F1678): a fixed 5,000 cut a draft's
+        # middle out, and a step revising it wrote placeholders for what it could not see.
+        context_parts.append(_format_context_value(key, val, label, max_chars=_input_share()))
 
     if context_parts:
         sections.append("## CONTEXT FROM PREVIOUS STEPS\n" + "\n\n".join(context_parts))
