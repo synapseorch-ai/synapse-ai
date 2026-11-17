@@ -77,10 +77,34 @@ def _claude_rung(claude: str) -> str:
     return FORCED_TOOL
 
 
+#: A host's own rung for a provider it serves, read before the table (F1618 e). A model gateway that takes no schema
+#: field would drop the schema silently, so its host puts it on the prompt rung. An install that sets none keeps the
+#: table.
+_HOST_RUNGS: dict[str, str] = {}
+
+
+def set_rung_for(provider: str, rung: str | None) -> None:
+    """Put every model `provider` serves on `rung`, one of `RUNGS`; None drops what was set."""
+    key = (provider or "").strip().lower()
+    if rung is None:
+        _HOST_RUNGS.pop(key, None)
+        return
+    if rung not in RUNGS:
+        raise ValueError(f"An answer rung is one of {', '.join(RUNGS)}, not {rung!r}.")
+    _HOST_RUNGS[key] = rung
+
+
+def host_rung(provider: str) -> str | None:
+    """The rung a host put `provider` on, or None when it set none."""
+    return _HOST_RUNGS.get((provider or "").strip().lower())
+
+
 def rung(provider: str, model: str) -> str:
-    """The one rung `model`, served by `provider` (the provider table's id), takes."""
+    """The one rung `model`, served by `provider` (the provider table's id), takes: a host's own first."""
     provider = (provider or "").strip().lower()
     name = (model or "").strip().lower()
+    if provider in _HOST_RUNGS:
+        return _HOST_RUNGS[provider]
     if name.startswith("cli."):
         return SCHEMA if name.startswith(_CLI_SCHEMA) else PROMPT
     if provider in _SCHEMA_PROVIDERS:

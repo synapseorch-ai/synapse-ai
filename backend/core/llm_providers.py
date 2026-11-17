@@ -4739,6 +4739,13 @@ async def _generate_response_once(
     if spec is None:
         raise LLMError(f"Error: Unknown cloud model selected ({current_model}).",
                        said=f"Unknown cloud model selected ({current_model}).")
+    # A provider its host put on the prompt rung (F1618 e: a gateway that takes no schema field) is sent no schema: the
+    # step's prompt already asks for the shape in words, and the answer is read against it on every rung.
+    if call.response_schema:
+        from core import answer_shape as _held
+
+        if _held.host_rung(spec.id) == _held.PROMPT:
+            call = call._replace(response_schema=None)
     try:
         _answer = await _providers.resolve(spec.chat)(call, spec)
         (result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
