@@ -162,6 +162,22 @@ async def definition_of(run) -> dict | None:
     return await resolve_orchestration(run.orchestration_id)
 
 
+def _with_what_was_left_out(reason: str, exc: BaseException, step: Any, orchestration: Any,
+                            run: OrchestrationRun) -> str:
+    """A step's failure `reason`, with which Tool step's answer left out what it reads (`answers_missed.clause`,
+    F1620), where the failure is a lookup; otherwise `reason` as it was. Never itself a failure."""
+    from core.orchestration import answers_missed
+
+    try:
+        if not run.shared_state.get(answers_missed.MISSED_KEY) or not answers_missed.is_lookup(exc):
+            return reason
+        missed = answers_missed.clause(step.id, getattr(orchestration, "steps", None) or [], run.shared_state)
+    except Exception as err:  # noqa: BLE001 — a reason not added is a word not said, never a failure of its own
+        _log.warning(f"step '{getattr(step, 'id', '?')}': what a tool left out was not said: {err}")
+        return reason
+    return f"{reason} — {missed}" if missed else reason
+
+
 def kept_definition(orchestration: Orchestration) -> dict:
     """The copy a run keeps of `orchestration`, before a per-run model is applied."""
     return orchestration.model_dump(mode="json")
@@ -838,6 +854,8 @@ class OrchestrationEngine:
                 # drops `step_error` altogether.
                 safe_error = "An internal error occurred while executing this step."
                 real_error = reason_of(e)
+                # A lookup of what a Tool step's answer left out says which tool left it out (F1620).
+                real_error = _with_what_was_left_out(real_error, e, step, self.orch, run)
                 # Whose the model's failure was, for a host's bill (F1012).
                 model_failure = model_failure_of(e)
                 end_step(run.step_history, {

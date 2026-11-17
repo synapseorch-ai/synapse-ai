@@ -4479,6 +4479,30 @@ def _deep_reads(steps: list, keys: set[str]) -> dict[str, list[tuple[str, list[s
     return out
 
 
+def answer_reads(steps: list, keys: set[str]) -> dict[str, list[tuple[str, list[str], bool, str]]]:
+    """Each read of a key in `keys` (F1620): (the reading step, the parts after the key, compared with a number,
+    `code`, `condition` or `template`). To its end in a template, a condition and a Loop's body through its item
+    (`_reads_where`); at its first field in a Transform's code and a condition (`compile.field_reads`, F1394's reader,
+    which also sees `.get('field')`), where no read taken to its end starts with that field."""
+    from core.native_builder.compile import field_reads
+
+    reads = _reads_where(steps, keys)
+    for s in steps:
+        if not isinstance(s, dict):
+            continue
+        sid = str(s.get("id", "?"))
+        firsts = [("code", s.get("transform_code")), *(("condition", s.get(f)) for f in _EXPRESSION_FIELDS)]
+        for where, text in firsts:
+            if not isinstance(text, str):
+                continue
+            for key, fields in field_reads(text, keys).items():
+                found = reads.setdefault(key, [])
+                for field in fields:
+                    if not any(r[0] == sid and r[3] == where and r[1][:1] == [field] for r in found):
+                        found.append((sid, [field], False, where))
+    return reads
+
+
 class AnswerMiss(NamedTuple):
     """A read of a Tool step's answer that its tool's declaration rules out (F1620): what the one rule found, for the
     saved workflow's validator and the plan check to each say in its own words."""
@@ -4501,13 +4525,11 @@ def tool_answer_misses(steps: list, tool_answers: dict[str, dict] | None) -> lis
     (`_tool_answer_reads`) and the plan check (`build_plan._answers_read_past`) both hold. `tool_answers` is
     `step_answers.tool_answers`: each tool's declared fields and who owns them.
 
-    A key is held when one step writes it, a Tool step whose tool declares its answer. Its reads are taken to their end
-    in a template, a condition and a Loop's body through its item (`_reads_where`), and at their first field in a
-    Transform's code and a condition (`compile.field_reads`, F1394's reader, which also sees `.get('field')`), where no
-    read taken to its end starts with that field. The whole answer, a text method and an index are no field. A read is
+    A key is held when one step writes it, a Tool step whose tool declares its answer; each of its reads
+    (`answer_reads`) is checked, and the whole answer, a text method and an index are no field. A read is
     checked to its depth, or at its first field where only that is known (`first_level`: a page read's, or a
     declaration with a part outside the answer's subset)."""
-    from core.native_builder.compile import TEXT_METHODS, field_reads
+    from core.native_builder.compile import TEXT_METHODS
     from core.orchestration import output_fields as _answer
     from core.orchestration import step_answers
 
@@ -4522,20 +4544,7 @@ def tool_answer_misses(steps: list, tool_answers: dict[str, dict] | None) -> lis
              if len(ws) == 1 and ws[0].get("type") == "tool" and ws[0].get("forced_tool") in tool_answers}
     if not known:
         return []
-    reads = _reads_where(steps, set(known))
-    for s in steps:
-        if not isinstance(s, dict):
-            continue
-        sid = str(s.get("id", "?"))
-        firsts = [("code", s.get("transform_code")), *(("condition", s.get(f)) for f in _EXPRESSION_FIELDS)]
-        for where, text in firsts:
-            if not isinstance(text, str):
-                continue
-            for key, fields in field_reads(text, set(known)).items():
-                found = reads.setdefault(key, [])
-                for field in fields:
-                    if not any(r[0] == sid and r[3] == where and r[1][:1] == [field] for r in found):
-                        found.append((sid, [field], False, where))
+    reads = answer_reads(steps, set(known))
     misses: list[AnswerMiss] = []
     for key, found in reads.items():
         writer, name, answer = known[key]

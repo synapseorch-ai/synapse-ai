@@ -106,8 +106,10 @@ def _quoted(value: Any) -> str:
     return shown if len(shown) <= _QUOTED_AT_MOST else shown[:_QUOTED_AT_MOST] + "…"
 
 
-def _answer_lacks(step: StepConfig, tool_obj: Any, custom_tools: list | None, result: Any) -> str | None:
-    """What a Tool step's answer lacks of what its tool declares, as the step's one warning (F1620), or None: when
+def _answer_lacks(step: StepConfig, tool_obj: Any, custom_tools: list | None,
+                  result: Any) -> tuple[str, list[str], str] | None:
+    """What a Tool step's answer lacks of what its tool declares (F1620): the step's one warning, the problems it names
+    and the tool, or None: when
     the tool declares nothing, when the answer holds, and for a built-in page read, whose shape lists every key the
     scraper may answer (held to the scraper's own source by a test). The declaration is a custom tool's output schema
     (the person's own), else the tool's `outputSchema` (its server's). The answer is never changed and the step
@@ -136,9 +138,23 @@ def _answer_lacks(step: StepConfig, tool_obj: Any, custom_tools: list | None, re
         return None
     whose = ("the tool's output schema, in its settings" if answer["owner"] == "custom"
              else "its server's own, which may be wrong")
-    return clean(f"'{step.name}': `{name}` answered without what it declares ({_answer._named(problems)}). Its "
-                 f"declaration is {whose}. The run goes on with the answer as the tool gave it; a later step that "
-                 "reads what is missing finds nothing there.")
+    return (clean(f"'{step.name}': `{name}` answered without what it declares ({_answer._named(problems)}). Its "
+                  f"declaration is {whose}. The run goes on with the answer as the tool gave it; a later step that "
+                  "reads what is missing finds nothing there."), problems, name)
+
+
+def _with_what_was_left_out(said: str, step: StepConfig, run: "OrchestrationRun", engine: Any) -> str:
+    """`said`, a condition's warning about a value not written (F1433), with which Tool step's answer left out what it
+    reads, where one did (`answers_missed.clause`, F1620)."""
+    from core.orchestration import answers_missed
+
+    try:
+        orch = getattr(engine, "orch", None)
+        missed = answers_missed.clause(step.id, getattr(orch, "steps", None) or [], run.shared_state)
+    except Exception as exc:  # noqa: BLE001 — a reason not added is a word not said, never a step failed
+        _log.warning(f"step '{step.id}': what a tool left out was not said: {exc}")
+        missed = None
+    return f"{said} — {missed}" if missed else said
 
 
 def _preview(value: Any, *, whole: bool = False) -> str:
@@ -1344,8 +1360,13 @@ class ToolStepExecutor:
                     "tool_name": called_tool,
                     "preview": preview,
                 }
+                # Kept for a later step that fails on what it left out, paths only; dropped when it holds again.
+                from core.orchestration import answers_missed
+
+                answers_missed.note(run.shared_state, step.output_key, step.id, step.name, called_tool,
+                                    lacks[1] if lacks else None)
                 if lacks:
-                    yield {"type": "step_warning", "orch_step_id": step.id, "message": lacks}
+                    yield {"type": "step_warning", "orch_step_id": step.id, "message": lacks[0]}
                 for _saved in resource_events:
                     yield {**_saved, "orch_step_id": step.id, "step_name": step.name}
                 _log.debug(f"TOOL STEP: 📤 Tool Result ({called_tool}): {preview}")
@@ -3941,7 +3962,8 @@ class IfElseStepExecutor:
         if err:  # a value the run has not written yet: data (F1433), the documented False
             _log.debug(f"IF_ELSE: ⚠ Condition eval failed: {err}")
             yield {"type": "step_warning", "orch_step_id": step.id,
-                   "message": f"Condition eval error (treating as False): {err}"}
+                   "message": _with_what_was_left_out(f"Condition eval error (treating as False): {err}", step, run,
+                                                      engine)}
 
         decision = "true" if result else "false"
         run.shared_state[f"_if_decision_{step.id}"] = decision
@@ -3980,7 +4002,7 @@ class SwitchStepExecutor:
         if err:
             _log.debug(f"SWITCH: ⚠ Expression eval failed: {err}")
             yield {"type": "step_warning", "orch_step_id": step.id,
-                   "message": f"Expression eval error: {err}"}
+                   "message": _with_what_was_left_out(f"Expression eval error: {err}", step, run, engine)}
 
         # Convert to string for case matching
         value_str = str(value) if value is not None else "None"
