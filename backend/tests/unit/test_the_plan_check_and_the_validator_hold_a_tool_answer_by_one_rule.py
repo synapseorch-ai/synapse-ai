@@ -105,6 +105,26 @@ class TestTheOwnerIsTagged:
         ws = await build_plan.workspace(None)
         assert "answer_owner" not in next(t for t in ws.tools if t["name"] == "loose")
 
+    async def test_the_planners_pack_never_carries_it(self, listed, client):
+        """Who owns a declared answer is the checks' to know: the tools the planner reads are as they were."""
+        from core import builder_access
+        from core.builder_tools import execute_builder_tool_with_events
+        from core.models_orchestration import OrchestrationRun
+        from core.orchestration.engine import live
+        from core.orchestration.state import SharedState
+
+        run = OrchestrationRun(run_id="builder_f1620_pack", orchestration_id="orch_native_builder",
+                               shared_state={builder_access.CALLER_KEY: {"user_id": "u1"}, "intent": "create",
+                                             "user_message": "Show this week's leads"})
+        await SharedState(run).checkpoint()
+        with live(run):
+            raw, _ = await execute_builder_tool_with_events("read_plan_context", {}, types.SimpleNamespace(
+                agent_sessions={}, tool_router={}), run_id=run.run_id)
+        pack = json.loads(raw) if isinstance(raw, str) else raw
+        listed_tools = {t["name"]: t for t in pack["tools"]}
+        assert listed_tools["find_leads"].get("outputSchema") == SCHEMA, "the declaration itself is still read"
+        assert not [t for t in pack["tools"] if "answer_owner" in t], pack["tools"]
+
 
 class TestThePlanCheckDecidesByTheValidatorsRule:
     async def test_a_read_past_a_custom_tools_answer_at_depth_is_sent_back_with_what_it_has(self):

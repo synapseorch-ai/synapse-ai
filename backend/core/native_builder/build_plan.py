@@ -115,18 +115,13 @@ class Workspace:
                            tools={t["name"] for t in self.tools})
 
 
-async def workspace(server_module: Any) -> Workspace:
-    """The workspace as the planner and the check read it. System definitions (Synapse AI's own) are never offered."""
-    from core.boards.config import boards_enabled
+async def tools_here(server_module: Any) -> tuple[list[dict], dict[str, dict]]:
+    """The tools this workspace has, as the planner and the checks read them, and what each takes (its input schema,
+    by name). Each tool that declares what it answers carries that `outputSchema` and who owns it (`answer_owner`,
+    F1620): `custom` for a custom tool, the person's own to edit, however its catalogue entry carries the schema; else
+    `mcp`, its server's word. The saved workflow's validator reads the same list (`answers_of`)."""
     from core.builder_tools import _workspace_catalogue
-    from core.config import load_settings
-    from core.knowledge.config import knowledge_enabled
-    from core.routes.agents import load_user_agents
-    from core.store.resources import load_orchestrations
 
-    agents = {a["id"]: a for a in await load_user_agents() if a.get("id") and not a.get("system")}
-    flows = {o["id"]: o for o in await load_orchestrations()
-             if o.get("id") and not o.get("system") and o.get("is_active", True) is not False}
     try:
         catalogue = await _workspace_catalogue(server_module)
     except Exception as exc:  # noqa: BLE001 — a server that cannot list is not a workspace with no tools
@@ -142,15 +137,16 @@ async def workspace(server_module: Any) -> Workspace:
         _log.warning("the build's named-only tools were not read: %s", exc)
         named = frozenset()
     # What a tool here declares it answers (F1394): an MCP tool's `outputSchema`, or a custom tool's, which the
-    # catalogue does not carry.
+    # catalogue does not carry. Every custom tool is the person's own, with a schema or without (F1620).
     try:
         from core.routes.tools import load_custom_tools
 
-        declared = {c["name"]: c["outputSchema"] for c in await load_custom_tools()
-                    if c.get("name") and isinstance(c.get("outputSchema"), dict)}
+        custom = [c for c in await load_custom_tools() if isinstance(c, dict) and c.get("name")]
     except Exception as exc:  # noqa: BLE001 — a tool's answer not known is a check not made, never a plan refused
         _log.warning("the custom tools' answers were not read: %s", exc)
-        declared = {}
+        custom = []
+    declared = {c["name"]: c["outputSchema"] for c in custom if isinstance(c.get("outputSchema"), dict)}
+    theirs = {c["name"] for c in custom}
     tools = []
     takes: dict[str, dict] = {}
     for t in catalogue:
@@ -162,12 +158,36 @@ async def workspace(server_module: Any) -> Workspace:
             said = " ".join(str(does or "").split())[:140]
             if name in named:
                 said += " (An agent holds it only by naming it in its tools.)"
-            tools.append({"name": name, "does": said, **({"named_only": True} if name in named else {}),
-                          **({"outputSchema": out} if isinstance(out, dict) else {})})
+            answers = ({"outputSchema": out, "answer_owner": "custom" if name in theirs else "mcp"}
+                       if isinstance(out, dict) else {})
+            tools.append({"name": name, "does": said, **({"named_only": True} if name in named else {}), **answers})
             took = getattr(t, "inputSchema", None) or (t.get("function", {}).get("parameters")
                                                         if isinstance(t, dict) else None)
             if isinstance(took, dict):
                 takes[name] = took
+    return tools, takes
+
+
+def answers_of(tools: list[dict]) -> dict[str, dict]:
+    """What each tool in `tools` (`tools_here`) declares it answers, with who owns it (`step_answers.tool_answers`): a
+    tool tagged `custom` is the person's own; any other declaration is its server's."""
+    from core.orchestration.step_answers import tool_answers
+
+    return tool_answers(tools, {t["name"] for t in tools if t.get("answer_owner") == "custom"})
+
+
+async def workspace(server_module: Any) -> Workspace:
+    """The workspace as the planner and the check read it. System definitions (Synapse AI's own) are never offered."""
+    from core.boards.config import boards_enabled
+    from core.config import load_settings
+    from core.knowledge.config import knowledge_enabled
+    from core.routes.agents import load_user_agents
+    from core.store.resources import load_orchestrations
+
+    agents = {a["id"]: a for a in await load_user_agents() if a.get("id") and not a.get("system")}
+    flows = {o["id"]: o for o in await load_orchestrations()
+             if o.get("id") and not o.get("system") and o.get("is_active", True) is not False}
+    tools, takes = await tools_here(server_module)
     kbs = None
     if knowledge_enabled():
         from core.knowledge import bases
@@ -433,7 +453,8 @@ async def read_plan_context(args: dict, server_module: Any, events: list[dict]) 
     ws = await workspace(server_module)
     state = _state()
     base = _base(state)
-    tools = ws.tools[:PACK_TOOLS]
+    # Who owns a tool's declared answer is the checks' to know (F1620), never a word in what the planner reads.
+    tools = [{k: v for k, v in t.items() if k != "answer_owner"} for t in ws.tools[:PACK_TOOLS]]
     pack: dict[str, Any] = {
         "kind": "update" if base is not None else "create",
         # Each service the request names, as code knows it (F1495, A1): first, so the planner never looks for one.
@@ -805,7 +826,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         # A step no step leads to in the workflow as it is now is not this change's to fix (SAI2's review, 23).
         before, _ = O.check_structure(base, ws.inventory())
         errors = [e for e in errors if not ("no step leads to it" in e and e in before)]
-    errors += copy_errors + await _rules(plan, ws, state) + asked
+    answer_notes: list[str] = []
+    errors += copy_errors + await _rules(plan, ws, state, answer_notes) + asked
     # A part of the ask the plan leaves out is said with why, never dropped (F1515, eb's QA B13).
     errors += [f"asked: '{a.part}' is not_done with no why_not: say why this plan does not do it, or plan it"
                for a in plan.asked if a.how == "not_done" and not (a.why_not or "").strip()]
@@ -878,7 +900,7 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         _log.warning("run cost not estimated: %s", exc)
     return Examined(filled, [_hinted(i) for i in issues], missing=list(filled.missing), issues=issues,
                     blocks={**blocked(filled, state), **{f: _feature_block(f) for f in needed}},
-                    notes=[*took_out, *room_notes, *eval_notes, *structure.as_notes(shaped)],
+                    notes=[*took_out, *room_notes, *eval_notes, *answer_notes, *structure.as_notes(shaped)],
                     features=needed, structure=shaped)
 
 
@@ -1246,61 +1268,60 @@ def _objects_read_as_text(s: O.Step, plan: O.Plan) -> list[str]:
 _ANSWER_FIELDS_SAID = "_answer_fields_said"
 
 
-def _fields_its_answer_lacks(s: O.Step, plan: O.Plan, ws: Workspace) -> list[str]:
-    """A step reading a field a Tool step's answer has not (F1394: the Porto plan fetched Open-Meteo with `scrape_url`
-    and its Transform read `daily` out of `{success, url, markdown}`, a KeyError on the first run). Read where the
-    answer is known (`structure.answer_fields`): in a Transform's code, an if/else's or a switch's condition, and the
-    `{{ state.x.field }}` templates in its prompt and arguments."""
-    from core.native_builder.compile import field_reads
-    from core.native_builder.structure import answer_fields
-    from core.templating import _OLD_STATE_REF, STATE_REF
+def _answers_read_past(plan: O.Plan, ws: Workspace, readers: set[str]) -> tuple[list[str], list[str]]:
+    """A step reading what a Tool step's answer has not (F1394: the Porto plan fetched Open-Meteo with `scrape_url`
+    and its Transform read `daily` out of `{success, url, markdown}`, a KeyError on the first run), held by the saved
+    workflow validator's own rule (`builder_tools.tool_answer_misses`, F1620): the same reads, to the same depth, in
+    a template, a condition, a Loop's body through its item and a Transform's code. Each workflow of the plan is read
+    on its own, as it runs; only the steps in `readers` (what this plan writes) are held.
 
-    steps = [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)]
-    known = {}
-    for x in steps:
-        if x.type == "tool" and x.id != s.id and (fields := answer_fields(x.tool, ws.tools)) is not None:
-            known[str((x.config or {}).get("output_key") or x.id)] = (x, fields)
-    if not known:
-        return []
-    config = dict(s.config or {})
-    reads: list[tuple[str, dict[str, list[str]]]] = []
-    if s.type == "transform":
-        reads.append(("code", field_reads(config.pop("transform_code", "") or "", set(known))))
-    for expr in (s.condition, config.get("if_condition"), config.get("switch_expression")):
-        if isinstance(expr, str):
-            reads.append(("condition", field_reads(expr, set(known))))
-    templated: dict[str, list[str]] = {}
+    Said in the plan check's words: a first field the answer lacks as F1394 said it, with the fields it has and the
+    two ways on; a read that goes wrong deeper in, with what the declaration has there. Returns (errors, notes): what
+    goes back to the planner, and what the card says. A read past an MCP tool's declaration is a note, never sent
+    back, as its server's own word can be wrong and the run reads whatever the tool answers."""
+    from core.builder_tools import tool_answer_misses
+    from core.native_builder.compile import _RESULT_TYPES, _engine_step
 
-    def walk(value: Any) -> None:
-        if isinstance(value, dict):
-            for v in value.values():
-                walk(v)
-        elif isinstance(value, list):
-            for v in value:
-                walk(v)
-        elif isinstance(value, str):
-            for ref in [*STATE_REF.findall(value), *_OLD_STATE_REF.findall(value)]:
-                head, _, rest = ref.partition(".")
-                if head in known and (field := rest.split(".", 1)[0]) and field not in templated.setdefault(head, []):
-                    templated[head].append(field)
-
-    walk([s.prompt or "", config])
-    reads.append(("template", templated))
-    out = []
-    for where, by_key in reads:
-        for key, fields in by_key.items():
-            writer, has = known[key]
-            lacks = [f for f in fields if f not in has]
-            if not lacks:
+    answers = answers_of(ws.tools)
+    errors: list[str] = []
+    notes: list[str] = []
+    for steps in [plan.steps, *(w.steps for w in plan.inner_workflows)]:
+        saved = []
+        for x in steps:
+            step = _engine_step(x, agent_ids={}, workflow_ids={}, end_id=None, issues=[])
+            if "output_key" not in step and step["type"] in _RESULT_TYPES:
+                step["output_key"] = step["id"]
+            saved.append(step)
+        firsts: dict[tuple[str, str, str], list] = {}
+        for m in tool_answer_misses(saved, answers):
+            if m.reader not in readers:
                 continue
+            if m.first:
+                firsts.setdefault((m.reader, m.where, m.key), []).append(m)
+                continue
+            line = (f"step {m.reader}: its {m.where} reads `{'.'.join(m.parts)}` from `state.{m.key}`, the answer of "
+                    f"step {m.writer}, which calls `{m.tool}`: {m.problem}")
+            if m.owner == "mcp":
+                line = (f"{line}. `{m.tool}`'s own declaration of its answer does not list it, so it is said here and "
+                        "not refused: the run reads whatever the tool answers")
+            elif m.owner == "custom":
+                line += f", which is `{m.tool}`'s output schema"
+            (notes if m.owner == "mcp" else errors).append(line)
+        for (reader, where, key), found in firsts.items():
+            m = found[0]
+            lacks = list(dict.fromkeys(x.parts[0] for x in found))
             page = (" (a page's text is in `markdown`, and so is an API's JSON fetched as a page: parse it there)"
-                    if "markdown" in has else "")
-            out.append(f"step {s.id}: its {where} reads {', '.join(f'`{f}`' for f in lacks)} from `state.{key}`, an "
-                       f"answer with no such field: step {writer.id} calls `{writer.tool}`, which answers an object "
-                       f"with {', '.join(f'`{f}`' for f in has)}. Read a field it has{page}, or call a JSON API with a "
-                       "GET tool, which answers its JSON (a tool nothing here provides is looked up, and made after "
-                       "the yes)")
-    return out
+                    if "markdown" in m.has else "")
+            line = (f"step {reader}: its {where} reads {', '.join(f'`{f}`' for f in lacks)} from `state.{key}`, an "
+                    f"answer with no such field: step {m.writer} calls `{m.tool}`, which answers an object with "
+                    f"{', '.join(f'`{f}`' for f in m.has)}")
+            if m.owner == "mcp":
+                notes.append(f"{line}, by its own declaration, which may be wrong: the run reads whatever the tool "
+                             "answers")
+            else:
+                errors.append(f"{line}. Read a field it has{page}, or call a JSON API with a GET tool, which answers "
+                              "its JSON (a tool nothing here provides is looked up, and made after the yes)")
+    return list(dict.fromkeys(errors)), list(dict.fromkeys(notes))
 
 
 #: Said once a run (Naveen 11-05, F1402): a Tool step's argument that writes an object answer as text.
@@ -1366,8 +1387,9 @@ def _objects_put_as_text(s: O.Step, plan: O.Plan, ws: Workspace) -> list[str]:
     return out
 
 
-async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
-    """The planner's rules a structure check cannot see (P1's findings, F866b)."""
+async def _rules(plan: O.Plan, ws: Workspace, state: dict, notes: list[str] | None = None) -> list[str]:
+    """The planner's rules a structure check cannot see (P1's findings, F866b). What only the card says goes into
+    `notes`."""
     from core.boards import TOOL_NAMES
 
     errors = []
@@ -1412,8 +1434,11 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
             errors.append(f"step {s.id}: Extract JSON is retired for new steps: give the step whose answer it reads "
                           "`config.output_fields` (e.g. `[{\"name\": \"risky\", \"type\": \"boolean\"}]`, which the "
                           "run holds its model to) and read `state.<that step's id>.<field>`; take this step out")
-    if not state.get(_ANSWER_FIELDS_SAID) and (lacks := [line for s in [*written, *(
-            x for w in plan.inner_workflows for x in w.steps)] for line in _fields_its_answer_lacks(s, plan, ws)]):
+    lacks, card = _answers_read_past(plan, ws, {x.id for x in [*written, *(
+        x for w in plan.inner_workflows for x in w.steps)]})
+    if notes is not None:
+        notes += card
+    if not state.get(_ANSWER_FIELDS_SAID) and lacks:
         state[_ANSWER_FIELDS_SAID] = True
         errors += lacks
     if not state.get(_OBJECT_TEXT_SAID) and (as_text := [line for s in [*written, *(

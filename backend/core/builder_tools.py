@@ -10,7 +10,7 @@ import re
 import random
 import string
 import time
-from typing import Any, Iterator
+from typing import Any, Iterator, NamedTuple
 
 from core.state_types import (
     CANONICAL_STATE_TYPES,
@@ -3600,8 +3600,13 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         # that agent to name it.
         from core.tools import named_only_offered
         named = await named_only_offered(server_module)
+        # What each tool here declares it answers, with who owns it (F1620): a read past a custom tool's or a page
+        # read's declaration is an issue, past an MCP tool's a warning. A build's own save (`compile`) passes none:
+        # its plan check has said them already, once a run.
+        from core.native_builder.build_plan import answers_of, tools_here
+        answers = answers_of((await tools_here(server_module))[0])
         verdict = _validate_orchestration(orch, agents=agents, kbs=kbs, knowledge_off=not knowledge_on,
-                                          named_only=named)
+                                          named_only=named, tool_answers=answers)
         issues = [*verdict["issues"], *issues]
         # The inner workflows this build made are checked with it; the workspace's
         # own, which run today, only have to exist — never refused, never rewritten.
@@ -3609,7 +3614,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         ours = [child for child in called if run is not None and child.get("building_run") == run]
         for child in ours:
             child_verdict = _validate_orchestration(child, agents=agents, kbs=kbs, knowledge_off=not knowledge_on,
-                                                    allow_dead_ends=True, named_only=named)
+                                                    allow_dead_ends=True, named_only=named, tool_answers=answers)
             issues += [f"In the inner workflow '{child.get('name')}' ({child['id']}): {i}"
                        for i in child_verdict["issues"]]
             verdict["warnings"] = [*verdict.get("warnings", []), *(
@@ -4415,10 +4420,10 @@ def _state_paths(code: str) -> list[tuple[str, list[str], bool]]:
     return out
 
 
-def _deep_reads(steps: list, keys: set[str]) -> dict[str, list[tuple[str, list[str], bool]]]:
-    """Each read of a key in `keys`, to its end (F1618): (the reading step, the parts after the key, compared with a
-    number), from templates and conditions, and from a Loop's body through its item, which is one of its list
-    (`state.<item>.b` in the body of a loop over `state.k.a` reads `k.a.0.b`)."""
+def _reads_where(steps: list, keys: set[str]) -> dict[str, list[tuple[str, list[str], bool, str]]]:
+    """Each read of a key in `keys`, to its end (F1618), with where it is: (the reading step, the parts after the key,
+    compared with a number, `condition` or `template`), from templates and conditions, and from a Loop's body through
+    its item, which is one of its list (`state.<item>.b` in the body of a loop over `state.k.a` reads `k.a.0.b`)."""
     from core.expressions import _unbraced
     from core.templating import _OLD_STATE_REF, STATE_REF
 
@@ -4429,14 +4434,14 @@ def _deep_reads(steps: list, keys: set[str]) -> dict[str, list[tuple[str, list[s
             if found and found[0][0] in keys:
                 items[str(s.get("loop_item_key") or "loop_item")] = (found[0][0], found[0][1])
 
-    out: dict[str, list[tuple[str, list[str], bool]]] = {}
+    out: dict[str, list[tuple[str, list[str], bool, str]]] = {}
 
-    def add(sid: str, head: str, parts: list[str], numeric: bool) -> None:
+    def add(sid: str, head: str, parts: list[str], numeric: bool, where: str) -> None:
         if head in items:
             key, prefix = items[head]
             head, parts = key, [*prefix, "0", *parts]
-        if head in keys and parts and (sid, parts, numeric) not in out.setdefault(head, []):
-            out[head].append((sid, parts, numeric))
+        if head in keys and parts and (sid, parts, numeric, where) not in out.setdefault(head, []):
+            out[head].append((sid, parts, numeric, where))
 
     for s in steps:
         if not isinstance(s, dict):
@@ -4445,7 +4450,7 @@ def _deep_reads(steps: list, keys: set[str]) -> dict[str, list[tuple[str, list[s
         for f in _EXPRESSION_FIELDS:
             if isinstance(s.get(f), str):
                 for head, parts, numeric in _state_paths(_unbraced(s[f])):
-                    add(sid, head, parts, numeric)
+                    add(sid, head, parts, numeric, "condition")
 
         def walk(value: Any) -> None:
             if isinstance(value, dict):
@@ -4457,28 +4462,57 @@ def _deep_reads(steps: list, keys: set[str]) -> dict[str, list[tuple[str, list[s
             elif isinstance(value, str) and "state." in value:
                 for ref in [*STATE_REF.findall(value), *_OLD_STATE_REF.findall(value)]:
                     head, *parts = ref.split(".")
-                    add(sid, head, [p for p in parts if p], False)
+                    add(sid, head, [p for p in parts if p], False, "template")
 
         walk({k: v for k, v in s.items() if k != "transform_code" and k not in _EXPRESSION_FIELDS})
     return out
 
 
-def _tool_answer_reads(steps: list, tool_answers: dict[str, dict] | None) -> tuple[list[str], list[str]]:
-    """Every read of a Tool step's answer, checked to its end against what its tool declares (F1620; F1616(b): a field
-    read that the tool never answers failed only when the run reached it). `tool_answers` is
+def _deep_reads(steps: list, keys: set[str]) -> dict[str, list[tuple[str, list[str], bool]]]:
+    """Each read of a key in `keys`, to its end (F1618): (the reading step, the parts after the key, compared with a
+    number), wherever it is (`_reads_where`)."""
+    out: dict[str, list[tuple[str, list[str], bool]]] = {}
+    for key, found in _reads_where(steps, keys).items():
+        for sid, parts, numeric, _ in found:
+            if (sid, parts, numeric) not in out.setdefault(key, []):
+                out[key].append((sid, parts, numeric))
+    return out
+
+
+class AnswerMiss(NamedTuple):
+    """A read of a Tool step's answer that its tool's declaration rules out (F1620): what the one rule found, for the
+    saved workflow's validator and the plan check to each say in its own words."""
+
+    reader: str  # the reading step's id
+    where: str  # `code`, `condition` or `template`
+    key: str  # the state key it reads
+    writer: str  # the Tool step's id
+    tool: str
+    owner: str  # `custom`, `page` or `mcp` (`step_answers.tool_answers`)
+    parts: tuple[str, ...]  # what it reads after the key
+    problem: str  # what is wrong, with its fix (`output_fields.path_problem`)
+    has: tuple[str, ...]  # the answer's first-level fields
+    first: bool  # the first field read is not one the answer has
+
+
+def tool_answer_misses(steps: list, tool_answers: dict[str, dict] | None) -> list[AnswerMiss]:
+    """Every read of a Tool step's answer that its tool's declaration rules out (F1620; F1616(b): a field read that the
+    tool never answers failed only when the run reached it): the one rule the saved workflow's validator
+    (`_tool_answer_reads`) and the plan check (`build_plan._answers_read_past`) both hold. `tool_answers` is
     `step_answers.tool_answers`: each tool's declared fields and who owns them.
 
-    Read in a template, a condition and a Loop's body through its item (`_deep_reads`), and a Transform's code (first
-    level, `compile.field_reads`). A custom tool's or a page read's declaration makes a read past it an issue, with its
-    fix; an MCP tool's a warning, as its server's own word can be wrong and a build is never stopped by what the person
-    cannot fix. A page read is checked at its first level only, as its lists' items are not known. Returns (issues,
-    warnings)."""
+    A key is held when one step writes it, a Tool step whose tool declares its answer. Its reads are taken to their end
+    in a template, a condition and a Loop's body through its item (`_reads_where`), and at their first field in a
+    Transform's code and a condition (`compile.field_reads`, F1394's reader, which also sees `.get('field')`), where no
+    read taken to its end starts with that field. The whole answer, a text method and an index are no field. A read is
+    checked to its depth, or at its first field where only that is known (`first_level`: a page read's, or a
+    declaration with a part outside the answer's subset)."""
     from core.native_builder.compile import TEXT_METHODS, field_reads
     from core.orchestration import output_fields as _answer
     from core.orchestration import step_answers
 
     if not tool_answers:
-        return [], []
+        return []
     writers: dict[str, list[dict]] = {}
     for s in steps:
         if isinstance(s, dict):
@@ -4487,42 +4521,60 @@ def _tool_answer_reads(steps: list, tool_answers: dict[str, dict] | None) -> tup
     known = {key: (ws[0], ws[0]["forced_tool"], tool_answers[ws[0]["forced_tool"]]) for key, ws in writers.items()
              if len(ws) == 1 and ws[0].get("type") == "tool" and ws[0].get("forced_tool") in tool_answers}
     if not known:
-        return [], []
-    reads = {key: list(found) for key, found in _deep_reads(steps, set(known)).items()}
+        return []
+    reads = _reads_where(steps, set(known))
     for s in steps:
-        if isinstance(s, dict) and isinstance(s.get("transform_code"), str):
-            for key, fields in field_reads(s["transform_code"], set(known)).items():
+        if not isinstance(s, dict):
+            continue
+        sid = str(s.get("id", "?"))
+        firsts = [("code", s.get("transform_code")), *(("condition", s.get(f)) for f in _EXPRESSION_FIELDS)]
+        for where, text in firsts:
+            if not isinstance(text, str):
+                continue
+            for key, fields in field_reads(text, set(known)).items():
+                found = reads.setdefault(key, [])
                 for field in fields:
-                    entry = (str(s.get("id", "?")), [field], False)
-                    if entry not in reads.setdefault(key, []):
-                        reads[key].append(entry)
-    issues: list[str] = []
-    warnings: list[str] = []
+                    if not any(r[0] == sid and r[3] == where and r[1][:1] == [field] for r in found):
+                        found.append((sid, [field], False, where))
+    misses: list[AnswerMiss] = []
     for key, found in reads.items():
         writer, name, answer = known[key]
-        has = [f["name"] for f in answer["fields"]]
-        for sid, parts, _ in found:
+        has = tuple(f["name"] for f in answer["fields"])
+        for sid, parts, _, where in found:
             if not parts or parts[0] in TEXT_METHODS or parts[0].lstrip("-").isdigit():
                 continue
-            where = (f"Step '{sid}' reads `{'.'.join(parts)}` from state.{key}, the answer of tool step "
-                     f"'{writer.get('id', '?')}' (`{name}`)")
-            if answer["owner"] == "page":
-                if parts[0] in has:
-                    continue
-                said = (f"{where}, an answer with no such field: `{name}` answers an object with "
-                        f"{', '.join(f'`{f}`' for f in has)}. Read a field it has (a page's text is in `markdown`, "
-                        "and so is an API's JSON fetched as a page: parse it there).")
-            else:
-                problem = _answer.path_problem(answer["fields"], parts, root="the tool's declared fields")
-                if not problem:
-                    continue
-                if answer["owner"] == "mcp":
-                    warnings.append(f"{where}: {problem}. `{name}`'s own declaration does not list it, so this is "
-                                    "said, never refused: the run reads whatever the tool answers.")
-                    continue
-                said = f"{where}: {problem}, which is the tool's output schema in its settings."
-            if said not in issues:
-                issues.append(said)
+            checked = parts[:1] if answer.get("first_level") else parts
+            problem = _answer.path_problem(answer["fields"], checked, root="the tool's declared fields")
+            if problem:
+                misses.append(AnswerMiss(sid, where, key, str(writer.get("id", "?")), name, answer["owner"],
+                                         tuple(parts), problem, has, parts[0] not in has))
+    return misses
+
+
+def _tool_answer_reads(steps: list, tool_answers: dict[str, dict] | None) -> tuple[list[str], list[str]]:
+    """Every read of a Tool step's answer that its tool's declaration rules out (`tool_answer_misses`, F1620), as the
+    saved workflow's validator says it. A custom tool's or a page read's declaration makes it an issue, with its fix;
+    an MCP tool's a warning, as its server's own word can be wrong and a build is never stopped by what the person
+    cannot fix. Each is said once. Returns (issues, warnings)."""
+    issues: list[str] = []
+    warnings: list[str] = []
+    for m in tool_answer_misses(steps, tool_answers):
+        where = (f"Step '{m.reader}' reads `{'.'.join(m.parts)}` from state.{m.key}, the answer of tool step "
+                 f"'{m.writer}' (`{m.tool}`)")
+        if m.owner == "page":
+            said = (f"{where}, an answer with no such field: `{m.tool}` answers an object with "
+                    f"{', '.join(f'`{f}`' for f in m.has)}. Read a field it has (a page's text is in `markdown`, "
+                    "and so is an API's JSON fetched as a page: parse it there).")
+        elif m.owner == "mcp":
+            said = (f"{where}: {m.problem}. `{m.tool}`'s own declaration does not list it, so this is said, never "
+                    "refused: the run reads whatever the tool answers.")
+            if said not in warnings:
+                warnings.append(said)
+            continue
+        else:
+            said = f"{where}: {m.problem}, which is the tool's output schema in its settings."
+        if said not in issues:
+            issues.append(said)
     return issues, warnings
 
 

@@ -16,8 +16,8 @@ a later step reads out of it can be checked before any run (`builder_tools._vali
 
 Any other step's answer is not known from the step: a tool's text (JSON or not, F801), a Transform's or an Extract
 JSON step's data, a Switch's value, a Merge's, a Loop's, a called workflow's, a Browser step's, an Agent step's whose
-agent is not known. A Tool step's is known only from the workspace's tools, and is F1394's
-(`build_plan._fields_its_answer_lacks`, said once).
+agent is not known. A Tool step's is known only from the workspace's tools (`tool_answers`), and every read of it is
+held by one rule (`builder_tools.tool_answer_misses`, F1620) in the saved workflow's validator and at the plan check.
 """
 from __future__ import annotations
 
@@ -87,24 +87,31 @@ _PAGE_FIELD_TYPES = {"success": "boolean", "wait_missed": "boolean", "count": "n
 def tool_answers(tools: list[dict[str, Any]], custom: set[str] | frozenset[str] = frozenset()) -> dict[str, dict]:
     """What each tool here declares it answers, as answer fields, with who owns the declaration (F1620): `custom` for a
     tool named in `custom` (the person's own HTTP or Python tool, its output schema theirs to edit), `mcp` for any other
-    tool's `outputSchema` (its server's word), and `page` for the built-in page reads (ours, `structure.ANSWERS`). A
-    tool that declares nothing, or whose declaration has a part outside the answer's subset, is not known and is left
-    out: its answer is never checked."""
-    from core.native_builder.structure import ANSWER_LISTS, ANSWERS
+    tool's `outputSchema` (its server's word), and `page` for the built-in page reads (ours, `structure.ANSWERS`).
+
+    A declaration inside the answer's subset is known to its depth. One with a part outside it is known at its first
+    level only (`first_level`): the fields it names (`structure.answer_fields`, as F1394 knew it), never what is under
+    them, as a page read's lists' items are not known either. A tool that declares nothing, or names no fields, is not
+    known and is left out: its answer is never checked."""
+    from core.native_builder.structure import ANSWER_LISTS, ANSWERS, answer_fields
     from core.orchestration.output_fields import from_json_schema
 
     out: dict[str, dict] = {}
     for name, has in ANSWERS.items():
         lists = set(ANSWER_LISTS.get(name, ()))
-        out[name] = {"owner": "page", "fields": [
+        out[name] = {"owner": "page", "first_level": True, "fields": [
             {"name": f, "type": "list" if f in lists else _PAGE_FIELD_TYPES.get(f, "string")} for f in has]}
     for tool in tools:
         name, schema = tool.get("name"), tool.get("outputSchema")
         if not isinstance(name, str) or not name or not isinstance(schema, dict):
             continue
+        owner = "custom" if name in custom else "mcp"
         fields, refused = from_json_schema(schema)
         if fields and not refused:
-            out[name] = {"owner": "custom" if name in custom else "mcp", "fields": fields}
+            out[name] = {"owner": owner, "fields": fields}
+        elif (named := answer_fields(name, [{"name": name, "outputSchema": schema}])) is not None and \
+                name not in ANSWERS:
+            out[name] = {"owner": owner, "first_level": True, "fields": [{"name": f} for f in named]}
     return out
 
 
