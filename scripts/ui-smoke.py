@@ -3254,6 +3254,93 @@ async def check_runstrip(browser) -> str:
     return "the strip opens Recent Runs and the Run Log, and a run opens its log"
 
 
+def _older_rows(first: int, count: int) -> list[dict]:
+    """Run summaries, newest first, a minute apart: `first` minutes before the newest onwards."""
+    rows = []
+    for i in range(first, first + count):
+        at = _m2b_at(-60 * i)
+        rows.append({"run_id": f"run_smoke_older_{i:03d}", "orchestration_id": "orch_smoke_m2b",
+                     "status": "completed", "started_at": at, "ended_at": at, "created_at": at.replace("Z", "+00:00"),
+                     "current_step_id": None, "waiting_for_human": False, "total_cost_usd": 0, "session_id": None,
+                     "error": None, "steps_completed": 1, "score": None, "score_regression": False})
+    return rows
+
+
+#: How many run links the Runs page shows of the fixture's.
+_OLDER_LINKS = "() => document.querySelectorAll(\"a[href^='/runs/run_smoke_older_']\").length"
+
+
+@check
+async def check_runsolder(browser) -> str:
+    """Older runs are reachable from the Runs page (F1639): when its read of the latest hundred comes back full,
+    "Show older" asks for the runs before the last one it has (`before=`, that run's created_at and id) and adds
+    them to the list."""
+    asked: list[str] = []
+
+    async def before(ctx):
+        def answer(route):
+            url = route.request.url
+            asked.append(url)
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+            rows = (_older_rows(100, 3) if "before" in query
+                    else _older_rows(0, int((query.get("limit") or ["20"])[0])))
+            return route.fulfill(status=200, content_type="application/json", body=json.dumps(rows))
+
+        await ctx.route(re.compile(r".*/api/orchestrations/runs(\?.*)?$"), answer)
+
+    ctx, page, _ = await _m2b_page(browser, "/runs", before=before)
+    problems: list[str] = []
+    try:
+        await page.wait_for_function(f"() => ({_OLDER_LINKS})() >= 100", timeout=20_000)
+        button = page.get_by_role("button", name="Show older")
+        if not await button.count():
+            problems.append("a full page of runs offers no Show older")
+        else:
+            await button.click()
+            await page.wait_for_function(f"() => ({_OLDER_LINKS})() >= 103", timeout=10_000)
+            pages = [u for u in asked if "before=" in u]
+            if not pages or "run_smoke_older_099" not in urllib.parse.unquote(pages[-1]):
+                problems.append(f"Show older asked {pages[-1:] or 'nothing'}, not the runs before the last one shown")
+            shown = await page.evaluate(_OLDER_LINKS)
+            if shown != 103:
+                problems.append(f"{shown} runs listed after Show older, not 103")
+    finally:
+        await ctx.close()
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "a full page offers Show older, which asks for the runs before the last one and adds them"
+
+
+@check
+async def check_recentrunsown(browser) -> str:
+    """The editor's Recent Runs reads its own workflow's runs (F1639), not everyone's newest hundred kept to it."""
+    oid = f"orch_uismoke_recentown_{int(time.time())}"
+    api("/api/orchestrations", "POST", print_orchestration(oid, "ui-smoke recent own"))
+    run_to_end(oid)
+    asked: list[str] = []
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    page.on("request", lambda r: asked.append(r.url) if "/api/orchestrations/runs" in r.url else None)
+    problems: list[str] = []
+    try:
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+        await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+        await page.get_by_role("button", name=re.compile(r"^Recent Runs")).click()
+        drawer = page.locator('[data-canvas-chrome="drawer"]')
+        await drawer.get_by_role("heading", name="Recent runs").wait_for(timeout=10_000)
+        await asyncio.sleep(SETTLE)
+        if not [u for u in asked if f"workflow={oid}" in u]:
+            problems.append(f"Recent Runs asked {[u.split('/api')[-1] for u in asked]}, never its own workflow's")
+        if not await drawer.locator("a[href^='/runs/']").count():
+            problems.append("Recent Runs lists none of this workflow's runs")
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "Recent Runs reads its own workflow's runs"
+
+
 @check
 async def check_canvasleave(browser) -> str:
     """Leaving a workflow with unsaved edits asks first (M3a, Naveen's OK).
