@@ -8,7 +8,7 @@ import contextlib
 import json
 import time
 from contextvars import ContextVar
-from typing import AsyncGenerator, Awaitable, Callable
+from typing import Any, AsyncGenerator, Awaitable, Callable
 
 import anyio
 
