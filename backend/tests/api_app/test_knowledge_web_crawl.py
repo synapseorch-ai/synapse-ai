@@ -1283,3 +1283,38 @@ class TestResumeInThisProcess:
         state = await web.load_state(source["id"])
         assert state["status"] == "cancelled" and state.get("finished_at")
         assert await web.load_frontier(source["id"]) == {}
+
+
+def _raw(markup: str) -> tuple[int, dict, bytes]:
+    return 200, {"Content-Type": "text/html; charset=utf-8"}, markup.encode()
+
+
+class TestAPageWithNoRealText:
+    """A page whose whole extract is a skip link is the empty, needs-JavaScript case, never content (F1660). The
+    measure is that no real text is left, never a count of characters: short real text is kept."""
+
+    async def test_a_page_whose_only_text_is_a_skip_link_is_skipped_as_needing_javascript(self, on, site, jobs,
+                                                                                           indexer):
+        _Site.pages["/app"] = _raw('<html><head><title>Docs</title></head><body><a href="#content-area" '
+                                   'class="sr-only">Skip to main content</a><div id="__next"></div>'
+                                   '<script>window.boot()</script></body></html>')
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/app", kind="page")
+        [row] = (await docs(kb["id"])).values()
+        assert (row.status, row.status_reason, row.sha256) == ("skipped", "empty_document", None)
+        assert "JavaScript" in (row.error or "")
+
+    @pytest.mark.parametrize("body", [
+        # A skip link beside short real text (as a retailer's 90-character page): the text is real, so it is kept.
+        '<a href="#main">Skip to main content</a><main><p>Free delivery on orders over $45. Shop tools, appliances '
+        'and garden supplies.</p></main>',
+        # A real heading that starts like a skip link is an article, not a skip link.
+        '<main><h1>Skip to content: how skip links help</h1></main>',
+    ])
+    async def test_short_real_text_beside_or_like_a_skip_link_is_still_indexed(self, body, on, site, jobs, indexer):
+        _Site.pages["/short"] = _raw(f"<html><head><title>Short</title></head><body>{body}</body></html>")
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/short", kind="page")
+        await drain(jobs)
+        [row] = (await docs(kb["id"])).values()
+        assert row.status == "indexed" and row.sha256
