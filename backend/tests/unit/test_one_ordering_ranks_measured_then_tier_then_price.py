@@ -13,7 +13,8 @@ An automatic pick never gives a small model the job when one that is not small f
 person names is theirs, small or not.
 
 Near misses: a menu of one model from each family is in exactly today's order; a family whose models have no tier
-keeps today's order; with only small models fitting, the pick is still made.
+keeps today's order; with only small models fitting, the pick is still made, and its reason says plainly that it is
+a small model, a fact and not a judgement.
 """
 from __future__ import annotations
 
@@ -108,6 +109,17 @@ class TestNeverASmallModelOnAnAutomaticPick:
     def test_with_only_small_models_the_pick_is_still_made(self):
         menu = [entry("gemini-3.1-flash-lite-preview", 0.75), entry("gpt-5-nano", 0.4)]
         assert isinstance(MM.pick("simple", has_tools=True, menu=menu), MM.Picked)
+
+    @pytest.mark.parametrize("models", [["gemini-3.1-flash-lite-preview", "gpt-5-nano"], ["gpt-5-nano"]])
+    def test_and_its_reason_says_plainly_it_is_a_small_model(self, models):
+        menu = [entry(m, 0.4) for m in models]
+        said = MM.pick("simple", has_tools=True, menu=menu)
+        assert said.reason.endswith("; it is a small model, as no larger one here fits"), said.reason
+
+    def test_a_pick_that_is_not_small_says_nothing_of_size(self):
+        menu = [entry("gemini-3.1-flash-lite-preview", 0.75), entry("gemini-2.5-flash", 2.5), entry("acme-model-9", 1)]
+        for narrow in (True, False):
+            assert "small" not in MM.pick("simple", has_tools=True, menu=menu, narrow=narrow).reason
 
     def test_a_model_the_person_names_is_theirs(self):
         menu = [entry("gemini-3.1-flash-lite-preview", 0.75), entry("gemini-2.5-flash", 2.5)]
