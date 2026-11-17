@@ -3552,8 +3552,10 @@ class LLMStepExecutor:
         fields = _answer.normalised(step.output_fields)
         if fields:
             prompt = f"{prompt}\n\n{_answer.instruction(fields)}"
-        # Where a provider that asked for it in words after a refusal of its schema mode says so (F1618).
+        # Where a provider that asked for it in words after a refusal of its schema mode says so (F1618), each line once
+        # for the step however many of its calls note it (a repair is a second call).
         shape_notes: list[str] = []
+        said_notes: set[str] = set()
         shaped = {"response_schema": _answer.json_schema(fields), "answer_notes": shape_notes} if fields else {}
 
         yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": prompt,
@@ -3611,7 +3613,9 @@ class LLMStepExecutor:
             if len(_used) > 1:
                 yield {"type": "step_warning", "orch_step_id": step.id, "message": _used[1]}
             for note in shape_notes:
-                yield {"type": "step_warning", "orch_step_id": step.id, "message": note}
+                if note not in said_notes:
+                    said_notes.add(note)
+                    yield {"type": "step_warning", "orch_step_id": step.id, "message": note}
             shape_notes.clear()
         except Exception as e:
             from core.llm_providers import LLMError
@@ -3645,7 +3649,9 @@ class LLMStepExecutor:
                     yield _wait_event
                 response = _rwait.result
                 for note in shape_notes:
-                    yield {"type": "step_warning", "orch_step_id": step.id, "message": note}
+                    if note not in said_notes:
+                        said_notes.add(note)
+                        yield {"type": "step_warning", "orch_step_id": step.id, "message": note}
                 shape_notes.clear()
                 output, again = _answer.read(fields, response)
                 if again:
