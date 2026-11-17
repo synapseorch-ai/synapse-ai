@@ -252,7 +252,8 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
                 if (modelsRes.ok) {
                     const data = await modelsRes.json();
                     setProviders(data.providers ?? {});
-                    setModelWindows({ windows: data.windows, synapse_ai_min_window: data.synapse_ai_min_window });
+                    setModelWindows({ windows: data.windows, synapse_ai_min_window: data.synapse_ai_min_window,
+                                      builder_fit: data.builder_fit, prices: data.prices, ranked: data.ranked });
                     setVisionCapable(Array.isArray(data.vision_capable) ? data.vision_capable : []);
                 }
                 if (settingsRes.ok) {

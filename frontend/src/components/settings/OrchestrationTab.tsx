@@ -50,7 +50,7 @@ import {
     type RunHost, type RunLogState, type RunRecord, type RunRow, type StepExecution, type StepResultEntry,
 } from '@/components/run';
 import { OSS_RUN_HOST, ossLastRun, ossRunRecord, ossRunRow } from '@/lib/runHost';
-import { offeredModels, withSaved } from '@/lib/models';
+import { modelHints, offeredModels, withSaved, type ModelWindows } from '@/lib/models';
 import { ResponseModal } from '@/components/workflows/runLog';
 import { RunDrawer } from '@/components/workflows/RunDrawer';
 import { RunStrip, type RunDrawerView } from '@/components/workflows/RunStrip';
@@ -322,6 +322,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
         return () => { live = false; };
     }, [knowledgeEnabled]);
     const [availableModels, setAvailableModels] = useState<string[]>([]);
+    // What `/api/models` says of each model, for each one's line in a step's picker (F1598).
+    const [modelFacts, setModelFacts] = useState<ModelWindows>({});
     // What a step's semantic cache embeds with (F327): the panel says whether one is set.
     const [embeddingModel, setEmbeddingModel] = useState<string | null>(null);
     useEffect(() => {
@@ -480,6 +482,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
         // A step's models are every picker's (F1603: not a signed-out CLI's).
         fetch('/api/models').then(r => r.json()).then(data => {
             setAvailableModels(offeredModels(data.providers ?? {}));
+            setModelFacts(data ?? {});
         }).catch(() => {});
 
         // Schedule names, for labelling schedule-triggered runs.
@@ -2106,6 +2109,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                                     onSetEntry={() => setEntryPoint(step.id)}
                                     // A model the step is set to stays visible when it is no longer offered (F1603).
                                     availableModels={withSaved(availableModels, step.model)}
+                                    modelHints={modelHints(availableModels, modelFacts)}
                                     orchestration={draft}
                                     knowledgeEnabled={knowledgeEnabled}
                                     knowledgeBases={knowledgeBases}

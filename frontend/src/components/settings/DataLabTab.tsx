@@ -13,6 +13,8 @@ interface DataLabTabProps {
     dlModel: string; setDlModel: (v: string) => void;
     /** Every model the workspace can reach, and the default one. */
     modelOptions: string[]; defaultModel: string;
+    /** Each model's line by id: its context, cost tier and price (F1598). */
+    modelHints?: Record<string, string>;
     dlSystemPrompt: string; setDlSystemPrompt: (v: string) => void;
     dlEdgeCases: string; setDlEdgeCases: (v: string) => void;
     dlStatus: any;
@@ -22,7 +24,7 @@ interface DataLabTabProps {
 
 export const DataLabTab = ({
     dlTopic, setDlTopic, dlCount, setDlCount,
-    dlModel, setDlModel, modelOptions, defaultModel, dlSystemPrompt, setDlSystemPrompt,
+    dlModel, setDlModel, modelOptions, modelHints, defaultModel, dlSystemPrompt, setDlSystemPrompt,
     dlEdgeCases, setDlEdgeCases, dlStatus, dlDatasets, onGenerate
 }: DataLabTabProps) => (
     <div className="space-y-10">
@@ -51,7 +53,8 @@ export const DataLabTab = ({
                         aria-label="Model"
                         options={[
                             { value: WORKSPACE_DEFAULT, label: `Workspace default${defaultModel ? ` (${defaultModel})` : ''}` },
-                            ...modelOptions.filter(m => m !== '').map(m => ({ value: m, label: m })),
+                            ...modelOptions.filter(m => m !== '').map(m => ({ value: m, label: m,
+                                ...(modelHints?.[m] ? { hint: modelHints[m] } : {}) })),
                         ]}
                     />
                 </div>

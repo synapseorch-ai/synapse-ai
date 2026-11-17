@@ -268,6 +268,7 @@ export function AgentsScreen() {
                 customTools={customTools}
                 onDeleteAgent={(id: string) => setConfirmDelete(id)}
                 providers={models.providers || {}}
+                modelFacts={models}
                 reasoningCapable={models.reasoning_capable || []}
                 reasoningWithoutOff={models.reasoning_without_off || []}
                 reasoningOffMinimum={models.reasoning_off_minimum || []}

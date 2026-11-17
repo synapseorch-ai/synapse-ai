@@ -28,7 +28,7 @@ import {
 } from "@/components/ui";
 import { cn } from "@/lib/cn";
 import { count } from "@/lib/copy";
-import { modelOptions, withUnreachable } from "@/lib/models";
+import { modelOptions, withHints, withUnreachable } from "@/lib/models";
 
 import { useSettingsData } from "./hooks/useSettingsData";
 import { judgedWords } from "@/components/orchestration/WorkflowSettings";
@@ -490,10 +490,11 @@ function RubricDetail({
 
     const scaleMax = trend?.rubric?.scale?.max ?? rubric?.scale.max ?? 10;
     const picked = orchestrations.find((o) => o.id === orchId);
-    const judgeOptions = [
+    // Each model's line: its context, cost tier and price (F1598).
+    const judgeOptions = withHints([
         { value: JUDGE_DEFAULT, label: "Workspace judge model, or the default model" },
         ...withUnreachable(modelOptions(models.providers ?? {}), draft.judge_model || undefined),
-    ];
+    ], models);
     // A workflow this rubric scores says how often it is judged (D340 F): set in its own settings, beside its rubric.
     const hintOf = (o: Orchestration) =>
         !o.rubric_id ? "no rubric bound" : rubric && o.rubric_id !== rubric.id ? "scored by another rubric"

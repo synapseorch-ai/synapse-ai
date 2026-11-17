@@ -14,7 +14,7 @@ import {
     DEFAULT_KNOWLEDGE_HOST, KnowledgeHostProvider, type KnowledgeHost, type KnowledgeWorkspace,
 } from '@/components/knowledge/host';
 import { rerankOptions, type RerankListing } from '@/lib/knowledge';
-import { modelOptions, withUnreachable, type ProviderModels } from '@/lib/models';
+import { modelOptions, withHints, withUnreachable, type ProviderModels } from '@/lib/models';
 
 const RERANK_KEYS = ['cohere_key', 'voyage_key', 'jina_key', 'model_gateway_key'];
 
@@ -33,7 +33,8 @@ async function loadWorkspace(): Promise<KnowledgeWorkspace> {
     return {
         embedding: String(settings?.knowledge_embedding_model || settings?.embedding_model || ''),
         embeddingModels: modelOptions(providers, 'embedding_models'),
-        chatModels: modelOptions(providers),
+        // Each model's line: its context, cost tier and price (F1598).
+        chatModels: withHints(modelOptions(providers), models ?? {}),
         model: String(settings?.model || ''),
         judge: judge === 'default' ? '' : judge,
         contextual: String(settings?.knowledge_contextual_model || settings?.model || ''),

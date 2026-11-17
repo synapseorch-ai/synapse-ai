@@ -28,6 +28,7 @@ import * as React from "react";
 import { cn } from "@/lib/cn";
 
 import { AppMark } from "./app-mark";
+import { Badge, type BadgeTone } from "./badge";
 import { useOwnScroll } from "./own-scroll";
 
 import { controlStyles, type ControlSize } from "./control-styles";
@@ -41,6 +42,11 @@ export type ComboboxOption<T extends string = string> = SelectOption<T> & {
    * F1482). Decoration beside a name that says it in words, so it is hidden from a screen reader as `AppMark` is.
    */
   mark?: OptionMark;
+  /**
+   * A word beside its name, in a tone of the design's tokens: Synapse AI's "Recommended" for a model that builds
+   * well (F1598). Always words, never colour alone.
+   */
+  tag?: { text: string; tone: BadgeTone };
 };
 
 /** A mark an option wears: a logo of ours, else `AppMark`'s letter tile from `name`. */
@@ -99,6 +105,7 @@ export function Combobox<T extends string = string>({
   iconOnPhone = false,
   "aria-label": ariaLabel,
   "aria-describedby": ariaDescribedBy,
+  note,
 }: {
   value: T | undefined;
   onChange: (value: T) => void;
@@ -126,6 +133,8 @@ export function Combobox<T extends string = string>({
   iconOnPhone?: boolean;
   "aria-label"?: string;
   "aria-describedby"?: string;
+  /** A line at the foot of the open list: what a picker leaves out, say (F1598, Synapse AI's model pickers). */
+  note?: string;
 }) {
   const [open, setOpen] = React.useState(false);
   // What was typed, held here to rank the groups by it (below). Each opening starts it empty, as cmdk's own did.
@@ -282,7 +291,13 @@ export function Combobox<T extends string = string>({
                         option.value === value && "text-accent-ink",
                       )}
                     >
-                      <span className="truncate">{option.label}</span>
+                      {/* The tag goes under the name when the list is too narrow for both, never cutting the name. */}
+                      <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                        <span className="min-w-0 max-w-full truncate">{option.label}</span>
+                        {option.tag && (
+                          <Badge tone={option.tag.tone} size="sm" className="shrink-0">{option.tag.text}</Badge>
+                        )}
+                      </span>
                       {option.hint && (
                         <span className="mt-0.5 text-xs text-text-faint">{option.hint}</span>
                       )}
@@ -299,6 +314,7 @@ export function Combobox<T extends string = string>({
                 </Command.Group>
               ))}
             </Command.List>
+            {note && <p className="border-t border-border px-3 py-2 text-xs text-text-muted">{note}</p>}
           </Command>
         </RPopover.Content>
       </RPopover.Portal>

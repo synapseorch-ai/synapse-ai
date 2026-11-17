@@ -55,7 +55,7 @@ import { SUGGESTED_LABEL } from '@/components/tabs';
 import { Button, Combobox, Hint, Mark, Markdown, showWhileScrolling } from '@/components/ui';
 import { effortAnswer, isPlanReview, shownInTrail, type BuilderMessage, type BuiltPlace } from '@/lib/builderEvents';
 import { cn, focusRing } from '@/lib/cn';
-import { modelOptions, synapseAIOnly, withUnreachable } from '@/lib/models';
+import { modelOptions, synapseAINote, synapseAIOnly, withHints, withUnreachable } from '@/lib/models';
 
 /** Empty `sessionModel` means "follow the workspace builder model". */
 const DEFAULT_SENTINEL = '__default__';
@@ -291,11 +291,11 @@ export function BuilderConversation({
     // pick whose provider has since lost its key shows under "Not reachable"
     // instead of leaving the control looking empty. Never a model too small for
     // Synapse AI (F1592: under 128K, as cloud's).
-    const modelChoices = [
+    const modelChoices = withHints([
         { value: DEFAULT_SENTINEL, label: `Default (${builderModel || 'workspace model'})` },
         ...withUnreachable(synapseAIOnly(modelOptions(providers), modelWindows, sessionModel || undefined),
                            sessionModel || undefined),
-    ];
+    ], modelWindows);
 
     // Consecutive activity collapses into one block; everything else is its own.
     type Group = { type: 'activity'; events: BuilderMessage[] } | { type: 'single'; message: BuilderMessage };
@@ -607,6 +607,7 @@ export function BuilderConversation({
                                     // On a phone the row's own width, not 200 px: "Default (Claude Haik…" (F1131).
                                     className="max-w-[200px] max-md:max-w-full"
                                     options={modelChoices}
+                                    note={synapseAINote(modelChoices, modelWindows)}
                                 />
                             </>
                         )}

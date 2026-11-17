@@ -15732,7 +15732,8 @@ async def check_f1598picker(browser) -> str:
     With `/api/models` saying each model's fit, price and the engine's order:
     - Settings → Models' Builder model and Synapse AI's panel list "Recommended for building" first, each with the
       word "Recommended", then "Other models" in the engine's order. Gemma 3 4B, not for building, is left out. The
-      Builder model, saved on it, keeps it as the one row saying why, and the note says what is left out.
+      Builder model, saved on it, keeps it as the one row saying why, and the note at the foot of the list says what
+      is left out.
     - The Default model keeps every model, Gemma included, with no rating.
     - Every picker, an agent's Model and a step's Model override too, shows each model's line: context, cost tier and
       price.
@@ -15744,7 +15745,7 @@ async def check_f1598picker(browser) -> str:
     shots = os.environ.get("SMOKE_SHOTS")
     bad: list[str] = []
     scoped = CONTRAST.replace("document.querySelectorAll('*')",
-                              "(document.querySelector('[cmdk-list]') || document).querySelectorAll('*')")
+                              "(document.querySelector('[cmdk-root]') || document).querySelectorAll('*')")
     assert scoped != CONTRAST, "the contrast script no longer reads every element"
 
     async def opened(page, trigger) -> tuple[list[str], list[str], list[str]]:
@@ -15803,12 +15804,13 @@ async def check_f1598picker(browser) -> str:
                         bad.append(f"{tag}: Sonnet's line reads {by.get('claude-sonnet-4-6')!r}")
                     if "Synapse AI" not in by.get("gemma-3-4b-it", ""):
                         bad.append(f"{tag}: the saved Gemma row does not say why: {by.get('gemma-3-4b-it')!r}")
+                    if not await page.locator("[cmdk-root]").get_by_text("Some models aren't offered here",
+                                                                          exact=False).count():
+                        bad.append(f"{tag}: the Builder model's note is not at the foot of its list")
                     await readable(page, f"{tag} builder")
                     await shot("builder")
                     await page.keyboard.press("Escape")
                     await asyncio.sleep(0.3)
-                    if not await page.get_by_text("Some models aren't offered here", exact=False).count():
-                        bad.append(f"{tag}: the Builder model's note is not shown")
 
                     # The Default model keeps every model, with the line and no rating.
                     names, texts, _ = await opened(page, page.locator('button[aria-label="Default model"]').first)

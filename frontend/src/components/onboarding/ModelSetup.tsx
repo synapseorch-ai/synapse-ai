@@ -25,7 +25,7 @@ import { ProviderCard } from '@/components/providers/ProviderCard';
 import { pickSecrets, type SecretState } from '@/components/settings/SavedSecret';
 import { AppMark, Button, Combobox, ErrorNote, Field, buttonStyles } from '@/components/ui';
 import { cn, focusRing } from '@/lib/cn';
-import { providerLabel, synapseAIOnly, type ModelWindows } from '@/lib/models';
+import { providerLabel, synapseAINote, synapseAIOnly, withHints, type ModelWindows } from '@/lib/models';
 import {
     FIRST_PROVIDERS, FREE_KEY_PROVIDER, KEY_NAMES, ONBOARDING_PROVIDERS, foundHere, keyNote, nothingYet, pickable,
     startingModel, type FoundHere,
@@ -118,7 +118,8 @@ export function ModelSetup({ open, problem, onClose, onSaved }: {
     const toggle = (key: string) =>
         setPicked(p => (p.includes(key) ? p.filter(k => k !== key) : [...p, key]));
 
-    const options = providers ? pickable(providers) : [];
+    // Each model's line: its context, cost tier and price (F1598).
+    const options = providers ? withHints(pickable(providers), windows) : [];
 
     function toModels() {
         setEveryday(startingModel(current.model, options));
@@ -285,6 +286,7 @@ export function ModelSetup({ open, problem, onClose, onSaved }: {
                                             // Never a model too small for Synapse AI's planner (F1592); the everyday one lists all.
                                             options={[{ value: 'same', label: 'Same as everyday model' },
                                                       ...synapseAIOnly(options, windows, assistant || undefined)]}
+                                            note={synapseAINote(synapseAIOnly(options, windows, assistant || undefined), windows)}
                                             searchPlaceholder={SEARCH} aria-label="Synapse AI’s model" />
                                     </Field>
                                     <p className="text-xs text-text-faint">You can change both in Settings → Models.</p>

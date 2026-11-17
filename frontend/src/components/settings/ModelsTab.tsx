@@ -2,7 +2,7 @@ import { ExternalLink, RefreshCw } from 'lucide-react';
 import { Button, Checkbox, Combobox, Field, Input, Section, Textarea } from '@/components/ui';
 import { ProviderCard } from '@/components/providers/ProviderCard';
 import { FORM } from './form';
-import { modelOptions as buildModelOptions, providerLabel, synapseAIOnly, withUnreachable, type ModelWindows } from '@/lib/models';
+import { modelOptions as buildModelOptions, providerLabel, synapseAINote, synapseAIOnly, withHints, withUnreachable, type ModelWindows } from '@/lib/models';
 
 /** `builder_model` is empty when it should follow `model`; a Combobox needs a value. */
 const DEFAULT_SENTINEL = '__default__';
@@ -111,7 +111,8 @@ export const ModelsTab = ({
 
     // Both lists, and the builder's picker, are built by one helper in
     // lib/models — they used to be three separate flatMaps that disagreed.
-    const modelOptions = withUnreachable(buildModelOptions(providers), selectedModel);
+    // Each model's line: its context, cost tier and price (F1598).
+    const modelOptions = withHints(withUnreachable(buildModelOptions(providers), selectedModel), modelWindows);
     // Empty is a real choice (F1020's class: every optional picker can go back to empty): code search and each
     // step's semantic cache simply have no embeddings then.
     const embeddingOptions = [
@@ -120,15 +121,16 @@ export const ModelsTab = ({
     ];
     // Empty means "whatever the default model is", which is a real choice and
     // needs a row of its own — a blank control reads as nothing being set.
-    const builderOptions = [
+    const builderOptions = withHints([
         { value: DEFAULT_SENTINEL, label: `Same as default model${selectedModel ? ` (${selectedModel})` : ''}` },
-        // Synapse AI's model: never one too small for it (F1592: under 128K, as cloud's).
+        // Synapse AI's model: never one too small for it (F1592: under 128K, as cloud's), and what builds well first
+        // (F1598).
         ...withUnreachable(synapseAIOnly(buildModelOptions(providers), modelWindows, builderModel || undefined), builderModel),
-    ];
-    const quickOptions = [
+    ], modelWindows);
+    const quickOptions = withHints([
         { value: DEFAULT_SENTINEL, label: `Same as builder model${(builderModel || selectedModel) ? ` (${builderModel || selectedModel})` : ''}` },
         ...withUnreachable(buildModelOptions(providers), builderQuickModel),
-    ];
+    ], modelWindows);
 
     /** A card's other fields save with the page, from a Save of their own inside the card. */
     const saveHere = (
@@ -346,6 +348,7 @@ export const ModelsTab = ({
                         value={builderModel || DEFAULT_SENTINEL}
                         onChange={(v) => setBuilderModel(v === DEFAULT_SENTINEL ? '' : v)}
                         options={builderOptions}
+                        note={synapseAINote(builderOptions, modelWindows)}
                         placeholder={loadingModels ? 'Loading models…' : 'Select builder model…'}
                         searchPlaceholder="Search models or providers…"
                         aria-label="Builder model"
@@ -436,7 +439,7 @@ export const ModelsTab = ({
             </Section>
 
             <KnowledgeModels part="knowledge" value={knowledgeModels} onChange={setKnowledgeModels} providers={providers}
-                rerankListings={rerankListings}
+                modelFacts={modelWindows} rerankListings={rerankListings}
                 embeddingModel={embeddingModel} chatModel={selectedModel} />
 
             {/* The form's one save, at its foot under the last field, on the right of its column: no rule

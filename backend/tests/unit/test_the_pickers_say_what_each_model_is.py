@@ -174,7 +174,8 @@ class TestEveryPickerReadsIt:
     @pytest.mark.parametrize("path, count", [
         ("components/settings/ModelsTab.tsx", 3), ("components/app/BuilderPanel.tsx", 1),
         ("components/onboarding/ModelSetup.tsx", 1), ("components/settings/AgentsTab.tsx", 2),
-        ("components/settings/EvalsScreen.tsx", 1), ("lib/knowledgeHost.tsx", 1)])
+        ("components/settings/EvalsScreen.tsx", 1), ("lib/knowledgeHost.tsx", 1),
+        ("components/settings/KnowledgeModels.tsx", 1)])
     def test_each_chat_model_picker_adds_the_line(self, path, count):
         assert (SRC / path).read_text().count("withHints(") >= count, path
 
