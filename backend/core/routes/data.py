@@ -718,16 +718,22 @@ async def get_models(refresh: bool = False):
     # Each model's known window, and the least Synapse AI runs on (F1592), so its pickers leave out a model too small
     # for it. An Ollama model's is what Ollama says (`/api/show`, asked once per model in this process); an unknown one
     # is left out.
-    from core.native_builder.models_menu import SYNAPSE_AI_MIN_WINDOW, synapse_ai_window
+    from core.native_builder.models_menu import SYNAPSE_AI_MIN_WINDOW, route_facts, synapse_ai_window
 
     listed = list(dict.fromkeys(all_available))
     known = await asyncio.gather(*(synapse_ai_window(m) for m in listed))
+    # Each model's fit for building, its price and the engine's order (F1598), so Synapse AI's picker shows first what
+    # builds well and leaves out what is not for building, and every picker says a model's size and cost.
+    facts = await route_facts(listed)
 
     return {
         "providers": providers,
         "all_available": all_available,
         "windows": {m: t for m, t in zip(listed, known) if t},
         "synapse_ai_min_window": SYNAPSE_AI_MIN_WINDOW,
+        "builder_fit": facts["builder_fit"],
+        "prices": facts["prices"],
+        "ranked": facts["ranked"],
         "local": ollama_chat,
         "cloud": cloud_models,
         # A Claude CLI model is on it too: it takes the agent's effort as

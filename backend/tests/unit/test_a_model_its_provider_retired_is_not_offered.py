@@ -96,16 +96,31 @@ def gemini_choices():
     model_choices.set_model_choices(None)
 
 
+#: A narrow job's lowest-cost fit that is not small: an automatic pick passes over a small model when a larger one fits
+#: (F1598), so the pick's own case is one it would give the job to.
+PICKED = "gemini-3-flash-preview"
+PICKED_GONE = GEMINI_GONE.replace("models/gemini-2.5-flash-lite is", f"models/{PICKED} is")
+
+
+@pytest.fixture
+def flash_choices():
+    async def listed():
+        return {"gemini": ["gemini-3.1-pro-preview", PICKED]}
+    model_choices.set_model_choices(listed)
+    yield
+    model_choices.set_model_choices(None)
+
+
 class TestItIsOfferedNowhere:
     async def test_the_workspaces_choices_leave_it_out(self, gemini_choices):
         await A.note_failure(LEARNED, LLMError(LEARNED_GONE))
         assert await model_choices.choices() == {"gemini": ["gemini-2.5-flash"]}
 
-    async def test_a_404d_model_is_never_picked_again(self, gemini_choices, monkeypatch):
+    async def test_a_404d_model_is_never_picked_again(self, flash_choices, monkeypatch):
         """CAP3's stage 0, end to end: picked as the lowest-cost fit, refused by its provider, never picked again."""
         # A narrow job's pick, the cheapest that fits (F1251 keeps it for one): the case itself.
         before = M.pick("simple", has_tools=True, menu=await M.menu(), narrow=True)
-        assert before.id == LEARNED, "the case itself: the lowest-cost model that fits"
+        assert before.id == PICKED, "the case itself: the lowest-cost model that fits"
 
         from core import llm_providers
         from core.providers import registry
@@ -113,8 +128,8 @@ class TestItIsOfferedNowhere:
         async def refused(call, spec):
             # Only the gone model is refused as gone. A same-provider stand-in tried after it (F1369, within its price
             # band) fails for another reason, so it is never marked gone with it.
-            if call.model == LEARNED:
-                raise LLMError(LEARNED_GONE)
+            if call.model == PICKED:
+                raise LLMError(PICKED_GONE)
             raise LLMError("Gemini LLM Error: 503 UNAVAILABLE")
 
         spec = types.SimpleNamespace(id="gemini", mode="cloud", chat=refused, error="Gemini LLM Error")
@@ -122,10 +137,10 @@ class TestItIsOfferedNowhere:
         monkeypatch.setattr(registry, "branch_for", lambda mode, model: spec)
         monkeypatch.setattr(registry, "resolve", lambda chat: chat)
         with pytest.raises(LLMError):
-            await llm_providers.generate_response_ex("hi", "sys", "cloud", LEARNED, {})
+            await llm_providers.generate_response_ex("hi", "sys", "cloud", PICKED, {})
 
         after = M.pick("simple", has_tools=True, menu=await M.menu(), narrow=True)
-        assert after.id == "gemini-2.5-flash"
+        assert after.id == "gemini-3.1-pro-preview"
 
     async def test_the_models_screen_says_why(self, monkeypatch):
         await A.note_failure(LEARNED, LLMError(LEARNED_GONE))
