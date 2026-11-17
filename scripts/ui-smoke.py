@@ -15698,6 +15698,178 @@ async def check_clisignedout(browser) -> str:
             f"{_CLI_OUT_SAVED} show it, alone of Claude Code's, light and dark at 1440")
 
 
+_F1598_MODELS_LIST = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5", "gpt-4.1",
+                      "gemini-3.1-flash-lite-preview", "gemma-3-4b-it"]
+#: `/api/models` with each model's fit, price and the engine's order (F1598): three Claude models recommended for
+#: building, Gemma 3 4B not for building, two with no mark.
+_F1598_MODELS = {
+    "providers": {
+        "ollama": {"available": False, "models": [], "embedding_models": []},
+        "anthropic": {"available": True, "models": _F1598_MODELS_LIST[:3], "embedding_models": []},
+        "openai": {"available": True, "models": ["gpt-4.1"], "embedding_models": []},
+        "gemini": {"available": True, "models": _F1598_MODELS_LIST[4:], "embedding_models": []},
+    },
+    "all_available": _F1598_MODELS_LIST, "local": [], "cloud": _F1598_MODELS_LIST,
+    "reasoning_capable": [], "reasoning_without_off": [], "reasoning_off_minimum": [],
+    "windows": {"claude-opus-4-6": 1_000_000, "claude-sonnet-4-6": 1_000_000, "claude-haiku-4-5": 200_000,
+                "gpt-4.1": 1_047_576, "gemini-3.1-flash-lite-preview": 1_048_576, "gemma-3-4b-it": 128_000},
+    "synapse_ai_min_window": 128_000,
+    "builder_fit": {"claude-opus-4-6": "recommended", "claude-sonnet-4-6": "recommended",
+                    "claude-haiku-4-5": "recommended", "gemma-3-4b-it": "not_for_building"},
+    "prices": {"claude-opus-4-6": {"in": 5, "out": 25}, "claude-sonnet-4-6": {"in": 3, "out": 15},
+               "claude-haiku-4-5": {"in": 1, "out": 5}, "gpt-4.1": {"in": 2, "out": 8},
+               "gemini-3.1-flash-lite-preview": {"in": 0.125, "out": 0.75}},
+    "ranked": ["claude-opus-4-6", "claude-sonnet-4-6", "gpt-4.1", "claude-haiku-4-5", "gemini-3.1-flash-lite-preview",
+               "gemma-3-4b-it"],
+}
+_F1598_SONNET_LINE = "Large context (1M) · $$$ · $3.00 in / $15.00 out per 1M tokens"
+
+
+@check
+async def check_f1598picker(browser) -> str:
+    """Every model picker says what each model is, and Synapse AI's offer what builds well first (F1598).
+
+    With `/api/models` saying each model's fit, price and the engine's order:
+    - Settings → Models' Builder model and Synapse AI's panel list "Recommended for building" first, each with the
+      word "Recommended", then "Other models" in the engine's order. Gemma 3 4B, not for building, is left out. The
+      Builder model, saved on it, keeps it as the one row saying why, and the note says what is left out.
+    - The Default model keeps every model, Gemma included, with no rating.
+    - Every picker, an agent's Model and a step's Model override too, shows each model's line: context, cost tier and
+      price.
+    - The open list reads at AA, the tag included.
+
+    Light and dark at 1440 and 390 (the agent and the step at 1440). `SMOKE_SHOTS`, when set, keeps a shot of each.
+    """
+    aid, oid = "agent_uismoke_f1598", "uismoke_f1598"
+    shots = os.environ.get("SMOKE_SHOTS")
+    bad: list[str] = []
+    scoped = CONTRAST.replace("document.querySelectorAll('*')",
+                              "(document.querySelector('[cmdk-list]') || document).querySelectorAll('*')")
+    assert scoped != CONTRAST, "the contrast script no longer reads every element"
+
+    async def opened(page, trigger) -> tuple[list[str], list[str], list[str]]:
+        """The open picker's rows' names, their whole texts, and its group headings in order."""
+        await trigger.click()
+        await page.locator("[cmdk-item]").first.wait_for(timeout=10_000)
+        await asyncio.sleep(0.4)
+        texts = [" ".join(t.split()) for t in await page.locator("[cmdk-item]").all_inner_texts()]
+        names = [t.split(" ")[0] for t in texts]
+        heads = [" ".join(h.split()) for h in await page.locator("[cmdk-group-heading]").all_inner_texts()]
+        return names, texts, heads
+
+    async def readable(page, tag: str) -> None:
+        faint = await page.evaluate(scoped)
+        if faint:
+            bad.append(f"{tag}: under AA in the open list: {faint[:3]}")
+
+    try:
+        api("/api/agents", "POST", {**_agent(aid, "UI smoke picker facts"), "model": "claude-haiku-4-5"})
+        api("/api/orchestrations", "POST", {
+            "id": oid, "name": "ui-smoke picker facts", "description": "Temporary fixture created by scripts/ui-smoke.py.",
+            "steps": [{"id": f"{oid}_w", "name": "Write", "type": "llm", "prompt_template": "Say hi",
+                       "output_key": "draft", "next_step_id": None, "position_x": 0, "position_y": 0}],
+            "entry_step_id": f"{oid}_w", "state_schema": {}, "trigger": "manual"})
+        settings = {**api("/api/settings"), "model": "claude-sonnet-4-6", "builder_model": "gemma-3-4b-it"}
+        for scheme in ("light", "dark"):
+            for width, height in ((1440, 900), (390, 844)):
+                tag = f"{scheme} {width}"
+                ctx = await browser.new_context(viewport={"width": width, "height": height}, color_scheme=scheme)
+                await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{scheme}')}}catch(e){{}}")
+                await ctx.route(re.compile(r".*/api/models(\?.*)?$"), _answer(_F1598_MODELS))
+                await ctx.route(re.compile(r".*/api/settings$"), _answer(settings))
+                page = await ctx.new_page()
+
+                async def shot(name: str) -> None:
+                    if shots:
+                        await page.screenshot(path=os.path.join(shots, f"f1598picker-{name}-{scheme}-{width}.png"))
+
+                try:
+                    # Settings → Models' Builder model: the saved one not for building, saying why; then the rest.
+                    await page.goto(f"{APP}/settings/models", wait_until="domcontentloaded")
+                    builder = page.locator('button[aria-label="Builder model"]').first
+                    await builder.wait_for(timeout=30_000)
+                    await asyncio.sleep(SETTLE)
+                    names, texts, heads = await opened(page, builder)
+                    want = ["gemma-3-4b-it", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5", "gpt-4.1",
+                            "gemini-3.1-flash-lite-preview"]
+                    if [n for n in names if n in want] != want:
+                        bad.append(f"{tag}: the Builder model lists {names}")
+                    if [h.lower() for h in heads] != ["not for building", "recommended for building", "other models"]:
+                        bad.append(f"{tag}: the Builder model's headings read {heads}")
+                    by = dict(zip(names, texts))
+                    if "Recommended" not in by.get("claude-sonnet-4-6", "") or "Recommended" in by.get("gpt-4.1", ""):
+                        bad.append(f"{tag}: the Recommended words read {by}")
+                    if _F1598_SONNET_LINE not in by.get("claude-sonnet-4-6", ""):
+                        bad.append(f"{tag}: Sonnet's line reads {by.get('claude-sonnet-4-6')!r}")
+                    if "Synapse AI" not in by.get("gemma-3-4b-it", ""):
+                        bad.append(f"{tag}: the saved Gemma row does not say why: {by.get('gemma-3-4b-it')!r}")
+                    await readable(page, f"{tag} builder")
+                    await shot("builder")
+                    await page.keyboard.press("Escape")
+                    await asyncio.sleep(0.3)
+                    if not await page.get_by_text("Some models aren't offered here", exact=False).count():
+                        bad.append(f"{tag}: the Builder model's note is not shown")
+
+                    # The Default model keeps every model, with the line and no rating.
+                    names, texts, _ = await opened(page, page.locator('button[aria-label="Default model"]').first)
+                    if not set(_F1598_MODELS_LIST) <= set(names):
+                        bad.append(f"{tag}: the Default model lists {names}")
+                    if any("Recommended" in t for t in texts):
+                        bad.append(f"{tag}: the Default model rates models")
+                    if not any("Standard context (128K)" in t for t in texts if t.startswith("gemma-3-4b-it")):
+                        bad.append(f"{tag}: the Default model's Gemma row has no line")
+                    await readable(page, f"{tag} default")
+                    await shot("default")
+                    await page.keyboard.press("Escape")
+                    await asyncio.sleep(0.3)
+
+                    # Synapse AI's panel: Recommended first, Gemma left out.
+                    await page.locator('[data-testid="assistant-open"]:visible').first.click()
+                    pill = page.locator('[data-testid="assistant-panel"] [aria-label="Model for this build"]').first
+                    await pill.wait_for(timeout=10_000)
+                    await asyncio.sleep(0.6)
+                    names, texts, heads = await opened(page, pill)
+                    if "gemma-3-4b-it" in names or not {"claude-opus-4-6", "gpt-4.1"} <= set(names):
+                        bad.append(f"{tag}: the panel lists {names}")
+                    if [h.lower() for h in heads] != ["recommended for building", "other models"]:
+                        bad.append(f"{tag}: the panel's headings read {heads}")
+                    await readable(page, f"{tag} panel")
+                    await shot("panel")
+                    await page.keyboard.press("Escape")
+
+                    if width == 1440:
+                        # An agent's Model and a step's Model override: every model, each with its line.
+                        await page.goto(f"{APP}/agents", wait_until="domcontentloaded")
+                        await asyncio.sleep(SETTLE)
+                        await page.get_by_text("UI smoke picker facts", exact=True).first.click()
+                        model = page.locator('button[aria-label="Model"]').first
+                        await model.wait_for(timeout=10_000)
+                        await asyncio.sleep(1.0)
+                        names, texts, _ = await opened(page, model)
+                        if not set(_F1598_MODELS_LIST) <= set(names) or not any(_F1598_SONNET_LINE in t for t in texts):
+                            bad.append(f"{tag}: the agent's Model lists {texts}")
+                        await shot("agent")
+                        await page.keyboard.press("Escape")
+                        await asyncio.sleep(0.3)
+                        await open_step(page, oid, "Write")
+                        override = page.locator('button[aria-label="Model override"]').first
+                        await override.wait_for(timeout=10_000)
+                        names, texts, _ = await opened(page, override)
+                        if not set(_F1598_MODELS_LIST) <= set(names) or not any(_F1598_SONNET_LINE in t for t in texts):
+                            bad.append(f"{tag}: the step's Model override lists {texts}")
+                        await shot("step")
+                        await page.keyboard.press("Escape")
+                finally:
+                    await ctx.close()
+    finally:
+        drop_fixtures([oid], [aid])
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("Synapse AI's pickers list Recommended first with its word, then Other models, Gemma 3 4B left out and kept "
+            "saying why where saved; every picker shows each model's context, cost tier and price; AA, light and dark "
+            "at 1440 and 390")
+
+
 # ── the browser inside Synapse: the pane (BRW2, D330) ───────────────────────
 
 #: A 16×10 JPEG: a frame of the screencast, and the screenshot after an action.
