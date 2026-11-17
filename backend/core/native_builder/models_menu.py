@@ -453,12 +453,25 @@ async def stand_in(refused: str, *, has_tools: bool) -> str | None:
     return sorted(fitting, key=lambda e: _cheapest_first(e, has_tools))[0].id if fitting else None
 
 
+#: Said after a pick's reason when the model picked is small (F1598): a fact, never a judgement of it.
+SMALL_PICK = "; it is a small model, as no larger one here fits"
+
+
 def pick(needs: str, *, has_tools: bool, menu: list[ModelEntry], narrow: bool = False, long_inputs: bool = False,
          default: str | None = None) -> Picked | NoModel | None:
     """The model an agent that needs `needs` gets: the best fit among the workspace's own-key models, then among the
     platform's (F1251). `narrow`: a small job with a narrow goal, which gets the cheapest that fits; `default`: the
     workspace's default model. None with no menu (the workspace default, as before); `NoModel` when nothing on it can
-    do the job, said rather than defaulted (SAI2's review)."""
+    do the job, said rather than defaulted, so nothing runs on a model that cannot do it. A small model is picked only
+    when no larger one fits (`_not_small`), and its reason then says it is small (`SMALL_PICK`)."""
+    picked = _pick(needs, has_tools=has_tools, menu=menu, narrow=narrow, long_inputs=long_inputs, default=default)
+    if isinstance(picked, Picked) and any(e.id == picked.id and e.small is True for e in menu):
+        return Picked(picked.id, picked.reason + SMALL_PICK)
+    return picked
+
+
+def _pick(needs: str, *, has_tools: bool, menu: list[ModelEntry], narrow: bool, long_inputs: bool,
+          default: str | None) -> Picked | NoModel | None:
     if not menu:
         return None
     usable = [e for e in menu if e.source not in ("cli", "local")]
