@@ -1,5 +1,5 @@
 {
- "commit": "cade169fb28d8d8918f18211edd8e5fff4ff3597",
+ "commit": "82e443441688987a2868aa39e07c0a6e24c31d60",
  "pages": [
   {
    "description": "AI automation without the surprises. Describe a recurring job in plain words, and get a workflow you can read, that runs the same way every time and checks with you before anything goes out.",
@@ -2724,6 +2724,11 @@
      "heading": "How they work"
     },
     {
+     "anchor": "what-it-answers-what-it-answers",
+     "excerpt": "A tool's editor has What it answers (since 2.1), after what the tool needs: the fields of the tool's answer, as a step's answer fields are, with the same rows to four levels, Paste an example and Paste a JSON Schema. Its output schema shows, read-only, the schema the fields make, which is what Save keeps. A schema set through the API or an import that fields can't hold is shown read-only, each…",
+     "heading": "What it answers [#what-it-answers]"
+    },
+    {
      "anchor": "managing-custom-tools",
      "excerpt": "Open Apps › Tools to: - View all registered tools, marked with their HTTP method (self-hosted, HTTP · POST and the like, or n8n) or Python - Create one with New tool — choose HTTP request for a REST API tool or Python code for a Python tool (self-hosted, New Tool, then the editor's HTTP or Python) - Create several from a spec with Import OpenAPI - Click a tool to edit it, or delete it…",
      "heading": "Managing custom tools"
@@ -3118,7 +3123,7 @@
     },
     {
      "anchor": "verifying-the-install",
-     "excerpt": "Expected output: synapse status --json adds the version, the address, whether the UI answers (ready) and the access link. Head to Quick Start to create your first agent and send a message in under 5 minutes.",
+     "excerpt": "Expected output: synapse status --json adds the version, the address, whether the UI answers (ready), the access link, and how (since 2.1): the options synapse start was given, and by, whether autostart or you started it. On Windows an autostart start reads as person for now. Head to Quick Start to create your first agent and send a message in under 5 minutes.",
      "heading": "Verifying the install"
     }
    ],
@@ -4662,7 +4667,7 @@
     },
     {
      "anchor": "find-a-run",
-     "excerpt": "Runs lists every workflow run, newest first and grouped by day, including the ones a schedule or the API started. Pick Needs you, Running, Queued, Failed, Completed or Cancelled at the top to show only those runs, and Search runs… to find one by its workflow's name or its run ID. A row's menu stops a run, replays a failed one, or copies its ID. Click a run to open it. Home puts the ones that need…",
+     "excerpt": "Runs lists every workflow run, newest first and grouped by day, including the ones a schedule or the API started. Pick Needs you, Running, Queued, Failed, Completed or Cancelled at the top to show only those runs, and Search runs… to find one by its workflow's name or its run ID. A row's menu stops a run, replays a failed one, or copies its ID. Click a run to open it. Under a full list, Show…",
      "heading": "Find a run"
     },
     {
@@ -6095,6 +6100,11 @@
      "heading": "Per-step model override"
     },
     {
+     "anchor": "what-the-pickers-say-pickers",
+     "excerpt": "Every model picker shows each model's line under its name (since 2.1): its context — Small under 128K tokens, Standard from 128K, Large from 500K — a cost tier from $ to $$$$, and its price per 1M tokens, for example Large context (1M) · $$$ · $3.00 in / $15.00 out per 1M tokens. What isn't known is left out; a CLI's or a local model's has no price. Synapse AI's own pickers — the panel's model…",
+     "heading": "What the pickers say [#pickers]"
+    },
+    {
      "anchor": "cost-limits",
      "excerpt": "There is no per-run spending cap. To bound what a run can cost, use these levers: - Per-step model choice — the largest single factor. See per-step overrides. - Reasoning effort — off or low on steps that have nothing to reason about. - Max Turns on an agent (on Cloud, Turn limit), which caps how many times the ReAct loop can go round, and Max response length, which caps each reply. - Step and…",
      "heading": "Cost limits"
@@ -6607,7 +6617,7 @@
     },
     {
      "anchor": "recent-runs",
-     "excerpt": "The run strip's Recent Runs lists this workflow's last runs with their status — running, paused, completed, failed or cancelled; Runs has every run. A failed or cancelled run has Resume: for a failed run the step that failed runs again; for a cancelled one it continues from the step it stopped before. State from the steps that already completed is kept. ---",
+     "excerpt": "The run strip's Recent Runs lists this workflow's own runs, newest first, with Show older for the ones before them, each with its status — running, paused, completed, failed or cancelled; Runs has every run. A failed or cancelled run has Resume: for a failed run the step that failed runs again; for a cancelled one it continues from the step it stopped before. State from the steps that already…",
      "heading": "Recent runs"
     },
     {
@@ -6764,7 +6774,7 @@
     },
     {
      "anchor": "answer-fields-answer-fields",
-     "excerpt": "When a later step decides on a model's answer — an If / Else on whether a review is negative, a Switch on a ticket's priority — name what it reads under Answer fields, on the LLM or Agent step. Each field has a name, a type and, optionally, a description the model reads: | Type in the panel | Stored as | The model answers | |---|---|---| | Yes / No | boolean | true or false | | One of | choice…",
+     "excerpt": "When a later step decides on a model's answer — an If / Else on whether a review is negative, a Switch on a ticket's priority — or reads parts of it, name them under Answer fields, on the LLM or Agent step. Each field has a name, a type and, optionally, a description the model reads: | Type in the panel | Stored as | The model answers | |---|---|---| | Yes / No | boolean | true or false | | One…",
      "heading": "Answer fields [#answer-fields]"
     },
     {
