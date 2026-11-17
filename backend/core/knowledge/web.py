@@ -1396,13 +1396,23 @@ async def _page(c: _Crawl, url: str, *, links_needed: bool) -> PageLinks | None:
                 await _outcome(c, url, "failed", "fetch_failed", f"The page is gone: the server answered {got.status}.",
                                http_status=got.status)
         return None
+    from core.web_refusals import sign_in_wall
+
     if not 200 <= got.status < 300:
         c.counts["failed"] += 1
         c.note(f"{url} answered {got.status}.")
         c.keep(held)
         if held is None and named:
-            await _outcome(c, url, "failed", "fetch_failed", f"The server answered {got.status}.",
-                           http_status=got.status)
+            said = sign_in_wall(url, str(got.url), got.status) or f"The server answered {got.status}."
+            await _outcome(c, url, "failed", "fetch_failed", said, http_status=got.status)
+        return None
+    if (wall := sign_in_wall(url, str(got.url), got.status)) is not None:
+        # A private page arrives as the site's sign-in page (F1632): never written as the page asked for.
+        c.counts["failed"] += 1
+        c.note(wall)
+        c.keep(held)
+        if held is None and named:
+            await _outcome(c, url, "failed", "fetch_failed", wall, http_status=got.status)
         return None
 
     final = normalize_url(got.url)

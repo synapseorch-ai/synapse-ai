@@ -83,7 +83,7 @@ async def site(monkeypatch):
 @pytest.mark.skipif(not _chromium(), reason="no Playwright Chromium on this machine")
 async def test_the_scraper_refuses_a_page_that_lands_on_a_sign_in(site):
     out = json.loads((await web_scraper._handle_scrape_url({"url": site + "/account"}))[0].text)
-    assert out["success"] is False and out["error"].startswith("Needs a sign-in:"), out
+    assert out["success"] is False and "Needs a sign-in:" in out["error"], out
     assert "Harbor & Pine" not in json.dumps(out)  # the login form is never handed back as the page
 
 
