@@ -54,7 +54,7 @@ function Count({ icon: Icon, count, label }: { icon: React.FC<{ className?: stri
 }
 
 function WorkflowPath({ workflow }: { workflow: any }) {
-  const { types, hasPerson } = templatePath(workflow);
+  const { types, roles, hasPerson } = templatePath(workflow);
   return (
     <li className="grid gap-2">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-xs">
@@ -68,7 +68,7 @@ function WorkflowPath({ workflow }: { workflow: any }) {
           <span className="text-text-faint">Runs on its own</span>
         )}
       </div>
-      <StepPath types={types} />
+      <StepPath types={types} roles={roles} />
     </li>
   );
 }

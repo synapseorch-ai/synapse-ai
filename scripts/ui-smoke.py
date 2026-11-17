@@ -3153,6 +3153,74 @@ async def check_canvasroles(browser) -> str:
     return "model, logic and person steps are three colours on the canvas and in the minimap, which starts off"
 
 
+def _set_args_orchestration(oid: str, name: str) -> dict:
+    """A Tool step whose arguments are set on it (no model is asked), a Print, then an LLM step: one step calls a
+    model."""
+    return {
+        "id": oid, "name": name, "description": "Temporary fixture created by scripts/ui-smoke.py (F1657).",
+        "trigger": "manual", "state_schema": {}, "entry_step_id": f"{oid}_fetch",
+        "steps": [
+            {"id": f"{oid}_fetch", "name": "Fetch the page", "type": "tool", "forced_tool": "scrape_url",
+             "tool_arguments": {"url": "https://example.com/"}, "output_key": "page", "next_step_id": f"{oid}_note"},
+            {"id": f"{oid}_note", "name": "Note", "type": "print", "print_content": "fetched", "output_key": "note",
+             "next_step_id": f"{oid}_draft"},
+            {"id": f"{oid}_draft", "name": "Draft", "type": "llm", "prompt_template": "Sum up the page.",
+             "output_key": "draft", "next_step_id": f"{oid}_end"},
+            {"id": f"{oid}_end", "name": "End", "type": "end", "next_step_id": None},
+        ],
+    }
+
+
+@check
+async def check_pathrole(browser) -> str:
+    """A workflow's path before any run draws each step by what its config does (F1657): a Tool step whose arguments
+    are set on it calls no model, so the Workflows list's path counts one step calling a model of three, and on the
+    canvas the Tool step's tile is logic's colour, not the model step's. Light and dark; `SMOKE_SHOTS` keeps each."""
+    stamp = int(time.time())
+    oid, name = f"orch_uismoke_pathrole_{stamp}", f"ui-smoke path roles {stamp}"
+    api("/api/orchestrations", "POST", _set_args_orchestration(oid, name))
+    shots = os.environ.get("SMOKE_SHOTS")
+    problems: list[str] = []
+    try:
+        for theme in ("light", "dark"):
+            ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+            await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{theme}')}}catch(e){{}}")
+            page = await ctx.new_page()
+            try:
+                await page.goto(f"{APP}/workflows", wait_until="domcontentloaded")
+                await page.get_by_role("button", name=re.compile(r"^Workflows")).click(timeout=30_000)
+                await page.get_by_role("searchbox", name=re.compile("Search workflows")).fill(f"{stamp}")
+                row = page.locator(f"[data-workflow-row='{oid}']")
+                await row.wait_for(timeout=30_000)
+                label = await row.locator("[data-step-path]").get_attribute("aria-label") or ""
+                if label != "3 steps, 1 calling a model, 2 logic":
+                    problems.append(f"{theme}: the row's path reads {label!r}")
+                if shots:
+                    await asyncio.sleep(0.6)
+                    await row.screenshot(path=os.path.join(shots, f"pathrole-row-{theme}.png"))
+                await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+                await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+                await asyncio.sleep(SETTLE)
+                tiles = await page.evaluate("""(oid) => Object.fromEntries(['fetch', 'note', 'draft'].map(k => {
+                    const tile = document.querySelector(`.react-flow__node[data-id="${oid}_${k}"] [aria-hidden].inline-flex`);
+                    return [k, tile ? getComputedStyle(tile).backgroundColor : null];
+                }))""", oid)
+                if None in tiles.values() or tiles["fetch"] != tiles["note"] or tiles["fetch"] == tiles["draft"]:
+                    problems.append(f"{theme}: the canvas tiles read {tiles}, not the Tool step's as logic's")
+                if shots:
+                    # The fixture's steps carry no places on the canvas: laid out first, so the shot shows each tile.
+                    await page.get_by_role("button", name=re.compile("^Tidy up")).click()
+                    await asyncio.sleep(1.2)
+                    await page.screenshot(path=os.path.join(shots, f"pathrole-canvas-{theme}.png"))
+            finally:
+                await ctx.close()
+    finally:
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "a Tool step with set arguments reads as logic on the Workflows list's path and the canvas, light and dark"
+
+
 @check
 async def check_runstrip(browser) -> str:
     """The run strip opens the Run Log and Recent Runs above it, and a run opens the log (M3a)."""

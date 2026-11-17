@@ -8,9 +8,10 @@
  * run page (its path glyph, its waterfall) can never disagree. A step's icon
  * tile is the run screens' `StepIcon`, for the same reason.
  */
-import { roleOf, type StepRole } from '../run/model';
+import { roleOf, stepRole, type StepRole } from '../run/model';
 
-export { roleOf, type StepRole };
+// `stepRole`: a step's role from its config, a Tool step with set arguments logic (F1657).
+export { roleOf, stepRole, type StepRole };
 
 /**
  * The minimap's fill. xyflow sets it as `style.fill`, so a token expression

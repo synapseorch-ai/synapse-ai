@@ -6,7 +6,8 @@ no model (E1), read as "calling a model": a tile in the machine colour, and a la
 call a model. Now they draw it by its config (`run/model.ts` `stepRole`): a Tool step with set arguments is logic.
 
 `templatePath` gives each step's role beside its type, and `pathLabel` counts by them; the path's tiles, the
-workflow list's row, an example's card, the canvas's step and a step's result card use the roles. The palette stays as
+workflow list's row, an example's card, the canvas's step (its icon and its glow as it works), the canvases' minimaps
+and a step's result card use the roles. The palette stays as
 it is: an entry there is a type with no config yet, and a new Tool step asks a model.
 
 Near misses: a Tool step that asks a model for its arguments, an LLM step and a Human step keep their roles.
@@ -99,5 +100,9 @@ def test_the_screens_draw_the_roles():
     assert "roles={roles}" in (SRC / "components/settings/import-export/ExamplesView.tsx").read_text("utf-8")
     node_src = (SRC / "components/orchestration/StepNode.tsx").read_text("utf-8")
     assert "role={stepRole(step.type, step)}" in node_src, "the canvas's step"
+    assert "const role = stepRole(step.type, step);" in node_src, "the canvas's step glows by it as it works"
+    for canvas in ("WorkflowCanvas.tsx", "CanvasWorkbench.tsx"):
+        minimap = (SRC / "components/orchestration" / canvas).read_text("utf-8")
+        assert "ROLE_FILL[stepRole(node.data?.step?.type, node.data?.step)]" in minimap, f"{canvas}'s minimap"
     card = (SRC / "components/orchestration/workbench/StepResultCard.tsx").read_text("utf-8")
     assert "role={stepRole(step.type, step)}" in card, "a step's result card"

@@ -381,6 +381,37 @@ export function glyphOf(workflow: Orchestration | undefined, run: Pick<RunRow, '
         });
 }
 
+// ── A workflow's path before any run ────────────────────────────────────────
+
+type PathStep = { id: string; type?: string | null; tool_arguments?: unknown };
+type PathWorkflow = { steps: PathStep[]; entry_step_id?: string | null };
+
+/**
+ * A workflow's step types in reading order, without its End steps, each with the role its config gives it
+ * (`stepRole`, F1657: a Tool step with set arguments calls no model), and whether a person takes part (a Human step
+ * anywhere, a container's body included).
+ */
+export function templatePath(workflow: PathWorkflow | null | undefined): { types: string[]; roles: StepRole[]; hasPerson: boolean } {
+    if (!workflow?.steps?.length) return { types: [], roles: [], hasPerson: false };
+    const byId = new Map(workflow.steps.map((s) => [s.id, s]));
+    // pathOrder reads only ids, links and entry_step_id; the cast widens the step shape.
+    const order = pathOrder(workflow as Parameters<typeof pathOrder>[0]);
+    const steps = order.map((id) => byId.get(id)).filter((s): s is PathStep => !!s?.type && s.type !== 'end');
+    const roles = steps.map((s) => stepRole(s.type, s));
+    return { types: steps.map((s) => s.type as string), roles, hasPerson: roles.includes('person') };
+}
+
+/** "8 steps, 5 calling a model, 1 for a person, 2 logic": by each step's role, or its type's when none is given. */
+export function pathLabel(types: string[], roles?: StepRole[]): string {
+    const count = (r: StepRole) => types.filter((t, i) => (roles?.[i] ?? roleOf(t)) === r).length;
+    return [
+        `${types.length} ${types.length === 1 ? 'step' : 'steps'}`,
+        count('model') && `${count('model')} calling a model`,
+        count('person') && `${count('person')} for a person`,
+        count('logic') && `${count('logic')} logic`,
+    ].filter(Boolean).join(', ');
+}
+
 // ── The timeline ─────────────────────────────────────────────────────────────
 
 export type TimelineRow = {

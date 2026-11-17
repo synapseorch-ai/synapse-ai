@@ -11,6 +11,7 @@ import { X } from 'lucide-react';
 import { IconButton, LinkButton } from '@/components/ui';
 import type { StepConfig } from '@/types/orchestration';
 
+import { stepRole } from '../../run/model';
 import { StepIcon } from '../../run/StepIcon';
 import { StepDetail } from '../../run/StepDetail';
 import { pillText, type StepExecution, type StepTime, type StepUsage } from '../../run/model';
@@ -28,7 +29,7 @@ export function StepResultCard({ step, result, time, sharedState, runHref, onClo
     return (
         <aside className="relative flex h-full min-h-0 w-full flex-col" aria-label={`${step.name}: result`}>
             <div className="flex items-center gap-2.5 border-b border-border px-4 py-3">
-                <StepIcon type={step.type} className="size-7 [&_svg]:size-4" />
+                <StepIcon type={step.type} role={stepRole(step.type, step)} className="size-7 [&_svg]:size-4" />
                 <h3 className="min-w-0 flex-1 truncate text-[15px] font-semibold tracking-[-0.01em] text-text">
                     {step.name} <span className="font-normal text-text-faint">· result</span>
                 </h3>
