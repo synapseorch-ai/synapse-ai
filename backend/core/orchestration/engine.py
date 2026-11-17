@@ -874,8 +874,11 @@ class OrchestrationEngine:
                 run.status = "failed"
                 if logger:
                     logger.step_end(step.id, "failed", real_error)
+                # With its model failure (F1682): the sentence a person is told of it (F1502), for the panel to say
+                # instead of the call's own text.
                 yield {"type": "step_error", "orch_step_id": step.id,
-                       "error": safe_error, "reason": real_error}
+                       "error": safe_error, "reason": real_error,
+                       **({"model_failure": model_failure} if model_failure else {})}
                 # Persist the failure here: between this and the finalize
                 # checkpoint is exactly where a second crash would lose it.
                 try:
