@@ -1346,3 +1346,23 @@ class TestASignInWall:
         await drain(jobs)
         [row] = (await docs(kb["id"])).values()
         assert row.status == "indexed" and row.sha256
+
+
+class TestABotCheck:
+    """A bot check that refuses SynapseBot names whose it is and the way on; a plain 403 keeps its words (F1632)."""
+
+    async def test_a_challenge_names_cloudflare_and_the_way_on(self, on, site, jobs, indexer):
+        _Site.pages["/guarded"] = (403, {"cf-mitigated": "challenge", "Server": "cloudflare",
+                                         "Content-Type": "text/html"}, b"<html>Just a moment...</html>")
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/guarded", kind="page")
+        [row] = (await docs(kb["id"])).values()
+        assert row.status == "failed" and row.sha256 is None
+        assert "Cloudflare" in (row.error or "") and "Firecrawl" in (row.error or ""), row.error
+
+    async def test_a_plain_403_keeps_its_plain_words(self, on, site, jobs, indexer):
+        _Site.pages["/closed"] = (403, {"Content-Type": "text/html"}, b"<html>Forbidden</html>")
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/closed", kind="page")
+        [row] = (await docs(kb["id"])).values()
+        assert row.status == "failed" and row.error == "The server answered 403.", row.error
