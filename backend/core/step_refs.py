@@ -46,15 +46,21 @@ _write_hook: Callable[[int], None] | None = None
 
 #: The read share of the model whose prompt is being built (`context_budget.Budget.read_cap`), set by its step.
 _reading: ContextVar[int | None] = ContextVar("step_refs_reading", default=None)
+#: Whether the step whose prompt is being built can read a file (an Agent can; an LLM step has no tools), F1677.
+_reads_files: ContextVar[bool] = ContextVar("step_refs_reads_files", default=True)
 
 
 @contextmanager
-def reading(cap: int | None) -> Iterator[None]:
-    """While a step builds its model's prompt: a saved output up to `cap` characters is inline in it."""
+def reading(cap: int | None, *, reads_files: bool = True) -> Iterator[None]:
+    """While a step builds its model's prompt: a saved output up to `cap` characters is inline in it; a longer one is
+    its file and how to read it, or, for a step that can't read files (`reads_files` False), what fits and a word that
+    the rest isn't shown (F1677)."""
     token = _reading.set(cap)
+    files = _reads_files.set(reads_files)
     try:
         yield
     finally:
+        _reads_files.reset(files)
         _reading.reset(token)
 
 
@@ -215,6 +221,19 @@ def for_prompt(ref: dict, inline_max: int) -> str:
             return f"({exc})"
         text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, default=str)
         return f"{_note(ref)}{text}"
+    if not _reads_files.get():
+        # A step with no tools can't follow a file's name (F1677): it got the note and none of the text, and wrote
+        # from nothing. What fits its share, at a line's end where one is near, and the rest said in words.
+        try:
+            content = load(ref)
+        except MissingOutput as exc:
+            return f"({exc})"
+        text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, default=str)
+        head = text[:max(0, inline_max)]
+        if (cut := head.rfind("\n")) > len(head) // 2:
+            head = head[:cut + 1]
+        return (f"{_note(ref)}{head.rstrip()}\n… (the rest, {len(text) - len(head):,} characters, is not shown: this "
+                "step cannot read files; an Agent step can.)")
     index = ""
     if ref.get("index") is not None:
         shown = json.dumps(ref["index"], ensure_ascii=False, default=str)
