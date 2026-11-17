@@ -214,10 +214,12 @@ def missing_key_reads(orch: dict) -> list[str]:
                      "or write one key every arm writes (each arm's step answering the same output_key) and read "
                      "that, or do this step in each arm"
                      if step.get("type") == "tool" else
+                     "or give it a default of [] in the state schema"
+                     if step.get("type") == "ingest" else
                      "an empty list where there is nothing, or give it a default of [] in the state schema")
             if key not in written:
-                if step.get("type") == "tool":
-                    continue  # a key no step writes: the validator's own Tool-arguments check says it (E1)
+                if step.get("type") in ("tool", "ingest"):
+                    continue  # a key no step writes: the validator's own Tool-arguments (E1) or Ingest check says it
                 sentences.append(f"Step '{step['id']}' reads state.{key}, which no step writes, so {breaks}. Write "
                                  f"it in an earlier step, {fixes}.")
                 continue

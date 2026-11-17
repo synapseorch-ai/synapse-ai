@@ -201,18 +201,24 @@ def annotation_kind(annotation: Any) -> str:
     return {list: "list", dict: "object"}.get(origin, "string")
 
 
-def loops_over_an_answer(steps: list) -> list[str]:
+def loops_over_an_answer(steps: list, entry: str | None = None) -> list[str]:
     """Each Loop whose list is a whole answer object, or a field of one that is no list, with its fix (F1613).
 
     A step that says its answer's fields answers one object: `{"keywords": [...]}`. A Loop over `state.<its key>` went
     through the object, ran zero times and the run said Completed. Checked only where every step writing the key says
     its fields, as `_fields_never_written` is: what a Tool or a Transform writes may be a list, and the run checks it.
-    A field the writers never declare is that check's to say."""
+    A field the writers never declare is that check's to say.
+
+    From `entry`, a Loop is judged by the writers a run brings to it (`state_reads.Walk.judged_by`, F1621), and a field
+    any one of them declares as no list is refused naming that one: the loop fails on a way through it. Without
+    `entry`, every writer of the key judges it, their fields taken together, as before."""
     from core.expressions import _unbraced
 
+    from core.orchestration.state_reads import Walk
     from core.orchestration.state_reads import writers as _writers
 
     writers = _writers(steps)
+    ways = Walk({"steps": steps, "entry_step_id": entry}) if entry else None
     said: list[str] = []
     for s in steps:
         if not (isinstance(s, dict) and s.get("type") == "loop" and isinstance(s.get("loop_over"), str)):
@@ -220,15 +226,22 @@ def loops_over_an_answer(steps: list) -> list[str]:
         m = _LOOP_SOURCE.fullmatch(_unbraced(s["loop_over"]).strip())
         if not m or m[1] not in writers:
             continue
-        key, field, ws = m[1], m[2], writers[m[1]]
+        key, field = m[1], m[2]
+        ws = ways.judged_by(s.get("id"), key, writers[key]) if ways else writers[key]
         typed = [typed_answer(w) for w in ws]
         if any(t is None for t in typed):
             continue
         fields: dict[str, str] = {}
         for t in typed:
             fields.update(t or {})
-        lists = [f for f, kind in fields.items() if kind == "list"]
         w = ws[0]
+        if ways is not None and field is not None:
+            # Each way's own writer: the first one declaring the field as no list is the way the loop fails on.
+            own = next(((x, t) for x, t in zip(ws, typed) if field in (t or {}) and (t or {})[field] != "list"), None)
+            if own is None:
+                continue
+            w, fields = own[0], dict(own[1] or {})
+        lists = [f for f, kind in fields.items() if kind == "list"]
         who = f"{kind_words(w)} step '{w.get('id', '?')}'"
         if len(lists) == 1:
             fix = f"point loop_over at state.{key}.{lists[0]}, its one list"

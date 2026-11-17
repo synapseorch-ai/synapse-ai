@@ -68,6 +68,15 @@ RESEARCH = {"id": "research", "name": "Research", "type": "llm", "prompt_templat
             "output_key": "research"}
 
 
+def _either(one: dict, other: dict, gate: dict) -> dict:
+    """`one` or `other`, by an If/Else, each on to `gate`, then Research."""
+    pick = {"id": "pick", "name": "Pick", "type": "if_else", "if_condition": "'rush' in str(state.user_input)",
+            "if_true_step_id": one["id"], "if_false_step_id": other["id"]}
+    return {"id": "orch_f1549", "name": "F1549", "entry_step_id": "pick", "state_schema": {},
+            "steps": [pick, {**one, "next_step_id": gate["id"]}, {**other, "next_step_id": gate["id"]}, gate,
+                      {**RESEARCH, "next_step_id": "end"}, {"id": "end", "name": "End", "type": "end"}]}
+
+
 def _never(orch: dict) -> list[str]:
     return [i for i in _validate_orchestration(orch)["issues"] if "never write" in i]
 
@@ -157,9 +166,14 @@ class TestASignOffsConditionIsChecked:
         assert _never(_orch(_ask([YES_NO]), _gate("state.human_response.approved"), RESEARCH)) == []
         other = {"id": "second", "name": "Second", "type": "human", "human_prompt": "And?", "human_fields": [YES_NO],
                  "output_key": "second"}
-        [said] = _never(_orch(_ask(), other, _gate("state.human_response.feedback"), RESEARCH))
+        # Both on ways that reach the gate (F1621: a read is judged by the writers a run can bring to it): either answer
+        # may be there, so a field neither asks names both, and one either asks is no issue.
+        [said] = _never(_either(_ask(), other, _gate("state.human_response.feedback")))
         assert "'approve_keywords'" in said and "'second'" in said, said
-        assert _never(_orch(_ask(), other, _gate("state.human_response.approved"), RESEARCH)) == []
+        assert _never(_either(_ask(), other, _gate("state.human_response.approved"))) == []
+        # In a line, the second answer is the one there: it alone is named.
+        [said] = _never(_orch(_ask(), other, _gate("state.human_response.feedback"), RESEARCH))
+        assert "'second'" in said and "'approve_keywords'" not in said, said
 
 
 class TestOtherStepsWhoseAnswerIsKnown:
@@ -213,11 +227,15 @@ class TestLeftAlone:
         assert _never(_orch(step, _gate("state.make.approved"), RESEARCH)) == []
 
     def test_a_key_another_kind_of_step_writes_too(self):
-        """A key written by a Human step and by a Tool step may hold either: not known. (A model step's answer is
-        known since F1553: its declared fields, and none for an llm step without, so it is no longer the example.)"""
+        """A key written by a Human step and by a Tool step, on two ways that both reach the read, may hold either: not
+        known. (A model step's answer is known since F1553: its declared fields, and none for an llm step without, so
+        it is no longer the example.) In a line, the Human step's answer is the one a run brings to the read (F1621),
+        so the read is held to it."""
         draft = {"id": "draft", "name": "Draft", "type": "tool", "forced_tool": "get_weather",
                  "output_key": "approve_keywords"}
-        assert _never(_orch(draft, _ask(), _gate("state.approve_keywords.approved"), RESEARCH)) == []
+        assert _never(_either(draft, _ask(), _gate("state.approve_keywords.approved"))) == []
+        [said] = _never(_orch(draft, _ask(), _gate("state.approve_keywords.approved"), RESEARCH))
+        assert "human step 'approve_keywords' never writes" in said, said
 
     def test_a_key_no_step_writes_is_another_rule(self):
         assert _never(_orch(_ask(), _gate("state.from_the_caller.approved"), RESEARCH)) == []

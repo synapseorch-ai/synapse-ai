@@ -14,7 +14,9 @@ What each finds, and whether it refuses: a refusal only where the run certainly 
 - Two Tool steps on two arms writing one key: a field only one answers is a warning; a read only the other reaches
   is held to its tool's declaration, as one tool's is.
 - An Ingest step reached with its records' key unset: refused, naming the way (the step fails there).
-- An input_key read before any step writes it: a warning, as a prompt's read is.
+
+Not said: a field one way lacks read only in a prompt (it reads empty there by design, U74's class), and an input_key
+read before its writer (the step's context leaves an unset key out by design).
 """
 from __future__ import annotations
 
@@ -62,6 +64,16 @@ class TestAFieldOneArmLacks:
         verdict = _validate_orchestration(_orch("cond", _if("ask_signoff", "ask_plain"),
                                                 _human("ask_signoff", "decide", "approved"),
                                                 _human("ask_plain", "decide", "approved"), _decide()))
+        assert not _about(verdict["warnings"] + verdict["issues"], "`approved`")
+
+    def test_a_prompt_reading_it_is_never_named(self):
+        """A prompt reads a missing field empty by design: the way's gap changes no route and breaks nothing."""
+        write = {"id": "decide", "name": "decide", "type": "llm",
+                 "prompt_template": "Approved: {{ state.review.approved }}", "output_key": "note",
+                 "next_step_id": "end"}
+        verdict = _validate_orchestration(_orch("cond", _if("ask_signoff", "ask_plain"),
+                                                _human("ask_signoff", "decide", "approved"),
+                                                _human("ask_plain", "decide"), write))
         assert not _about(verdict["warnings"] + verdict["issues"], "`approved`")
 
     def test_a_read_inside_the_arm_that_asks_it_is_never_named(self):
@@ -143,8 +155,9 @@ class TestTwoToolsOnTwoArms:
     def test_a_read_only_one_tool_reaches_is_held_to_its_declaration(self):
         steps = [_if("finder", "brief"), _tool("finder", "find_leads", "end"), _tool("brief", "brief_leads", "show"),
                  _show("show", "title")]
-        issues, _ = _tool_answer_reads(steps, TOOLS)
+        issues = _validate_orchestration(_orch("cond", *steps), tool_answers=TOOLS)["issues"]
         assert len(_about(issues, "title")) == 1, issues
+        assert _tool_answer_reads(steps, TOOLS) == ([], []), "without its entry, every writer judges, as before"
 
     def test_both_answering_it_is_never_named(self):
         both = step_answers.tool_answers([FINDER, {**BRIEF, "outputSchema": FINDER["outputSchema"]}],
@@ -158,7 +171,8 @@ class TestTwoToolsOnTwoArms:
 # ── an Ingest step reached with its records' key unset ────────────────────────────────────────────────────────────
 
 def _store() -> dict:
-    return {"id": "store", "name": "store", "type": "ingest", "ingest": {"kb_id": "kb_notes", "records_from": "records"},
+    return {"id": "store", "name": "store", "type": "ingest",
+            "ingest": {"kb_id": "kb_notes", "records_from": "records"},
             "output_key": "stored", "next_step_id": "end"}
 
 
@@ -180,7 +194,7 @@ class TestAnIngestReachedWithItsRecordsUnset:
         assert not _about(seeded["issues"], "state.records"), seeded["issues"]
 
 
-# ── an input_key read before any step writes it ───────────────────────────────────────────────────────────────────
+# ── an input_key read before any step writes it: left out of the step's context, by design ────────────────────────
 
 def _answer(nxt: str) -> dict:
     return {"id": "answer", "name": "answer", "type": "llm", "prompt_template": "Answer the customer.",
@@ -192,18 +206,12 @@ NOTES = {"id": "note", "name": "note", "type": "transform", "transform_code": "r
 
 
 class TestAnInputKeyReadBeforeItsWriter:
-    def test_is_a_warning(self):
+    def test_is_not_said(self):
+        """An unset input_key is left out of the step's context (a feedback loop's first pass): nothing to warn of."""
         verdict = _validate_orchestration(_orch("answer", _answer("note"), NOTES))
-        assert len(_about(verdict["warnings"], "'answer'", "'notes'", "before any step writes it")) == 1, verdict
-        assert not _about(verdict["issues"], "'notes'"), verdict["issues"]
+        assert not _about(verdict["warnings"] + verdict["issues"], "'notes'"), verdict
 
-    def test_written_before_or_declared_is_never_named(self):
-        before = _validate_orchestration(_orch("note", {**NOTES, "next_step_id": "answer"}, _answer("end")))
-        assert not _about(before["warnings"] + before["issues"], "'notes'")
-        declared = _validate_orchestration(_orch("answer", _answer("end"), schema={"notes": {"type": "str"}}))
-        assert not _about(declared["warnings"], "'notes'")
-
-    def test_one_no_step_writes_keeps_its_issue_and_gets_no_warning(self):
+    def test_one_no_step_writes_keeps_its_issue(self):
         verdict = _validate_orchestration(_orch("answer", _answer("end")))
         assert len(_about(verdict["issues"], "reads input_key 'notes', which nothing writes")) == 1
         assert not _about(verdict["warnings"], "'notes'")

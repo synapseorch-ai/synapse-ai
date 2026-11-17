@@ -174,6 +174,11 @@ def hard_reads(step: dict) -> dict[str, str]:
 
         walk(step["tool_arguments"])
         return {k: "its arguments cannot be set there and the run stops" for k in sorted(keys)}
+    if step.get("type") == "ingest" and isinstance(step.get("ingest"), dict):
+        # An Ingest step's records come from one key: with it unset, the step fails "nothing to ingest" (F1621).
+        source = str(step["ingest"].get("records_from") or "").strip()
+        source = source[len("state."):] if source.startswith("state.") else source
+        return {source: "it has nothing to ingest there and the step fails"} if source else {}
     return {}
 
 
@@ -187,6 +192,8 @@ class Walk:
         self.by_id = {s["id"]: s for s in self.steps}
         self.entry = orch.get("entry_step_id")
         self._unset: dict[str, tuple[set[str], dict[str, tuple[str, str]]]] = {}
+        self._reaching: dict[str, dict[str, set[str]]] = {}
+        self._shape: tuple[dict[str, list[str]], dict[str, tuple[str | None, str]], dict[str, set[str]]] | None = None
 
     def unset(self, key: str) -> tuple[set[str], dict[str, tuple[str, str]]]:
         """The steps a run can reach before any step writes `key`, and each one's way in: the step before it and
@@ -201,15 +208,121 @@ class Walk:
             self._unset[key] = _first_unwritten(key, self.entry, self.by_id)
         return self._unset[key]
 
+    def reaching(self, key: str) -> dict[str, set[str]]:
+        """For each step, the steps that wrote `key` and whose value a run can bring to it (F1621 part 2): from each
+        writer, every way on, as the engine runs it, to the next step that writes the key again (which reads it before
+        it writes, so it is reached too). A Loop's body runs in order and round again. A Parallel runs every branch
+        before it goes on: a value written in a branch goes on to the join, and one written before the Parallel goes
+        on past it only when no branch writes the key again."""
+        if key not in self._reaching:
+            found: dict[str, set[str]] = {}
+            for writer in self.steps:
+                if key not in own_writes(writer):
+                    continue
+                seen: set[str] = set()
+                queue = list(self._on(writer["id"], key, writer["id"]))
+                while queue:
+                    sid = queue.pop()
+                    if sid in seen:
+                        continue
+                    seen.add(sid)
+                    found.setdefault(sid, set()).add(writer["id"])
+                    if key not in own_writes(self.by_id[sid]):
+                        queue.extend(self._on(sid, key, writer["id"]))
+            self._reaching[key] = found
+        return self._reaching[key]
+
+    def judged_by(self, sid: str, key: str, candidates: list[dict]) -> list[dict]:
+        """The writers of `key` (`candidates`, in order) a read in `sid` is judged by: those a run can bring to it, or,
+        when none can (no entry to walk from, or a read before every writer), all of them, as every read was before."""
+        if self.entry not in self.by_id:
+            return candidates
+        reach = self.reaching(key).get(sid)
+        picked = [w for w in candidates if w.get("id") in reach] if reach else []
+        return picked or candidates
+
+    def _on(self, sid: str, key: str, origin: str) -> list[str]:
+        """Where a run goes once `sid` is done, carrying `origin`'s value of `key`."""
+        body_next, branch_next, members = self._structure()
+        step, by_id = self.by_id[sid], self.by_id
+        if sid in body_next:
+            targets = body_next[sid]
+        elif step.get("type") == "loop":
+            targets = [b for b in step.get("loop_step_ids") or [] if b in by_id][:1] or [step.get("next_step_id")]
+        elif step.get("type") == "parallel":
+            targets = [chain[0] for chain in branch_chains(step, by_id) if chain]
+            if key not in writes(sid, by_id, set()):
+                targets.append(step.get("next_step_id"))
+        else:
+            nxt = step.get("next_step_id")
+            if sid in branch_next:
+                nxt, parallel = branch_next[sid]
+                if nxt is None and origin in members.get(parallel, ()):
+                    nxt = by_id[parallel].get("next_step_id")
+            targets = [nxt, step.get("if_true_step_id"), step.get("if_false_step_id"),
+                       step.get("switch_default_step_id"), step.get("on_exhausted_step_id"),
+                       *(step.get("route_map") or {}).values(), *(step.get("switch_cases") or {}).values()]
+        return [t for t in dict.fromkeys(targets) if t and t in by_id]
+
+    def _structure(self) -> tuple[dict[str, list[str]], dict[str, tuple[str | None, str]], dict[str, set[str]]]:
+        """A Loop body step's ways on (the next body step, or round again and on), a branch step's next within its
+        branch and its Parallel, and every step inside each Parallel's branches."""
+        if self._shape is None:
+            by_id = self.by_id
+            body_next: dict[str, list[str]] = {}
+            branch_next: dict[str, tuple[str | None, str]] = {}
+            members: dict[str, set[str]] = {}
+            for step in self.steps:
+                if step.get("type") == "loop":
+                    body = [b for b in step.get("loop_step_ids") or [] if b in by_id]
+                    for index, sid in enumerate(body):
+                        body_next[sid] = ([body[index + 1]] if index + 1 < len(body)
+                                          else [body[0], *([step["next_step_id"]] if step.get("next_step_id") else [])])
+                elif step.get("type") == "parallel":
+                    inside: set[str] = set()
+                    for chain in branch_chains(step, by_id):
+                        chain = [c for c in chain if c in by_id]
+                        for index, sid in enumerate(chain):
+                            branch_next.setdefault(sid, (chain[index + 1] if index + 1 < len(chain) else None,
+                                                         step["id"]))
+                            inside |= _contained(sid, by_id, set())
+                    members[step["id"]] = inside
+            self._shape = (body_next, branch_next, members)
+        return self._shape
+
+
+def _contained(step_id: str, by_id: dict[str, dict], seen: set[str]) -> set[str]:
+    """A step and every step inside it: a Loop's body, a Parallel's branches."""
+    step = by_id.get(step_id)
+    if not step or step_id in seen:
+        return set()
+    seen.add(step_id)
+    found = {step_id}
+    if step.get("type") == "loop":
+        for body_id in step.get("loop_step_ids") or []:
+            found |= _contained(body_id, by_id, seen)
+    elif step.get("type") == "parallel":
+        for chain in branch_chains(step, by_id):
+            for sid in chain:
+                found |= _contained(sid, by_id, seen)
+    return found
+
 
 def _first_unwritten(key: str, entry: str | None,
                      by_id: dict[str, dict]) -> tuple[set[str], dict[str, tuple[str, str]]]:
     in_loop: dict[str, str | None] = {}  # a Loop body step -> the one after it
+    in_branch: dict[str, str | None] = {}  # a Parallel's branch step -> the one after it in its branch
     for step in by_id.values():
         if step.get("type") == "loop":
             body = [b for b in step.get("loop_step_ids") or [] if b in by_id]
             for index, sid in enumerate(body):
                 in_loop[sid] = body[index + 1] if index + 1 < len(body) else None
+        elif step.get("type") == "parallel":
+            # Its branches run before it goes on, so a branch step never goes on to the join (F1621): the Parallel
+            # does, once every branch has run.
+            for chain in branch_chains(step, by_id):
+                for index, sid in enumerate(chain):
+                    in_branch.setdefault(sid, chain[index + 1] if index + 1 < len(chain) else None)
     reached: set[str] = set()
     parents: dict[str, tuple[str, str]] = {}
     queue = [entry] if entry in by_id else []
@@ -232,7 +345,8 @@ def _first_unwritten(key: str, entry: str | None,
             if sid in in_loop:
                 targets.append(("next", in_loop[sid]))
             else:
-                targets += [("next", step.get("next_step_id")), ("true branch", step.get("if_true_step_id")),
+                targets += [("next", in_branch[sid] if sid in in_branch else step.get("next_step_id")),
+                            ("true branch", step.get("if_true_step_id")),
                             ("false branch", step.get("if_false_step_id")),
                             ("default case", step.get("switch_default_step_id")),
                             ("way when its tries run out", step.get("on_exhausted_step_id")),
