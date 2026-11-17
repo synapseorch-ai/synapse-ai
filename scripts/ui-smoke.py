@@ -1581,6 +1581,54 @@ async def check_builderrefusal(browser) -> str:
     return "a refusal with a reason is said in its words and a 500 could not be reached, light and dark"
 
 
+#: A checked plan with a Tool step whose inputs are set (none in `model_fills`) and an LLM step (F1672).
+ROLE_PLAN = {"kind": "create", "title": "Weather note", "summary": "Fetches the forecast and writes a note.",
+             "steps": [{"id": "fetch", "type": "tool", "name": "Fetch the forecast", "tool": "http_get"},
+                       {"id": "write", "type": "llm", "name": "Write the note", "does": "Writes the note"}],
+             "model_fills": []}
+
+
+@check
+async def check_plancardrole(browser) -> str:
+    """The plan card draws a step by what it does, as the run views do (F1672): a Tool step with its inputs set is not
+    "calls a model"; the LLM step beside it is. Drawn from the plan as check_build fills it in; light and dark at 1440.
+    With SMOKE_SHOTS, each card is saved."""
+    shots = os.environ.get("SMOKE_SHOTS")
+    bad: list[str] = []
+    for scheme in ("light", "dark"):
+        parked = {"client_session_id": "conv-f1672", "run_id": RUN_ID, "status": "paused",
+                  "turns": [{"user": ROLE_PLAN["summary"], "assistant": ""}],
+                  "pending": {"run_id": RUN_ID, "field": "feedback", "step_id": "step_human_review",
+                              "prompt": "Here is the plan.", "context_key": "plan_checked",
+                              "context": {"object": "plan", "outcome": "review", "plan": ROLE_PLAN,
+                                          "offers": ["build", "change"]}}}
+        ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]}, color_scheme=scheme)
+        await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{scheme}')}}catch(e){{}}")
+        await ctx.add_init_script(f"window.__conversation = {json.dumps(parked)};")
+        await ctx.add_init_script(BUILDER_BACK)
+        page = await ctx.new_page()
+        try:
+            await page.goto(APP, wait_until="domcontentloaded")
+            await asyncio.sleep(SETTLE + 1.0)
+            await page.locator('[data-testid="assistant-open"]:visible').first.click()
+            card = page.locator('[data-testid="assistant-panel"] section[aria-label="The plan"]')
+            await card.wait_for(timeout=10_000)
+            rows = card.get_by_role("list", name="What it will do").locator("li")
+            names = [" ".join((await rows.nth(i).inner_text()).split()) for i in range(await rows.count())]
+            fetch = next((n for n in names if "Fetch the forecast" in n), "")
+            write = next((n for n in names if "Write the note" in n), "")
+            if not fetch or "calls a model" in fetch:
+                bad.append(f"{scheme}: the set-arguments Tool step reads {fetch!r}")
+            if "calls a model" not in write:
+                bad.append(f"{scheme}: the LLM step reads {write!r}")
+            if shots:
+                await card.screenshot(path=os.path.join(shots, f"plancardrole-{scheme}-1440.png"))
+        finally:
+            await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "a set-arguments Tool step is not 'calls a model' on the card, the LLM step is, light and dark"
+
 
 @check
 async def check_runfollow(browser) -> str:
