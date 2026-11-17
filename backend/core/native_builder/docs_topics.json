@@ -1,5 +1,5 @@
 {
- "commit": "7da12aff50d231c51cba3897b29eb6bc830f441f",
+ "commit": "cade169fb28d8d8918f18211edd8e5fff4ff3597",
  "pages": [
   {
    "description": "AI automation without the surprises. Describe a recurring job in plain words, and get a workflow you can read, that runs the same way every time and checks with you before anything goes out.",
@@ -867,18 +867,43 @@
    "title": "Knowledge API"
   },
   {
-   "description": "Connect Claude Code, Cursor or any MCP client to Synapse: build agents and workflows, run them, answer their questions and read the results — every workflow you offer to MCP clients is a tool of its own.",
+   "description": "Connect Claude, Claude Code, Cursor or any MCP client to Synapse: build agents and workflows, run them, answer their questions and read the results. On SynapseOrch Cloud, Claude connects by signing in; any client can use an API key.",
    "edition": "both",
    "kind": "guide",
    "sections": [
     {
      "anchor": "",
-     "excerpt": "Synapse is an MCP server. A client holding an API key can run agents and workflows, build them, answer the questions they ask and read the results — and every workflow is also a tool of its own. A delete takes two calls, so nothing goes by accident. This page is about Synapse serving MCP. For Synapse using other MCP servers as tools, see Apps (MCP servers).",
+     "excerpt": "Synapse is an MCP server. A client connected to it can run agents and workflows, build them, answer the questions they ask and read the results — and every workflow you offer to MCP clients is also a tool of its own. A delete takes two calls, so nothing goes by accident. There are two ways in. On SynapseOrch Cloud, Claude and other apps connect by signing in: you choose the workspace and what the…",
      "heading": ""
     },
     {
+     "anchor": "connect-claude-by-signing-in-synapseorch-cloud-claude",
+     "excerpt": "Claude — claude.ai, the Claude desktop app and Claude Code — connects to SynapseOrch Cloud by signing in, with no key to make or paste. From a chat, Claude can then run your workflows, answer what they ask, search your knowledge bases, and build or change agents and workflows, as far as you allow.",
+     "heading": "Connect Claude by signing in (SynapseOrch Cloud) [#claude]"
+    },
+    {
+     "anchor": "in-claudeai-and-the-claude-desktop-app",
+     "excerpt": "1. Open Customize → Connectors (claude.ai/customize/connectors), choose + Add, then Add custom connector. 2. Name it SynapseOrch, paste https://api.synapseorch.com/api/v1/mcp as the server URL, keep the sign-in Claude detects, and add it. 3. Claude opens SynapseOrch's sign-in. Sign in, then choose the workspace and what Claude may do on the consent screen, and choose Connect. Turn it on for a…",
+     "heading": "In claude.ai and the Claude desktop app"
+    },
+    {
+     "anchor": "in-claude-code",
+     "excerpt": "Then type /mcp in Claude Code, pick synapse and choose Authenticate: your browser opens to SynapseOrch's sign-in and the same consent screen. Codex, Cursor and VS Code sign in the same way; Settings → MCP server in SynapseOrch shows each one's setup.",
+     "heading": "In Claude Code"
+    },
+    {
+     "anchor": "what-you-allow-consent",
+     "excerpt": "The consent screen names the app and the address it sends you back to. An app SynapseOrch has not verified is shown by that address rather than by the name it gave itself, so continue only if you started the connection there. Workspace — the workspace the app connects to: any you belong to, picked from a list if you have several. Then what it may do, as you, on the SynapseOrch MCP server. Each is…",
+     "heading": "What you allow [#consent]"
+    },
+    {
+     "anchor": "once-its-connected",
+     "excerpt": "- It acts as you. Claude is offered the tools your role in the workspace has, within the scopes you allowed: a viewer's connection reads, an approver's also answers what waits for a person, and a builder's builds, runs and deletes. Members, billing, keys, provider keys and settings stay in the app. - Any member can connect it. It stops working if you leave the workspace; if your role changes, it…",
+     "heading": "Once it's connected"
+    },
+    {
      "anchor": "the-endpoint",
-     "excerpt": "| Where | URL | |---|---| | Self-hosted | http://localhost:3000/api/v1/mcp — your SynapseOrch address and the web UI's port | | SynapseOrch Cloud | https://api.synapseorch.com/api/v1/mcp | It speaks MCP's streamable HTTP transport, statelessly, with the key as a Bearer token. It takes POST only; anything else is a 405. On a self-hosted install, Settings → API keys → View docs opens the API…",
+     "excerpt": "| Where | URL | |---|---| | Self-hosted | http://localhost:3000/api/v1/mcp — your SynapseOrch address and the web UI's port | | SynapseOrch Cloud | https://api.synapseorch.com/api/v1/mcp | It speaks MCP's streamable HTTP transport, statelessly, with a key or a signed-in app's token as a Bearer token. It takes POST only; anything else is a 405. The examples below connect with a key. On a…",
      "heading": "The endpoint"
     },
     {
@@ -898,7 +923,7 @@
     },
     {
      "anchor": "the-tools",
-     "excerpt": "The tool list follows the caller's role. A viewer is offered tools that read; an approver may also answer what waits for a person; a builder builds, runs and deletes. A self-hosted key acts as the install's owner, so it gets every tool. On SynapseOrch Cloud a key reads and runs, and builds and deletes only if it was made with Can also build (see What a key can do); members, billing, keys…",
+     "excerpt": "The tool list follows the caller's role. A viewer is offered tools that read; an approver may also answer what waits for a person; a builder builds, runs and deletes. A self-hosted key acts as the install's owner, so it gets every tool. On SynapseOrch Cloud a key reads and runs, and builds and deletes only if it was made with Can also build (see What a key can do), and an app connected by signing…",
      "heading": "The tools"
     },
     {
@@ -913,7 +938,7 @@
     },
     {
      "anchor": "running-and-answering",
-     "excerpt": "runorchestration, a run tool and answerrun wait up to waitseconds (default 30, at most 120) for the run to finish or ask a question, and return its status: - completed, with its response; - paused, with the question in humaninputrequired — answer it with answerrun, as text or as an object keyed by the question's field names; an approval takes or . A Team step can ask several questions at once…",
+     "excerpt": "runorchestration, a run tool and answerrun wait up to waitseconds (default 30, at most 120) for the run to finish or ask a question, and return its status: - completed, with its response; - paused, with the question in humaninputrequired — answer it with answerrun, as text or as an object keyed by the question's field names; an approval takes or . A question with several fields takes the object…",
      "heading": "Running and answering"
     },
     {
@@ -928,7 +953,7 @@
     },
     {
      "anchor": "on-synapseorch-cloud",
-     "excerpt": "- Any valid key gets every tool. - Credits and the key's start limit apply: each run, answer or chat turn counts as a start, and a 429 carries Retry-After. - A run started beyond your plan's runs at once waits in line: when the wait runs out it reads queued, with its queueposition. The Free plan runs one workflow at a time. - Apps an owner or admin connects with OAuth see only the tools they were…",
+     "excerpt": "- A key gets the tools it was made for, and an app connected by signing in the scopes you allowed, within your role. - Credits and the key's start limit apply: each run, answer or chat turn counts as a start, and a 429 carries Retry-After. - A run started beyond your plan's runs at once waits in line: when the wait runs out it reads queued, with its queueposition. The Free plan runs one workflow…",
      "heading": "On SynapseOrch Cloud"
     }
    ],
@@ -1041,7 +1066,7 @@
     },
     {
      "anchor": "response--paused-human-gate",
-     "excerpt": "A run also pauses when an agent step reaches a tool call its Tool Policy wants confirmed. That pause is answered the same way, with {\"response\": } — or false to refuse. A Team step can wait on several questions at once, one per member. Its paused run adds questions, each with its own questionid; answer each with that questionid beside response on resume. Without one, the answer goes to the only…",
+     "excerpt": "prompt, and each field's label and options, are as the person is asked them: filled in from the run, with a reference that finds nothing said in words and a secret variable never shown. Answer a Dropdown with one of the options as they are listed here. A run also pauses when an agent step reaches a tool call its Tool Policy wants confirmed. That pause is answered the same way, with {\"response\": }…",
      "heading": "Response — paused (human gate)"
     },
     {
@@ -2220,7 +2245,7 @@
     },
     {
      "anchor": "what-a-credit-is",
-     "excerpt": "A step is priced by its type: | Steps | Credits each | |---|---| | Agent, LLM, Evaluator, Extract JSON, Tool, Workflow | 1 | | Transform, If / Else, Switch, Loop, Parallel, Merge, Print, End, Retrieve, Ingest | 0.1 | | Human | 0 | A run costs its steps' prices added up — each step inside a Loop or a Parallel counted as it runs — or one credit per started minute of active time, whichever is more…",
+     "excerpt": "A step is priced by its type: | Steps | Credits each | |---|---| | Agent, LLM, Evaluator, Tool, Workflow | 1 | | Transform, Extract JSON, If / Else, Switch, Loop, Parallel, Merge, Print, End, Retrieve, Ingest | 0.1 | | Human | 0 | A run costs its steps' prices added up — each step inside a Loop or a Parallel counted as it runs — or one credit per started minute of active time, whichever is more…",
      "heading": "What a credit is"
     },
     {
@@ -2637,7 +2662,7 @@
     },
     {
      "anchor": "secrets",
-     "excerpt": "A variable is the right home for a key you do not want pasted into fifty tools. It is stored per tenant, like everything else, and on SynapseOrch Cloud a value that is a secret reference is resolved on the way out — the engine itself never sees the difference. It is still a value an agent can print if a tool echoes it back. Treat it as \"typed once\" rather than \"hidden\".",
+     "excerpt": "A variable is the right home for a key you do not want pasted into fifty tools. It is stored per tenant, like everything else, and on SynapseOrch Cloud a value that is a secret reference is resolved on the way out — the engine itself never sees the difference. It is still a value an agent can print if a tool echoes it back. Treat it as \"typed once\" rather than \"hidden\". What a person reads never…",
      "heading": "Secrets"
     }
    ],
@@ -3117,7 +3142,7 @@
     },
     {
      "anchor": "using-ollama-no-api-key-required",
-     "excerpt": "1. Install Ollama if you haven't already 2. Pull a model: ollama pull mistral 3. In Settings → Models, the Ollama (Local) card lists the models it found. Set Default model to ollama.mistral — an install that skipped the AI question already uses it — and click Save changes Until Ollama answers with the default model, Chat's welcome line says Model not ready and why, with a link back to Settings →…",
+     "excerpt": "1. Install Ollama if you haven't already 2. Pull a model: ollama pull gpt-oss:20b. It is about a 14 GB download and runs in 16 GB of memory. It reads 128K tokens at once, which is enough for Synapse AI, the assistant that builds your workflows. Smaller models still work for workflow steps. 3. In Settings → Models, the Ollama (Local) card lists the models it found. Set Default model to…",
      "heading": "Using Ollama (no API key required)"
     },
     {
@@ -4917,7 +4942,7 @@
     },
     {
      "anchor": "what-a-run-costs",
-     "excerpt": "Credits price each step by its type: | Steps | Credits each | |---|---| | Agent, LLM, Evaluator, Extract JSON, Tool | 1 | | Transform, If / Else, Switch, Loop, Parallel, Merge, Print, End, Retrieve, Ingest | 0.1 | | Human | 0 | A run costs its steps added up, or one credit per started minute of working time if that is more, and at least one credit. Harbor & Pine's Invoice triage — a Transform, an…",
+     "excerpt": "Credits price each step by its type: | Steps | Credits each | |---|---| | Agent, LLM, Evaluator, Tool | 1 | | Transform, Extract JSON, If / Else, Switch, Loop, Parallel, Merge, Print, End, Retrieve, Ingest | 0.1 | | Human | 0 | A run costs its steps added up, or one credit per started minute of working time if that is more, and at least one credit. Harbor & Pine's Invoice triage — a Transform, an…",
      "heading": "What a run costs"
     },
     {
@@ -5242,7 +5267,7 @@
     },
     {
      "anchor": "human-steps",
-     "excerpt": "A human gate with Notify messaging channel set posts its question to that channel when the run pauses, and a reply in the channel answers it and resumes the run. While a run waits on a channel, the next message sent to the bot there is taken as the answer, not passed to an agent. Teams replies do not answer a waiting run, and Teams and WhatsApp questions are posted only when the API server is…",
+     "excerpt": "A human gate with Notify messaging channel set posts its question to that channel when the run pauses, and a reply in the channel answers it and resumes the run. While a run waits on a channel, the next message sent to the bot there is taken as the answer, not passed to an agent. A step with several fields lists each one, with what it takes, and reads the reply as a name: value line each; a reply…",
      "heading": "Human steps"
     },
     {
@@ -5973,7 +5998,7 @@
     },
     {
      "anchor": "ollama",
-     "excerpt": "Model names: ollama. — a name with no recognised prefix is also sent to Ollama Install Ollama from ollama.com and pull the models you want: SynapseOrch looks for Ollama at http://127.0.0.1:11434. There is nothing to fill in: open Settings → Models, and the Ollama (Local) card lists the models it detected, or says \"Ollama is not running\". Pulled models appear in the selectors as ollama.mistral…",
+     "excerpt": "Model names: ollama. — a name with no recognised prefix is also sent to Ollama Install Ollama from ollama.com and pull the models you want. For Synapse AI, the assistant that builds your workflows, pull a model that reads at least 128K tokens at once: Synapse AI won't run on a smaller one. gpt-oss:20b does: it is about a 14 GB download and runs in 16 GB of memory. SynapseOrch looks for Ollama at…",
      "heading": "Ollama"
     },
     {
@@ -6483,7 +6508,7 @@
     },
     {
      "anchor": "example-requests-example-requests",
-     "excerpt": "",
+     "excerpt": "Code from another tool. Paste an OpenAI Agents SDK export, from Agent Builder, in Python or TypeScript, and say what you want built from it. Each agent's instructions reach the agent or step the build makes exactly as written, however long, rather than retyped; the code is read, never run. Dashes and special spaces in what you paste are kept, and a key in it is still taken out before anything…",
      "heading": "Example requests [#example-requests]"
     },
     {
@@ -6523,7 +6548,7 @@
     },
     {
      "anchor": "which-model-to-use-which-model",
-     "excerpt": "Synapse AI does its best work on a capable model. Use Claude Haiku 4.5 or a stronger model: SynapseOrch 2.0's release tests built and ran every test brief with Synapse AI on Claude Haiku 4.5. Reasoning-capable models do noticeably better; a smaller model may plan less well, ask more, or miss a step. - The picker under the message box, Model for this build (Builder model on Cloud), sets the model…",
+     "excerpt": "Synapse AI does its best work on a capable model. Use Claude Haiku 4.5 or a stronger model: SynapseOrch 2.0's release tests built and ran every test brief with Synapse AI on Claude Haiku 4.5. Reasoning-capable models do noticeably better; a smaller model may plan less well, ask more, or miss a step. Synapse AI needs a model that reads at least 128K tokens at once: its first planning call alone is…",
      "heading": "Which model to use [#which-model]"
     },
     {
@@ -6616,7 +6641,7 @@
     },
     {
      "anchor": "configuring-a-human-step",
-     "excerpt": "The prompt fills in { }, nested paths too ({ }); the older single-brace is read the same way. The value of the first input key that has one is shown to the person as context above the question, captioned with the key it came from — From draft.",
+     "excerpt": "The prompt fills in { }, nested paths too ({ }); the older single-brace is read the same way. It fills in the workspace's variables too, { }, but a variable stored as a secret reads (a secret is not shown here): the question goes to messaging channels, email and the API, and the secret never does. An object or a list shows as JSON, and a reference that finds nothing is said in words, never left…",
      "heading": "Configuring a human step"
     },
     {
@@ -6626,17 +6651,17 @@
     },
     {
      "anchor": "messaging-notification",
-     "excerpt": "Pick a channel in the panel's Notify messaging channel setting, humanchannelid in JSON, to ask the question in that messaging channel as well as in the app. When the run pauses, the prompt is posted as ⏸ followed by \"Reply here to answer.\" It goes to the channel's notification chat, notifychatid, if one is set on the channel (the Channels screen has no field for it), and otherwise to the…",
+     "excerpt": "Pick a channel in the panel's Notify messaging channel setting, humanchannelid in JSON, to ask the question in that messaging channel as well as in the app. When the run pauses, the prompt is posted as ⏸ followed by \"Reply here to answer.\" A step with two or more fields asks each of them in the channel, under the prompt: its name, its label and what it takes, and how to reply. The reply is read a…",
      "heading": "Messaging notification"
     },
     {
      "anchor": "answering-responding-via-the-ui",
-     "excerpt": "A waiting run is answered where you read it. Each place shows the question, what it is about (From this run, or the state key it names), and the answer: the step's own fields when it declared any, else a box for your answer and Send answer. A step whose fields hold exactly one yes/no is an approval, answered with two buttons: the field's own label, and Decline. - On Home, Needs you lists every…",
+     "excerpt": "A waiting run is answered where you read it. Each place shows the question, what it is about (From this run, or the state key it names), and the answer: the step's own fields when it declared any, else a box for your answer and Send answer. A step with one approval asks it with two buttons, the field's own label and Decline, and asks its other fields in the form. - On Home, Needs you lists every…",
      "heading": "Answering [#responding-via-the-ui]"
     },
     {
      "anchor": "using-human-responses-in-subsequent-steps",
-     "excerpt": "The answer is written to the gate's output key, and always to humanresponse too. Its shape depends on where it was given: | The step has | Value | |---|---| | Fields — answered on the canvas or in Chat | An object keyed by field name: | | No fields — answered anywhere | The text itself: \"approve\" | | Either — answered through the API | Whatever the request's response held; for a step with no…",
+     "excerpt": "The answer is written to the gate's output key, and always to humanresponse too. Its shape depends on where it was given: | The step has | Value | |---|---| | Fields — answered on the canvas, in Chat or in a messaging channel | An object keyed by field name: | | No fields — answered anywhere | The text itself: \"approve\" | | Fields — answered through the API or MCP | The object sent, each value…",
      "heading": "Using human responses in subsequent steps"
     },
     {
@@ -6675,7 +6700,7 @@
     },
     {
      "anchor": "step-types",
-     "excerpt": "SynapseOrch has 18 step types. Add step, in the canvas's dock, lists them all; here they are grouped by what each is for: | Group | Step | What it does | |---|---|---| | Work | Agent | Runs an agent in its full reasoning loop, with its tools — or a Team agent, or a workflow wrapped as an agent. | | | LLM | One direct model call — no tools. For classification, summaries, rewrites. | | | Tool |…",
+     "excerpt": "SynapseOrch has 18 step types. Add step, in the canvas's dock, lists them all; here they are grouped by what each is for: | Group | Step | What it does | |---|---|---| | Work | Agent | Runs an agent in its full reasoning loop, with its tools — or a Team agent, or a workflow wrapped as an agent. | | | LLM | One direct model call — no tools. For classification, summaries, rewrites. With answer…",
      "heading": "Step types"
     },
     {
@@ -6714,7 +6739,7 @@
     },
     {
      "anchor": "referencing-state-in-text",
-     "excerpt": "Which references a text field fills in depends on the field: | Field | { } and { } | | |---|---|---| | Agent, LLM and Tool Prompt template, Workflow Its input | Yes, including nested paths such as { } | Flat keys only | | Human Prompt for human | No | Flat keys only | | Print Content | No | Yes, including | A reference to a key that doesn't exist is left as written, so the gap shows. { } renders…",
+     "excerpt": "{ } reads the run's state, nested paths included ({ }), and { } reads Variables. Objects and lists are written as JSON. These fields fill them in: | Field | Who reads it | |---|---| | Agent, LLM and Tool Prompt template, Workflow Its input, Evaluator prompt | A model | | Human Prompt for human, each field's label and a Dropdown's options, Print Content | A person | The older single-brace is read…",
      "heading": "Referencing state in text"
     },
     {
@@ -6734,8 +6759,13 @@
     },
     {
      "anchor": "llm",
-     "excerpt": "One direct model call — no agent, no tools, no loop. Use it for classification, summaries and rewrites between heavier steps. Prompt template (required) — the whole prompt. The values of input keys are added as context, as for an Agent step. Model override — the model for this step; blank uses the default model. Include full revision history — as for an Agent step. If the model call fails — the…",
+     "excerpt": "One direct model call — no agent, no tools, no loop. Use it for classification, summaries and rewrites between heavier steps. Prompt template (required) — the whole prompt. The values of input keys are added as context, as for an Agent step. Model override — the model for this step; blank uses the default model. Include full revision history — as for an Agent step. Answer fields — optional…",
      "heading": "LLM"
+    },
+    {
+     "anchor": "answer-fields-answer-fields",
+     "excerpt": "When a later step decides on a model's answer — an If / Else on whether a review is negative, a Switch on a ticket's priority — name what it reads under Answer fields, on the LLM or Agent step. Each field has a name, a type and, optionally, a description the model reads: | Type in the panel | Stored as | The model answers | |---|---|---| | Yes / No | boolean | true or false | | One of | choice…",
+     "heading": "Answer fields [#answer-fields]"
     },
     {
      "anchor": "tool",
@@ -6774,22 +6804,22 @@
     },
     {
      "anchor": "if--else",
-     "excerpt": "Evaluates a condition and routes to the True or False path. No model call. Condition (required) — an expression that is true or false, such as state.result.approved == True. If it fails, the step takes the False path. True path and False path — the steps to go to. If the True path is empty, a true result falls through to the False path; if both are empty, the run ends. The output key, if set…",
+     "excerpt": "Evaluates a condition and routes to the True or False path. No model call. Condition (required) — an expression that is true or false, such as state.result.approved == True. A key or field the run hasn't written makes it false; a condition that is refused or fails stops the step, saying why. Branch on an answer — shown when another step asks or answers a Yes / No or a One of: a Human step's Yes /…",
      "heading": "If / Else"
     },
     {
      "anchor": "switch",
-     "excerpt": "Evaluates an expression and routes to the case whose value matches. No model call. Expression (required) — an expression, such as state.result.status. Cases — each maps a value to a target step (or End workflow). The expression's result is converted to text and compared exactly: True matches the case True, and a missing key matches None. Default path — taken when no case matches or the expression…",
+     "excerpt": "Evaluates an expression and routes to the case whose value matches. No model call. Expression (required) — an expression, such as state.result.status. Cases — each maps a value to a target step (or End workflow). The expression's result is converted to text and compared exactly: True matches the case True, and a missing key matches None. Add case names the new case case , past every name the step…",
      "heading": "Switch"
     },
     {
      "anchor": "human",
-     "excerpt": "Pauses the run until a person answers. The run is stored as paused and survives a restart. Answer it on the workflow canvas (Waiting for your input → Answer), in Chat if the run was started from there, in the messaging channel the step names, or through the resume API endpoint. Prompt for human — what to ask. Supports for flat keys only. Structured fields — optional, each with a name, a type…",
+     "excerpt": "Pauses the run until a person answers. The run is stored as paused and survives a restart. Answer it on the workflow canvas (Waiting for your input → Answer), in Chat if the run was started from there, in the messaging channel the step names, or through the resume API endpoint. Prompt for human — what to ask. It fills in { }, nested paths too, and { }, never a secret one; see Referencing state in…",
      "heading": "Human"
     },
     {
      "anchor": "extract-json",
-     "excerpt": "Finds JSON in the text of its input keys and stores it parsed. It handles fenced json blocks, raw JSON and several objects in one text. One object is stored as is; several are stored as an array; none stores null with a warning. No model call. #### Advanced: the step's JSON shape ---",
+     "excerpt": "Finds JSON in the text of its input keys and stores it parsed. It handles fenced json blocks, raw JSON and several objects in one text. One object is stored as is; several are stored as an array. An object or a list already in state is read as its JSON. No model call; on SynapseOrch Cloud it costs 0.1 credit. Text with no JSON in it fails the step, rather than store nothing for a later step to…",
      "heading": "Extract JSON"
     },
     {
@@ -6804,7 +6834,7 @@
     },
     {
      "anchor": "print",
-     "excerpt": "Writes text or markdown to the output key, filling in state references. Use it to compose a final report. No model call. Content — the template. It fills in and nested ; { } references are not filled in here, and neither are @[path] vault mentions. A reference that doesn't resolve is left as written. #### Advanced: the step's JSON shape ---",
+     "excerpt": "Writes text or markdown to the output key, filling in state references. Use it to compose a final report. No model call. Content — the template. It fills in { }, nested { } and the older , and { } from the workspace's variables, never a secret one ((a secret is not shown here)). An object or a list is written as JSON, and a reference that finds nothing is said in words: (no value: state.result…",
      "heading": "Print"
     },
     {
