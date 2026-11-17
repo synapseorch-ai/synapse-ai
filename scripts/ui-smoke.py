@@ -15288,7 +15288,8 @@ _FIRSTRUN_MODELS = {"providers": {
 
 
 async def _firstrun_page(browser, path: str, state: dict, theme: str | None = None, width=WIDE,
-                         fresh: bool = False, late: float = 0, new_workspace: bool = False, models: dict | None = None):
+                         fresh: bool = False, late: float = 0, new_workspace: bool = False, models: dict | None = None,
+                         settings_over: dict | None = None):
     """A page over a stubbed install whose model cannot answer (ONB2): `state["closed"]` is the setting,
     `state["posts"]` every settings write. `fresh` is a browser that has seen no tour (`firsttour`); `late` holds the
     readiness answer back that many seconds while the step is still to open, as a slow backend would.
@@ -15303,7 +15304,7 @@ async def _firstrun_page(browser, path: str, state: dict, theme: str | None = No
         await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{theme}')}}catch(e){{}}")
     await ctx.add_init_script("try{localStorage.removeItem('synapseHomeStartHidden')}catch(e){}")
     settings = {"model": "ollama.mistral", "builder_model": "", "gemini_key": "", "gemini_key_set": True,
-                "gemini_key_hint": "x9Q2"}
+                "gemini_key_hint": "x9Q2", **(settings_over or {})}
 
     async def onboarding(route):
         if late and not state["closed"]:
@@ -15406,6 +15407,58 @@ async def check_firstrun(browser) -> str:
         raise AssertionError("; ".join(bad))
     return ("opens once on a model that cannot answer, CLI states and a saved key shown, outside click kept, "
             "two models saved, Escape remembered, Home and Chat reopen it")
+
+
+#: An install with nothing on it: no CLI, no key, Ollama not running, so the first-run step offers its two ways.
+_FIRSTRUN_NOTHING = {"providers": {"ollama": {"available": False, "models": []}}}
+
+
+@check
+async def check_ollamatip(browser) -> str:
+    """The first-run step's Ollama way names a local model Synapse AI runs on (F1592, F1598). With nothing on this
+    computer, "Ollama on this computer" lists its steps, and the pull it names is gpt-oss:20b, which reads 128K, with
+    its download and the memory it runs in: never llama3.1, a small local model Synapse AI's picker leaves out. The
+    command is never broken across lines. The Gemini way is still offered. Light and dark at 1440 and 390: AA contrast in the steps. `SMOKE_SHOTS`, when set,
+    keeps a shot of each."""
+    problems: list[str] = []
+    shots = os.environ.get("SMOKE_SHOTS")
+    scoped = CONTRAST.replace("document.querySelectorAll('*')",
+                              "(document.querySelector('[data-ollama-steps]') || document).querySelectorAll('*')")
+    assert scoped != CONTRAST, "the contrast script no longer reads every element"
+    for scheme in ("light", "dark"):
+        for size in ((1440, 900), (390, 844)):
+            tag = f"{scheme} {size[0]}"
+            state = {"closed": False, "posts": []}
+            ctx, page = await _firstrun_page(browser, "/dashboard", state, theme=scheme, width=size,
+                                             new_workspace=True, models=_FIRSTRUN_NOTHING,
+                                             settings_over={"gemini_key_set": False, "gemini_key_hint": ""})
+            try:
+                dialog = page.get_by_test_id("model-setup")
+                await dialog.wait_for(timeout=30_000)
+                if not await page.locator("[data-way='key']").count():
+                    problems.append(f"{tag}: the Gemini way is not offered")
+                await page.locator("[data-way='ollama']").click()
+                steps = page.locator("[data-ollama-steps]")
+                await steps.wait_for(timeout=5_000)
+                said = " ".join((await steps.inner_text()).split())
+                missing = [w for w in ("ollama pull gpt-oss:20b", "14 GB", "16 GB", "128K") if w not in said]
+                if missing or "llama3.1" in said:
+                    problems.append(f"{tag}: the steps read {said!r}")
+                # The command is copied as one: never broken across lines, at a phone's width either.
+                lines = await steps.locator("code").first.evaluate("el => el.getClientRects().length")
+                if lines != 1:
+                    problems.append(f"{tag}: the pull command breaks across {lines} lines")
+                await steps.scroll_into_view_if_needed()
+                if shots:
+                    await page.screenshot(path=os.path.join(shots, f"ollamatip-{scheme}-{size[0]}.png"))
+                faint = await page.evaluate(scoped)
+                if faint:
+                    problems.append(f"{tag}: under AA in the steps: {faint[:3]}")
+            finally:
+                await ctx.close()
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "the Ollama way names gpt-oss:20b with its download, memory and 128K; light and dark at 1440 and 390, AA"
 
 
 #: A workspace with an Anthropic and an OpenAI key, Gemini's and Claude Code (PICK1, F1482).
