@@ -188,15 +188,52 @@ async def route_facts(ids: list[str]) -> dict[str, Any]:
     """What `/api/models` says of each model beside its window (F1598): `builder_fit`, a known fit only; `prices`,
     `{in, out}` in USD per 1M tokens where both are known (never a CLI's subscription or a local model); and `ranked`,
     the models in the engine's one order (`ordered`, as for Synapse AI, which calls tools)."""
-    ids = list(dict.fromkeys(i for i in ids if i))
-    if not ids:
+    entries = await facts_of(ids)
+    if not entries:
         return {"builder_fit": {}, "prices": {}, "ranked": []}
-    pricing = await _pricing()
-    entries = await with_host_facts([_entry(i, pricing) for i in ids])
     return {"builder_fit": {e.id: e.fit for e in entries if e.fit},
             "prices": {e.id: {"in": e.price_in, "out": e.price_out} for e in entries
                        if e.source not in ("cli", "local") and e.price_in is not None and e.price_out is not None},
             "ranked": [e.id for e in ordered(entries, has_tools=True)]}
+
+
+async def facts_of(ids: list[str]) -> list[ModelEntry]:
+    """Each of `ids` as the model picker knows it: the engine's window table and rate card, with a host's own facts over
+    both (`with_host_facts`). `/api/models` (`route_facts`) and Synapse AI's models topic read the same (F1684)."""
+    ids = list(dict.fromkeys(i for i in ids if i))
+    if not ids:
+        return []
+    pricing = await _pricing()
+    return await with_host_facts([_entry(i, pricing) for i in ids])
+
+
+def window_words(tokens: int) -> str:
+    """A window as a person says it: 1,000,000 and 1,047,576 → "1M", 1,500,000 → "1.5M", 200,000 → "200K"."""
+    if tokens >= 1_000_000:
+        return f"{tokens / 1_000_000:.1f}".rstrip("0").rstrip(".") + "M"
+    return tokens_short(tokens)
+
+
+def money(usd: float) -> str:
+    """A price in dollars, without the sign: 5 → "5", 5.5 → "5.50", 0.075 → "0.075"."""
+    if usd == int(usd):
+        return str(int(usd))
+    return f"{usd:.2f}" if usd >= 0.1 else f"{usd:.4f}".rstrip("0")
+
+
+def window_and_price(entry: ModelEntry) -> dict[str, str]:
+    """What Synapse AI says of a model's window and price (F1684), only what is known: a CLI's model is its
+    subscription, a local one is free, an API model's is its price per 1M tokens in and out."""
+    out: dict[str, str] = {}
+    if entry.window:
+        out["window"] = f"{window_words(entry.window)} tokens"
+    if entry.source == "cli":
+        out["price"] = "the CLI's own subscription: no price per token here"
+    elif entry.source == "local":
+        out["price"] = "free: it runs on this machine"
+    elif entry.price_in is not None and entry.price_out is not None:
+        out["price"] = f"${money(entry.price_in)} in, ${money(entry.price_out)} out per 1M tokens"
+    return out
 
 
 async def _pricing() -> dict:
