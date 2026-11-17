@@ -731,7 +731,8 @@ def _kill_proc_tree(proc: subprocess.Popen, timeout: int = 5) -> None:
     child node.exe processes become orphans.  taskkill /F /T kills the whole
     process tree including every grandchild.
 
-    On Unix, send SIGTERM to the process group so npm -> node children all die.
+    On Unix, SIGTERM to the whole tree so npm -> node children all die, then SIGKILL to what is left
+    (`_signal_tree`).
     """
     if IS_WIN:
         try:
@@ -745,27 +746,74 @@ def _kill_proc_tree(proc: subprocess.Popen, timeout: int = 5) -> None:
             except Exception:
                 pass
     else:
-        # Try to kill the entire process group (handles npm -> node chains)
-        try:
-            pgid = os.getpgid(proc.pid)
-            os.killpg(pgid, signal.SIGTERM)
-        except Exception:
-            try:
-                proc.terminate()
-            except Exception:
-                pass
+        tree = _tree_of(proc)
+        _signal_tree(proc, tree, signal.SIGTERM)
         # Wait then force-kill if still alive
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
+            _signal_tree(proc, tree, signal.SIGKILL)
+
+
+def _shutdown_handler(frontend_proc: subprocess.Popen, backend_proc: subprocess.Popen):
+    """A foreground start's way out, on Ctrl+C or SIGTERM (F1654): said once, both trees stopped, their pidfiles gone,
+    and one result line. A second signal while it runs (another Ctrl+C) is ignored rather than starting it over."""
+    started: list[int] = []
+
+    def _shutdown(sig, frame):
+        if started:
+            return
+        started.append(sig)
+        for s in (signal.SIGINT, signal.SIGTERM):
             try:
-                pgid = os.getpgid(proc.pid)
-                os.killpg(pgid, signal.SIGKILL)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
+                signal.signal(s, signal.SIG_IGN)
+            except (OSError, ValueError):
+                pass
+        print("\nStopping Synapse...")
+        # Kill full process trees -- on Windows terminate() leaves node children alive
+        _kill_proc_tree(frontend_proc)
+        _kill_proc_tree(backend_proc)
+        for name in ("backend", "frontend"):
+            try:
+                _pid_file(name).unlink()
+            except OSError:
+                pass
+        print("Synapse stopped.")
+        sys.exit(0)
+
+    return _shutdown
+
+
+def _tree_of(proc: subprocess.Popen) -> list[int]:
+    """The pids under `proc`, deepest last, read once before anything is signalled: a child that dies first leaves
+    its own children to the system, where they could no longer be found under it."""
+    try:
+        import psutil
+
+        return [p.pid for p in psutil.Process(proc.pid).children(recursive=True)]
+    except Exception:
+        return []
+
+
+def _signal_tree(proc: subprocess.Popen, tree: list[int], sig: int) -> None:
+    """`sig` to `proc` and every process under it (F1654). By its process group where that group is its own (a
+    detached start's: npm's node children are in it too); by each pid where it shares ours (a foreground start's),
+    since signalling that group would signal Synapse itself, whose handler would then stop everything again."""
+    try:
+        pgid = os.getpgid(proc.pid)
+    except Exception:
+        pgid = None
+    if pgid is not None and pgid != os.getpgrp():
+        try:
+            os.killpg(pgid, sig)
+            return
+        except Exception:
+            pass
+    for pid in [*reversed(tree), proc.pid]:
+        try:
+            os.kill(pid, sig)
+        except Exception:
+            pass
 
 
 def _terminate_pid(pid: int, name: str, timeout: int = 5) -> bool:
@@ -1384,18 +1432,7 @@ def _start_command(
 
     print("Press Ctrl+C to stop.")
 
-    def _shutdown(sig, frame):
-        print("\nStopping Synapse...")
-        # Kill full process trees -- on Windows terminate() leaves node children alive
-        _kill_proc_tree(frontend_proc)
-        _kill_proc_tree(backend_proc)
-        for name in ("backend", "frontend"):
-            try:
-                _pid_file(name).unlink()
-            except OSError:
-                pass
-        sys.exit(0)
-
+    _shutdown = _shutdown_handler(frontend_proc, backend_proc)
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
