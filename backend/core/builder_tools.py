@@ -2667,7 +2667,19 @@ async def _steps_as_run_calls(orch: dict, server_module: Any) -> dict:
         fixed = await builder_guard.canonical_names([s["forced_tool"] for s in steps], server_module)
         for step, name in zip(steps, fixed):
             step["forced_tool"] = name
-    return orch
+    # A Tool step whose tool's app isn't connected right now decides its ask when it runs (F1679).
+    return await builder_guard.mark_checks(orch, server_module)
+
+
+async def _with_checks(agent: dict, server_module: Any) -> dict:
+    """An agent as a save keeps it (F1679): a tool whose app isn't connected right now is `check`, decided each call
+    from what it declares, and a `check` that can be read now is decided (`builder_guard.checked_policy`)."""
+    from core import builder_guard
+
+    policy = await builder_guard.checked_policy(agent.get("tool_policy"), agent.get("tools"), server_module)
+    if policy or "tool_policy" in agent:
+        agent["tool_policy"] = policy
+    return agent
 
 
 async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list[dict]) -> Any:
@@ -2776,7 +2788,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             agent["boards"] = dict(args["boards"])
         if args.get("knowledge"):
             agent["knowledge"] = agent_knowledge.ids(args["knowledge"])
-        await save_agent(agent)
+        await save_agent(await _with_checks(agent, server_module))
         _emit(events, "agent", "created", agent["id"], agent["name"], agent)
         return {"status": "created", "agent": agent}
 
@@ -2885,7 +2897,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         if (refusal := await _memory_room(sum(d.get("memory") is True for d in documents))) is not None:
             return refusal
         for document in documents:
-            await save_agent(document)
+            await save_agent(await _with_checks(document, server_module))
             _emit(events, "agent", "created", document["id"], document["name"], document)
         return {"status": "created", "agents": created, "errors": errors}
 
@@ -2951,7 +2963,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             return {"error": said}
         agent.update(fields)
         agent["id"] = args["agent_id"]  # the id is not patchable
-        await save_agent(agent)
+        await save_agent(await _with_checks(agent, server_module))
         _emit(events, "agent", "updated", agent["id"], agent.get("name"), agent)
         return {"status": "updated", "agent": agent}
 
@@ -3011,8 +3023,12 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                         "inputSchema": t.inputSchema if hasattr(t, "inputSchema") else {},
                     }
             missing = requested - result.keys()
-            if missing:
-                result["_not_found"] = sorted(missing)
+            # A tool of an app set up here that isn't connected right now: why, never "not found" (F1679).
+            away = {n: why for n in sorted(missing) if (why := builder_guard.unreachable(n, server_module))}
+            if away:
+                result["_not_reachable"] = away
+            if missing - away.keys():
+                result["_not_found"] = sorted(missing - away.keys())
             return result
         except Exception as e:
             return {"error": f"Could not fetch tool details: {e}"}

@@ -2353,7 +2353,7 @@ async def run_agent_step(
     if _visitor is not None and _visitor.approvals != "park":
         # Nobody on a public surface can answer an approval card (F280). A phone
         # call parks instead and asks a person in the bell (VOX1a, V16).
-        _policy = {c: ("deny" if d == "confirm" else d) for c, d in _policy.items()}
+        _policy = _tool_policy.as_visitor(_policy)
 
     # What a sub-agent may be given: what this agent may use here, a step's
     # narrowing included (F266) — `_spawn_subtask_available_tools` is every

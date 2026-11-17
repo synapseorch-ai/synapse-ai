@@ -234,6 +234,10 @@ class StepConfig(BaseModel):
     #: text (an object as JSON); an older `{state.x}` is written so as the step is read (F1252). None, the default,
     #: is "ask the model", as every Tool step did before.
     tool_arguments: dict[str, Any] | None = None
+    #: TOOL -- built while its tool's app wasn't connected, so what the tool does couldn't be read (F1679): each run
+    #: decides whether it asks first from the tool's real declaration ("ask unless it only reads"). A builder save
+    #: sets it, and a later save that can read the tool clears it.
+    tool_check: bool = False
 
     # Per-step guardrails
     max_turns: int = 15

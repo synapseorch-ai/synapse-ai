@@ -344,7 +344,8 @@ class PlanDraft(_Written):
 
 class ToolStatus(BaseModel):
     name: str
-    #: present: a run could call it now; found: research found who provides it (connect first); missing: neither.
+    #: present: a run could call it now, or its app is set up here but not connected right now (`detail` says why,
+    #: F1679); found: research found who provides it (connect first); missing: neither.
     status: Literal["present", "found", "missing"]
     provider: str | None = None
     via: Literal["catalog_app", "mcp_server", "http_tool", "none"] = "none"
@@ -952,6 +953,10 @@ async def fill(plan: Plan, server_module: Any, *, found: dict[str, ToolStatus] |
         # blocks it with their switch (F1203, `build_plan.features_needed`).
         if name in BOARD_TOOLS or await exists(name):
             statuses.append(ToolStatus(name=name, status="present"))
+        elif why := builder_guard.unreachable(name, server_module):
+            # Its app is set up here but not connected right now: kept, never sent to research to be connected again
+            # (F1679); whether it asks first is decided when it runs (`check`), never held now.
+            statuses.append(ToolStatus(name=name, status="present", detail=f"can't be checked right now ({why})"))
         elif found and name in found:
             # The research's verdict: found (connect first), or missing with why (`none` / `unclear`, A6).
             statuses.append(found[name].model_copy(update={"name": name}))

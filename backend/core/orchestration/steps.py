@@ -1168,8 +1168,11 @@ class ToolStepExecutor:
             return key is not None and key == _router.resolve(forced)
 
         _policy = _tool_policy.resolve_policy(active_agent, settings)
+        if step.tool_check and f"{_tool_policy.TOOL_KEY}{tool_name}" not in _policy:
+            # Built while its app wasn't connected (F1679): whether it asks is decided now, from what it declares.
+            _policy = {**_policy, f"{_tool_policy.TOOL_KEY}{tool_name}": _tool_policy.CHECK}
         if _visitor is not None:
-            _policy = {c: ("deny" if d == "confirm" else d) for c, d in _policy.items()}
+            _policy = _tool_policy.as_visitor(_policy)
         _decision, _category = _tool_policy.decide(tool_obj, _policy)
 
         # A person's answer to a pause this step made: the call they allowed is
