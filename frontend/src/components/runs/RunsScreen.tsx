@@ -10,9 +10,10 @@
  * every 10 s, which the counts are of. A row opens the run's page,
  * `/runs/<id>`; the log viewer is Logs, the tab beside this one.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { RunList } from '@/components/run';
+import { Button } from '@/components/ui';
 import { ossRunRow } from '@/lib/runHost';
 import type { Orchestration } from '@/types/orchestration';
 
@@ -26,6 +27,10 @@ export function RunsScreen() {
     const [recent, setRecent] = useState<RunSummary[]>([]);
     const [all, setAll] = useState<RunSummary[]>([]);
     const [loaded, setLoaded] = useState(false);
+    // The runs before the latest hundred, a page at a time (F1639), and whether a page came back full.
+    const [older, setOlder] = useState<RunSummary[]>([]);
+    const [olderFull, setOlderFull] = useState(true);
+    const [reading, setReading] = useState(false);
 
     useEffect(() => {
         fetch('/api/orchestrations').then(r => r.json()).then(data => {
@@ -60,26 +65,51 @@ export function RunsScreen() {
         return () => clearInterval(interval);
     }, []);
 
-    // The hundred, with the fresher reads of the newest laid over them.
+    // More past the latest hundred, from the last run read: its created_at and id (F1639).
+    const hasOlder = all.length >= ALL && olderFull;
+    const showOlder = useCallback(() => {
+        const last = (older.length ? older : all).at(-1);
+        if (!last?.created_at) return;
+        setReading(true);
+        const before = encodeURIComponent(`${last.created_at},${last.run_id}`);
+        fetch(`/api/orchestrations/runs?limit=${ALL}&before=${before}`)
+            .then(r => r.json())
+            .then(d => {
+                if (!Array.isArray(d)) return;
+                setOlder((prev) => [...prev, ...d]);
+                setOlderFull(d.length >= ALL);
+            })
+            .catch(() => {})
+            .finally(() => setReading(false));
+    }, [all, older]);
+
+    // The hundred and what was read past it, with the fresher reads of the newest laid over them.
     const rows = useMemo(() => {
-        const byId = new Map(all.map((r) => [r.run_id, r]));
+        const byId = new Map([...all, ...older].map((r) => [r.run_id, r]));
         for (const r of recent) byId.set(r.run_id, r);
         return [...byId.values()]
             .sort((a, b) => String(b.started_at ?? '').localeCompare(String(a.started_at ?? '')))
             .map((r) => ossRunRow(r, workflows, schedules));
-    }, [all, recent, workflows, schedules]);
+    }, [all, older, recent, workflows, schedules]);
 
     return (
+        <>
         <RunList
             rows={rows}
             workflows={workflows}
             hrefOf={(row) => `/runs/${encodeURIComponent(row.id)}`}
-            caption={all.length >= ALL ? `The latest ${ALL} runs.` : undefined}
+            caption={hasOlder ? `The latest ${all.length + older.length} runs.` : undefined}
             empty={
                 <p className="px-2.5 py-10 text-center text-sm text-text-faint">
                     {loaded ? 'No runs recorded yet. Start one from Workflows.' : 'Reading runs…'}
                 </p>
             }
         />
+        {hasOlder && (
+            <div className="flex justify-center py-4">
+                <Button variant="secondary" size="sm" onClick={showOlder} loading={reading}>Show older</Button>
+            </div>
+        )}
+        </>
     );
 }

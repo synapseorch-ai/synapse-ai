@@ -12,6 +12,8 @@ export type RunSummary = {
     orchestration_id: string;
     status: string;
     started_at?: string | null;
+    /** When the run was made: the list's order, and its cursor (F1639). */
+    created_at?: string | null;
     ended_at?: string | null;
     current_step_id?: string | null;
     steps_completed?: number;

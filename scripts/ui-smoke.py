@@ -3304,6 +3304,10 @@ async def check_runsolder(browser) -> str:
             shown = await page.evaluate(_OLDER_LINKS)
             if shown != 103:
                 problems.append(f"{shown} runs listed after Show older, not 103")
+            if os.environ.get("SMOKE_SHOTS"):
+                await page.locator("a[href='/runs/run_smoke_older_102']").scroll_into_view_if_needed()
+                await asyncio.sleep(0.5)
+                await page.screenshot(path=os.path.join(os.environ["SMOKE_SHOTS"], "runsolder-after.png"))
     finally:
         await ctx.close()
     if problems:
@@ -3316,7 +3320,7 @@ async def check_recentrunsown(browser) -> str:
     """The editor's Recent Runs reads its own workflow's runs (F1639), not everyone's newest hundred kept to it."""
     oid = f"orch_uismoke_recentown_{int(time.time())}"
     api("/api/orchestrations", "POST", print_orchestration(oid, "ui-smoke recent own"))
-    run_to_end(oid)
+    run_id = run_to_end(oid)
     asked: list[str] = []
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     page = await ctx.new_page()
@@ -3331,8 +3335,10 @@ async def check_recentrunsown(browser) -> str:
         await asyncio.sleep(SETTLE)
         if not [u for u in asked if f"workflow={oid}" in u]:
             problems.append(f"Recent Runs asked {[u.split('/api')[-1] for u in asked]}, never its own workflow's")
-        if not await drawer.locator("a[href^='/runs/']").count():
+        if not await drawer.get_by_text(run_id).count():
             problems.append("Recent Runs lists none of this workflow's runs")
+        if os.environ.get("SMOKE_SHOTS"):
+            await page.screenshot(path=os.path.join(os.environ["SMOKE_SHOTS"], "recentrunsown.png"))
     finally:
         await ctx.close()
         drop_fixture(oid)
