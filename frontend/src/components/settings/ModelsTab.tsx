@@ -2,7 +2,7 @@ import { ExternalLink, RefreshCw } from 'lucide-react';
 import { Button, Checkbox, Combobox, Field, Input, Section, Textarea } from '@/components/ui';
 import { ProviderCard } from '@/components/providers/ProviderCard';
 import { FORM } from './form';
-import { modelOptions as buildModelOptions, providerLabel, synapseAINote, synapseAIOnly, withHints, withUnreachable, type ModelWindows } from '@/lib/models';
+import { modelOptions as buildModelOptions, providerLabel, synapseAIDefaultHint, synapseAINote, synapseAIOnly, withHints, withUnreachable, type ModelWindows } from '@/lib/models';
 
 /** `builder_model` is empty when it should follow `model`; a Combobox needs a value. */
 const DEFAULT_SENTINEL = '__default__';
@@ -122,7 +122,8 @@ export const ModelsTab = ({
     // Empty means "whatever the default model is", which is a real choice and
     // needs a row of its own — a blank control reads as nothing being set.
     const builderOptions = withHints([
-        { value: DEFAULT_SENTINEL, label: `Same as default model${selectedModel ? ` (${selectedModel})` : ''}` },
+        { value: DEFAULT_SENTINEL, label: `Same as default model${selectedModel ? ` (${selectedModel})` : ''}`,
+          hint: synapseAIDefaultHint(selectedModel, modelWindows) },
         // Synapse AI's model: never one too small for it (F1592: under 128K, as cloud's), and what builds well first
         // (F1598).
         ...withUnreachable(synapseAIOnly(buildModelOptions(providers), modelWindows, builderModel || undefined), builderModel),

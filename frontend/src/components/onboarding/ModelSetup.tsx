@@ -25,7 +25,7 @@ import { ProviderCard } from '@/components/providers/ProviderCard';
 import { pickSecrets, type SecretState } from '@/components/settings/SavedSecret';
 import { AppMark, Button, Combobox, ErrorNote, Field, buttonStyles } from '@/components/ui';
 import { cn, focusRing } from '@/lib/cn';
-import { providerLabel, synapseAINote, synapseAIOnly, withHints, type ModelWindows } from '@/lib/models';
+import { providerLabel, synapseAIDefaultHint, synapseAINote, synapseAIOnly, withHints, type ModelWindows } from '@/lib/models';
 import {
     FIRST_PROVIDERS, FREE_KEY_PROVIDER, KEY_NAMES, ONBOARDING_PROVIDERS, foundHere, keyNote, nothingYet, pickable,
     startingModel, type FoundHere,
@@ -284,7 +284,8 @@ export function ModelSetup({ open, problem, onClose, onSaved }: {
                                     <Field label="Synapse AI’s model" hint="Builds your workflows and answers in the assistant. A stronger model pays for itself here.">
                                         <Combobox value={assistant || 'same'} onChange={(v) => setAssistant(v === 'same' ? SAME : v)}
                                             // Never a model too small for Synapse AI's planner (F1592); the everyday one lists all.
-                                            options={[{ value: 'same', label: 'Same as everyday model' },
+                                            options={[{ value: 'same', label: 'Same as everyday model',
+                                                        hint: synapseAIDefaultHint(everyday, windows) },
                                                       ...synapseAIOnly(options, windows, assistant || undefined)]}
                                             note={synapseAINote(synapseAIOnly(options, windows, assistant || undefined), windows)}
                                             searchPlaceholder={SEARCH} aria-label="Synapse AI’s model" />

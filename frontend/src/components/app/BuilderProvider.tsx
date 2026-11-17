@@ -153,6 +153,9 @@ interface BuilderContextValue extends BuilderChatValue {
      */
     canAttach: boolean;
     builderModel: string;
+    /** The workspace's default model, which Synapse AI runs on when no builder model is set (F1598: its Default row
+     *  says when that model is not for building). */
+    workspaceModel: string;
     sessionModel: string;
     setSessionModel: (model: string) => void;
     saveBuilderModel: (model: string) => Promise<void>;
@@ -409,12 +412,12 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
         () => ({
             chatId: panelChat.id, state, streaming, ready, send, stop, watchBuilt,
             isOpen, entered, open, draft, draftTaken, takeDraft, close, newConversation, showChat,
-            providers, modelWindows, canAttach, builderModel, sessionModel, setSessionModel, saveBuilderModel,
-            setCurrentOrchestration, setCurrentAgent, showing, chats, sendContext,
+            providers, modelWindows, canAttach, builderModel, workspaceModel, sessionModel, setSessionModel,
+            saveBuilderModel, setCurrentOrchestration, setCurrentAgent, showing, chats, sendContext,
         }),
         [panelChat.id, state, streaming, ready, send, stop, watchBuilt, isOpen, entered, open, draft, draftTaken, close,
-         newConversation, showChat, providers, modelWindows, canAttach, builderModel, sessionModel, setSessionModel,
-         saveBuilderModel, setCurrentOrchestration, setCurrentAgent, showing, chats, sendContext],
+         newConversation, showChat, providers, modelWindows, canAttach, builderModel, workspaceModel, sessionModel,
+         setSessionModel, saveBuilderModel, setCurrentOrchestration, setCurrentAgent, showing, chats, sendContext],
     );
 
     return <BuilderContext.Provider value={value}>{children}</BuilderContext.Provider>;

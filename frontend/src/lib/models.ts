@@ -155,16 +155,28 @@ export function synapseAIOnly(options: ComboboxOption[], said: ModelWindows, cur
     const listed = fits ? rated(fitting, fits, said.ranked) : fitting;
     if (!current) return listed;
     const label = options.find((o) => o.value === current)?.label ?? current;
-    if (floor !== undefined && small(current)) {
-        return [{ value: current, label, group: TOO_SMALL_FOR_SYNAPSE_AI,
-                  hint: `reads up to ${tokensShort(windows[current])} tokens; Synapse AI needs ${tokensShort(floor)}` },
-                ...listed];
+    const why = synapseAIDefaultHint(current, said);
+    if (why === undefined) return listed;
+    return [{ value: current, label, group: small(current) ? TOO_SMALL_FOR_SYNAPSE_AI : NOT_FOR_BUILDING, hint: why },
+            ...listed];
+}
+
+/** What a saved model left out of Synapse AI's pickers says, on its own row and on a "Default (…)" row that runs on it. */
+const NOT_OFFERED_FOR_BUILDING = "Not offered for building with Synapse AI: pick a Recommended model";
+
+/**
+ * Why Synapse AI's pickers leave `model` out, in the words its row says (F1592, F1598): what it reads, when that is
+ * less than Synapse AI needs; else that it is not offered for building. A "Default (…)" or "Same as … model" row that
+ * runs Synapse AI on it says the same, so it never quietly offers what the list leaves out. Undefined for a model that
+ * is not left out, or not known.
+ */
+export function synapseAIDefaultHint(model: string | null | undefined, said: ModelWindows): string | undefined {
+    if (!model) return undefined;
+    const { windows = {}, synapse_ai_min_window: floor } = said;
+    if (floor !== undefined && windows[model] !== undefined && windows[model] < floor) {
+        return `reads up to ${tokensShort(windows[model])} tokens; Synapse AI needs ${tokensShort(floor)}`;
     }
-    if (left(current)) {
-        return [{ value: current, label, group: NOT_FOR_BUILDING,
-                  hint: "Not offered for building with Synapse AI: pick a Recommended model" }, ...listed];
-    }
-    return listed;
+    return said.builder_fit?.[model] === "not_for_building" ? NOT_OFFERED_FOR_BUILDING : undefined;
 }
 
 /** The note at the foot of Synapse AI's pickers (F1598): what they leave out, and when nothing listed is rated for
