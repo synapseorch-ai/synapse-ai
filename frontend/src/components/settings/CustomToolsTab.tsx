@@ -8,6 +8,7 @@ import { Badge, Button, buttonStyles, CodeEditor, ConfirmDialog, Label, Select, 
 import { AppScreen } from '@/components/app/AppScreen';
 import { defaultsFor, sameTags, tagChips, tagsOf } from '@/lib/toolHints';
 import { ToolTagsFields } from './ToolTagsFields';
+import { ToolAnswerSection } from './ToolAnswerSection';
 
 interface CustomToolsTabProps {
     customTools: any[];
@@ -112,8 +113,13 @@ export const CustomToolsTab = ({
     };
 
     // ── Which tool is open (M2f: the list and the editor side by side) ─────
+    // Its output schema is edited as text in the draft, by both kinds (F1620: "What it answers").
     const draftFromTool = (t: any) => (t.tool_type === 'python'
-        ? { draft: { ...t, schemaParams: t.schemaParams || [] }, rows: null, mode: 'python' as const }
+        ? {
+            draft: { ...t, schemaParams: t.schemaParams || [],
+                     outputSchemaStr: t.outputSchema ? JSON.stringify(t.outputSchema, null, 2) : '' },
+            rows: null, mode: 'python' as const,
+        }
         : {
             draft: {
                 ...t,
@@ -132,9 +138,12 @@ export const CustomToolsTab = ({
     const openName = useRef<string | null>(null);
     const userClosed = useRef(false);
     const [pending, setPending] = useState<null | (() => void)>(null);
+    // Each opening of a tool, so its "What it answers" starts from that tool's schema.
+    const [opened, setOpened] = useState(0);
 
     const openTool = (t: any) => {
         const { draft, rows, mode } = draftFromTool(t);
+        setOpened((n) => n + 1);
         setDraftTool(draft);
         if (rows) setHeaderRows(rows);
         setToolBuilderMode(mode);
@@ -151,6 +160,7 @@ export const CustomToolsTab = ({
             outputSchemaStr: '', tool_type: 'http',
         };
         const rows = [{ id: 'h1', key: '', value: '' }];
+        setOpened((n) => n + 1);
         setDraftTool(draft);
         setHeaderRows(rows);
         setToolBuilderMode('config');
@@ -590,6 +600,11 @@ export const CustomToolsTab = ({
                                     aria-label="What it needs (JSON schema)"
                                 />
                             </div>
+                            <ToolAnswerSection
+                                key={`answer-${opened}`}
+                                text={draftTool.outputSchemaStr}
+                                onChange={outputSchemaStr => setDraftTool({ ...draftTool, outputSchemaStr })}
+                            />
                         </div>
                         </TemplateScope>
                     )}
@@ -667,6 +682,11 @@ export const CustomToolsTab = ({
                             <PythonToolEditor
                                 draft={draftTool as PythonDraftTool}
                                 onChange={(updated) => setDraftTool(updated)}
+                            />
+                            <ToolAnswerSection
+                                key={`answer-${opened}`}
+                                text={draftTool.outputSchemaStr}
+                                onChange={outputSchemaStr => setDraftTool({ ...draftTool, outputSchemaStr })}
                             />
                             {/* A Python tool can say what it does too (TAG1); until then it is "not set". */}
                             <ToolTagsFields

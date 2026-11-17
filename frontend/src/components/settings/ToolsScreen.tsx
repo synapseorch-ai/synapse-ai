@@ -133,6 +133,14 @@ export function ToolsScreen() {
         if (draftTool.tool_type === "python") {
             if (!draftTool.name) return show("Give the tool a name agents use", "warning");
             if (!draftTool.code?.trim()) return show("Python code cannot be empty", "warning");
+            // What it answers (F1620), edited as text like an HTTP tool's: sent, or a schema set anywhere else
+            // would be erased by this field-by-field save, as its globals once were (F28).
+            let pythonOutput;
+            try {
+                pythonOutput = draftTool.outputSchemaStr?.trim() ? JSON.parse(draftTool.outputSchemaStr) : undefined;
+            } catch {
+                return show("Invalid Output Schema JSON", "danger");
+            }
 
             return persist(
                 {
@@ -149,6 +157,7 @@ export function ToolsScreen() {
                     globals: draftTool.globals || [],
                     // What it says it does (TAG1); null keeps it "not set".
                     annotations: draftTool.annotations ?? null,
+                    ...(pythonOutput ? { outputSchema: pythonOutput } : {}),
                 },
                 "Python tool saved successfully",
             );

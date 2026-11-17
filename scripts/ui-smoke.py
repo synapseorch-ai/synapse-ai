@@ -1766,8 +1766,15 @@ async def check_toolanswer(browser) -> str:
     editor is still there. Light and dark at 1440 and 390: AA contrast in the section, every control reached with Tab
     alone. `SMOKE_SHOTS`, when set, keeps a shot of each state.
     """
-    for tool in TOOLANSWER_TOOLS.values():
-        api("/api/tools/custom", "POST", tool)
+    def seed() -> None:
+        # Each round opens the tools as seeded: the first round's saves change them.
+        for tool in TOOLANSWER_TOOLS.values():
+            try:
+                api(f"/api/tools/custom/{tool['name']}", "DELETE")
+            except Exception:
+                pass
+            api("/api/tools/custom", "POST", tool)
+
     scoped = CONTRAST.replace("document.querySelectorAll('*')",
                               "(document.querySelector('[data-testid=\"tool-answer\"]') || document)"
                               ".querySelectorAll('*')")
@@ -1782,6 +1789,7 @@ async def check_toolanswer(browser) -> str:
     try:
         for n, (scheme, size) in enumerate(runs):
             tag = f"{scheme} {size[0]}"
+            seed()
             ctx = await browser.new_context(viewport={"width": size[0], "height": size[1]}, color_scheme=scheme)
             await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{scheme}')}}catch(e){{}}")
             page = await ctx.new_page()

@@ -29,6 +29,8 @@ ROOT = Path(__file__).resolve().parents[3]
 SRC = ROOT / "frontend/src"
 ANSWER_TS = SRC / "components/orchestration/answerFields.ts"
 STEPS_TSX = SRC / "components/orchestration/panel/steps.tsx"
+#: The answer-field editor a model step's section is (and a custom tool's "What it answers", F1620).
+ANSWER_EDITOR_TSX = SRC / "components/orchestration/panel/answerFieldsEditor.tsx"
 
 #: Node resolves the app's `@/` imports to `frontend/src`, and a relative import without its extension to the `.ts`
 #: beside it, as the bundler does.
@@ -268,7 +270,10 @@ class TestPasteAJsonSchema:
 
 class TestTheStepEditor:
     def test_the_editor_offers_the_ways_in_and_shows_what_is_asked(self):
-        source = STEPS_TSX.read_text(encoding="utf-8")
-        for words in ("Paste an example", "Paste a JSON Schema", "What the model is asked for",
+        """The step's section is the shared answer-field editor, in the step's words (F1620)."""
+        steps = STEPS_TSX.read_text(encoding="utf-8")
+        editor = ANSWER_EDITOR_TSX.read_text(encoding="utf-8")
+        assert "<AnswerFieldsEditor" in steps and "What the model is asked for" in steps
+        for words in ("Paste an example", "Paste a JSON Schema",
                       "answerFieldsFromExample(", "answerFieldsFromSchema(", "answerJsonSchema("):
-            assert words in source, words
+            assert words in editor, words
