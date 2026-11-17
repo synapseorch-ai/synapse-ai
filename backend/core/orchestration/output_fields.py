@@ -544,3 +544,194 @@ def words_said(reader: dict[str, Any], writer: dict[str, Any], key: str, expr: s
             f"as text (`{shown}`): it reads the model's own words; declare an answer field — give "
             f"'{writer.get('id', '?')}' output_fields (a choice with the words it picks from as options, or a boolean "
             f"for a yes or no) and read state.{key}.<field>. It runs as it is today.")
+
+
+# ── A JSON Schema read into answer fields (F1620): a tool's declared answer ─────────────────────────────────────────
+#
+# The server's twin of the editor's `answerFieldsFromSchema` (`frontend/src/components/orchestration/answerFields.ts`),
+# held to it byte for byte by a test. A schema inside the answer's subset becomes its fields; every part outside it is
+# named by its path, and then nothing is taken, so a tool whose answer is not wholly known is never half-checked.
+
+#: Words that describe a schema and constrain nothing: read past.
+_READ_PAST = frozenset({"title", "$schema", "$id", "$comment", "examples", "default", "$defs", "definitions"})
+_LIMITS = frozenset({"minLength", "maxLength", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "pattern",
+                     "minItems", "maxItems", "uniqueItems", "multipleOf", "minProperties", "maxProperties",
+                     "minContains", "maxContains"})
+_SHAPES = frozenset({"oneOf", "allOf", "anyOf", "not", "if", "then", "else"})
+_OPEN = frozenset({"additionalProperties", "patternProperties", "propertyNames", "unevaluatedProperties"})
+_FORMATS = {"date": "date", "email": "email"}
+#: What each type of node may say besides `type` and `description`.
+_OWN = {"string": {"enum", "format"}, "number": set(), "integer": set(), "boolean": set(), "array": {"items"},
+        "object": {"properties", "required", "additionalProperties"}}
+
+
+def _at(where: str) -> str:
+    return f"`{where}`" if where else "The schema"
+
+
+def _refused_keyword(key: str, value: Any, kind: str | None) -> str | None:
+    """Why a keyword is outside the subset, or None when it is inside it."""
+    if key in ("type", "description") or key in _READ_PAST:
+        return None
+    if key == "$ref":
+        return "uses $ref: write the shape out where it is used"
+    if key in _SHAPES:
+        return f"is one of several shapes ({key}): a field has one type, or that type or nothing (null)"
+    if key in _LIMITS:
+        return f"has `{key}`: an answer holds no limits on lengths, sizes or values; say it in the description"
+    if key == "const":
+        return 'has `const`: give it as a choice, "enum": ["…"]'
+    if key == "additionalProperties" and value is False and kind == "object":
+        return None
+    if key in _OPEN:
+        return f"takes keys besides its own ({key}): an answer holds its named fields only"
+    if key == "enum":
+        words = kind == "string" and isinstance(value, list) and len(value) > 0 and all(isinstance(v, str) for v in value)
+        return None if words else "has an enum that is not words: a choice is one of some words"
+    if key == "format" and kind == "string":
+        return None if str(value) in _FORMATS else (
+            f"has format '{value}': an answer holds the date and email formats; take it out to read it as text")
+    if kind and key in _OWN.get(kind, ()):
+        return None
+    return f"has `{key}`, which an answer cannot hold"
+
+
+def _from_node(name: str, node: Any, where: str, required: bool, refused: list[str]) -> dict | None:
+    if not isinstance(node, dict):
+        refused.append(f"{_at(where)} is not a schema")
+        return None
+    may = not required
+    description = node["description"].strip() if isinstance(node.get("description"), str) else ""
+    inner = node
+    # Itself or nothing, as the run writes it (`anyOf` with null) or as a list of two types.
+    if isinstance(node.get("anyOf"), list):
+        parts = node["anyOf"]
+
+        def is_null(p: Any) -> bool:
+            return isinstance(p, dict) and p.get("type") == "null" and len(p) == 1
+
+        other = next((p for p in parts if not is_null(p)), None) \
+            if len(parts) == 2 and any(is_null(p) for p in parts) else None
+        outer_ok = all(k in ("anyOf", "description") or k in _READ_PAST for k in node)
+        if not isinstance(other, dict) or not outer_ok:
+            refused.append(f"{_at(where)} is one of several shapes (anyOf): a field has one type, or that type or "
+                           "nothing (null)")
+            return None
+        inner = other
+        may = True
+        if not description and isinstance(other.get("description"), str):
+            description = other["description"].strip()
+    kind = inner["type"] if isinstance(inner.get("type"), str) else None
+    if isinstance(inner.get("type"), list):
+        types = [str(t) for t in inner["type"]]
+        rest = [t for t in types if t != "null"]
+        if len(types) != 2 or len(rest) != 1:
+            refused.append(f"{_at(where)} has several types ({', '.join(types)}): a field has one type, or that type "
+                           "or null")
+            return None
+        kind = rest[0]
+        may = True
+    if kind is None and isinstance(inner.get("properties"), dict):
+        kind = "object"
+    reasons = [r for k, v in inner.items() if (r := _refused_keyword(k, v, kind)) is not None]
+    if reasons:
+        refused.append(f"{_at(where)} {reasons[0]}")
+        return None
+    if kind is None:
+        refused.append(f"{_at(where)} has no type: give it one of string, number, boolean, array or object")
+        return None
+    if kind not in _OWN:
+        refused.append(f"{_at(where)} has type '{kind}', which an answer cannot hold")
+        return None
+    out: dict[str, Any] = {"name": name, "type": "string"}
+    if kind in ("number", "integer"):
+        out["type"] = "number"
+    elif kind == "boolean":
+        out["type"] = "boolean"
+    elif kind == "string":
+        if isinstance(inner.get("enum"), list):
+            out["type"] = "choice"
+            out["options"] = [str(o) for o in inner["enum"]]
+        elif isinstance(inner.get("format"), str):
+            out["type"] = _FORMATS[inner["format"]]
+    elif kind == "array":
+        items = inner.get("items")
+        if isinstance(items, list):
+            refused.append(f"{_at(where)} gives its `items` as a list of shapes: a list's items share one shape")
+            return None
+        if not isinstance(items, dict):
+            refused.append(f"{_at(where)} is a list of anything: give its `items` a type")
+            return None
+        item = _from_node("item", items, f"{where}[]", True, refused)
+        if item is None:
+            return None
+        if item["type"] == "list":
+            refused.append(f"{_at(where)} is a list of lists: a list holds values or groups, one level at a time")
+            return None
+        if item.get("may_be_empty") or item.get("description") or \
+                item["type"] not in ("string", "number", "boolean", "object"):
+            refused.append(f"{_at(f'{where}[]')} is not plain text, a number, a yes or no or a group: a list's items "
+                           "are one of those, never empty, and the list is described rather than its items")
+            return None
+        out["type"] = "list"
+        if item["type"] == "object":
+            out["of"] = {"fields": item.get("fields") or []}
+        elif item["type"] != "string":
+            out["of"] = item["type"]
+    elif kind == "object":
+        properties = inner.get("properties")
+        if not isinstance(properties, dict) or not properties:
+            refused.append(f"{_at(where)} is a group with no fields: give it properties")
+            return None
+        needed = {str(r) for r in inner["required"]} if isinstance(inner.get("required"), list) else set()
+        fields = []
+        for key, sub in properties.items():
+            field = _from_node(key, sub, f"{where}.{key}" if where else key, key in needed, refused)
+            if field:
+                fields.append(field)
+        out["type"] = "object"
+        out["fields"] = fields
+    if description:
+        out["description"] = description
+    if may:
+        out["may_be_empty"] = True
+    return out
+
+
+def _ordered(field: dict) -> dict:
+    """A field as a person reads it: name, type, then options, items, rows, description, may be empty."""
+    out: dict[str, Any] = {"name": field["name"], "type": field["type"]}
+    if "options" in field:
+        out["options"] = field["options"]
+    if "of" in field:
+        out["of"] = ({"fields": [_ordered(f) for f in field["of"].get("fields") or []]}
+                     if isinstance(field["of"], dict) else field["of"])
+    if "fields" in field:
+        out["fields"] = [_ordered(f) for f in field["fields"]]
+    if field.get("description"):
+        out["description"] = field["description"]
+    if field.get("may_be_empty"):
+        out["may_be_empty"] = True
+    return out
+
+
+def from_json_schema(schema: Any) -> tuple[list[dict[str, Any]], list[str]]:
+    """A JSON Schema of one object (or a provider's wrapper of one) as answer fields, when every part is inside the
+    answer's subset; else no fields and each part outside it, named by its path (F1620: a tool's declared answer).
+    The editor's `answerFieldsFromSchema`, byte for byte."""
+    root = schema
+    if isinstance(root, dict) and root.get("type") == "json_schema" and isinstance(root.get("json_schema"), dict) \
+            and isinstance(root["json_schema"].get("schema"), dict):
+        root = root["json_schema"]["schema"]
+    elif isinstance(root, dict) and "properties" not in root and isinstance(root.get("schema"), dict):
+        root = root["schema"]
+    if not isinstance(root, dict) or not (root.get("type") == "object"
+                                          or ("type" not in root and isinstance(root.get("properties"), dict))):
+        return [], ['The answer is one object of named fields: a schema whose "type" is "object", with "properties".']
+    refused: list[str] = []
+    read = _from_node("answer", root, "", True, refused)
+    if refused or read is None:
+        return [], refused
+    fields = [_ordered(f) for f in read.get("fields") or []]
+    problems = declaration_problems(fields)
+    return ([], problems) if problems else (fields, [])
