@@ -676,6 +676,49 @@ def _without(plan: O.Plan, tools: list[str], took_out: list[str] | None = None) 
     return out
 
 
+#: Words in an answer field's description that say it may hold nothing (F1667), each whole: "the null hypothesis",
+#: "non-null", "if anything" and "optionally" are not among them.
+_MAY_BE_ABSENT = re.compile(r"\b(?:or null|if none|if any|if absent|if not present|may be empty|optional)\b", re.I)
+
+
+def _absent_fields_may_be_empty(plan: O.Plan) -> O.Plan:
+    """The Plan with each answer field whose own description says it may be absent marked may be empty (F1667), at
+    any depth, in its inner workflows too. Since 2.1 the fields reach a provider as a schema it must answer in (F1618);
+    a required field the answer cannot fill makes a schema-enforcing provider invent a value, or the CLI refuse
+    (F1665). Repaired here rather than refused; a field already marked, or described otherwise, is left as it is."""
+
+    def marked(fields: Any) -> Any:
+        if not isinstance(fields, list):
+            return fields
+        out = []
+        for f in fields:
+            if isinstance(f, dict):
+                f = dict(f)
+                if not f.get("may_be_empty") and _MAY_BE_ABSENT.search(str(f.get("description") or "")):
+                    f["may_be_empty"] = True
+                if isinstance(f.get("fields"), list):
+                    f["fields"] = marked(f["fields"])
+                if isinstance(f.get("of"), dict) and isinstance(f["of"].get("fields"), list):
+                    f["of"] = {**f["of"], "fields": marked(f["of"]["fields"])}
+            out.append(f)
+        return out
+
+    def through(steps: list[O.Step]) -> list[O.Step]:
+        out = []
+        for s in steps:
+            fields = (s.config or {}).get("output_fields") if s.type in ("llm", "agent") else None
+            if isinstance(fields, list) and fields:
+                s = s.model_copy(update={"config": {**s.config, "output_fields": marked(fields)}})
+            out.append(s)
+        return out
+
+    out = plan.model_copy(deep=True)
+    out.steps = through(out.steps)
+    for w in out.inner_workflows:
+        w.steps = through(w.steps)
+    return out
+
+
 def _loops_through_their_list(plan: O.Plan, notes: list[str]) -> O.Plan:
     """The Plan with each Loop over a whole answer that holds one list going through that list (F1613), said in
     `notes` for the card. A model step that declares its answer's fields answers one object, `{"keywords": [...]}`;
@@ -803,6 +846,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     plan, copy_errors = _instructions_whole(plan, state, took_out)
     # A Loop over a step that answers one list field goes through that field, said on the card (F1613).
     plan = _loops_through_their_list(plan, took_out)
+    # A field its own description says may be absent may be empty, so a schema never forces a made-up value (F1667).
+    plan = _absent_fields_may_be_empty(plan)
     # An agent already here that the plan uses for an export's Agent keeps its own instructions; said (F1615).
     took_out += _reused_for_an_export(plan, ws, state)
     from core.native_builder.change_tools import _holds_a_key
