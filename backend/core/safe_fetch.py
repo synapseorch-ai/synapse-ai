@@ -71,6 +71,26 @@ class FetchTooLarge(FetchRefused):
     """The body is larger than the cap."""
 
 
+class FetchTimedOut(FetchRefused):
+    """No answer came within the deadline: the host is slow, or slow to answer this client. A refusal like any
+    other to every caller that only asks whether the download happened; one that tells the person why (a robots.txt,
+    F1661) can say "timed out" and never mistake it for a site that answered with an error. `seconds` is the wait
+    that ran out, when it is known."""
+
+    def __init__(self, message: str, seconds: float | None = None):
+        super().__init__(message)
+        self.seconds = seconds
+
+
+def _timed_out(exc: httpx.HTTPError, client: httpx.AsyncClient) -> float | None:
+    """The seconds an httpx timeout waited, from the client's own limits; None when `exc` is no timeout."""
+    if not isinstance(exc, httpx.TimeoutException):
+        return None
+    limits = client.timeout
+    waited = limits.connect if isinstance(exc, httpx.ConnectTimeout) else limits.read
+    return waited if waited is not None else 0.0
+
+
 #: The header Smokescreen names its refusal in (I1, D152).
 PROXY_ERROR_HEADER = "X-Smokescreen-Error"
 
@@ -85,8 +105,8 @@ async def fetch_bytes(url: str, *, max_bytes: int | None = None) -> bytes:
         async with asyncio.timeout(TOTAL_TIMEOUT_SECONDS):
             return await _fetch(url, max_bytes)
     except TimeoutError:
-        raise FetchRefused(
-            f"the download did not finish within {TOTAL_TIMEOUT_SECONDS:g} seconds"
+        raise FetchTimedOut(
+            f"the download did not finish within {TOTAL_TIMEOUT_SECONDS:g} seconds", seconds=TOTAL_TIMEOUT_SECONDS
         ) from None
 
 
@@ -111,6 +131,9 @@ async def _fetch(url: str, cap: int | None = None) -> bytes:
                         )
                     return await _read_capped(response, cap)
             except httpx.HTTPError as exc:
+                waited = _timed_out(exc, client)
+                if waited is not None:
+                    raise FetchTimedOut(f"could not download {url}: {type(exc).__name__}", seconds=waited) from None
                 raise FetchRefused(f"could not download {url}: {type(exc).__name__}") from None
 
     raise FetchRefused(f"more than {MAX_REDIRECTS} redirects; giving up")
@@ -180,7 +203,7 @@ async def fetch(url: str, *, client: httpx.AsyncClient, headers: Mapping[str, st
             return await _fetch_answer(url, client=client, headers=dict(headers or {}), max_bytes=max_bytes,
                                        ready=ready)
     except TimeoutError:
-        raise FetchRefused(f"{url} did not answer within {timeout_s:g} seconds") from None
+        raise FetchTimedOut(f"{url} did not answer within {timeout_s:g} seconds", seconds=timeout_s) from None
 
 
 async def _fetch_answer(url: str, *, client: httpx.AsyncClient, headers: dict[str, str],
@@ -211,5 +234,8 @@ async def _fetch_answer(url: str, *, client: httpx.AsyncClient, headers: dict[st
             refusal = proxy_refusal(exc)
             if refusal is not None:
                 raise FetchBlocked(f"{refusal}: {url}") from None
+            waited = _timed_out(exc, client)
+            if waited is not None:
+                raise FetchTimedOut(f"could not fetch {url}: {type(exc).__name__}", seconds=waited) from None
             raise FetchRefused(f"could not fetch {url}: {type(exc).__name__}") from None
     raise FetchRefused(f"more than {MAX_REDIRECTS} redirects from {seen[0] if seen else url}; giving up")

@@ -114,12 +114,17 @@ class RobotsDisallowed(Exception):
 class RobotsUnreachable(Exception):
     """The host's robots.txt could not be read (a server error, no answer), so nothing on it is fetched
     now (RFC 9309). A failure, not a refusal: it says nothing about what the site allows, so pages
-    already held are kept."""
+    already held are kept.
 
-    def __init__(self, url: str):
-        super().__init__(f"The site's robots.txt could not be read, so {url} was not fetched; it is tried again "
-                         "at the next crawl.")
+    `why` says which way it was not read (F1661), in words that finish "The site's robots.txt …": a timeout
+    says it timed out and a server error names its status, so a site that only kept SynapseBot waiting never
+    reads like one that was down."""
+
+    def __init__(self, url: str, why: str = ""):
+        super().__init__(f"The site's robots.txt {why or 'could not be read'}, so {url} was not fetched; it is "
+                         "tried again at the next crawl.")
         self.url = url
+        self.why = why
 
 
 # ── robots.txt (RFC 9309) ──────────────────────────────────────────────────────
@@ -140,14 +145,15 @@ class Robots:
     disallow_all: bool = False
     sitemaps: list[str] = field(default_factory=list)
     unreachable_: bool = False  # disallow_all because it could not be read, not because the site said so
+    why: str = ""  # how it was not read, for `RobotsUnreachable` (F1661)
 
     @classmethod
     def allow_all(cls) -> Robots:
         return cls()
 
     @classmethod
-    def unreachable(cls) -> Robots:
-        return cls(disallow_all=True, unreachable_=True)
+    def unreachable(cls, why: str = "") -> Robots:
+        return cls(disallow_all=True, unreachable_=True, why=why)
 
     @classmethod
     def parse(cls, text: str) -> Robots:
@@ -398,16 +404,22 @@ class Fetcher:
         except safe_fetch.FetchBlocked:
             raise  # the host itself is refused: every page on it is
         except safe_fetch.FetchTooLarge:
-            found = Robots.unreachable()
+            found = Robots.unreachable(f"is larger than {ROBOTS_MAX_BYTES // 1024} KiB, more than {BOT} reads")
+        except safe_fetch.FetchTimedOut as exc:
+            # Kept waiting is not down (F1661): a site can answer browsers at once and SynapseBot never.
+            waited = f" within {exc.seconds:g} seconds" if exc.seconds else " in time"
+            found = Robots.unreachable(f"timed out: it gave {BOT} no answer{waited}")
         except safe_fetch.FetchRefused:
-            found = Robots.unreachable()
+            found = Robots.unreachable("could not be reached: the site did not answer the connection")
         else:
             if 200 <= got.status < 300:
                 found = Robots.parse(got.body.decode("utf-8", errors="replace"))
             elif 400 <= got.status < 500:
                 found = Robots.allow_all()
+            elif got.status >= 500:
+                found = Robots.unreachable(f"answered {got.status}, a server error on the site's side")
             else:
-                found = Robots.unreachable()
+                found = Robots.unreachable(f"answered {got.status}, which is not a robots.txt")
         self._robots[host] = found
         return found
 
@@ -418,7 +430,7 @@ class Fetcher:
         `FetchRefused`."""
         robots = await self.robots(url)
         if robots.unreachable_:
-            raise RobotsUnreachable(url)
+            raise RobotsUnreachable(url, robots.why)
         if not robots.allows(url):
             raise RobotsDisallowed(url)
         return await self._get(url, headers=conditional_headers(validator), max_bytes=max_bytes)
