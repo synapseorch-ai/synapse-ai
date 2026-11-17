@@ -54,3 +54,9 @@ def test_llama3_1s_70b_is_never_left_out():
 
 def test_the_tip_names_gpt_oss_20b():
     assert MM.SYNAPSE_AI_LOCAL_MODEL == "gpt-oss:20b"
+
+
+def test_the_tips_words_trace_to_the_pages_that_say_them():
+    """gpt-oss:20b's 14 GB and 128K are its tags page's; that it runs in 16 GB of memory, its card's and Ollama's."""
+    source = F.size_of("ollama.gpt-oss:20b").source
+    assert "ollama.com/library/gpt-oss" in source and "huggingface.co/openai/gpt-oss-20b" in source, source
