@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[3]
 def home(monkeypatch, tmp_path):
     monkeypatch.setenv("SYNAPSE_HOME", str(tmp_path))
     monkeypatch.delenv("SYNAPSE_STARTED_BY", raising=False)
+    cli._run_dir().mkdir(parents=True, exist_ok=True)  # where a start keeps its state
     return tmp_path
 
 
@@ -60,8 +61,8 @@ class TestTheStateHoldsIt:
 
     def test_start_writes_how_it_was_started(self):
         source = (ROOT / "synapse/cli.py").read_text(encoding="utf-8")
-        assert ("_write_state(effective_backend_port, effective_frontend_port, _how_it_ran(detach, no_browser, "
-                "profile, verbose, backend_port, frontend_port))") in source
+        assert "how = _how_it_ran(detach, no_browser, profile, verbose, backend_port, frontend_port)" in source
+        assert "_write_state(effective_backend_port, effective_frontend_port, how)" in source
 
     def test_status_json_reports_it_and_reads_an_older_state(self, home, monkeypatch):
         monkeypatch.setattr(cli, "_login_is_on", lambda: True)

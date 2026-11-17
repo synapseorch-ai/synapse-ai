@@ -1311,8 +1311,24 @@ def _state_file() -> Path:
     return _run_dir() / "state.json"
 
 
-def _write_state(backend_port: int, frontend_port: int) -> None:
-    """What `synapse status` reports: the ports this run actually used."""
+#: What a launcher sets when it starts Synapse itself (F1641): the systemd unit and the launchd plist (autostart).
+STARTED_BY_ENV = "SYNAPSE_STARTED_BY"
+
+
+def _how_it_ran(detach: bool = False, no_browser: bool = False, profile: bool = False, verbose: bool = False,
+                backend_port: int | None = None, frontend_port: int | None = None) -> dict:
+    """How this start ran (F1641), so a later release can bring Synapse back the same way: the flags it was given (a
+    port is None when it was not given, so a restart picks one again) and who started it, "autostart" when its launcher
+    marks the start, else "person". A mark, not a flag: an older Synapse started by a newer launcher ignores it."""
+    return {
+        "detached": bool(detach), "browser": not no_browser, "profile": bool(profile), "verbose": bool(verbose),
+        "backend_port": backend_port, "frontend_port": frontend_port,
+        "by": "autostart" if os.environ.get(STARTED_BY_ENV) == "autostart" else "person",
+    }
+
+
+def _write_state(backend_port: int, frontend_port: int, how: dict | None = None) -> None:
+    """What `synapse status` reports: the ports this run actually used, and how it ran (`_how_it_ran`)."""
     import json as _json
     try:
         _state_file().write_text(_json.dumps({
@@ -1320,6 +1336,7 @@ def _write_state(backend_port: int, frontend_port: int) -> None:
             "frontend_port": frontend_port,
             "version": _get_current_version(),
             "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "how": how,
         }), encoding="utf-8")
     except OSError:
         pass
@@ -1413,7 +1430,8 @@ def _start_command(
             print(f"  Full log: synapse logs {failure.log_name}")
         sys.exit(1)
 
-    _write_state(effective_backend_port, effective_frontend_port)
+    how = _how_it_ran(detach, no_browser, profile, verbose, backend_port, frontend_port)
+    _write_state(effective_backend_port, effective_frontend_port, how)
 
     url = f"http://localhost:{effective_frontend_port}"
     # With login off, the browser is opened with the access link, so the person
@@ -1509,7 +1527,9 @@ def _status_command(as_json: bool = False):
             pass
     login = _login_is_on()
     report.update(url=url, ready=ready, login=login,
-                  link=url if login else _access_link(frontend_port))
+                  link=url if login else _access_link(frontend_port),
+                  # How the running Synapse was started (F1641), or None for a start before it was recorded.
+                  how=state.get("how"))
     print(_json.dumps(report))
 
 
