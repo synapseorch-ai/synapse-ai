@@ -209,7 +209,9 @@ from core.native_builder import prompt_lint, seed
 #: to use an agent step there, c6c7e724… (on F1689's 26c6cde2).
 #: F1687: a page reader agent (only the builder's read_page; a page's words never instructions) and the step
 #: that answers a one-off read of named pages in the chat, b80ff176… (on F1677's c6c7e724).
-BUNDLE_SHA256 = "b80ff176053c05a572e7ff22bc55913a0a1fe762585b2a4f263241eef329b4e2"
+#: F1689: the planner and the maker open as Synapse AI and name speak_as_synapse_ai; the prompt writer and the
+#: researchers' passage name no role, 976c0d59… (on F1687's b80ff176).
+BUNDLE_SHA256 = "976c0d594d0bcfc4304a2fba99c923cf4421ba5721d8424438c6b09038ecbd7e"
 
 
 def _sha(definitions) -> str:
