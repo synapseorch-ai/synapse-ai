@@ -145,6 +145,8 @@ PRIVATE_STATE_PREFIXES = (
     # That a plan went back once for code going through a tool's whole object answer (`build_plan.WALK_SENT_BACK`,
     # F1704).
     "_answer_walk_sent_back",
+    # How often a plan went back for what its practice run found (`build_plan.PRACTICE_SENT_BACK`, F1619).
+    "_practice_sent_back",
 )
 
 

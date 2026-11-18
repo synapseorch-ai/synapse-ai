@@ -588,6 +588,9 @@ class Examined:
     #: What its structure should be instead, where code can tell (D340 D3, `structure.issues`): sent back once, then
     #: said on the card; never a block.
     structure: list[str] = field(default_factory=list)
+    #: What the practice run on made-up answers found the plan's steps read and don't get (F1619): sent back up to
+    #: `SENDBACKS` times by `submit_plan`, and on the card in `notes` always; never a block.
+    practice: list[str] = field(default_factory=list)
 
 
 #: Steps that only make data for later ones (F1426): taken out with the emptied step only they fed. A tool's, a
@@ -1192,11 +1195,78 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         filled.run_cost = (await estimate.of(filled, ws)).words()
     except Exception as exc:  # noqa: BLE001 — a cost not worked out is said nowhere, never a plan refused
         _log.warning("run cost not estimated: %s", exc)
+    practice, practice_notes = ([], []) if issues else await _practised(filled, ws, state)
     return Examined(filled, [_hinted(i) for i in issues], missing=list(filled.missing), issues=issues,
                     blocks={**blocked(filled, state), **{f: _feature_block(f) for f in needed}},
                     notes=[*took_out, *room_notes, *eval_notes, *answer_notes, *first_read_notes, *cut_notes, *walk_notes,
-                           *structure.as_notes(shaped)],
-                    features=needed, structure=shaped)
+                           *structure.as_notes(shaped), *practice_notes],
+                    features=needed, structure=shaped, practice=practice)
+
+
+#: How many times a run's plan went back for what its practice run found (F1619), of `SENDBACKS`.
+PRACTICE_SENT_BACK = "_practice_sent_back"
+#: The practices already run, by the run that asked and what they ran (the workflows and the tools' declared answers),
+#: so the planner's own check, `submit_plan` and the route's check of one plan in one run run its code once. Keyed by
+#: the run, never shared across runs (a practice can name a column of its workspace's own Vault file), and kept here
+#: rather than in the run's state, which the planner's own check never writes. No run, nothing kept.
+_PRACTICED: dict[tuple[str, str], tuple[list[str], list[str]]] = {}
+_PRACTICED_KEPT = 64
+
+
+async def _practised(plan: O.Plan, ws: Workspace, state: dict) -> tuple[list[str], list[str]]:
+    """(what goes back to the planner, the card's lines) from the plan's practice run on made-up answers (F1619,
+    `practice_run`). A finding about a value an MCP server's declaration made is only said on the card, as F1620 says
+    such a miss; a Transform this install can't run with no network is said as not practised. Never raises."""
+    import hashlib
+
+    from core.native_builder import practice_run
+    from core.native_builder.compile import compile_plan
+
+    try:
+        compiled = compile_plan(plan, existing_agents=dict(ws.agents), mint=placeholder_mint(),
+                                orch_id=_orch_id(plan, state))
+        docs, todo = [], [compiled]
+        while todo:
+            c = todo.pop(0)
+            docs.append(c.orchestration)
+            todo.extend(c.inner)
+        answers = answers_of(ws.tools)
+        readers = _changed_steps(plan, state, compiled)
+        _, here = _run()
+        key = (here.run_id, hashlib.sha256(json.dumps([docs, answers, sorted(readers) if readers is not None else None],
+                                                      sort_keys=True, default=str).encode()).hexdigest()) \
+            if here is not None and here.run_id else None
+        if key is not None and key in _PRACTICED:
+            back, card = _PRACTICED[key]
+            return list(back), list(card)
+        found = await practice_run.practise(docs, answers=answers, readers=readers, vault_text=_vault_shape_text)
+    except Exception as exc:  # noqa: BLE001 — a practice that breaks never stops a plan from being shown
+        _log.warning("practice run not run: %s", exc, exc_info=True)
+        return [], []
+    back = [f"step {f.step_id}: {f.says} (a practice run, on made-up answers in each step's declared shape). Read "
+            "what the value has, or change the step that makes it" for f in found.findings if not f.mcp]
+    card = [f"{f.step_name}: {f.says}" + (", by the tool's own declaration of its answer, which may be wrong: the run "
+                                          "reads whatever the tool answers" if f.mcp else "")
+            for f in found.findings] + found.not_run
+    if key is not None:
+        _PRACTICED[key] = (back, card)
+        while len(_PRACTICED) > _PRACTICED_KEPT:
+            _PRACTICED.pop(next(iter(_PRACTICED)))
+    return list(back), list(card)
+
+
+async def _vault_shape_text(path: str) -> str | None:
+    """A Vault file the workspace has, read for the practice run's shape of it (F1619 D3): read here, read-only, as
+    `read_vault` reads it; only its columns or keys and their types are kept, never sent anywhere."""
+    import asyncio
+
+    from core.vault_tools import _get_text
+
+    try:
+        text, error = await asyncio.to_thread(_get_text, path)
+    except Exception:  # noqa: BLE001 — a file not read is a step not practised
+        return None
+    return None if error or text is None else text
 
 
 async def _knowledge_parts(plan: O.Plan, ws: Workspace) -> list[str]:
@@ -2780,6 +2850,14 @@ async def submit_plan(args: dict, server_module: Any, events: list[dict]) -> dic
                      if (key := O.wrapped_in(args)) is not None else [])
             return {"error": "Fix these, then submit the plan again:\n" + "\n".join(f"- {e}" for e in
                                                                                    [*where, *found.errors])}
+    # What the practice run found (F1619): sent back up to SENDBACKS times, then the plan goes on and its card says
+    # each one. Never a block: a practice on made-up answers can be wrong where the real one is right.
+    if found.practice:
+        practised = int((here.shared_state.get(PRACTICE_SENT_BACK) or 0) if here is not None else 0)
+        if practised < SENDBACKS:
+            if here is not None:
+                here.shared_state[PRACTICE_SENT_BACK] = practised + 1
+            return {"error": "Fix these, then submit the plan again:\n" + "\n".join(f"- {e}" for e in found.practice)}
     _, run = _run()
     if run is not None:
         run.shared_state.pop(_SENDBACK_KEY, None)
@@ -2824,9 +2902,10 @@ async def check_draft(args: dict, server_module: Any, events: list[dict]) -> dic
     if found.plan is None:
         return {"ok": False, "errors": found.errors}
     copied = imitation.findings(found.plan, ws) if found.plan.kind == "create" else []
-    return {"ok": not (found.errors or found.blocks or copied), "errors": found.errors,
+    return {"ok": not (found.errors or found.blocks or copied or found.practice), "errors": found.errors,
             "missing": found.missing, "misnamed": found.misnamed, "blocks": found.blocks,
             "features_off": found.features, "structure": found.structure,
+            **({"practice": found.practice} if found.practice else {}),
             "imitations": [f["say"] for f in copied], "estimate": found.plan.run_cost}
 
 

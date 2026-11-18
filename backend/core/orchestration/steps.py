@@ -2519,6 +2519,30 @@ def _loop_source_name(expr: str) -> str:
     return _unbraced(expr or "").strip().removeprefix("state.") or "its list"
 
 
+def loop_record(state: dict, output_key: str, iteration: int, agent: str) -> None:
+    """Keep what a Loop body step wrote this iteration, beside the iteration and who wrote it, for the Loop to promote
+    when it ends (`promote_loop_results`). The engine's Loop and the builder's practice run (F1619) both keep it so."""
+    state.setdefault(f"_loop_{output_key}", []).append(
+        {"iteration": iteration, "agent": agent, "result": state[output_key]})
+
+
+def promote_loop_results(state: dict, body: list, output_key: str | None) -> None:
+    """Once a Loop ends, each body step's key holds the list of what it wrote each iteration
+    (`[{iteration, agent, result}, …]`), and the Loop's own key, when it has one, those lists by step name. Only body
+    steps that wrote something: a step that failed every iteration has whatever its key held before still in state,
+    and that value is not this loop's output. The engine's Loop and the builder's practice run (F1619) both end so."""
+    promoted: dict[str, str] = {}  # step name -> output key it produced
+    for sub_step in body:
+        if not sub_step or not sub_step.output_key:
+            continue
+        acc_key = f"_loop_{sub_step.output_key}"
+        if acc_key in state:
+            state[sub_step.output_key] = state.pop(acc_key)
+            promoted[sub_step.name] = sub_step.output_key
+    if output_key:
+        state[output_key] = {name: state[key] for name, key in promoted.items()}
+
+
 def _not_a_list(step: StepConfig, value: Any) -> str:
     """Why a Loop cannot go through `value`, and the fix (F1613): an object names its one list field, if it has one."""
     from core.expressions import _unbraced
@@ -2949,15 +2973,8 @@ class LoopStepExecutor:
                     if sub_step.output_key not in run.shared_state:
                         continue
 
-                    acc_key = f"_loop_{sub_step.output_key}"
                     agent_name = engine.agent_names.get(sub_step.agent_id, sub_step.name) if sub_step.agent_id else sub_step.name
-                    if acc_key not in run.shared_state:
-                        run.shared_state[acc_key] = []
-                    run.shared_state[acc_key].append({
-                        "iteration": iteration,
-                        "agent": agent_name,
-                        "result": run.shared_state[sub_step.output_key],
-                    })
+                    loop_record(run.shared_state, sub_step.output_key, iteration, agent_name)
 
                 iterations_run = iteration
 
@@ -2989,25 +3006,7 @@ class LoopStepExecutor:
 
             run.shared_state.pop(progress_key, None)
 
-            # After all iterations, promote accumulated results to output keys
-            promoted: dict[str, str] = {}  # step name -> output key it produced
-            for sid in body_ids:
-                sub_step = engine.step_map.get(sid)
-                if not sub_step or not sub_step.output_key:
-                    continue
-                acc_key = f"_loop_{sub_step.output_key}"
-                if acc_key in run.shared_state:
-                    run.shared_state[sub_step.output_key] = run.shared_state.pop(acc_key)
-                    promoted[sub_step.name] = sub_step.output_key
-
-            # Store loop's own output if configured — only body steps that
-            # actually produced something across the run. A step that failed
-            # every iteration has whatever its key held beforehand still sitting
-            # in state, and that value is not this loop's output.
-            if step.output_key:
-                run.shared_state[step.output_key] = {
-                    name: run.shared_state[key] for name, key in promoted.items()
-                }
+            promote_loop_results(run.shared_state, [engine.step_map.get(sid) for sid in body_ids], step.output_key)
             _note_a_zero_run(step, run, engine, body_ids, iterations_run, zero_why or {
                 "condition_false": "its condition was false from the start",
                 "condition_error": "its condition could not be evaluated",

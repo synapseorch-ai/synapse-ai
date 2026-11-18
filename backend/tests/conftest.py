@@ -259,6 +259,17 @@ def _plan_pages_unread():
 
 
 @pytest.fixture(autouse=True)
+def _no_practice_code():
+    """A plan a test checks never starts Docker for its practice run (F1619): its Transforms are left out, nothing said,
+    and the rest of the practice runs. A test about the practice sets its own runner (`practice_run.set_runner`)."""
+    from core.native_builder import practice_run
+
+    practice_run.set_runner(practice_run.OFF)
+    yield
+    practice_run.set_runner(None)
+
+
+@pytest.fixture(autouse=True)
 def _no_headless_renders():
     """A crawl in a test never starts Chromium to render a page (F1632 c): the render answers None, as where Chromium is
     not installed, so a page with no words keeps F1660's. A test about the render sets its own renderer, or calls
