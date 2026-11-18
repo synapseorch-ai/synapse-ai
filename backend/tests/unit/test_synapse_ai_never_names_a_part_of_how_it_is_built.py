@@ -21,9 +21,12 @@ ROLES = re.compile(r"\b(Reporter|Talker|Planner|Classifier|Maker|Prompt Writer|R
 
 
 def _prompt(name: str) -> str:
+    """The agent's prompt as it runs: its library passages written in, as the model reads it."""
+    from core.native_builder import seed
+
     agent = json.loads((AGENTS / f"{name}.json").read_text(encoding="utf-8"))
     agent = agent if isinstance(agent, dict) else agent[0]
-    return str(agent.get("system_prompt") or "")
+    return seed.expand_prompts(str(agent.get("system_prompt") or ""))
 
 
 def test_the_answering_step_speaks_as_synapse_ai_and_names_no_role():
