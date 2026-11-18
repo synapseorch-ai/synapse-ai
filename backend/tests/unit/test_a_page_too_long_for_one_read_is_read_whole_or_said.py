@@ -17,6 +17,21 @@ import pytest
 from core.native_builder import named_sites
 
 URL = "https://en.wikipedia.org/wiki/List_of_sovereign_states"
+_REAL_READ = named_sites.read
+
+
+@pytest.fixture(autouse=True)
+def _the_real_reader_with_no_web(monkeypatch):
+    """These tests are about the plan-time read itself: it goes through `named_sites.read`, which each test sets; by
+    default a page that was not read, so nothing here reaches the web."""
+    from core.native_builder import build_plan
+
+    async def unread(url):
+        return named_sites.NamedPage(url=url, why_not="not read")
+
+    build_plan.set_plan_page_reader(None)
+    monkeypatch.setattr(named_sites, "read", unread)
+    yield
 WORDS = "A sovereign state is a polity that has supreme legitimate authority over a territory. " * 12
 
 
@@ -198,6 +213,7 @@ async def test_a_private_address_the_planner_composed_is_never_fetched(monkeypat
     from core.native_builder import build_plan
 
     monkeypatch.delenv("EGRESS_ALLOW_HOSTS", raising=False)
+    monkeypatch.setattr(named_sites, "read", _REAL_READ)  # the real guarded read
     connected: list = []
     real = safe_fetch.fetch
 
@@ -225,3 +241,21 @@ async def test_a_page_that_cannot_be_read_leaves_the_plan_as_it_is(why, monkeypa
     state = {"user_message": "Make me a list of every country on Wikipedia's List of sovereign states page"}
     got = await build_plan.examine(_plan("scrape_url"), None, ws=build_plan.Workspace(), state=state)
     assert not _cut(got.errors) and not any("is cut at" in n for n in got.notes)
+
+
+
+async def test_outside_tests_the_plan_time_read_is_the_named_sites_read(monkeypatch):
+    """The suite reads no web pages through a checked plan (its conftest sets an offline reader); with none set, the
+    plan-time read is `named_sites.read` itself, the guarded read a named page gets."""
+    from core.native_builder import build_plan
+
+    build_plan.set_plan_page_reader(None)
+    seen: list[str] = []
+
+    async def read(url):
+        seen.append(url)
+        return named_sites.NamedPage(url=url, why_not="not read")
+
+    monkeypatch.setattr(named_sites, "read", read)
+    await build_plan._read_plan_page("https://example.com/a")
+    assert seen == ["https://example.com/a"]

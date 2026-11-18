@@ -174,10 +174,12 @@ def _largest_table(body: str) -> dict[str, Any] | None:
     if best is None or best[0] < 2:
         return None
     rows, attrs, inner = best
-    if (found := _ATTR["id"].search(attrs)) and found.group(1).strip():
-        selector = f"table#{found.group(1).split()[0]}"
-    elif (found := _ATTR["class"].search(attrs)) and found.group(1).strip():
+    # A class before an id: a site's own class names its tables the same way on every page and revision, where an id
+    # can be generated per render (Wikipedia's `mwdA`).
+    if (found := _ATTR["class"].search(attrs)) and found.group(1).strip():
         selector = f"table.{found.group(1).split()[0]}"
+    elif (found := _ATTR["id"].search(attrs)) and found.group(1).strip():
+        selector = f"table#{found.group(1).split()[0]}"
     else:
         selector = "table"
     first = _ROW.search(inner)

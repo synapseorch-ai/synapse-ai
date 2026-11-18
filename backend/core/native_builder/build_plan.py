@@ -896,15 +896,65 @@ def _page_key(url: str) -> str:
     return url.split("#", 1)[0].rstrip("/")
 
 
-def _cut_page_reads(plan: O.Plan, state: dict) -> tuple[list[str], list[str]]:
-    """(errors, card lines) for each Tool step that reads a page the message names, which its read found too long for
-    one read, with `scrape_url` (F1691): that read keeps only the page's start, so a table or list past it is lost.
-    The first plan in a run that does it is sent back with the page's length and its table; a second is built, and
-    its card says the page is cut. Only a page the builder read (`named_sites`) is judged: its length is a fact."""
+#: The pages a plan's `scrape_url` steps target that the conversation has not read, read at plan time (F1691): at most
+#: this many a plan, each on the plan's web budget.
+PLAN_PAGE_READS = 3
+#: What reads one of them: `named_sites.read` unless set (`set_plan_page_reader`). The test suite sets an offline one,
+#: so no test reaches the web through a plan it checks, as `builder_research.set_api_probe` does for API probes.
+_plan_page_reader = None
+
+
+def set_plan_page_reader(reader) -> None:
+    """Read a plan's pages with `reader` (an async `url -> NamedPage`), or with `named_sites.read` again when None."""
+    global _plan_page_reader
+    _plan_page_reader = reader
+
+
+async def _read_plan_page(url: str):
+    from core.native_builder import named_sites
+
+    return await (_plan_page_reader or named_sites.read)(url)
+
+
+async def _read_plan_pages(plan: O.Plan, state: dict) -> None:
+    """Read, once a conversation, each page a `scrape_url` step of the plan targets that nothing has read yet (F1691):
+    a message can name a page in words, and the planner then writes its address, so the read before planning never
+    saw it. The same guarded read as a named page's (`named_sites.read`: the egress guard, 8 seconds, 2 MB, the plan's
+    web budget), kept beside them; a read that fails is kept as failed and judged as nothing."""
+    from core.native_builder import named_sites
+    from core.orchestration.state_reads import tool_part
+
+    kept = state.get(named_sites.PAGES_KEY)
+    pages = dict(kept) if isinstance(kept, dict) else {}
+    seen = {_page_key(str(u)) for key, page in pages.items() if isinstance(page, dict)
+            for u in (key, page.get("url"), page.get("final_url")) if u}
+    wanted: list[str] = []
+    for step in [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)]:
+        if step.type != "tool" or not step.tool or tool_part(step.tool) != "scrape_url":
+            continue
+        args = (step.config or {}).get("tool_arguments")
+        url = str(args.get("url") or "").strip() if isinstance(args, dict) else ""
+        if url.startswith(("http://", "https://")) and _page_key(url) not in seen and url not in wanted:
+            wanted.append(url)
+    for url in wanted[:PLAN_PAGE_READS]:
+        try:
+            pages[url] = (await _read_plan_page(url)).as_dict()
+        except Exception as exc:  # noqa: BLE001 — a page unread is a plan judged without it, never a check that fails
+            _log.warning("a page the plan reads was not read: %s", exc)
+    if wanted:
+        state[named_sites.PAGES_KEY] = pages
+
+
+async def _cut_page_reads(plan: O.Plan, state: dict) -> tuple[list[str], list[str]]:
+    """(errors, card lines) for each Tool step that reads, with `scrape_url`, a page the builder's read found too long
+    for one read (F1691): that read keeps only the page's start, so a table or list past it is lost. The first plan in
+    a run that does it is sent back with the page's length and its table; a second is built, and its card says the
+    page is cut. A page the message named was read before planning; one only the plan names is read here, once."""
     from core.native_builder import named_sites
     from core.orchestration.state_reads import tool_part
     from tools.web_scraper import MAX_MARKDOWN_LEN
 
+    await _read_plan_pages(plan, state)
     pages = state.get(named_sites.PAGES_KEY)
     long_pages: dict[str, dict] = {}
     for key, page in (pages.items() if isinstance(pages, dict) else ()):
@@ -1054,7 +1104,7 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     errors += await _agent_switches(plan, ws, server_module)
     errors += _llm_reads_a_long_fetch(plan, state)
     # A named page too long for one read, read with scrape_url (F1691): sent back once, then said on the card.
-    cut_errors, cut_notes = _cut_page_reads(plan, state)
+    cut_errors, cut_notes = await _cut_page_reads(plan, state)
     errors += cut_errors
     # A Vault file read before the plan's own first write of it reads as empty on its first run (F1692), on the card.
     plan, first_read_notes = first_reads_kept_empty(plan)

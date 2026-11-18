@@ -245,6 +245,20 @@ def _api_probe_answers():
 
 
 @pytest.fixture(autouse=True)
+def _plan_pages_unread():
+    """A page a checked plan reads is not fetched (F1691): no test reaches the web through a plan it examines. A test
+    about the plan-time read sets its own reader, or `set_plan_page_reader(None)` for the real one."""
+    from core.native_builder import build_plan, named_sites
+
+    async def unread(url):
+        return named_sites.NamedPage(url=url, why_not="not read: tests read no web pages")
+
+    build_plan.set_plan_page_reader(unread)
+    yield
+    build_plan.set_plan_page_reader(None)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_cli_status():
     """Forget what the model CLIs said (CLIM1): their status is cached for ten
     minutes per binary, and a test's faked `which` must not answer for the next."""
