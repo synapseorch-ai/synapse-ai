@@ -17,7 +17,7 @@ from core.models_orchestration import Orchestration, OrchestrationRun, StepConfi
 from core.state_types import matches_declared_type, normalize_state_type
 from .human_prompts import HUMAN_CHANNEL_KEY, announce as announce_human_prompt
 from .human_fields import asked_in_words
-from . import run_images
+from . import result_honesty, run_images
 from .run_error import failure_reason, model_failure_of, reason_of, set_run_error
 from .pauses import end_step, innermost_container, pause_chain, progress_key, record_pause, take_tasks
 from .step_usage import exact_window, step_scope
@@ -612,12 +612,16 @@ class OrchestrationEngine:
                 # NEW asyncio Task. We break out of the scope cleanly (in the
                 # current task) and yield the event below.
                 human_input_event: dict | None = None
+                #: What this step's result is said to lack (F1690), kept on its record.
+                result_notes: list[str] = []
                 try:
                     # The step its model calls are made for (F461).
                     with anyio.fail_after(step_timeout), step_scope(run.run_id, step.id), deadline_scope(step_timeout):
                         async for event in executor.execute(step, run, self):
                             # A secret variable rendered into a prompt leaves as its name (F854).
                             event = scrub_secrets_in(event)
+                            if event.get("type") == "step_warning" and event.get("result_note"):
+                                result_notes.append(str(event.get("message") or ""))
                             # Feed every event to the logger
                             if logger:
                                 logger.log_event(event)
@@ -759,6 +763,15 @@ class OrchestrationEngine:
                     if logger:
                         logger.log_event(warning)
                     yield warning
+                # A step that made nothing says so (F1690), unless the plan says its fields may be empty.
+                if run.status != "failed" and step.output_key and step.type.value in result_honesty.MAKES and (
+                        line := result_honesty.empty_said(step, run.shared_state.get(step.output_key))):
+                    warning = {"type": "step_warning", "orch_step_id": step.id, "step_name": step.name,
+                               "message": line, "result_note": True}
+                    result_notes.append(line)
+                    if logger:
+                        logger.log_event(warning)
+                    yield warning
 
                 # If END step or timeout set status, break out
                 if run.status in ("completed", "failed"):
@@ -778,6 +791,7 @@ class OrchestrationEngine:
                     **exact_window(step_start_time),
                     "duration_seconds": step_duration,
                     "output_key": step.output_key,
+                    **({"result_notes": result_notes} if result_notes else {}),
                 })
 
                 # Where the run goes next, decided before the step is announced
@@ -985,8 +999,10 @@ class OrchestrationEngine:
 
         final_output = self._build_final_response(run, getattr(self.orch, "result_key", "") or "")
 
-        # The steps that ended with their plan open (F862): "Completed with warnings", the status unchanged.
-        warnings = sum(1 for h in run.step_history if isinstance(h, dict) and h.get("open_tasks"))
+        # The steps that ended with their plan open (F862), or whose result is said to lack something (F1690):
+        # "Completed with warnings", the status unchanged.
+        warnings = sum(1 for h in run.step_history
+                       if isinstance(h, dict) and (h.get("open_tasks") or h.get("result_notes")))
         yield {
             "type": "orchestration_complete",
             "run_id": run.run_id,

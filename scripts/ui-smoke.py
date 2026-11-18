@@ -1680,6 +1680,64 @@ async def check_toolpolicycheck(browser) -> str:
 
 
 @check
+async def check_resultnotes(browser) -> str:
+    """A completed run whose steps say what their result lacks reads "with warnings" (F1690): a cut answer, an empty
+    result and a CSV with no rows are kept on their step's record, and the run's header counts them, its hover naming
+    the steps and the first warning. A clean run beside it says just "Completed". Light and dark at 1600, and at phone
+    width with no row past the sheet; with SMOKE_SHOTS, the header of each is saved."""
+    shots = os.environ.get("SMOKE_SHOTS")
+    cut = "'Fetch page' got a cut answer: the first 50,039 of about 424,518 characters. What is built from it may be partial."
+    warned = {**_M2B_RUNS["run_smoke_m2b_done"], "run_id": "run_smoke_f1690_warned", "step_history": [
+        _m2b_entry("fetch", "Fetch page", "tool", 0, 0.6, output_key="page", result_notes=[cut]),
+        _m2b_entry("parse", "Parse countries", "tool", 0, 0.2, output_key="rows",
+                   result_notes=["'Parse countries' made nothing: its result is empty."]),
+        _m2b_entry("save", "Save CSV", "tool", 1, 0.1, output_key="saved",
+                   result_notes=["'Save CSV' wrote sovereign_states.csv with a header and no rows."])]}
+    clean = {**_M2B_RUNS["run_smoke_m2b_done"], "run_id": "run_smoke_f1690_clean"}
+    bad: list[str] = []
+    for scheme, (w, h) in (("light", WIDE), ("dark", WIDE), ("light", (390, 844))):
+        ctx = await browser.new_context(viewport={"width": w, "height": h}, color_scheme=scheme)
+        await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{scheme}')}}catch(e){{}}")
+        await ctx.route(f"**/api/orchestrations/{_M2B_REVIEW['id']}", _answer(_M2B_REVIEW))
+        for run in (warned, clean):
+            rid = run["run_id"]
+            await ctx.route(re.compile(rf".*/api/orchestrations/runs/{rid}(\?.*)?$"), _answer(run))
+            await ctx.route(f"**/api/orchestrations/runs/{rid}/children", _answer([]))
+            await ctx.route(f"**/api/orchestrations/runs/{rid}/events/stream*",
+                            _answer(_frame({"type": "stream_complete"}), content_type="text/event-stream"))
+        page = await ctx.new_page()
+        try:
+            for run, want in ((warned, True), (clean, False)):
+                await page.goto(f"{APP}/runs/{run['run_id']}", wait_until="domcontentloaded")
+                strip = page.get_by_label("About this run")
+                await strip.wait_for(timeout=15_000)
+                await asyncio.sleep(SETTLE)
+                said = page.get_by_text("with warnings", exact=True)
+                if want:
+                    if not await said.count():
+                        bad.append(f"{scheme} {w}: a run whose steps warned does not say 'with warnings'")
+                    else:
+                        title = await said.first.get_attribute("title") or ""
+                        for words in ("'Fetch page'", "'Parse countries'", "'Save CSV'", "cut answer"):
+                            if words not in title:
+                                bad.append(f"{scheme} {w}: its hover does not say {words}: {title!r}")
+                elif await said.count():
+                    bad.append(f"{scheme} {w}: a clean run says 'with warnings'")
+                over = await page.evaluate("() => document.documentElement.scrollWidth - window.innerWidth")
+                if w < 600 and over > 1:
+                    bad.append(f"phone: {run['run_id']} runs {over}px past the sheet")
+                if shots:
+                    kind = "warned" if want else "clean"
+                    await strip.screenshot(path=os.path.join(shots, f"resultnotes-{kind}-{scheme}-{w}.png"))
+                    await page.screenshot(path=os.path.join(shots, f"resultnotes-{kind}-{scheme}-{w}-page.png"))
+        finally:
+            await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "a run whose steps warned reads 'with warnings', naming them; a clean one says just Completed"
+
+
+@check
 async def check_runfollow(browser) -> str:
     """The run log follows the newest line, and leaves a reader who scrolled up alone.
 

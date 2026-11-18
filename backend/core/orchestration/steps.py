@@ -1399,6 +1399,15 @@ class ToolStepExecutor:
                                     lacks[1] if lacks else None)
                 if lacks:
                     yield {"type": "step_warning", "orch_step_id": step.id, "message": lacks[0]}
+                # An answer the reader cut short, read whole before it is kept as a file, and a CSV written with no
+                # rows (F1690): said, and kept on the step's record, so the run never reads as a clean success.
+                from core.orchestration import result_honesty
+
+                for _note in (result_honesty.cut_said(step.name, result),
+                              result_honesty.csv_said(step.name, tool_args)):
+                    if _note:
+                        yield {"type": "step_warning", "orch_step_id": step.id, "step_name": step.name,
+                               "message": _note, "result_note": True}
                 for _saved in resource_events:
                     yield {**_saved, "orch_step_id": step.id, "step_name": step.name}
                 _log.debug(f"TOOL STEP: 📤 Tool Result ({called_tool}): {preview}")
