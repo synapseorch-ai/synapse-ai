@@ -822,6 +822,7 @@ class _Crawl:
     took: list[str] = field(default_factory=list)  # addresses taken, in order
     landed: set[str] = field(default_factory=set)  # redirect and canonical addresses pages landed on
     sitemap_urls: list[str] | None = None  # a sitemap's pages, once listed
+    renders: int = 0  # pages this crawl rendered in headless Chromium (F1632 c), at most render.MAX_RENDERS_PER_CRAWL
     sitemap_next: int = 0  # how far down them it got
     resumed: bool = False
     max_pages: int = 0
@@ -1463,6 +1464,19 @@ async def _page(c: _Crawl, url: str, *, links_needed: bool) -> PageLinks | None:
             return links
         from core.knowledge.parse.html import has_real_text
 
+        if not has_real_text(extract.markdown) and (shown := await _rendered(c, final)) is not None:
+            # Its words are written by JavaScript (F1632 c): read as headless Chromium rendered it, as SynapseBot.
+            if (wall := sign_in_wall(url, shown.url, None)) is not None:
+                c.counts["failed"] += 1
+                c.keep(held)
+                if held is None and named:
+                    await _outcome(c, url, "failed", "fetch_failed", wall)
+                return links
+            rendered_links, rendered = await asyncio.to_thread(_render, shown.html.encode("utf-8"),
+                                                               "text/html; charset=utf-8", final,
+                                                               got.headers.get("x-robots-tag"))
+            if has_real_text(rendered.markdown) and not rendered_links.noindex:
+                links, extract = rendered_links, rendered
         if not has_real_text(extract.markdown):  # a lone skip link is no content (F1660): the page needs JavaScript
             c.counts["skipped"] += 1
             c.keep(held)
@@ -1484,6 +1498,21 @@ async def _page(c: _Crawl, url: str, *, links_needed: bool) -> PageLinks | None:
         return None
     await _write(c, page_rel(final, ext=ext), final, got.body, validator_of(got.headers), media or None)
     return None
+
+
+async def _rendered(c: _Crawl, url: str):
+    """`url` rendered in headless Chromium as SynapseBot, once, within the crawl's cap (F1632 c), or None: Chromium is
+    not here, the render failed, or the crawl has rendered its share."""
+    from core.knowledge import fetch as F, render
+
+    if c.renders >= render.MAX_RENDERS_PER_CRAWL:
+        return None
+    c.renders += 1
+    try:
+        return await render.render(url, user_agent=F.USER_AGENT)
+    except Exception as exc:  # noqa: BLE001 — a render that fails is the page as the plain fetch read it
+        _log.info("the render of %s failed: %s", url, exc)
+        return None
 
 
 async def _write(c: _Crawl, rel: str, url: str, data: bytes, validator: str | None, mime: str | None) -> None:

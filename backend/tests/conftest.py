@@ -259,6 +259,21 @@ def _plan_pages_unread():
 
 
 @pytest.fixture(autouse=True)
+def _no_headless_renders():
+    """A crawl in a test never starts Chromium to render a page (F1632 c): the render answers None, as where Chromium is
+    not installed, so a page with no words keeps F1660's. A test about the render sets its own renderer, or calls
+    `render.render_page` itself."""
+    from core.knowledge import render
+
+    async def none(url, *, user_agent):
+        return None
+
+    render.set_renderer(none)
+    yield
+    render.set_renderer(None)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_cli_status():
     """Forget what the model CLIs said (CLIM1): their status is cached for ten
     minutes per binary, and a test's faked `which` must not answer for the next."""
