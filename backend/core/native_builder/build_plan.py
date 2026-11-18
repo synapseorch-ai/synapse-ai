@@ -1570,6 +1570,72 @@ def _objects_read_as_text(s: O.Step, plan: O.Plan) -> list[str]:
 _ANSWER_FIELDS_SAID = "_answer_fields_said"
 
 
+#: A field a prompt writes as code (F1705): a dotted path to an answer's field outside a template (`find.humidity`,
+#: `state.find.humidity`), or a backticked name (`` `humidity` ``). A plain word is never read as one.
+_DOTTED_FIELD = re.compile(r"(?<![\w.{])(?:state\.)?([A-Za-z_]\w*)\.([A-Za-z_]\w*)\b(?!\s*\}\})")
+_BACKTICKED = re.compile(r"`([A-Za-z_]\w*)`")
+#: Backticked words that are literals, never an answer's field.
+_NOT_FIELDS = frozenset({"true", "false", "null", "none", "json", "csv", "yes", "no"})
+
+
+def _whole_reads(x: O.Step) -> set[str]:
+    """The keys an llm or agent step reads whole (F1705): `{{ state.key }}` in its prompt, or its input keys."""
+    from core.templating import STATE_REF, one_form
+
+    if x.type not in ("llm", "agent"):
+        return set()
+    whole = {m.group(1) for m in STATE_REF.finditer(one_form(x.prompt or "")) if "." not in m.group(1)}
+    return whole | {k for k in ((x.config or {}).get("input_keys") or []) if isinstance(k, str)}
+
+
+def _prompt_fields(x: O.Step) -> list[str]:
+    """Each field of an answer an llm or agent step reads whole that its prompt writes as code (F1705), as
+    `key.field`: a dotted path names its key; a backticked name is a field of each answer it reads whole."""
+    from core.templating import STATE_REF, one_form
+
+    whole = _whole_reads(x)
+    if not whole:
+        return []
+    prose = STATE_REF.sub(" ", one_form(x.prompt or ""))
+    out = [f"{key}.{field}" for key, field in _DOTTED_FIELD.findall(prose) if key in whole]
+    # A backticked name is a field only as a field is written: lower case, never a literal, a step's or a tool's name.
+    names = [n for n in _BACKTICKED.findall(prose) if n == n.lower() and n not in _NOT_FIELDS and n not in whole
+             and n != (x.tool or "") and n != x.id]
+    out += [f"{key}.{name}" for name in names for key in sorted(whole)]
+    return list(dict.fromkeys(out))
+
+
+#: A plan sent back once for a step that reads a tool's whole answer and names none of its fields (F1705).
+USES_FIELDS_SENT_BACK = "_uses_fields_sent_back"
+
+
+def _whole_answers_unnamed(plan: O.Plan, ws: Workspace, state: dict, readers: set[str]) -> tuple[list[str],
+                                                                                                    list[str]]:
+    """An llm or agent step that reads the whole object answer of a tool step whose tool declares its shape, and names
+    none of its fields (F1705): nothing can tell from its words which field it means, so it is sent back once a run to
+    name them in `uses_fields`; a plan that still names none is built, and its card says that use isn't checked. A
+    page read's own answer, a list answer and a tool that declares no shape are not asked. (errors, notes)"""
+    from core.native_builder.structure import ANSWERS, answer_fields
+
+    steps = [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)]
+    declared: dict[str, tuple[O.Step, tuple[str, ...]]] = {}
+    for s in steps:
+        if s.type == "tool" and s.tool and s.tool not in ANSWERS and (fields := answer_fields(s.tool, ws.tools)):
+            declared[str((s.config or {}).get("output_key") or s.id)] = (s, fields)
+    unnamed = [(x, key, *declared[key]) for x in steps if x.id in readers
+               for key in sorted(_whole_reads(x) & declared.keys())
+               if not any(str(u).partition(".")[0] == key for u in [*x.uses_fields, *_prompt_fields(x)])]
+    if not unnamed:
+        return [], []
+    if not state.get(USES_FIELDS_SENT_BACK):
+        state[USES_FIELDS_SENT_BACK] = True
+        return [f"step {x.id}: reads the whole answer of step {w.id} (`{w.tool}`, an object with "
+                f"{', '.join(f'`{f}`' for f in fields)}): name in `uses_fields` the fields of it this step uses, as "
+                f"`{key}.<field>`, so each is checked against what the tool answers" for x, key, w, fields in unnamed], []
+    return [], [f"Step \"{x.name}\"'s use of \"{w.name}\"'s answer isn't checked: it reads the whole answer and names "
+                "none of its fields" for x, key, w, fields in unnamed]
+
+
 def _answers_read_past(plan: O.Plan, ws: Workspace, readers: set[str]) -> tuple[list[str], list[str]]:
     """A step reading what a Tool step's answer has not (F1394: the Porto plan fetched Open-Meteo with `scrape_url`
     and its Transform read `daily` out of `{success, url, markdown}`, a KeyError on the first run), held by the saved
@@ -1593,8 +1659,9 @@ def _answers_read_past(plan: O.Plan, ws: Workspace, readers: set[str]) -> tuple[
             step = _engine_step(x, agent_ids={}, workflow_ids={}, end_id=None, issues=[])
             if "output_key" not in step and step["type"] in _RESULT_TYPES:
                 step["output_key"] = step["id"]
-            if x.uses_fields:
-                step["uses_fields"] = list(x.uses_fields)
+            # The fields it says it uses, and any its prompt writes as code (F1705): held as reads of the answer.
+            if uses := list(dict.fromkeys([*x.uses_fields, *_prompt_fields(x)])):
+                step["uses_fields"] = uses
             saved.append(step)
         firsts: dict[tuple[str, str, str], list] = {}
         # Held to the Tool step a run brings to each read, from the plan's first step, as the validator holds them
@@ -1753,6 +1820,12 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict, notes: list[str] | No
     if not state.get(_ANSWER_FIELDS_SAID) and lacks:
         state[_ANSWER_FIELDS_SAID] = True
         errors += lacks
+    # A whole answer read with none of its fields named (F1705): sent back once, then said on the card.
+    unnamed, unchecked = _whole_answers_unnamed(plan, ws, state, {x.id for x in [*written, *(
+        x for w in plan.inner_workflows for x in w.steps)]})
+    errors += unnamed
+    if notes is not None:
+        notes += unchecked
     if not state.get(_OBJECT_TEXT_SAID) and (as_text := [line for s in [*written, *(
             x for w in plan.inner_workflows for x in w.steps)] for line in _objects_put_as_text(s, plan, ws)]):
         state[_OBJECT_TEXT_SAID] = True

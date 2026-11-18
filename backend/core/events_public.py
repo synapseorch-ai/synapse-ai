@@ -136,6 +136,9 @@ PRIVATE_STATE_PREFIXES = (
     "_long_fetch_sent_back",
     # That a plan went back once for a website widget it left unsaid (`build_plan.WIDGET_SENT_BACK`, F1668).
     "_widget_sent_back",
+    # That a plan went back once for a step reading a tool's whole answer with no fields named
+    # (`build_plan.USES_FIELDS_SENT_BACK`, F1705).
+    "_uses_fields_sent_back",
     # That a plan went back once for a scrape_url of a page too long for one read (`build_plan.CUT_READ_SENT_BACK`,
     # F1691).
     "_cut_read_sent_back",
