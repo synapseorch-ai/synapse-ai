@@ -841,6 +841,36 @@ def _llm_reads_a_long_fetch(plan: O.Plan, state: dict) -> list[str]:
     return errors
 
 
+def first_reads_kept_empty(plan: O.Plan) -> tuple[O.Plan, list[str]]:
+    """Each Tool step that reads a Vault file a later step writes, before any step writes it on some way there (F1692),
+    set to read a missing file as empty, with the card's line for it: a workflow's first run has not written the file
+    yet, and its read would fail. Judged on the plan as it compiles; a plan that doesn't compile yet is left as it is,
+    its own errors said elsewhere."""
+    from core.native_builder.compile import compile_plan
+    from core.orchestration.vault_reads import first_read_note, first_reads
+
+    try:
+        compiled = compile_plan(plan, existing_agents={}, mint=placeholder_mint(), orch_id="orch_first_reads")
+    except Exception as exc:  # noqa: BLE001 — nothing marked: the save's own check says the rest
+        _log.debug("first reads not judged: %s", exc)
+        return plan, []
+    docs = [(None, compiled.orchestration), *((i, inner.orchestration) for i, inner in enumerate(compiled.inner))]
+    marks = [(w_i, sid, path) for w_i, doc in docs for sid, path in first_reads(doc)]
+    if not marks:
+        return plan, []
+    out = plan.model_copy(deep=True)
+    notes: list[str] = []
+    for w_i, sid, path in marks:
+        steps = out.steps if w_i is None else out.inner_workflows[w_i].steps
+        for i, s in enumerate(steps):
+            if s.id == sid:
+                config = dict(s.config or {})
+                config["tool_arguments"] = {**dict(config.get("tool_arguments") or {}), "missing_ok": True}
+                steps[i] = s.model_copy(update={"config": config})
+                notes.append(first_read_note(s.name, path))
+    return out, notes
+
+
 async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, state: dict | None = None,
                   without: list[str] | None = None, alone: list[str] | None = None) -> Examined:
     """The planner's Plan held to every rule, as data: `errors` the planner can fix, `missing` the tools nothing here
@@ -920,6 +950,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     errors += addresses_as_given(plan, ws, state)
     errors += await _agent_switches(plan, ws, server_module)
     errors += _llm_reads_a_long_fetch(plan, state)
+    # A Vault file read before the plan's own first write of it reads as empty on its first run (F1692), on the card.
+    plan, first_read_notes = first_reads_kept_empty(plan)
     # Its eval (F1255, D340 F): only where this host offers Evals' tools (cloud withholds them until its own Evals
     # host is in: D3ASM), else left out and said, never a save that fails; then held to the Evals forms' own rules.
     eval_notes = _without_unreachable_eval(plan)
@@ -980,7 +1012,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         _log.warning("run cost not estimated: %s", exc)
     return Examined(filled, [_hinted(i) for i in issues], missing=list(filled.missing), issues=issues,
                     blocks={**blocked(filled, state), **{f: _feature_block(f) for f in needed}},
-                    notes=[*took_out, *room_notes, *eval_notes, *answer_notes, *structure.as_notes(shaped)],
+                    notes=[*took_out, *room_notes, *eval_notes, *answer_notes, *first_read_notes,
+                           *structure.as_notes(shaped)],
                     features=needed, structure=shaped)
 
 

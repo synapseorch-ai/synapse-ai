@@ -5465,12 +5465,14 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
     # A prompt that reads a key before any step writes it reads it empty there
     # (U74): said, never refused — a feedback loop's first pass is a real pattern.
     # An LLM step reading a page, a crawl or a file a Tool step fetched (F1677): said with its fix, never refused.
+    # A Vault file read before the workflow's own first write of it fails its first run (F1692): said with its fix.
     from core.orchestration.state_reads import reads_a_long_fetch
+    from core.orchestration.vault_reads import first_read_warnings
 
     return {"ok": not issues, "issues": issues,
             "warnings": [*unset_reads(orch), *_decisions_on_words(steps, agents),
                          *step_answers_never_followed(steps), *tool_warnings, *field_warnings,
-                         *reads_a_long_fetch(steps)]}
+                         *reads_a_long_fetch(steps), *first_read_warnings(orch)]}
 
 
 def _parse_json_field(value: Any, fallback: Any) -> Any:
