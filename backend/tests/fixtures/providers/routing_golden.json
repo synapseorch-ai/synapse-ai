@@ -4576,7 +4576,7 @@
      "call": "call_anthropic",
      "kwargs": {
       "images": null,
-      "max_tokens": 10240,
+      "max_tokens": 20480,
       "prompt_blocks": null,
       "prompt_cache": true,
       "reasoning": [
@@ -4584,7 +4584,7 @@
        6144,
        "MEDIUM",
        "medium",
-       10240
+       20480
       ],
       "tools": null,
       "volatile_tail": null
@@ -4613,7 +4613,7 @@
      "call": "call_anthropic",
      "kwargs": {
       "images": null,
-      "max_tokens": 10240,
+      "max_tokens": 20480,
       "prompt_blocks": null,
       "prompt_cache": true,
       "reasoning": [
@@ -4621,7 +4621,7 @@
        6144,
        "MEDIUM",
        "medium",
-       10240
+       20480
       ],
       "tools": null,
       "volatile_tail": null
@@ -4650,7 +4650,7 @@
      "call": "call_anthropic",
      "kwargs": {
       "images": null,
-      "max_tokens": 10240,
+      "max_tokens": 20480,
       "prompt_blocks": [
        "block"
       ],
@@ -4660,7 +4660,7 @@
        6144,
        "MEDIUM",
        "medium",
-       10240
+       20480
       ],
       "tools": "<tools>",
       "volatile_tail": "tail"
