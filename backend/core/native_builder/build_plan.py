@@ -327,7 +327,8 @@ def _request_words(state: dict) -> str:
 
 
 #: What the planner sees of a read site (D340 B): the facts, not the fetch's bookkeeping.
-_SITE_FIELDS = ("url", "final_url", "title", "what", "kind", "api_spec", "api", "why_not")
+_SITE_FIELDS = ("url", "final_url", "title", "what", "kind", "api_spec", "api", "text_chars", "too_long_for_one_read",
+                "table", "why_not")
 
 
 def turn_texts(state: dict) -> list[str]:
@@ -886,6 +887,60 @@ def _llm_reads_a_long_fetch(plan: O.Plan, state: dict) -> list[str]:
     return errors
 
 
+#: A plan sent back once for a `scrape_url` of a named page too long for one read (F1691): a second such plan in the
+#: run is built, with a line on its card that says the page is cut, so this is never a loop.
+CUT_READ_SENT_BACK = "_cut_read_sent_back"
+
+
+def _page_key(url: str) -> str:
+    return url.split("#", 1)[0].rstrip("/")
+
+
+def _cut_page_reads(plan: O.Plan, state: dict) -> tuple[list[str], list[str]]:
+    """(errors, card lines) for each Tool step that reads a page the message names, which its read found too long for
+    one read, with `scrape_url` (F1691): that read keeps only the page's start, so a table or list past it is lost.
+    The first plan in a run that does it is sent back with the page's length and its table; a second is built, and
+    its card says the page is cut. Only a page the builder read (`named_sites`) is judged: its length is a fact."""
+    from core.native_builder import named_sites
+    from core.orchestration.state_reads import tool_part
+    from tools.web_scraper import MAX_MARKDOWN_LEN
+
+    pages = state.get(named_sites.PAGES_KEY)
+    long_pages: dict[str, dict] = {}
+    for key, page in (pages.items() if isinstance(pages, dict) else ()):
+        if isinstance(page, dict) and page.get("too_long_for_one_read"):
+            for url in (key, page.get("url"), page.get("final_url")):
+                if url:
+                    long_pages[_page_key(str(url))] = page
+    if not long_pages:
+        return [], []
+    hits: list[tuple[O.Step, str, dict]] = []
+    for step in [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)]:
+        if step.type != "tool" or not step.tool or tool_part(step.tool) != "scrape_url":
+            continue
+        args = (step.config or {}).get("tool_arguments")
+        given = str(args.get("url") or "") if isinstance(args, dict) else ""
+        said = " ".join(x for x in (step.does, step.prompt, step.name) if x)
+        url = given or next((u for u in long_pages if u in said), "")
+        if (page := long_pages.get(_page_key(url))) is not None:
+            hits.append((step, url, page))
+    if not hits:
+        return [], []
+    if state.get(CUT_READ_SENT_BACK):
+        return [], [f"{s.name}: {url} is cut at {MAX_MARKDOWN_LEN:,} of about {int(p.get('text_chars') or 0):,} "
+                    "characters; scrape_url reads only the start of the page." for s, url, p in hits]
+    state[CUT_READ_SENT_BACK] = True
+    errors = []
+    for s, url, p in hits:
+        table = p.get("table") if isinstance(p.get("table"), dict) else None
+        whole = (f"Its table `{table.get('selector')}` has {table.get('rows')} rows: read them whole with "
+                 "scrape_structured, a schema on that selector, " if table else "Read it whole with scrape_structured, ")
+        errors.append(f"step '{s.id}' reads {url} with scrape_url, which keeps the first {MAX_MARKDOWN_LEN:,} "
+                      f"characters of a page; this page is about {int(p.get('text_chars') or 0):,}, so the rest is "
+                      f"cut. {whole}or say in the plan that the page is too large for one read")
+    return errors, []
+
+
 def first_reads_kept_empty(plan: O.Plan) -> tuple[O.Plan, list[str]]:
     """Each Tool step that reads a Vault file a later step writes, before any step writes it on some way there (F1692),
     set to read a missing file as empty, with the card's line for it: a workflow's first run has not written the file
@@ -998,6 +1053,9 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     errors += addresses_as_given(plan, ws, state)
     errors += await _agent_switches(plan, ws, server_module)
     errors += _llm_reads_a_long_fetch(plan, state)
+    # A named page too long for one read, read with scrape_url (F1691): sent back once, then said on the card.
+    cut_errors, cut_notes = _cut_page_reads(plan, state)
+    errors += cut_errors
     # A Vault file read before the plan's own first write of it reads as empty on its first run (F1692), on the card.
     plan, first_read_notes = first_reads_kept_empty(plan)
     # Its eval (F1255, D340 F): only where this host offers Evals' tools (cloud withholds them until its own Evals
@@ -1060,7 +1118,7 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         _log.warning("run cost not estimated: %s", exc)
     return Examined(filled, [_hinted(i) for i in issues], missing=list(filled.missing), issues=issues,
                     blocks={**blocked(filled, state), **{f: _feature_block(f) for f in needed}},
-                    notes=[*took_out, *room_notes, *eval_notes, *answer_notes, *first_read_notes,
+                    notes=[*took_out, *room_notes, *eval_notes, *answer_notes, *first_read_notes, *cut_notes,
                            *structure.as_notes(shaped)],
                     features=needed, structure=shaped)
 

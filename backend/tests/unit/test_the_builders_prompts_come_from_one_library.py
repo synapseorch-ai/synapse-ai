@@ -216,7 +216,10 @@ from core.native_builder import prompt_lint, seed
 #: F1675: plan_steps.md says a tool answers what its outputSchema declares, never a field it doesn't list, and an llm
 #: or agent step that reads a tool's whole answer names the fields it uses in `uses_fields`, 486f8e21… (on F1645's
 #: 5d1e630e).
-BUNDLE_SHA256 = "486f8e215a10274e9913ae1ba719cf2d19988a0f608b31923c1c68484545d9ba"
+#: F1691: the planner's Structure says scrape_url keeps a page's first 50,000 characters, and a named page marked
+#: too_long_for_one_read is read whole with scrape_structured from its table, or the plan says it is too large for
+#: one read, b40af047… (on F1675's 486f8e21).
+BUNDLE_SHA256 = "b40af047b2828490244fcfd9f703de9fae15338d6f3e7de1325cd6a3edcdbffa"
 
 
 def _sha(definitions) -> str:

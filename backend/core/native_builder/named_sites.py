@@ -47,6 +47,9 @@ NO_SPEC = ("no API spec at its usual addresses ({paths}): ask the person for its
 
 #: Each typed fact's length: what the planner reads of a page, and no more.
 TITLE_CHARS, WHAT_CHARS = 120, 200
+#: A long page's largest table, as the planner sees it (F1691): its header cells are the page's own words, each cut
+#: to this length, and only the first few.
+COLUMN_CHARS, COLUMNS_SHOWN = 40, 8
 
 #: Endings that name a file, not a site, when a bare word has one (`main.py`, `notes.md`); a site with one is still
 #: named with `www.` or `https://`.
@@ -76,6 +79,12 @@ class NamedPage:
     api_spec: str | None = None
     #: The spec's own title, where one was found at its usual address: the API's name.
     api_title: str = ""
+    #: The page's readable text, in characters (F1691): its words, without scripts, styles or tags.
+    text_chars: int = 0
+    #: More than the scraper's `scrape_url` keeps of a page: one read of it is cut.
+    too_long_for_one_read: bool = False
+    #: A long page's largest table: {"selector", "rows", "columns"}, its header cells quoted as the page's words.
+    table: dict[str, Any] | None = None
     why_not: str = ""
     redirects: list[str] = field(default_factory=list)
 
@@ -138,6 +147,10 @@ _HEADING = re.compile(r"<h1[^>]*>(.*?)</h1>", re.I | re.S)
 _TAG = re.compile(r"<[^>]+>")
 _SCRIPT = re.compile(r"<(script|style|noscript)[^>]*>.*?</\1>", re.I | re.S)
 _LINK = re.compile(r"<a\b[^>]*href=[\"']([^\"'#]+)[\"'][^>]*>(.*?)</a>", re.I | re.S)
+_TABLE = re.compile(r"<table\b([^>]*)>(.*?)</table>", re.I | re.S)
+_ROW = re.compile(r"<tr\b[^>]*>(.*?)(?=<tr\b|</tbody|</thead|</tfoot|$)", re.I | re.S)
+_HEAD_CELL = re.compile(r"<th\b[^>]*>(.*?)</th>", re.I | re.S)
+_ATTR = {name: re.compile(rf"\b{name}=[\"']([^\"']*)[\"']", re.I) for name in ("id", "class")}
 _SPEC_HREF = re.compile(r"(openapi|swagger)[^/]*\.(json|ya?ml)$|/(openapi|swagger)(\.json|\.ya?ml)?$", re.I)
 _SPEC_WORDS = re.compile(r"\b(openapi|swagger|api reference|api spec)\b", re.I)
 
@@ -148,6 +161,28 @@ def spec_address(url: Any) -> bool:
         return False
     path = urlsplit(url).path or ""
     return bool(_SPEC_HREF.search(path)) or path.rstrip("/") in SPEC_PATHS
+
+
+def _largest_table(body: str) -> dict[str, Any] | None:
+    """The page's table with the most rows, as a `scrape_structured` schema needs it: a selector for it, its row count,
+    and its first row's header cells, capped (F1691). A table nested in another is counted inside it."""
+    best: tuple[int, str, str] | None = None
+    for m in _TABLE.finditer(body):
+        rows = len(_ROW.findall(m.group(2)))
+        if best is None or rows > best[0]:
+            best = (rows, m.group(1), m.group(2))
+    if best is None or best[0] < 2:
+        return None
+    rows, attrs, inner = best
+    if (found := _ATTR["id"].search(attrs)) and found.group(1).strip():
+        selector = f"table#{found.group(1).split()[0]}"
+    elif (found := _ATTR["class"].search(attrs)) and found.group(1).strip():
+        selector = f"table.{found.group(1).split()[0]}"
+    else:
+        selector = "table"
+    first = _ROW.search(inner)
+    cells = [_trim(_TAG.sub(" ", c), COLUMN_CHARS) for c in _HEAD_CELL.findall(first.group(1) if first else "")]
+    return {"selector": selector, "rows": rows, "columns": [c for c in cells if c][:COLUMNS_SHOWN]}
 
 
 def _facts(page: NamedPage, body: str) -> NamedPage:
@@ -176,6 +211,13 @@ def _facts(page: NamedPage, body: str) -> NamedPage:
             page.api_spec = href
     page.same_site_links = len(links)
     page.kind = "site" if len(links) >= SITE_LINKS else "page"
+    # Its length against what one `scrape_url` keeps (F1691): the scraper's own cut, never a copy of it.
+    from tools.web_scraper import MAX_MARKDOWN_LEN
+
+    page.text_chars = len(" ".join(html.unescape(_TAG.sub(" ", _SCRIPT.sub(" ", body))).split()))
+    page.too_long_for_one_read = page.text_chars > MAX_MARKDOWN_LEN
+    if page.too_long_for_one_read:
+        page.table = _largest_table(_SCRIPT.sub(" ", body))
     return page
 
 
