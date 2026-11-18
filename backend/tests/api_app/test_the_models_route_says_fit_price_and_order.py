@@ -14,13 +14,22 @@ there.
 """
 from __future__ import annotations
 
+import pytest
+
 from core.native_builder import models_menu as MM
 from core.providers import model_facts as F
 
 
+@pytest.fixture(autouse=True)
+def _no_measure():
+    """Each case from no measured rows, then the shipped table back."""
+    F.set_measured({})
+    yield
+    F.set_measured(None)
+
+
 class TestTheRoutesFacts:
     async def test_each_known_fit_price_and_the_order(self):
-        F.set_measured(None)
         listed = ["claude-sonnet-4-6", "gemma-3-4b-it", "acme-model-9", "cli.claude.claude-haiku-4-5",
                   "gemini-3.1-flash-lite-preview", "claude-opus-4-6"]
         said = await MM.route_facts(listed)

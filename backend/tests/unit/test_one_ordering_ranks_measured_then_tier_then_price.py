@@ -27,7 +27,8 @@ from core.providers import model_facts as F
 
 @pytest.fixture(autouse=True)
 def _no_measure():
-    F.set_measured(None)
+    """Each case from no measured rows, then the shipped table back for whatever runs next."""
+    F.set_measured({})
     yield
     F.set_measured(None)
 
