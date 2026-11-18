@@ -135,3 +135,93 @@ async def test_a_whole_read_or_a_short_page_is_not_sent_back(tool, url):
 
     got = await build_plan.examine(_plan(tool, url), None, ws=build_plan.Workspace(), state=_state())
     assert not _cut(got.errors), got.errors
+
+
+# ── a page the plan reads that the message never named (S2's own case) ─────────
+
+def test_a_tables_class_wins_over_an_id_its_site_generates():
+    html = _page(_table(206).replace('<table class="wikitable sortable">',
+                                     '<table class="wikitable sortable" id="mwdA">'))
+    assert _facts(html)["table"]["selector"] == "table.wikitable"
+
+
+def test_a_table_with_only_an_id_is_found_by_it():
+    html = _page(_table(206).replace('<table class="wikitable sortable">', '<table id="countries">'))
+    assert _facts(html)["table"]["selector"] == "table#countries"
+
+
+@pytest.fixture
+def reads(monkeypatch):
+    """named_sites.read as a stand-in: this page is too long for one read; each call recorded."""
+    calls: list[str] = []
+
+    async def read(url):
+        calls.append(url)
+        page = named_sites.NamedPage(url=url, reached=True, final_url=url, status=200, kind="page", title="List",
+                                     text_chars=120_777, too_long_for_one_read=True,
+                                     table={"selector": "table.wikitable", "rows": 196, "columns": ["Name"]})
+        return page
+
+    monkeypatch.setattr(named_sites, "read", read)
+    return calls
+
+
+async def test_a_page_the_plan_reads_but_the_message_never_named_is_read_once_and_sent_back(reads):
+    from core.native_builder import build_plan
+
+    state = {"user_message": "Make me a list of every country on Wikipedia's List of sovereign states page"}
+    first = await build_plan.examine(_plan("scrape_url"), None, ws=build_plan.Workspace(), state=state)
+    [said] = _cut(first.errors)
+    assert "120,777" in said and "table.wikitable" in said and "scrape_structured" in said
+    assert reads == [URL]
+    assert state[named_sites.PAGES_KEY][URL]["too_long_for_one_read"] is True
+    again = await build_plan.examine(_plan("scrape_url"), None, ws=build_plan.Workspace(), state=state)
+    assert reads == [URL], "a page is read once a conversation"
+    assert any("cut at 50,000 of about 120,777 characters" in n for n in again.notes), again.notes
+
+
+async def test_a_read_the_web_budget_refuses_sends_nothing_back(monkeypatch):
+    from core.native_builder import build_plan
+
+    async def over(url):
+        return named_sites.NamedPage(url=url, why_not="the plan's 24 web reads are used")
+
+    monkeypatch.setattr(named_sites, "read", over)
+    state = {"user_message": "Make me a list of every country on Wikipedia's List of sovereign states page"}
+    got = await build_plan.examine(_plan("scrape_url"), None, ws=build_plan.Workspace(), state=state)
+    assert not _cut(got.errors)
+
+
+async def test_a_private_address_the_planner_composed_is_never_fetched(monkeypatch):
+    """The real guarded read: the egress guard refuses it before any connection, and the plan goes on unchanged."""
+    from core import safe_fetch
+    from core.native_builder import build_plan
+
+    monkeypatch.delenv("EGRESS_ALLOW_HOSTS", raising=False)
+    connected: list = []
+    real = safe_fetch.fetch
+
+    async def fetch(url, **kw):
+        connected.append(url)
+        return await real(url, **kw)
+
+    monkeypatch.setattr(safe_fetch, "fetch", fetch)
+    state = {"user_message": "List the admin page's users"}
+    got = await build_plan.examine(_plan("scrape_url", "http://10.1.2.3/admin/users"), None, ws=build_plan.Workspace(),
+                                   state=state)
+    assert not _cut(got.errors)
+    page = state.get(named_sites.PAGES_KEY, {}).get("http://10.1.2.3/admin/users", {})
+    assert page.get("reached") is not True and "too_long_for_one_read" not in {k for k, v in page.items() if v}
+
+
+@pytest.mark.parametrize("why", ["it answered 403", "not read: the read timed out"])
+async def test_a_page_that_cannot_be_read_leaves_the_plan_as_it_is(why, monkeypatch):
+    from core.native_builder import build_plan
+
+    async def failed(url):
+        return named_sites.NamedPage(url=url, why_not=why)
+
+    monkeypatch.setattr(named_sites, "read", failed)
+    state = {"user_message": "Make me a list of every country on Wikipedia's List of sovereign states page"}
+    got = await build_plan.examine(_plan("scrape_url"), None, ws=build_plan.Workspace(), state=state)
+    assert not _cut(got.errors) and not any("is cut at" in n for n in got.notes)
