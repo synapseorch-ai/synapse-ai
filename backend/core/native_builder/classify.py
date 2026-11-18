@@ -83,7 +83,7 @@ _A_NEW_ONE = re.compile(r"\b(?:a|an|another|new)\s+(?:workflow|flow|automation|a
 
 
 #: The ways a request beside an open workflow is built new: it plans from nothing, never from the open one.
-_BUILT_NEW_BESIDE = ("new_beside_open", "new_past_cap", "new_using_open", "import_described")
+_BUILT_NEW_BESIDE = ("new_beside_open", "new_past_cap", "new_using_open", "new_using_named", "import_described")
 
 
 def _import_described(message: str) -> bool:
@@ -105,6 +105,24 @@ def new_using_open(text: str, state: dict) -> bool:
         return False
     new_one, uses = _A_NEW_ONE.search(text), re.search(rf"{_USES}{_FILLER}\s+{re.escape(name)}\b", text)
     return bool(new_one and uses and new_one.start() < uses.start())
+
+
+def new_using_named(text: str, names: list[str]) -> bool:
+    """A new job that names a workflow here as what it runs, calls or follows, open or not (F1673, F1628's rule for
+    every workflow the message names): built new, planned from nothing, never a change to the one it names. The same
+    words as F1628: the message starts as a whole job, is no edit, and asks for the new one before the word that uses
+    the named one. "change X so it runs Y afterwards" is an edit of X, and "every Monday run my X" schedules X."""
+    if _EDIT_FIRST.match(text) or not _NEW_JOB.search(text):
+        return False
+    new_one = _A_NEW_ONE.search(text)
+    if not new_one:
+        return False
+    for raw in names:
+        name = _words(str(raw or ""))
+        uses = re.search(rf"{_USES}{_FILLER}\s+{re.escape(name)}\b", text) if name else None
+        if uses and new_one.start() < uses.start():
+            return True
+    return False
 
 
 def open_or_new(text: str, state: dict) -> bool:
@@ -151,10 +169,10 @@ _QUESTION_IF_ASKED = re.compile(r"^(?:is|are|was|were|did|does|do i|what|which|w
 _TELL_ME = re.compile(r"\b(?:tell me|explain|let me know)\b|^(?:what|which|why|who|how)\b")
 
 
-def _own_capability(message: str) -> str | None:
+def _own_capability(message: str, browser: bool | None = None) -> str | None:
     from core.native_builder.lookup import own_capability
 
-    return own_capability(message)
+    return own_capability(message, browser=browser)
 
 
 #: Connecting a named service, said as an instruction; and what makes it an automation instead.
@@ -282,8 +300,10 @@ def _findings(value: Any) -> bool:
 # ── the overrides ─────────────────────────────────────────────────────────────────────────────────────────────────
 
 def override(request: Request, *, message: str, state: dict, inventory: dict[str, list[str]],
-             connectable: set[str]) -> Routed:
-    """`request` corrected from what code knows, with the entry it goes to."""
+             connectable: set[str], browser_agent: bool | None = None) -> Routed:
+    """`request` corrected from what code knows, with the entry it goes to. `browser_agent` is whether a browser agent
+    may be offered here (`lookup.browser_agent_offered`, asked by the async caller, F1643); None reads only whether a
+    browser is installed."""
     text = _words(message)
     if state.get("export_source"):
         # Pasted export code is a new build, whatever it names or says (SAI2's review 1).
@@ -327,6 +347,9 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
     # A new workflow that runs, calls or follows the open one is a new build, though it names it (F1628).
     elif kind in ("change", "build") and new_using_open(text, state):
         kind, by = "build", "new_using_open"
+    # The same for a workflow the message only names, open or not (F1673): built new, planned from nothing.
+    elif kind in ("change", "build") and new_using_named(text, things.get("orchestration") or []):
+        kind, by = "build", "new_using_named"
     # A new request typed beside an open workflow is a new build, whatever the quick model read (F1605): "this" and
     # "it" mean the open one only when the message is about it.
     elif kind in ("change", "build") and not things and new_beside_open(text, state):
@@ -362,7 +385,7 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
     # here) is planned with it, never looked up outside as missing (F1629). Only a research ask that names no outside
     # service, and never a question: "what does this page say" is answered, not built.
     elif kind == "research" and not request.providers and not asked and not message.rstrip().endswith("?") and \
-            not _TELL_ME.search(text) and _own_capability(message):
+            not _TELL_ME.search(text) and _own_capability(message, browser_agent):
         kind, by = "build", "own_capability"
 
     needs = _needs(kind, request.needs, text, things)
@@ -524,7 +547,15 @@ async def _classified(request: Request, events: list[dict]) -> dict:
     state = run.shared_state if run is not None else {}
     message = str(state.get("user_message") or "")
     inventory = await _inventory()
-    routed = override(request, message=message, state=state, inventory=inventory, connectable=await _connectable())
+    # Whether a browser agent may be offered, asked of the host's plan here, once, for the one rule that reads it: a
+    # research ask the product meets (F1629, F1643).
+    browser_agent = None
+    if request.kind == "research":
+        from core.native_builder.lookup import browser_agent_offered
+
+        browser_agent = await browser_agent_offered()
+    routed = override(request, message=message, state=state, inventory=inventory, connectable=await _connectable(),
+                      browser_agent=browser_agent)
     from core.native_builder import change_tools as CT
 
     waiting = CT.staged_plan(state) if run is not None and routed.kind in ("build", "change") else None

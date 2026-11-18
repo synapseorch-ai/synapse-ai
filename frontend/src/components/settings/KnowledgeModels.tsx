@@ -17,7 +17,7 @@ import { useState } from 'react';
 import { Button, Combobox, Field, Input, Section, type ComboboxOption } from '@/components/ui';
 import { ProviderCard } from '@/components/providers/ProviderCard';
 import { rerankOptions, rerankStatus, useKnowledgeEnabled, type RerankListing } from '@/lib/knowledge';
-import { modelOptions, withUnreachable, type ProviderModels } from '@/lib/models';
+import { modelOptions, withHints, withUnreachable, type ModelWindows, type ProviderModels } from '@/lib/models';
 
 import { FORM } from './form';
 import { useSavedSecrets } from './SavedSecret';
@@ -58,13 +58,15 @@ const KEYS: { name: (typeof KNOWLEDGE_SECRETS)[number]; provider: string; icon: 
 const SERVER = 'Rerank server (TEI or Infinity)';
 
 export function KnowledgeModels({
-    part, value, onChange, providers, rerankListings, embeddingModel, chatModel, onSave, isSaving,
+    part, value, onChange, providers, modelFacts, rerankListings, embeddingModel, chatModel, onSave, isSaving,
 }: {
     /** Which half to draw: the models, or the rerankers' cards. */
     part: 'knowledge' | 'rerankers';
     value: KnowledgeModelSettings;
     onChange: (next: KnowledgeModelSettings) => void;
     providers: Record<string, ProviderModels>;
+    /** What `/api/models` says of each model: its window and price, for each chat model's line (F1598). */
+    modelFacts?: ModelWindows;
     /** The rerank models each saved key (or the rerank server) can use, or why none (BF9). */
     rerankListings: RerankListing[];
     /** The workspace's embedding model (code search), which Knowledge uses when it names none. */
@@ -86,10 +88,10 @@ export function KnowledgeModels({
         { value: SAME, label: embeddingModel ? `Same as the embedding model above (${embeddingModel})` : 'Same as the embedding model above (none set)' },
         ...withUnreachable(modelOptions(providers, 'embedding_models'), value.knowledge_embedding_model || undefined),
     ];
-    const contextualOptions: ComboboxOption[] = [
+    const contextualOptions: ComboboxOption[] = withHints([
         { value: SAME, label: chatModel ? `Same as the default model above (${chatModel})` : 'Same as the default model above (none set)' },
         ...withUnreachable(modelOptions(providers), value.knowledge_contextual_model || undefined),
-    ];
+    ], modelFacts);
     const rerankChoices: ComboboxOption[] = [
         { value: NONE, label: 'None: no rerank unless a base names one' },
         ...withUnreachable(rerankOptions(rerankListings), value.knowledge_rerank_model || undefined),

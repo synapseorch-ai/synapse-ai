@@ -50,7 +50,7 @@ import {
     type RunHost, type RunLogState, type RunRecord, type RunRow, type StepExecution, type StepResultEntry,
 } from '@/components/run';
 import { OSS_RUN_HOST, ossLastRun, ossRunRecord, ossRunRow } from '@/lib/runHost';
-import { offeredModels, withSaved } from '@/lib/models';
+import { modelHints, offeredModels, withSaved, type ModelWindows } from '@/lib/models';
 import { ResponseModal } from '@/components/workflows/runLog';
 import { RunDrawer } from '@/components/workflows/RunDrawer';
 import { RunStrip, type RunDrawerView } from '@/components/workflows/RunStrip';
@@ -194,6 +194,9 @@ const OSS_CAP_UNITS = ['usd'] as const;
 
 export type { EditorTabs } from '../tabs/editorTabs';
 
+/** How many of a workflow's own runs Recent Runs reads at a time (F1639). */
+const OWN_RUNS_PAGE = 20;
+
 export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, openSettings, tabs }: {
     initialRunId?: string;
     initialOrchId?: string;
@@ -319,6 +322,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
         return () => { live = false; };
     }, [knowledgeEnabled]);
     const [availableModels, setAvailableModels] = useState<string[]>([]);
+    // What `/api/models` says of each model, for each one's line in a step's picker (F1598).
+    const [modelFacts, setModelFacts] = useState<ModelWindows>({});
     // What a step's semantic cache embeds with (F327): the panel says whether one is set.
     const [embeddingModel, setEmbeddingModel] = useState<string | null>(null);
     useEffect(() => {
@@ -477,6 +482,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
         // A step's models are every picker's (F1603: not a signed-out CLI's).
         fetch('/api/models').then(r => r.json()).then(data => {
             setAvailableModels(offeredModels(data.providers ?? {}));
+            setModelFacts(data ?? {});
         }).catch(() => {});
 
         // Schedule names, for labelling schedule-triggered runs.
@@ -1555,15 +1561,33 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
         }
         return [...byId.values()].sort((a, b) => (b.started_at ?? '').localeCompare(a.started_at ?? ''));
     }, [draft, pastRuns, moreRuns]);
+    // Its own runs, a page at a time (F1639): read from the server by this workflow, not everyone's newest hundred
+    // kept to it, which left a workflow behind a hundred newer runs elsewhere with none.
+    const [moreFull, setMoreFull] = useState(false);
     useEffect(() => {
-        if (runDrawer !== 'recent') return;
+        if (runDrawer !== 'recent' || !draft?.id) return;
         let live = true;
-        fetch('/api/orchestrations/runs?limit=100')
+        fetch(`/api/orchestrations/runs?workflow=${encodeURIComponent(draft.id)}&limit=${OWN_RUNS_PAGE}`)
             .then(r => (r.ok ? r.json() : []))
-            .then(rows => { if (live && Array.isArray(rows)) setMoreRuns(rows); })
+            .then(rows => {
+                if (live && Array.isArray(rows)) { setMoreRuns(rows); setMoreFull(rows.length >= OWN_RUNS_PAGE); }
+            })
             .catch(() => { /* the poll's rows stand */ });
         return () => { live = false; };
-    }, [runDrawer]);
+    }, [runDrawer, draft?.id]);
+    const showOlderRuns = useCallback(() => {
+        const last = moreRuns.at(-1);
+        if (!draft?.id || !last?.created_at) return;
+        const before = encodeURIComponent(`${last.created_at},${last.run_id}`);
+        fetch(`/api/orchestrations/runs?workflow=${encodeURIComponent(draft.id)}&limit=${OWN_RUNS_PAGE}&before=${before}`)
+            .then(r => (r.ok ? r.json() : []))
+            .then(rows => {
+                if (!Array.isArray(rows)) return;
+                setMoreRuns((prev) => [...prev, ...rows]);
+                setMoreFull(rows.length >= OWN_RUNS_PAGE);
+            })
+            .catch(() => { /* what was read stands */ });
+    }, [draft?.id, moreRuns]);
 
     // Last run on the steps: the run on the canvas — as it goes, then as its end
     // records it — or, with none, the workflow's newest run, read once when the
@@ -2085,6 +2109,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                                     onSetEntry={() => setEntryPoint(step.id)}
                                     // A model the step is set to stays visible when it is no longer offered (F1603).
                                     availableModels={withSaved(availableModels, step.model)}
+                                    modelHints={modelHints(availableModels, modelFacts)}
                                     orchestration={draft}
                                     knowledgeEnabled={knowledgeEnabled}
                                     knowledgeBases={knowledgeBases}
@@ -2214,6 +2239,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                                         humanPrompt={humanPrompt}
                                         orchestrationNames={Object.fromEntries(orchestrations.map(o => [o.id, o.name]))}
                                         pastRuns={workflowRuns}
+                                        onShowOlder={moreFull ? showOlderRuns : undefined}
                                         onRestoreRun={(run) => guardLeave(() => restoreRun(run))}
                                     />
                                 ),

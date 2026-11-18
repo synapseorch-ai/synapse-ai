@@ -298,7 +298,7 @@ function Row({
                     </span>
                 )}
                 {row.types.length > 0 && (
-                    <StepPath types={row.types} max={12} variant="inline" />
+                    <StepPath types={row.types} roles={row.roles} max={12} variant="inline" />
                 )}
                 <span className="shrink-0 whitespace-nowrap tabular-nums">{steps}</span>
                 {row.updatedAt && (

@@ -21,6 +21,9 @@ import type { Orchestration } from '@/types/orchestration';
 
 /** How often a live run's record is read again: a running one moves by the second, a waiting one by the person. */
 const POLL_MS = { running: 3000, waiting: 10_000 };
+/** While the run's events stream follows it, its moves read the run (F1662); this read stays in case the stream hangs
+ *  without closing. */
+const FOLLOWED_MS = 30_000;
 
 type Loaded =
     | { state: 'loading' }
@@ -81,7 +84,9 @@ export function RunPage({ runId }: { runId: string }) {
     useEffect(() => { void read(); }, [read]);
 
     const live = loaded.state === 'ok' && isLive(loaded.run.status);
-    const every = loaded.state === 'ok' && loaded.run.status === 'paused' ? POLL_MS.waiting : POLL_MS.running;
+    const [following, setFollowing] = useState(false);
+    const every = following ? FOLLOWED_MS
+        : loaded.state === 'ok' && loaded.run.status === 'paused' ? POLL_MS.waiting : POLL_MS.running;
     useEffect(() => {
         if (!live) return;
         const timer = window.setInterval(() => { void read(); }, every);
@@ -114,6 +119,7 @@ export function RunPage({ runId }: { runId: string }) {
                 workflow={loaded.workflow}
                 nested={nested}
                 onChanged={() => { void read(); }}
+                onFollowing={setFollowing}
                 activityNote="No events were recorded for this run. A run from before the event journal has none."
                 extra={<FullLog runId={runId} />}
             />

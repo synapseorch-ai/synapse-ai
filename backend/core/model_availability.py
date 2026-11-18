@@ -39,7 +39,9 @@ KEEP_DAYS = 14
 _CACHE_S = 60
 
 #: Models their provider retired for new callers, known before any call fails (F1299): `{model: {provider, reason,
-#: since}}`, the reason the provider's own sentence. Offered nowhere for that provider; still priced.
+#: since}}`, the reason the provider's own words. Offered nowhere for that provider; still priced. One its provider
+#: shut down for everyone (`shut_down`, F1648) is never called either: a saved step on it is refused with those words
+#: (`shut_down_said`), or answers from a same-provider stand-in where one fits (F1369).
 RETIRED: dict[str, dict[str, str]] = {
     "gemini-2.5-flash-lite": {
         "provider": "gemini", "since": "2026-10-29",
@@ -49,6 +51,24 @@ RETIRED: dict[str, dict[str, str]] = {
     "gpt-4.1-nano": {
         "provider": "openai", "since": "2026-11-04",
         "reason": "The model `gpt-4.1-nano` has been deprecated.",
+    },
+    # Google's deprecations page (aistudio.google.com/docs/deprecations, read 2026-11-17): shut down, replaced by
+    # gemini-3.1-flash-lite.
+    "gemini-3.1-flash-lite-preview": {
+        "provider": "gemini", "since": "2026-05-25", "shut_down": True,
+        "reason": "Gemini 3.1 Flash-Lite Preview (Shut down): its shutdown date was May 25, 2026, and its replacement "
+                  "is gemini-3.1-flash-lite.",
+    },
+    # DeepSeek's changelog (api-docs.deepseek.com/updates, 2026-04-24, read 2026-11-17).
+    "deepseek-chat": {
+        "provider": "deepseek", "since": "2026-07-24", "shut_down": True,
+        "reason": "The two legacy API model names, deepseek-chat and deepseek-reasoner, will be discontinued in three "
+                  "months (2026-07-24).",
+    },
+    "deepseek-reasoner": {
+        "provider": "deepseek", "since": "2026-07-24", "shut_down": True,
+        "reason": "The two legacy API model names, deepseek-chat and deepseek-reasoner, will be discontinued in three "
+                  "months (2026-07-24).",
     },
 }
 
@@ -81,6 +101,28 @@ def said_stand_in(refused: str, used: str) -> None:
     if said is not None:
         said.append(f"`{refused}` is no longer served by its provider, so this step used `{used}` instead, from the "
                     "same provider and keys. Set the model on the step or its agent to keep that one.")
+
+
+def shut_down_said(model: str | None) -> str | None:
+    """What a step on `model` is told, or None (F1648): its provider shut it down for everyone (`RETIRED`'s
+    `shut_down`), said with the provider's own words and the date. A model refused only to new callers is not."""
+    if not model:
+        return None
+    for listed, row in RETIRED.items():
+        if row.get("shut_down") and same_model(listed, model):
+            return (f"`{listed}` was retired by its provider on {row['since']}. {row['reason']} Choose another model "
+                    "for this step before the provider stops serving it.")
+    return None
+
+
+def said_retired(model: str | None) -> None:
+    """Say on the step, once, that its model was retired by its provider (F1648), with the step's other model notes
+    (`noting_stand_ins`). The call itself still goes out: a provider can go on serving a retired id, and a call it
+    then refuses as gone takes the gone path like any other (F1369, F1650)."""
+    said = _STAND_INS.get()
+    line = shut_down_said(model)
+    if said is not None and line is not None and line not in said:
+        said.append(line)
 
 
 def retired_for(provider: str) -> dict[str, dict]:
@@ -212,12 +254,35 @@ async def clear(model: str) -> bool:
 
 async def note_failure(model: str | None, err: BaseException, *, provider: str | None = None,
                        settings: dict | None = None) -> None:
-    """Called with every failed model call: marks the model when the provider said it is gone, never a local one."""
+    """Called with every failed model call: marks the model when the provider said it is gone, never a local one, and
+    only when the error names that model (F1650): an error naming another model, or none, marks nothing."""
     if not model or is_local(provider, settings):
         return
     reason = model_gone(err)
-    if reason:
+    if reason and names_model(str(getattr(err, "detail", None) or err or ""), model):
         await mark(model, reason)
+
+
+#: A word of an error's text that could be a model's id: letters, digits and the marks ids are written with.
+_ID_WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@-]*")
+
+
+def _bare(model_id: str) -> str:
+    """A model's id without its path or provider prefixes: `models/x` and `gemini.x` are `x`, `groq.openai/x` is `x`,
+    `us.anthropic.x` is `x`. A version's dot is never a prefix's (`gpt-4.1-nano` stays whole)."""
+    bare = model_id.lower().rsplit("/", 1)[-1]
+    while True:
+        head, dot, rest = bare.partition(".")
+        if not (dot and head.isalpha() and rest):
+            return bare
+        bare = rest
+
+
+def names_model(text: str, model: str) -> bool:
+    """Whether an error's text names `model`, in any of its provider's spellings (`models/x`, `gemini.x`, `x`): one of
+    its words is the model, its path and provider prefixes aside, whole, never a part of a longer id."""
+    want = _bare(model)
+    return bool(want) and any(_bare(word.rstrip(".:,;")) == want for word in _ID_WORD.findall(text or ""))
 
 
 async def note_success(model: str | None) -> None:

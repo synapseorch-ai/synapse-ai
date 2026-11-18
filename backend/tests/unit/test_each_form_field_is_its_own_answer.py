@@ -211,8 +211,11 @@ class TestTheEditor:
     def test_each_is_wired(self):
         src = ROOT / "frontend/src/components/orchestration"
         steps = (src / "panel/steps.tsx").read_text()
-        # A Human step's Add field and a model step's Add answer field (F1553's twin) alike.
-        assert steps.count("name: nextHumanFieldName(fields)") == 2 and "`field_${fields.length + 1}`" not in steps
+        editor = (src / "panel/answerFieldsEditor.tsx").read_text()
+        # A Human step's Add field and a model step's Add answer field (F1553's twin) alike: the second is the shared
+        # answer-field editor's (F1620), which a model step's section is.
+        assert steps.count("name: nextHumanFieldName(fields)") == 1 and editor.count("name: nextHumanFieldName(fields)") == 1
+        assert "`field_${fields.length + 1}`" not in steps + editor
         reader = (src / "readOrchestration.ts").read_text()
         assert "namedHumanFields(" in reader
         validate = (src / "validate.ts").read_text()

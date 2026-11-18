@@ -16,7 +16,7 @@
  * `components/assistant/`.
  */
 import type { HumanField } from '@/components/orchestration/humanFields';
-import { roleOf, type StepRole } from '@/components/run/model';
+import { roleOf, stepRole, type StepRole } from '@/components/run/model';
 import { cronWords, scheduleWords, zoneWords } from '@/components/run/workflowRows';
 import type { ChangeRow } from '@/lib/builderEvents';
 import { STEP_TYPE_META, type StepType } from '@/types/orchestration';
@@ -753,7 +753,14 @@ export function planFromPlanObject(view: PlanObjectView, prompt: string): Plan |
         steps: changes.length
             ? changes.map((c, i) => ({ n: i + 1, name: c, type: null, label: '', role: 'logic' as const }))
             : steps.map((s, i) => {
-                const step = stepOf(i + 1, s.name, known(s.type));
+                const base = stepOf(i + 1, s.name, known(s.type));
+                // By what it does, as the run views draw it (F1672, F1656): a Tool step a model does not fill in has its
+                // inputs set and runs no model. `model_fills` names the ones a model fills; a plan from before it reads
+                // by its type.
+                const fills = view.plan.model_fills;
+                const step = Array.isArray(fills)
+                    ? { ...base, role: stepRole(s.type, { tool_arguments: fills.includes(s.id) ? null : {} }) }
+                    : base;
                 // What a step does is its parts', in code's words (F1228); the planner's words are only what a model
                 // in it is asked to do. A plan from before them reads as it did.
                 const said = view.plan.step_words?.[s.id]?.trim();

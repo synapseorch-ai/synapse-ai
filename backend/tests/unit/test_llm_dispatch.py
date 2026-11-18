@@ -28,7 +28,7 @@ class TestCloudDispatch:
         ("claude-x", "call_anthropic"),
         ("gemini-2.0", "call_gemini"),
         ("grok-2", "call_grok"),
-        ("deepseek-chat", "call_deepseek"),
+        ("deepseek-flash", "call_deepseek"),
         # F62: OpenAI's reasoning models are not `gpt*`, and fell through to Ollama.
         ("o3-mini", "call_openai"),
         ("o4-mini", "call_openai"),

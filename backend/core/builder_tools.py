@@ -10,7 +10,7 @@ import re
 import random
 import string
 import time
-from typing import Any, Iterator
+from typing import Any, Iterator, NamedTuple
 
 from core.state_types import (
     CANONICAL_STATE_TYPES,
@@ -3600,8 +3600,13 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         # that agent to name it.
         from core.tools import named_only_offered
         named = await named_only_offered(server_module)
+        # What each tool here declares it answers, with who owns it (F1620): a read past a custom tool's or a page
+        # read's declaration is an issue, past an MCP tool's a warning. A build's own save (`compile`) passes none:
+        # its plan check has said them already, once a run.
+        from core.native_builder.build_plan import answers_of, tools_here
+        answers = answers_of((await tools_here(server_module))[0])
         verdict = _validate_orchestration(orch, agents=agents, kbs=kbs, knowledge_off=not knowledge_on,
-                                          named_only=named)
+                                          named_only=named, tool_answers=answers)
         issues = [*verdict["issues"], *issues]
         # The inner workflows this build made are checked with it; the workspace's
         # own, which run today, only have to exist — never refused, never rewritten.
@@ -3609,7 +3614,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         ours = [child for child in called if run is not None and child.get("building_run") == run]
         for child in ours:
             child_verdict = _validate_orchestration(child, agents=agents, kbs=kbs, knowledge_off=not knowledge_on,
-                                                    allow_dead_ends=True, named_only=named)
+                                                    allow_dead_ends=True, named_only=named, tool_answers=answers)
             issues += [f"In the inner workflow '{child.get('name')}' ({child['id']}): {i}"
                        for i in child_verdict["issues"]]
             verdict["warnings"] = [*verdict.get("warnings", []), *(
@@ -4365,7 +4370,288 @@ def step_successors(s: dict, by_id: dict) -> list[str]:
 _EXPRESSION_FIELDS = ("if_condition", "switch_expression", "loop_while_condition", "loop_break_condition", "loop_over")
 
 
-def _fields_never_written(steps: list, agents: dict | None = None) -> list[str]:
+def _state_paths(code: str) -> list[tuple[str, list[str], bool]]:
+    """Every `state.…` read in `code` (a condition, a Loop's list) to its end: (key, the parts after it, whether it is
+    compared with a number). `state.k.a[0].b` is (k, [a, 0, b]); a method called on a read is no part of it."""
+    import ast
+
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+    parent: dict = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parent[child] = node
+
+    def chain(node) -> list[str] | None:
+        parts: list[str] = []
+        while True:
+            if isinstance(node, ast.Attribute):
+                parts.append(node.attr)
+                node = node.value
+            elif isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant) and \
+                    isinstance(node.slice.value, (str, int)) and not isinstance(node.slice.value, bool):
+                parts.append(str(node.slice.value))
+                node = node.value
+            elif isinstance(node, ast.Name) and node.id == "state":
+                return list(reversed(parts))
+            else:
+                return None
+
+    out: list[tuple[str, list[str], bool]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Attribute, ast.Subscript)):
+            continue
+        up = parent.get(node)
+        if isinstance(up, (ast.Attribute, ast.Subscript)) and up.value is node:
+            continue  # not the read's end
+        parts = chain(node)
+        if not parts:
+            continue
+        if isinstance(up, ast.Call) and up.func is node:
+            parts = parts[:-1]  # `state.k.f.lower()`: the method is no field
+            if not parts:
+                continue
+        numeric = isinstance(up, ast.Compare) and any(
+            isinstance(c, ast.Constant) and isinstance(c.value, (int, float)) and not isinstance(c.value, bool)
+            for c in (up.left, *up.comparators))
+        out.append((parts[0], parts[1:], numeric))
+    return out
+
+
+def _reads_where(steps: list, keys: set[str]) -> dict[str, list[tuple[str, list[str], bool, str]]]:
+    """Each read of a key in `keys`, to its end (F1618), with where it is: (the reading step, the parts after the key,
+    compared with a number, `condition` or `template`), from templates and conditions, and from a Loop's body through
+    its item, which is one of its list (`state.<item>.b` in the body of a loop over `state.k.a` reads `k.a.0.b`)."""
+    from core.expressions import _unbraced
+    from core.templating import _OLD_STATE_REF, STATE_REF
+
+    items: dict[str, tuple[str, list[str]]] = {}
+    for s in steps:
+        if isinstance(s, dict) and s.get("type") == "loop" and isinstance(s.get("loop_over"), str):
+            found = _state_paths(_unbraced(s["loop_over"]))
+            if found and found[0][0] in keys:
+                items[str(s.get("loop_item_key") or "loop_item")] = (found[0][0], found[0][1])
+
+    out: dict[str, list[tuple[str, list[str], bool, str]]] = {}
+
+    def add(sid: str, head: str, parts: list[str], numeric: bool, where: str) -> None:
+        if head in items:
+            key, prefix = items[head]
+            head, parts = key, [*prefix, "0", *parts]
+        if head in keys and parts and (sid, parts, numeric, where) not in out.setdefault(head, []):
+            out[head].append((sid, parts, numeric, where))
+
+    for s in steps:
+        if not isinstance(s, dict):
+            continue
+        sid = str(s.get("id", "?"))
+        for f in _EXPRESSION_FIELDS:
+            if isinstance(s.get(f), str):
+                for head, parts, numeric in _state_paths(_unbraced(s[f])):
+                    add(sid, head, parts, numeric, "condition")
+
+        def walk(value: Any) -> None:
+            if isinstance(value, dict):
+                for v in value.values():
+                    walk(v)
+            elif isinstance(value, list):
+                for v in value:
+                    walk(v)
+            elif isinstance(value, str) and "state." in value:
+                for ref in [*STATE_REF.findall(value), *_OLD_STATE_REF.findall(value)]:
+                    head, *parts = ref.split(".")
+                    add(sid, head, [p for p in parts if p], False, "template")
+
+        walk({k: v for k, v in s.items() if k != "transform_code" and k not in _EXPRESSION_FIELDS})
+    return out
+
+
+def _deep_reads(steps: list, keys: set[str]) -> dict[str, list[tuple[str, list[str], bool]]]:
+    """Each read of a key in `keys`, to its end (F1618): (the reading step, the parts after the key, compared with a
+    number), wherever it is (`_reads_where`)."""
+    out: dict[str, list[tuple[str, list[str], bool]]] = {}
+    for key, found in _reads_where(steps, keys).items():
+        for sid, parts, numeric, _ in found:
+            if (sid, parts, numeric) not in out.setdefault(key, []):
+                out[key].append((sid, parts, numeric))
+    return out
+
+
+def answer_reads(steps: list, keys: set[str]) -> dict[str, list[tuple[str, list[str], bool, str]]]:
+    """Each read of a key in `keys` (F1620): (the reading step, the parts after the key, compared with a number,
+    `code`, `condition` or `template`). To its end in a template, a condition and a Loop's body through its item
+    (`_reads_where`); at its first field in a Transform's code and a condition (`compile.field_reads`, F1394's reader,
+    which also sees `.get('field')`), where no read taken to its end starts with that field."""
+    from core.native_builder.compile import field_reads
+
+    reads = _reads_where(steps, keys)
+    for s in steps:
+        if not isinstance(s, dict):
+            continue
+        sid = str(s.get("id", "?"))
+        firsts = [("code", s.get("transform_code")), *(("condition", s.get(f)) for f in _EXPRESSION_FIELDS)]
+        for where, text in firsts:
+            if not isinstance(text, str):
+                continue
+            for key, fields in field_reads(text, keys).items():
+                found = reads.setdefault(key, [])
+                for field in fields:
+                    if not any(r[0] == sid and r[3] == where and r[1][:1] == [field] for r in found):
+                        found.append((sid, [field], False, where))
+    return reads
+
+
+class AnswerMiss(NamedTuple):
+    """A read of a Tool step's answer that its tool's declaration rules out (F1620): what the one rule found, for the
+    saved workflow's validator and the plan check to each say in its own words."""
+
+    reader: str  # the reading step's id
+    where: str  # `code`, `condition` or `template`
+    key: str  # the state key it reads
+    writer: str  # the Tool step's id
+    tool: str
+    owner: str  # `custom`, `page` or `mcp` (`step_answers.tool_answers`)
+    parts: tuple[str, ...]  # what it reads after the key
+    problem: str  # what is wrong, with its fix (`output_fields.path_problem`)
+    has: tuple[str, ...]  # the answer's first-level fields
+    first: bool  # the first field read is not one the answer has
+
+
+def tool_answer_misses(steps: list, tool_answers: dict[str, dict] | None,
+                       entry: str | None = None) -> list[AnswerMiss]:
+    """Every read of a Tool step's answer that its tool's declaration rules out (F1620; F1616(b): a field read that the
+    tool never answers failed only when the run reached it): the one rule the saved workflow's validator
+    (`_tool_answer_reads`) and the plan check (`build_plan._answers_read_past`) both hold. `tool_answers` is
+    `step_answers.tool_answers`: each tool's declared fields and who owns them.
+
+    A key is held when one step writes it, a Tool step whose tool declares its answer; each of its reads
+    (`answer_reads`) is checked, and the whole answer, a text method and an index are no field. A read is
+    checked to its depth, or at its first field where only that is known (`first_level`: a page read's, or a
+    declaration with a part outside the answer's subset).
+
+    From `entry`, each read is held to the Tool step a run brings to it (`state_reads.Walk.judged_by`, F1621): two Tool
+    steps on two arms writing one key no longer leave a read only one of them reaches unchecked."""
+    from core.native_builder.compile import TEXT_METHODS
+    from core.orchestration import output_fields as _answer
+    from core.orchestration import step_answers
+
+    if not tool_answers:
+        return []
+    from core.orchestration.state_reads import writers as _writers
+
+    from core.orchestration.state_reads import Walk
+
+    writers = _writers(steps)
+    ways = Walk({"steps": steps, "entry_step_id": entry}) if entry else None
+
+    def held_to(sid: Any, key: str) -> dict | None:
+        """The one Tool step whose declared answer a read of `key` in `sid` is held to, or None."""
+        ws = ways.judged_by(sid, key, writers[key]) if ways else writers[key]
+        if len(ws) == 1 and ws[0].get("type") == "tool" and ws[0].get("forced_tool") in tool_answers:
+            return ws[0]
+        return None
+
+    keys = ({key for key, ws in writers.items()
+             if any(w.get("type") == "tool" and w.get("forced_tool") in tool_answers for w in ws)} if ways else
+            {key for key in writers if held_to(None, key) is not None})
+    if not keys:
+        return []
+    reads = answer_reads(steps, keys)
+    misses: list[AnswerMiss] = []
+    for key, found in reads.items():
+        for sid, parts, _, where in found:
+            writer = held_to(sid, key)
+            if writer is None or not parts or parts[0] in TEXT_METHODS or parts[0].lstrip("-").isdigit():
+                continue
+            name = writer["forced_tool"]
+            answer = tool_answers[name]
+            has = tuple(f["name"] for f in answer["fields"])
+            checked = parts[:1] if answer.get("first_level") else parts
+            problem = _answer.path_problem(answer["fields"], checked, root="the tool's declared fields")
+            if problem:
+                misses.append(AnswerMiss(sid, where, key, str(writer.get("id", "?")), name, answer["owner"],
+                                         tuple(parts), problem, has, parts[0] not in has))
+    return misses
+
+
+def _tool_answer_reads(steps: list, tool_answers: dict[str, dict] | None,
+                       entry: str | None = None) -> tuple[list[str], list[str]]:
+    """Every read of a Tool step's answer that its tool's declaration rules out (`tool_answer_misses`, F1620), as the
+    saved workflow's validator says it. A custom tool's or a page read's declaration makes it an issue, with its fix;
+    an MCP tool's a warning, as its server's own word can be wrong and a build is never stopped by what the person
+    cannot fix. Each is said once. Returns (issues, warnings)."""
+    issues: list[str] = []
+    warnings: list[str] = []
+    for m in tool_answer_misses(steps, tool_answers, entry):
+        where = (f"Step '{m.reader}' reads `{'.'.join(m.parts)}` from state.{m.key}, the answer of tool step "
+                 f"'{m.writer}' (`{m.tool}`)")
+        if m.owner == "page":
+            said = (f"{where}, an answer with no such field: `{m.tool}` answers an object with "
+                    f"{', '.join(f'`{f}`' for f in m.has)}. Read a field it has (a page's text is in `markdown`, "
+                    "and so is an API's JSON fetched as a page: parse it there).")
+        elif m.owner == "mcp":
+            said = (f"{where}: {m.problem}. `{m.tool}`'s own declaration does not list it, so this is said, never "
+                    "refused: the run reads whatever the tool answers.")
+            if said not in warnings:
+                warnings.append(said)
+            continue
+        else:
+            said = f"{where}: {m.problem}, which is the tool's output schema in its settings."
+        if said not in issues:
+            issues.append(said)
+    for said in _tool_answer_gaps(steps, tool_answers, entry):
+        if said not in warnings:
+            warnings.append(said)
+    return issues, warnings
+
+
+def _tool_answer_gaps(steps: list, tool_answers: dict[str, dict] | None, entry: str | None) -> list[str]:
+    """A read two or more Tool steps can bring an answer to, which some of their tools answer and the rest do not
+    (F1621): on a way through the rest it finds nothing. A warning, as a field one arm's step lacks is."""
+    from core.native_builder.compile import TEXT_METHODS
+    from core.orchestration import output_fields as _answer
+    from core.orchestration.state_reads import Walk
+    from core.orchestration.state_reads import writers as _writers
+
+    if not tool_answers or not entry:
+        return []
+    ways = Walk({"steps": steps, "entry_step_id": entry})
+    writers = _writers(steps)
+    keys = {key for key, ws in writers.items() if len(ws) > 1 and all(
+        w.get("type") == "tool" and w.get("forced_tool") in tool_answers for w in ws)}
+    said: list[str] = []
+    for key, found in (answer_reads(steps, keys) if keys else {}).items():
+        for sid, parts, _, _ in found:
+            if not parts or parts[0] in TEXT_METHODS or parts[0].lstrip("-").isdigit():
+                continue
+            if not ways.reaching(key).get(sid):
+                continue
+            ws = ways.judged_by(sid, key, writers[key])
+            if len(ws) < 2:
+                continue
+            checked = {str(w.get("id")): (parts[:1] if tool_answers[w["forced_tool"]].get("first_level") else parts)
+                       for w in ws}
+            lacking = [w for w in ws if _answer.path_problem(tool_answers[w["forced_tool"]]["fields"],
+                                                             checked[str(w.get("id"))],
+                                                             root="the tool's declared fields")]
+            if not lacking or len(lacking) == len(ws):
+                continue
+            has = [w for w in ws if w not in lacking]
+            line = (f"Step '{sid}' reads `{'.'.join(parts)}` from state.{key}, which "
+                    f"{', '.join(repr(str(w.get('id'))) for w in has)} answer{'s' if len(has) == 1 else ''} but "
+                    f"{', '.join(repr(str(w.get('id'))) for w in lacking)} (`{lacking[0]['forced_tool']}`) never "
+                    f"answer{'s' if len(lacking) == 1 else ''}, so on a way through "
+                    f"{', '.join(repr(str(w.get('id'))) for w in lacking)} the read finds nothing: read it only where "
+                    f"{', '.join(repr(str(w.get('id'))) for w in has)} answered, or have each tool answer it.")
+            if line not in said:
+                said.append(line)
+    return said
+
+
+def _fields_never_written(steps: list, agents: dict | None = None, entry: str | None = None,
+                          warnings: list[str] | None = None) -> list[str]:
     """A read of a field that the steps writing its key never write (F1549, MIG1's bug A: a Human step with no fields,
     then an If/Else on `state.<its id>.approved`, routed every approval "no").
 
@@ -4373,37 +4659,90 @@ def _fields_never_written(steps: list, agents: dict | None = None) -> list[str]:
     Evaluator, an If/Else, a Retrieve or an Ingest step): a key another kind of step writes too may hold anything.
     Read in a condition (`compile.field_reads`, F1394's reader, on the braced form's inside too, F1433), a template
     anywhere in a step (`{{ state.k.f }}`, or the older single brace) and a Transform's code. A whole read, a text
-    method and an index are no field. Each issue leads with its repair, as every message here does."""
+    method and an index are no field. Each issue leads with its repair, as every message here does.
+
+    Each read is judged by the writers a run can bring to it from `entry` (`state_reads.Walk.judged_by`, F1621): a
+    writer of unknown shape that cannot reach the read no longer switches the rule off, and a field one reaching writer
+    has and another lacks, read in a condition or code (where missing it changes the route or breaks the step; a
+    prompt reads it empty, U74's class), is said in `warnings`, naming the one that lacks it. Without `entry`, every
+    writer of a key judges every read of it, as before."""
     from core.expressions import _unbraced
     from core.native_builder.compile import TEXT_METHODS, field_reads
     from core.orchestration import step_answers
     from core.templating import _OLD_STATE_REF, STATE_REF
 
-    writers: dict[str, list[dict]] = {}
-    for s in steps:
-        if isinstance(s, dict):
-            for key in step_answers.keys_written(s):
-                writers.setdefault(key, []).append(s)
-    known = {key: ws for key, ws in writers.items()
-             if all(step_answers.answer_fields(w, agents) is not None for w in ws)}
-    if not known:
+    from core.orchestration.state_reads import Walk
+    from core.orchestration.state_reads import writers as _writers
+
+    writers = _writers(steps)
+    ways = Walk({"steps": steps, "entry_step_id": entry}) if entry else None
+
+    def known_for(sid: Any, key: str) -> list[dict] | None:
+        """The writers a read of `key` in `sid` is judged by, when every one of them says its answer; else None."""
+        if key not in writers:
+            return None
+        ws = ways.judged_by(sid, key, writers[key]) if ways else writers[key]
+        return ws if all(step_answers.answer_fields(w, agents) is not None for w in ws) else None
+
+    known = {key: ws for key in writers if (ws := known_for(None, key)) is not None}
+    if not known and ways is None:
         return []
 
     issues: list[str] = []
+    # A model step's answer read in depth (F1618): checked to its end against what it declares, or, declaring
+    # nothing, given the whole shape its readers use, once. A read one level deep is told what it was told before.
+    from core.orchestration import output_fields as _answer
+
+    proposed_for: set[tuple[str, str]] = set()  # (key, the model step) whose answer's whole shape was proposed
+    by_writer: dict[tuple[str, str], list[tuple[str, list[str], bool]]] = {}
+    for key, found in _deep_reads(steps, set(writers) if ways else set(known)).items():
+        for sid, parts, numeric in found:
+            ws = known_for(sid, key)
+            if ws is not None and len(ws) == 1 and ws[0].get("type") in ("llm", "agent"):
+                by_writer.setdefault((key, str(ws[0].get("id"))), []).append((sid, parts, numeric))
+    for (key, wid), reads_of in by_writer.items():
+        w = next(x for x in writers[key] if str(x.get("id")) == wid)
+        declared = step_answers.declared_fields(w)
+        names = {f["name"].strip() for f in declared}
+        if declared:
+            for sid, parts, _ in reads_of:
+                if len(parts) < 2 or parts[0] not in names:
+                    continue  # one level deep: as before
+                problem = _answer.path_problem(declared, parts)
+                said = f"Step '{sid}' reads `{'.'.join(parts)}` from state.{key}: {problem}."
+                if problem and said not in issues:
+                    issues.append(said)
+        elif any(len(parts) >= 2 for _, parts, _ in reads_of):
+            shape = _answer.proposed([parts for _, parts, _ in reads_of],
+                                     [parts for _, parts, numeric in reads_of if numeric])
+            readers = sorted({sid for sid, _, _ in reads_of})
+            paths = ", ".join(sorted({f"`{'.'.join(parts)}`" for _, parts, _ in reads_of}))
+            issues.append(f"Step{'s' if len(readers) > 1 else ''} {', '.join(repr(r) for r in readers)} read"
+                          f"{'' if len(readers) > 1 else 's'} state.{key} in depth ({paths}), which {w.get('type')} step "
+                          f"'{w.get('id', '?')}' declares nothing of: declare its output_fields as "
+                          f"{json.dumps(shape)}, and the run holds its model to them.")
+            proposed_for.add((key, wid))
     for s in steps:
         if not isinstance(s, dict):
             continue
+        sid = s.get("id", "?")
+        here = {key: ws for key in writers if (ws := known_for(sid, key)) is not None}
         reads: dict[str, list[str]] = {}
+        decided: set[tuple[str, str]] = set()  # a field read in a condition or code: missing, it changes the run
 
         def add(key: str, field: str) -> None:
-            if key in known and field not in reads.setdefault(key, []):
+            ws = here.get(key)
+            if ws is None or (len(ws) == 1 and (key, str(ws[0].get("id"))) in proposed_for):
+                return
+            if field not in reads.setdefault(key, []):
                 reads[key].append(field)
 
         for code in [*(_unbraced(s[f]) for f in _EXPRESSION_FIELDS if isinstance(s.get(f), str)),
                      *([s["transform_code"]] if isinstance(s.get("transform_code"), str) else [])]:
-            for key, fields in field_reads(code, set(known)).items():
+            for key, fields in field_reads(code, set(here)).items():
                 for field in fields:
                     add(key, field)
+                    decided.add((key, field))
 
         def walk(value: Any) -> None:
             if isinstance(value, dict):
@@ -4420,12 +4759,15 @@ def _fields_never_written(steps: list, agents: dict | None = None) -> list[str]:
                         add(head, field)
 
         walk({k: v for k, v in s.items() if k != "transform_code" and k not in _EXPRESSION_FIELDS})
-        sid = s.get("id", "?")
         for key, fields in reads.items():
-            ws = known[key]
+            ws = here[key]
             has = {f for w in ws for f in step_answers.answer_fields(w, agents) or ()}
             for field in fields:
                 if field in has:
+                    lacking = [w for w in ws if field not in (step_answers.answer_fields(w, agents) or ())]
+                    if (lacking and warnings is not None and ways is not None and (key, field) in decided
+                            and ways.reaching(key).get(sid)):
+                        warnings.append(_a_way_lacks(sid, key, field, ws, lacking))
                     continue
                 if len(ws) == 1 and ws[0].get("type") in ("llm", "agent"):
                     # A model's answer has the fields it declares, held to them (F1553); its text has none.
@@ -4453,6 +4795,22 @@ def _fields_never_written(steps: list, agents: dict | None = None) -> list[str]:
     return issues
 
 
+def _a_way_lacks(sid: Any, key: str, field: str, ws: list[dict], lacking: list[dict]) -> str:
+    """A field some of the writers a run brings to a read write and the rest never do (F1621): the read finds nothing on
+    a way through the rest. A warning: the run takes that way only sometimes, and may not take it at all."""
+    from core.orchestration import step_answers
+
+    def names(group: list[dict]) -> str:
+        return ", ".join(f"'{w.get('id', '?')}'" for w in group)
+
+    has = [w for w in ws if w not in lacking]
+    w = lacking[0]
+    fix = step_answers.declare(w, field) if w.get("type") in ("llm", "agent") else step_answers.repair(w, key, field)
+    return (f"Step '{sid}' reads `{field}` from state.{key}, which {names(has)} write{'s' if len(has) == 1 else ''} "
+            f"but {names(lacking)} never write{'s' if len(lacking) == 1 else ''}, so on a way through "
+            f"{names(lacking)} the read finds nothing: {fix}.")
+
+
 def _decisions_on_words(steps: list, agents: dict | None = None) -> list[str]:
     """A condition deciding on a model's own words (F1553's follow-up, Naveen's pick 1: warn and offer the fix, never
     refuse): the key every writer of which is an llm step's text (or a plain agent's, agents known), read by a text
@@ -4460,11 +4818,9 @@ def _decisions_on_words(steps: list, agents: dict | None = None) -> list[str]:
     from core.orchestration import output_fields as _answer
     from core.orchestration import step_answers
 
-    writers: dict[str, list[dict]] = {}
-    for s in steps:
-        if isinstance(s, dict):
-            for key in step_answers.keys_written(s):
-                writers.setdefault(key, []).append(s)
+    from core.orchestration.state_reads import writers as _writers
+
+    writers = _writers(steps)
     texts = {key: ws for key, ws in writers.items()
              if all(w.get("type") in ("llm", "agent") and step_answers.answer_fields(w, agents) == () for w in ws)}
     if not texts:
@@ -4632,7 +4988,8 @@ def _transform_reads_a_wrapper(step: dict, steps: list[dict]) -> list[str]:
 
 def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | None = None,
                             knowledge_off: bool = False, allow_dead_ends: bool = False,
-                            knowledge_later: bool = False, named_only: frozenset[str] = frozenset()) -> dict:
+                            knowledge_later: bool = False, named_only: frozenset[str] = frozenset(),
+                            tool_answers: dict[str, dict] | None = None) -> dict:
     """Return {"ok": bool, "issues": [str, ...], "warnings": [str, ...]}: wiring
     problems, and what probably is not meant but runs (a prompt that reads a key
     before any step writes it, U74) — warnings never make `ok` false.
@@ -4888,25 +5245,11 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
     # conditioning is not the validator's concern — an unset read gets the
     # schema default, or reads empty in a prompt with none (U74), which is the
     # intended pattern for optional branch outputs and iterative refinement loops.
-    FREE_KEYS = {"user_input", "user_query"}
-    writable: set[str] = set(FREE_KEYS)
-    for s in steps:
-        ok = s.get("output_key")
-        if ok:
-            writable.add(ok)
-        # `output_key` is not the only way a key reaches shared state (F123).
-        # Every loop writes its iteration's index before the body runs (F212),
-        # and a **for-each** loop its item too (`steps.py`, under
-        # `if mode == "foreach"`); a count or while loop has no item, so a body
-        # reading `loop_item` there is still told so.
-        if s.get("type") == "loop":
-            writable.add(s.get("loop_index_key") or "loop_index")
-            if s.get("loop_over"):
-                writable.add(s.get("loop_item_key") or "loop_item")
-        # And the engine writes a human answer to `human_response` as well as
-        # to the step's own output_key, so evaluators that check it still work.
-        if s.get("type") == "human":
-            writable.add("human_response")
+    # `output_key` is not the only way a key reaches shared state (F123): a Loop's index and a for-each's item, and a
+    # Human step's `human_response` too (`state_reads.writable`).
+    from core.orchestration.state_reads import writable as _writable
+
+    writable = _writable(steps)
     for s in steps:
         sid = s.get("id", "?")
         for k in s.get("input_keys") or []:
@@ -4948,11 +5291,17 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
                 )
     # And a field of a key: one the steps writing it never write is always missing, so a condition on it always takes
     # its documented default (F1549: every approval routed "no").
-    issues += _fields_never_written(steps, agents)
+    # Each read judged by the writers a run brings to it (F1621): a field one way's writer lacks is said as a warning.
+    field_warnings: list[str] = []
+    issues += _fields_never_written(steps, agents, entry=orch.get("entry_step_id"), warnings=field_warnings)
+    # A field of a Tool step's answer that its tool does not declare (F1620): an issue for a tool the person or the
+    # product owns, a warning for an MCP tool's own word.
+    tool_issues, tool_warnings = _tool_answer_reads(steps, tool_answers, entry=orch.get("entry_step_id"))
+    issues += tool_issues
     # A Loop over a whole answer object, or a field of it that is no list, ran zero times and said Completed (F1613).
     from core.orchestration.step_answers import loops_over_an_answer
 
-    issues += loops_over_an_answer(steps)
+    issues += loops_over_an_answer(steps, entry=orch.get("entry_step_id"))
     # A model step's declared answer (F1553): fields the run can hold a model to, and only where they are read.
     issues += _answer_field_problems(steps, agents)
     # What a run makes (F249): a result_key no step writes is never the result.
@@ -5101,7 +5450,7 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
     # (U74): said, never refused — a feedback loop's first pass is a real pattern.
     return {"ok": not issues, "issues": issues,
             "warnings": [*unset_reads(orch), *_decisions_on_words(steps, agents),
-                         *step_answers_never_followed(steps)]}
+                         *step_answers_never_followed(steps), *tool_warnings, *field_warnings]}
 
 
 def _parse_json_field(value: Any, fallback: Any) -> Any:

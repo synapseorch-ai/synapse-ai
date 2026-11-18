@@ -41,7 +41,7 @@ import { cn } from '@/lib/cn';
 import { KNOWLEDGE_STEP_TYPES, type Orchestration, type StepConfig, type StepType } from '@/types/orchestration';
 import { stepResult, type RunRecord, type StepTime } from '../run/model';
 import { canvasFlags } from './canvasFlags';
-import { ROLE_FILL, roleOf } from './roles';
+import { ROLE_FILL, stepRole } from './roles';
 import { nodeTypes, useWorkflowGraph, type RunStepStatus } from './useWorkflowGraph';
 import { validateOrchestration } from './validate';
 import { Dock, ZoomCluster } from './workbench/Controls';
@@ -561,7 +561,7 @@ function Workbench({
                             zoomable
                             ariaLabel="Minimap"
                             // By who does the work (D211), as the steps themselves are.
-                            nodeColor={(node: any) => ROLE_FILL[roleOf(node.data?.step?.type)]}
+                            nodeColor={(node: any) => ROLE_FILL[stepRole(node.data?.step?.type, node.data?.step)]}
                             maskColor="var(--minimap-mask)"
                             className="!m-0"
                             style={{ right: zoomRight, bottom: 62, width: 204, height: 124 }}

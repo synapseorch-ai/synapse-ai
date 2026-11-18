@@ -7,8 +7,9 @@ floor with room for its answer; if the planner's prompt grows past that, this te
 again (eb, 11-14), rather than the floor going stale.
 
 The route refuses before any run, in words that say what to do: a model that reads 128K, one named
-(`ollama pull llama3.1`), and where to change what chose the model: a pick in Synapse AI's model menu, the Builder model
-setting, or the everyday model a turn takes when no Builder model is set. A model whose window is not known runs.
+(`ollama pull gpt-oss:20b`), and where to change what chose the model: a pick in Synapse AI's model menu, the
+Builder model setting, or the everyday model a turn takes when no Builder model is set. A model whose window is not
+known runs.
 `GET /api/models` says each known window and the floor, for the pickers.
 """
 from __future__ import annotations
@@ -76,7 +77,7 @@ class TestATurnOnAModelTooSmallIsRefusedBeforeAnythingRuns:
     async def test_a_pick(self, client, builder, fake_llm):
         notice = _refused(await _turn(client, "f1592-pick", model=SMALL))
         assert SMALL in notice["message"] and "8K" in notice["message"] and "model menu" in notice["message"]
-        assert "128K" in notice["message"] and "ollama pull llama3.1" in notice["message"], "what to do, named"
+        assert "128K" in notice["message"] and "ollama pull gpt-oss:20b" in notice["message"], "what to do, named"
         assert fake_llm.calls == [], "no model was called"
 
     async def test_the_builder_model_setting(self, client, builder, fake_llm):

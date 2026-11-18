@@ -31,7 +31,7 @@ export function isBareImportLead(text: string): boolean {
  * What the panel says when it holds the bare line back: true before and after Agent Builder closes (F1636), since a
  * saved export is still one and the person's own words always do.
  */
-export const IMPORT_LEAD_NOTE = 'Paste the workflow\'s Agents SDK code under the line first (the Code → Agents SDK export from Agent Builder, or a copy you saved), or describe the workflow in your own words.';
+export const IMPORT_LEAD_NOTE = 'Paste the workflow\'s Agents SDK code under the line first (the Code → Agents SDK export from Agent Builder, or a copy you saved), attach a screenshot of it, or describe the workflow in your own words.';
 
 /** Whether `search` (a `location.search`) asks for the switch. */
 export function asksForAgentBuilderSwitch(search: string): boolean {

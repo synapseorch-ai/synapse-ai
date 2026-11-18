@@ -87,12 +87,24 @@ class TestSentBack:
                                                      "`state.fetch_forecast`"), said
 
     async def test_a_declared_output_its_code_reads_past(self):
-        """A tool here that declares what it answers (`outputSchema`) is held to it as the built-ins are."""
-        tool = {"name": "forecast_lookup", "does": "Gets a forecast",
+        """A custom tool here that declares what it answers (`outputSchema`, the person's own) is held to it as the
+        built-ins are (F1620: its declaration is tagged by who owns it)."""
+        tool = {"name": "forecast_lookup", "does": "Gets a forecast", "answer_owner": "custom",
                 "outputSchema": {"type": "object", "properties": {"hourly": {"type": "object"}}}}
         fetch = {**FETCH, "tool": "forecast_lookup"}
         said = await _said(_plan(fetch, _code(PORTO)), ws=_ws(tool))
         assert len(said) == 1 and "`forecast_lookup`, which answers an object with `hourly`" in said[0], said
+
+    async def test_a_declared_output_its_server_wrote_is_said_on_the_card(self):
+        """An MCP tool's declaration is its server's word, which may be wrong (F1620): the same read is never sent
+        back, and the plan's card says it."""
+        tool = {"name": "forecast_lookup", "does": "Gets a forecast", "answer_owner": "mcp",
+                "outputSchema": {"type": "object", "properties": {"hourly": {"type": "object"}}}}
+        fetch = {**FETCH, "tool": "forecast_lookup"}
+        found = await build_plan.examine(_plan(fetch, _code(PORTO, "end")), None, ws=_ws(tool),
+                                         state={"user_message": "x"})
+        assert not [e for e in found.errors if "`daily`" in e], found.errors
+        assert [n for n in found.notes if "`daily`" in n and "forecast_lookup" in n], found.notes
 
     async def test_said_once_a_run(self):
         state = {"user_message": "x"}

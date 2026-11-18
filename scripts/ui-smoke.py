@@ -1523,6 +1523,113 @@ RUNLOG_POSITION = r"""() => {
 }"""
 
 
+#: What the builder refuses an image with on a model that cannot see one, as this edition's proxy wraps it (F1666).
+REFUSAL_SAID = ("cli.claude.claude-sonnet-4-6 cannot see images. Pick a different builder model, or send the message "
+                "without them.")
+
+
+@check
+async def check_builderrefusal(browser) -> str:
+    """The panel says the builder's own reason for refusing a message (F1666), never "could not be reached".
+
+    The builder's POST is stubbed, so no model is called: first a refusal with its reason, as the proxy wraps it (a
+    422 `{"error": "Backend Error 422: {\\"detail\\": …}"}`), which the panel must say in its words; then a 500, which
+    still says the builder could not be reached. Light and dark at 1440; `SMOKE_SHOTS`, when set, keeps a shot of each.
+    """
+    shots = os.environ.get("SMOKE_SHOTS")
+    problems: list[str] = []
+    for scheme in ("light", "dark"):
+        ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]}, color_scheme=scheme)
+        await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{scheme}')}}catch(e){{}}")
+        page = await ctx.new_page()
+        answer = {"status": 422, "body": json.dumps({"error": "Backend Error 422: " + json.dumps({"detail": REFUSAL_SAID})})}
+        try:
+            await page.route("**/api/builder/chat", lambda route: route.fulfill(
+                status=answer["status"], content_type="application/json", body=answer["body"]))
+            await page.route("**/api/builder/conversation", lambda route: route.fulfill(
+                status=200, content_type="application/json", body='{"conversation": null}'))
+            await page.goto(f"{APP}/dashboard", wait_until="domcontentloaded")
+            await asyncio.sleep(SETTLE + 1.0)
+            await _build_with_ai(page)
+            panel = page.locator('[data-testid="assistant-panel"]')
+            await panel.wait_for(timeout=15_000)
+
+            async def say(text: str) -> str:
+                box = panel.locator("textarea").last
+                await box.fill(text)
+                await box.press("Enter")
+                await asyncio.sleep(2.0)
+                return await panel.inner_text()
+
+            said = await say("Build what this picture shows.")
+            if REFUSAL_SAID not in said:
+                problems.append(f"{scheme}: the refusal's reason is not said: {said[-300:]!r}")
+            if "could not be reached (422)" in said:
+                problems.append(f"{scheme}: a refusal with a reason still reads 'could not be reached (422)'")
+            if shots:
+                await panel.screenshot(path=os.path.join(shots, f"builderrefusal-reason-{scheme}-1440.png"))
+            answer.update(status=500, body=json.dumps({"error": "Backend Error 500: Internal Server Error"}))
+            said = await say("And this one?")
+            if "The builder could not be reached (500)." not in said:
+                problems.append(f"{scheme}: a 500 does not say the builder could not be reached: {said[-300:]!r}")
+            if shots:
+                await panel.screenshot(path=os.path.join(shots, f"builderrefusal-500-{scheme}-1440.png"))
+        finally:
+            await ctx.close()
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "a refusal with a reason is said in its words and a 500 could not be reached, light and dark"
+
+
+#: A checked plan with a Tool step whose inputs are set (none in `model_fills`) and an LLM step (F1672).
+ROLE_PLAN = {"kind": "create", "title": "Weather note", "summary": "Fetches the forecast and writes a note.",
+             "steps": [{"id": "fetch", "type": "tool", "name": "Fetch the forecast", "tool": "http_get"},
+                       {"id": "write", "type": "llm", "name": "Write the note", "does": "Writes the note"}],
+             "model_fills": []}
+
+
+@check
+async def check_plancardrole(browser) -> str:
+    """The plan card draws a step by what it does, as the run views do (F1672): a Tool step with its inputs set is not
+    "calls a model"; the LLM step beside it is. Drawn from the plan as check_build fills it in; light and dark at 1440.
+    With SMOKE_SHOTS, each card is saved."""
+    shots = os.environ.get("SMOKE_SHOTS")
+    bad: list[str] = []
+    for scheme in ("light", "dark"):
+        parked = {"client_session_id": "conv-f1672", "run_id": RUN_ID, "status": "paused",
+                  "turns": [{"user": ROLE_PLAN["summary"], "assistant": ""}],
+                  "pending": {"run_id": RUN_ID, "field": "feedback", "step_id": "step_human_review",
+                              "prompt": "Here is the plan.", "context_key": "plan_checked",
+                              "context": {"object": "plan", "outcome": "review", "plan": ROLE_PLAN,
+                                          "offers": ["build", "change"]}}}
+        ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]}, color_scheme=scheme)
+        await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{scheme}')}}catch(e){{}}")
+        await ctx.add_init_script(f"window.__conversation = {json.dumps(parked)};")
+        await ctx.add_init_script(BUILDER_BACK)
+        page = await ctx.new_page()
+        try:
+            await page.goto(APP, wait_until="domcontentloaded")
+            await asyncio.sleep(SETTLE + 1.0)
+            await page.locator('[data-testid="assistant-open"]:visible').first.click()
+            card = page.locator('[data-testid="assistant-panel"] section[aria-label="The plan"]')
+            await card.wait_for(timeout=10_000)
+            rows = card.get_by_role("list", name="What it will do").locator("li")
+            names = [" ".join((await rows.nth(i).inner_text()).split()) for i in range(await rows.count())]
+            fetch = next((n for n in names if "Fetch the forecast" in n), "")
+            write = next((n for n in names if "Write the note" in n), "")
+            if not fetch or "calls a model" in fetch:
+                bad.append(f"{scheme}: the set-arguments Tool step reads {fetch!r}")
+            if "calls a model" not in write:
+                bad.append(f"{scheme}: the LLM step reads {write!r}")
+            if shots:
+                await card.screenshot(path=os.path.join(shots, f"plancardrole-{scheme}-1440.png"))
+        finally:
+            await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "a set-arguments Tool step is not 'calls a model' on the card, the LLM step is, light and dark"
+
+
 @check
 async def check_runfollow(browser) -> str:
     """The run log follows the newest line, and leaves a reader who scrolled up alone.
@@ -1716,6 +1823,224 @@ async def check_toolglobals(browser) -> str:
         raise AssertionError("; ".join(problems))
     return ("a declared global is shown, survives Save, and reaches Test"
             + (f"; {added} declared through the picker" if added else "; no variable to pick here"))
+
+
+# ── a tool's answer ──────────────────────────────────────────────────────────
+
+#: A tool's declared answer inside the answer's subset, two levels deep, as the server compiles it (F1620).
+TOOLANSWER_SCHEMA = {
+    "type": "object", "properties": {
+        "leads": {"type": "array", "items": {"type": "object", "properties": {
+            "email": {"type": "string"}, "score": {"anyOf": [{"type": "number"}, {"type": "null"}]}},
+            "required": ["email", "score"], "additionalProperties": False}},
+        "total": {"type": "number"}},
+    "required": ["leads", "total"], "additionalProperties": False}
+#: One with parts outside the subset: kept as it is, shown read-only, each part named.
+TOOLANSWER_OUTSIDE = {"type": "object", "properties": {"id": {"oneOf": [{"type": "string"}, {"type": "number"}]},
+                                                       "name": {"type": "string", "minLength": 2}},
+                      "required": ["id", "name"]}
+#: Pasted into a tool that declares nothing, and taken.
+TOOLANSWER_PASTED = {"type": "object", "properties": {"risky": {"type": "boolean"}}, "required": ["risky"],
+                     "additionalProperties": False}
+_TOOLANSWER_HTTP = {"description": "finds this week's leads", "tool_type": "http", "method": "GET",
+                    "url": "https://example.com/leads", "inputSchema": {"type": "object", "properties": {}},
+                    "headers": {}}
+TOOLANSWER_TOOLS = {
+    "rows": {"name": "uismoke_answer_rows", "generalName": "UI smoke answer rows", **_TOOLANSWER_HTTP,
+             "outputSchema": TOOLANSWER_SCHEMA},
+    "kept": {"name": "uismoke_answer_kept", "generalName": "UI smoke answer kept", **_TOOLANSWER_HTTP,
+             "outputSchema": TOOLANSWER_OUTSIDE},
+    "none": {"name": "uismoke_answer_none", "generalName": "UI smoke answer none", **_TOOLANSWER_HTTP},
+    "python": {"name": "uismoke_answer_py", "generalName": "UI smoke answer python", "tool_type": "python",
+               "description": "counts the leads", "code": "print('{\"leads\": [], \"total\": 0}')\n",
+               "inputSchema": {"type": "object", "properties": {}}, "schemaParams": [], "globals": [],
+               "outputSchema": TOOLANSWER_SCHEMA},
+}
+#: The controls a person reaches with Tab alone in the section, each by its accessible name.
+TOOLANSWER_REACHED = ("Answer field 2 type", "Answer field 2 may be empty", "Add a field", "Paste an example",
+                      "Paste a JSON Schema", "Its output schema")
+
+
+@check
+async def check_toolanswer(browser) -> str:
+    """A custom tool's output schema is edited as answer fields, and kept as it is given (F1620, part 3).
+
+    The tool editor showed no output schema at all. Its "What it answers" section now has F1618 d's rows: a tool whose
+    schema is inside the answer's subset shows its fields, and Save sends that schema unchanged until a field is
+    changed; one with a part outside the subset is shown read-only with each part named, and Save sends it unchanged;
+    one that declares nothing sends no schema, and a pasted JSON Schema taken there is saved. A Python tool's Save
+    keeps its schema too (it sent none before, so one set through the API was erased). Every other option of the
+    editor is still there. Light and dark at 1440 and 390: AA contrast in the section, every control reached with Tab
+    alone. `SMOKE_SHOTS`, when set, keeps a shot of each state.
+    """
+    def seed() -> None:
+        # Each round opens the tools as seeded: the first round's saves change them.
+        for tool in TOOLANSWER_TOOLS.values():
+            try:
+                api(f"/api/tools/custom/{tool['name']}", "DELETE")
+            except Exception:
+                pass
+            api("/api/tools/custom", "POST", tool)
+
+    scoped = CONTRAST.replace("document.querySelectorAll('*')",
+                              "(document.querySelector('[data-testid=\"tool-answer\"]') || document)"
+                              ".querySelectorAll('*')")
+    assert scoped != CONTRAST, "the contrast script no longer reads every element"
+    problems: list[str] = []
+    shots = os.environ.get("SMOKE_SHOTS")
+    runs = [(scheme, size) for scheme in ("light", "dark") for size in ((1440, 900), (390, 844))]
+
+    def same(a, b) -> bool:
+        return json.dumps(a) == json.dumps(b)
+
+    try:
+        for n, (scheme, size) in enumerate(runs):
+            tag = f"{scheme} {size[0]}"
+            seed()
+            ctx = await browser.new_context(viewport={"width": size[0], "height": size[1]}, color_scheme=scheme)
+            await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{scheme}')}}catch(e){{}}")
+            page = await ctx.new_page()
+            saved: list[dict] = []
+            page.on("request", lambda r: saved.append(json.loads(r.post_data or "{}"))
+                    if r.method == "POST" and urllib.parse.urlsplit(r.url).path == "/api/tools/custom" else None)
+
+            async def shot(state: str) -> None:
+                if shots:
+                    await page.screenshot(path=os.path.join(shots, f"toolanswer-{state}-{scheme}-{size[0]}.png"),
+                                          full_page=False)
+
+            async def contrast(state: str) -> None:
+                faint = await page.evaluate(scoped)
+                if faint:
+                    problems.append(f"{tag} {state}: under AA in the section: {faint[:3]}")
+
+            async def open_tool(which: str):
+                await page.goto(f"{APP}/tools", wait_until="domcontentloaded")
+                await asyncio.sleep(SETTLE)
+                await page.locator(f'[data-tool-row="{TOOLANSWER_TOOLS[which]["name"]}"] > button:first-child'
+                                   ).first.click()
+                section = page.get_by_test_id("tool-answer")
+                await section.wait_for(timeout=15_000)
+                await section.scroll_into_view_if_needed()
+                return section
+
+            async def save() -> dict:
+                before = len(saved)
+                await page.get_by_role("button", name=re.compile(r"^save", re.I)).first.click()
+                await asyncio.sleep(2.0)
+                return saved[-1] if len(saved) > before else {"<no save>": True}
+
+            try:
+                # Inside the subset: its rows, and Save sends it unchanged.
+                section = await open_tool("rows")
+                said = {}
+                for path, want in (("1", "List of groups"), ("1.1", "Text"), ("1.2", "Number"), ("2", "Number")):
+                    box = section.get_by_role("combobox", name=f"Answer field {path} type")
+                    said[path] = (await box.inner_text()).strip() if await box.count() else None
+                if said != {"1": "List of groups", "1.1": "Text", "1.2": "Number", "2": "Number"}:
+                    problems.append(f"{tag}: the rows read {said}")
+                if not await section.get_by_role("checkbox", name="Answer field 1.2 may be empty").is_checked():
+                    problems.append(f"{tag}: `score` does not say it may be empty")
+                if not await page.get_by_label("What it needs (JSON schema)").count():
+                    problems.append(f"{tag}: the input schema's editor is gone")
+                await shot("rows")
+                await contrast("rows")
+                # Every control reached with Tab alone, from the first row's name.
+                await section.get_by_role("textbox", name="Answer field 1 name").focus()
+                reached = set()
+                for _ in range(60):
+                    await page.keyboard.press("Tab")
+                    reached.add(await page.evaluate(ANSWERJSON_FOCUS))
+                missed = [c for c in TOOLANSWER_REACHED if c not in reached]
+                if missed:
+                    problems.append(f"{tag}: Tab never reaches {missed}")
+                await section.get_by_text("Its output schema", exact=True).click()
+                shown = section.get_by_label("The tool's output schema")
+                await shown.wait_for(timeout=5_000)
+                if not same(json.loads(await shown.inner_text()), TOOLANSWER_SCHEMA):
+                    problems.append(f"{tag}: its output schema reads {await shown.inner_text()!r}")
+                await shot("schema")
+                await contrast("schema")
+                if n == 0:
+                    sent = await save()
+                    if not same(sent.get("outputSchema"), TOOLANSWER_SCHEMA):
+                        problems.append(f"untouched Save sent outputSchema={sent.get('outputSchema', '<absent>')}")
+                    # A field added is saved with the rest.
+                    section = await open_tool("rows")
+                    await section.get_by_role("button", name="Add a field", exact=True).click()
+                    name = section.get_by_role("textbox", name="Answer field 3 name")
+                    await name.fill("notes")
+                    await name.press("Tab")
+                    sent = await save()
+                    props = (sent.get("outputSchema") or {}).get("properties") or {}
+                    if list(props) != ["leads", "total", "notes"]:
+                        problems.append(f"Save after adding `notes` sent properties {list(props)}")
+
+                # Outside the subset: read-only, each part named, saved unchanged.
+                section = await open_tool("kept")
+                kept = section.get_by_test_id("tool-answer-kept")
+                words = " ".join((await kept.inner_text()).split()) if await kept.count() else ""
+                if not all(w in words for w in ("`id`", "oneOf", "`name`", "minLength")):
+                    problems.append(f"{tag}: the kept schema reads {words!r}")
+                if await section.get_by_role("combobox", name="Answer field 1 type").count():
+                    problems.append(f"{tag}: a schema outside the subset is shown as rows")
+                await shot("kept")
+                await contrast("kept")
+                if n == 0:
+                    sent = await save()
+                    if not same(sent.get("outputSchema"), TOOLANSWER_OUTSIDE):
+                        problems.append(f"Save of the kept schema sent {sent.get('outputSchema', '<absent>')}")
+
+                # None: no rows, no schema sent; a pasted JSON Schema taken there is saved.
+                section = await open_tool("none")
+                if await section.get_by_role("combobox", name="Answer field 1 type").count():
+                    problems.append(f"{tag}: a tool that declares nothing shows rows")
+                await shot("none")
+                await contrast("none")
+                if n == 0:
+                    sent = await save()
+                    if sent.get("outputSchema") not in (None,) or "<no save>" in sent:
+                        problems.append(f"Save of a tool that declares nothing sent {sent}")
+                    section = await open_tool("none")
+                    await section.get_by_role("button", name="Paste a JSON Schema").click()
+                    await section.get_by_role("textbox", name="JSON Schema").fill(json.dumps(TOOLANSWER_PASTED))
+                    await section.get_by_role("button", name="Read it").click()
+                    await section.get_by_role("button", name="Use these fields").click()
+                    await asyncio.sleep(0.5)
+                    await shot("pasted")
+                    sent = await save()
+                    if not same(sent.get("outputSchema"), TOOLANSWER_PASTED):
+                        problems.append(f"Save after a pasted schema sent {sent.get('outputSchema', '<absent>')}")
+
+                # A Python tool: the same section, and Save keeps its schema.
+                section = await open_tool("python")
+                if not await section.get_by_role("combobox", name="Answer field 1 type").count():
+                    problems.append(f"{tag}: a Python tool's section shows no rows")
+                await shot("python")
+                await contrast("python")
+                if n == 0:
+                    sent = await save()
+                    if not same(sent.get("outputSchema"), TOOLANSWER_SCHEMA):
+                        problems.append(f"a Python tool's Save sent outputSchema={sent.get('outputSchema', '<absent>')}")
+            finally:
+                await ctx.close()
+    finally:
+        stored = {t.get("name"): t for t in api("/api/tools/custom")}
+        for tool in TOOLANSWER_TOOLS.values():
+            try:
+                api(f"/api/tools/custom/{tool['name']}", "DELETE")
+            except Exception:
+                pass
+    held = stored.get(TOOLANSWER_TOOLS["kept"]["name"], {}).get("outputSchema")
+    if not same(held, TOOLANSWER_OUTSIDE):
+        problems.append(f"the kept schema is stored as {held}")
+    if not same(stored.get(TOOLANSWER_TOOLS["python"]["name"], {}).get("outputSchema"), TOOLANSWER_SCHEMA):
+        problems.append("a Python tool's Save erased its output schema")
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return ("rows for a schema inside the subset, saved unchanged and with a field added; one outside it kept "
+            "read-only and saved unchanged; none sends none, and a pasted schema is saved; a Python tool keeps its "
+            "schema; light and dark at 1440 and 390, AA and Tab")
 
 
 # ── scale ────────────────────────────────────────────────────────────────────
@@ -3153,6 +3478,74 @@ async def check_canvasroles(browser) -> str:
     return "model, logic and person steps are three colours on the canvas and in the minimap, which starts off"
 
 
+def _set_args_orchestration(oid: str, name: str) -> dict:
+    """A Tool step whose arguments are set on it (no model is asked), a Print, then an LLM step: one step calls a
+    model."""
+    return {
+        "id": oid, "name": name, "description": "Temporary fixture created by scripts/ui-smoke.py (F1657).",
+        "trigger": "manual", "state_schema": {}, "entry_step_id": f"{oid}_fetch",
+        "steps": [
+            {"id": f"{oid}_fetch", "name": "Fetch the page", "type": "tool", "forced_tool": "scrape_url",
+             "tool_arguments": {"url": "https://example.com/"}, "output_key": "page", "next_step_id": f"{oid}_note"},
+            {"id": f"{oid}_note", "name": "Note", "type": "print", "print_content": "fetched", "output_key": "note",
+             "next_step_id": f"{oid}_draft"},
+            {"id": f"{oid}_draft", "name": "Draft", "type": "llm", "prompt_template": "Sum up the page.",
+             "output_key": "draft", "next_step_id": f"{oid}_end"},
+            {"id": f"{oid}_end", "name": "End", "type": "end", "next_step_id": None},
+        ],
+    }
+
+
+@check
+async def check_pathrole(browser) -> str:
+    """A workflow's path before any run draws each step by what its config does (F1657): a Tool step whose arguments
+    are set on it calls no model, so the Workflows list's path counts one step calling a model of three, and on the
+    canvas the Tool step's tile is logic's colour, not the model step's. Light and dark; `SMOKE_SHOTS` keeps each."""
+    stamp = int(time.time())
+    oid, name = f"orch_uismoke_pathrole_{stamp}", f"ui-smoke path roles {stamp}"
+    api("/api/orchestrations", "POST", _set_args_orchestration(oid, name))
+    shots = os.environ.get("SMOKE_SHOTS")
+    problems: list[str] = []
+    try:
+        for theme in ("light", "dark"):
+            ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+            await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{theme}')}}catch(e){{}}")
+            page = await ctx.new_page()
+            try:
+                await page.goto(f"{APP}/workflows", wait_until="domcontentloaded")
+                await page.get_by_role("button", name=re.compile(r"^Workflows")).click(timeout=30_000)
+                await page.get_by_role("searchbox", name=re.compile("Search workflows")).fill(f"{stamp}")
+                row = page.locator(f"[data-workflow-row='{oid}']")
+                await row.wait_for(timeout=30_000)
+                label = await row.locator("[data-step-path]").get_attribute("aria-label") or ""
+                if label != "3 steps, 1 calling a model, 2 logic":
+                    problems.append(f"{theme}: the row's path reads {label!r}")
+                if shots:
+                    await asyncio.sleep(0.6)
+                    await row.screenshot(path=os.path.join(shots, f"pathrole-row-{theme}.png"))
+                await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+                await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+                await asyncio.sleep(SETTLE)
+                tiles = await page.evaluate("""(oid) => Object.fromEntries(['fetch', 'note', 'draft'].map(k => {
+                    const tile = document.querySelector(`.react-flow__node[data-id="${oid}_${k}"] [aria-hidden].inline-flex`);
+                    return [k, tile ? getComputedStyle(tile).backgroundColor : null];
+                }))""", oid)
+                if None in tiles.values() or tiles["fetch"] != tiles["note"] or tiles["fetch"] == tiles["draft"]:
+                    problems.append(f"{theme}: the canvas tiles read {tiles}, not the Tool step's as logic's")
+                if shots:
+                    # The fixture's steps carry no places on the canvas: laid out first, so the shot shows each tile.
+                    await page.get_by_role("button", name=re.compile("^Tidy up")).click()
+                    await asyncio.sleep(1.2)
+                    await page.screenshot(path=os.path.join(shots, f"pathrole-canvas-{theme}.png"))
+            finally:
+                await ctx.close()
+    finally:
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "a Tool step with set arguments reads as logic on the Workflows list's path and the canvas, light and dark"
+
+
 @check
 async def check_runstrip(browser) -> str:
     """The run strip opens the Run Log and Recent Runs above it, and a run opens the log (M3a)."""
@@ -3184,6 +3577,99 @@ async def check_runstrip(browser) -> str:
     if problems:
         raise AssertionError("; ".join(problems))
     return "the strip opens Recent Runs and the Run Log, and a run opens its log"
+
+
+def _older_rows(first: int, count: int) -> list[dict]:
+    """Run summaries, newest first, a minute apart: `first` minutes before the newest onwards."""
+    rows = []
+    for i in range(first, first + count):
+        at = _m2b_at(-60 * i)
+        rows.append({"run_id": f"run_smoke_older_{i:03d}", "orchestration_id": "orch_smoke_m2b",
+                     "status": "completed", "started_at": at, "ended_at": at, "created_at": at.replace("Z", "+00:00"),
+                     "current_step_id": None, "waiting_for_human": False, "total_cost_usd": 0, "session_id": None,
+                     "error": None, "steps_completed": 1, "score": None, "score_regression": False})
+    return rows
+
+
+#: How many run links the Runs page shows of the fixture's.
+_OLDER_LINKS = "() => document.querySelectorAll(\"a[href^='/runs/run_smoke_older_']\").length"
+
+
+@check
+async def check_runsolder(browser) -> str:
+    """Older runs are reachable from the Runs page (F1639): when its read of the latest hundred comes back full,
+    "Show older" asks for the runs before the last one it has (`before=`, that run's created_at and id) and adds
+    them to the list."""
+    asked: list[str] = []
+
+    async def before(ctx):
+        def answer(route):
+            url = route.request.url
+            asked.append(url)
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+            rows = (_older_rows(100, 3) if "before" in query
+                    else _older_rows(0, int((query.get("limit") or ["20"])[0])))
+            return route.fulfill(status=200, content_type="application/json", body=json.dumps(rows))
+
+        await ctx.route(re.compile(r".*/api/orchestrations/runs(\?.*)?$"), answer)
+
+    ctx, page, _ = await _m2b_page(browser, "/runs", before=before)
+    problems: list[str] = []
+    try:
+        await page.wait_for_function(f"() => ({_OLDER_LINKS})() >= 100", timeout=20_000)
+        button = page.get_by_role("button", name="Show older")
+        if not await button.count():
+            problems.append("a full page of runs offers no Show older")
+        else:
+            await button.click()
+            await page.wait_for_function(f"() => ({_OLDER_LINKS})() >= 103", timeout=10_000)
+            pages = [u for u in asked if "before=" in u]
+            if not pages or "run_smoke_older_099" not in urllib.parse.unquote(pages[-1]):
+                problems.append(f"Show older asked {pages[-1:] or 'nothing'}, not the runs before the last one shown")
+            shown = await page.evaluate(_OLDER_LINKS)
+            if shown != 103:
+                problems.append(f"{shown} runs listed after Show older, not 103")
+            if os.environ.get("SMOKE_SHOTS"):
+                await page.locator("a[href='/runs/run_smoke_older_102']").scroll_into_view_if_needed()
+                await asyncio.sleep(0.5)
+                await page.screenshot(path=os.path.join(os.environ["SMOKE_SHOTS"], "runsolder-after.png"))
+    finally:
+        await ctx.close()
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "a full page offers Show older, which asks for the runs before the last one and adds them"
+
+
+@check
+async def check_recentrunsown(browser) -> str:
+    """The editor's Recent Runs reads its own workflow's runs (F1639), not everyone's newest hundred kept to it."""
+    oid = f"orch_uismoke_recentown_{int(time.time())}"
+    api("/api/orchestrations", "POST", print_orchestration(oid, "ui-smoke recent own"))
+    run_id = run_to_end(oid)
+    asked: list[str] = []
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    page.on("request", lambda r: asked.append(r.url) if "/api/orchestrations/runs" in r.url else None)
+    problems: list[str] = []
+    try:
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+        await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+        await page.get_by_role("button", name=re.compile(r"^Recent Runs")).click()
+        drawer = page.locator('[data-canvas-chrome="drawer"]')
+        await drawer.get_by_role("heading", name="Recent runs").wait_for(timeout=10_000)
+        await asyncio.sleep(SETTLE)
+        if not [u for u in asked if f"workflow={oid}" in u]:
+            problems.append(f"Recent Runs asked {[u.split('/api')[-1] for u in asked]}, never its own workflow's")
+        if not await drawer.get_by_text(run_id).count():
+            problems.append("Recent Runs lists none of this workflow's runs")
+        if os.environ.get("SMOKE_SHOTS"):
+            await page.screenshot(path=os.path.join(os.environ["SMOKE_SHOTS"], "recentrunsown.png"))
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "Recent Runs reads its own workflow's runs"
 
 
 @check
@@ -6188,7 +6674,7 @@ async def check_f1600card(browser) -> str:
 #: The import starter's line, and what the panel says when it is sent with nothing under it (F1607).
 F1607_LEAD = "Rebuild this OpenAI Agent Builder workflow here. Its export (Code → Agents SDK) is below:"
 F1607_NOTE = ("Paste the workflow's Agents SDK code under the line first (the Code → Agents SDK export from Agent "
-              "Builder, or a copy you saved), or describe the workflow in your own words.")
+              "Builder, or a copy you saved), attach a screenshot of it, or describe the workflow in your own words.")
 #: The held note as the browser lays it out: whether all of it shows, what it says, and whether it is announced.
 F1607_NOTE_READ = r"""
 (el) => ({shown: el.clientWidth, needs: el.scrollWidth, text: (el.textContent || '').replace(/\s+/g, ' ').trim(),
@@ -12117,6 +12603,121 @@ async def check_runpath(browser) -> str:
     return "followed line, timeline with branches indented and model bars cyan, a step opens, Result first, 4 reads"
 
 
+# A Tool step whose arguments are set on it asks no model (E1), then a Transform; the second workflow adds an LLM step.
+_ROLE_SET_ARGS = {"tool_name": "http_get", "tool_arguments": {"url": "https://example.com/forecast?city=Harbor"}}
+_ROLE_FORECAST = {
+    "id": "orch_smoke_role", "name": "Smoke forecast", "description": "", "trigger": "manual",
+    "entry_step_id": "fetch", "max_total_turns": 100, "timeout_minutes": 30, "updated_at": _m2b_at(-86400),
+    "state_schema": {},
+    "steps": [
+        {"id": "fetch", "name": "Fetch the forecast", "type": "tool", **_ROLE_SET_ARGS, "next_step_id": "shape",
+         "output_key": "forecast"},
+        {"id": "shape", "name": "Shape the answer", "type": "transform", "next_step_id": "end", "output_key": "answer"},
+        {"id": "end", "name": "End", "type": "end"}]}
+_ROLE_NOTE = {
+    **_ROLE_FORECAST, "id": "orch_smoke_role_note", "name": "Smoke forecast note",
+    "steps": [
+        {**_ROLE_FORECAST["steps"][0]},
+        {**_ROLE_FORECAST["steps"][1], "next_step_id": "write"},
+        {"id": "write", "name": "Write the note", "type": "llm", "output_key": "note", "next_step_id": "end"},
+        {"id": "end", "name": "End", "type": "end"}]}
+_ROLE_SPENT = {"turns": 1, "models": ["openai.gpt-4.1-mini"], "tools": [], "tokens": 220, "input_tokens": 200,
+               "output_tokens": 20, "cost_usd": 0.0002, "context_peak_chars": 900, "latency_seconds": 0.7}
+
+
+def _role_run(rid: str, orch: dict, status: str, history: list, step_usage: dict, entry_usage: list) -> dict:
+    return {"run_id": rid, "orchestration_id": orch["id"], "status": status, "session_id": None,
+            "started_at": _m2b_at(0), "ended_at": _m2b_at(4), "current_step_id": history[-1]["step_id"],
+            "waiting_for_human": False, "total_tokens_used": sum(u["tokens"] for u in step_usage.values()),
+            "total_cost_usd": 0, "tasks": [], "shared_state": {},
+            "error": "Transform error: the forecast had no rows" if status == "failed" else None,
+            "step_history": history, "step_usage": step_usage, "entry_usage": entry_usage}
+
+
+_ROLE_RUNS = {
+    # Called no model: "0 tokens", and the record carries no call at all, as both products send it.
+    "run_smoke_role_none": _role_run("run_smoke_role_none", _ROLE_FORECAST, "completed", [
+        _m2b_entry("fetch", "Fetch the forecast", "tool", 0, 1.2, output_key="forecast"),
+        _m2b_entry("shape", "Shape the answer", "transform", 1.2, 0.3, output_key="answer")], {}, []),
+    # Its LLM step spent tokens: that bar alone is a model's.
+    "run_smoke_role_note": _role_run("run_smoke_role_note", _ROLE_NOTE, "completed", [
+        _m2b_entry("fetch", "Fetch the forecast", "tool", 0, 1.2, output_key="forecast"),
+        _m2b_entry("shape", "Shape the answer", "transform", 1.2, 0.3, output_key="answer"),
+        _m2b_entry("write", "Write the note", "llm", 1.5, 0.7, output_key="note")],
+        {"write": _ROLE_SPENT}, [None, None, _ROLE_SPENT]),
+    # Failed at its Transform: the stepper, where the LLM step not reached is drawn by its config.
+    "run_smoke_role_fail": _role_run("run_smoke_role_fail", _ROLE_NOTE, "failed", [
+        _m2b_entry("fetch", "Fetch the forecast", "tool", 0, 1.2, output_key="forecast"),
+        _m2b_entry("shape", "Shape the answer", "transform", 1.2, 0.3, "failed",
+                   error="Transform error: the forecast had no rows")], {}, []),
+}
+
+
+async def _role_routes(ctx) -> None:
+    for orch in (_ROLE_FORECAST, _ROLE_NOTE):
+        await ctx.route(f"**/api/orchestrations/{orch['id']}", _answer(orch))
+
+
+@check
+async def check_runrole(browser) -> str:
+    """A run draws a step as "Called a model" only when it called one (F1656). A Tool step whose arguments are set on
+    it asks no model: a run of it and a Transform draws no bar in the machine colour, and the legend says
+    "Called a model (none in this run)"; with an LLM step that spent tokens, that bar alone is the machine colour; a
+    failed run's stepper grounds the Tool step's icon as logic and the LLM step it never reached as a model's. Light
+    and dark at 1440; `SMOKE_SHOTS` keeps each page."""
+    shots = os.environ.get("SMOKE_SHOTS")
+    bad: list[str] = []
+    for theme in ("light", "dark"):
+        for rid, machine_bars in (("run_smoke_role_none", 0), ("run_smoke_role_note", 1)):
+            ctx, page, _ = await _m2b_page(browser, f"/runs/{rid}", runs=_ROLE_RUNS, theme=theme, before=_role_routes)
+            try:
+                timeline = page.get_by_role("table", name="Steps on a timeline")
+                await timeline.wait_for(timeout=20_000)
+                colours = await page.evaluate("""() => {
+                    const cs = getComputedStyle(document.documentElement);
+                    const bars = [...document.querySelectorAll('[aria-label="Steps on a timeline"] [role=cell] > span.absolute.top-1')];
+                    const probe = document.createElement('i'); document.body.append(probe);
+                    const resolve = (v) => { probe.style.color = v; return getComputedStyle(probe).color; };
+                    const out = { machine: resolve(cs.getPropertyValue('--machine')), bars: bars.map(b => getComputedStyle(b).backgroundColor) };
+                    probe.remove(); return out; }""")
+                got = colours["bars"].count(colours["machine"])
+                if len(colours["bars"]) != machine_bars + 2 or got != machine_bars:
+                    bad.append(f"{theme} {rid}: {got} of {len(colours['bars'])} bars in the machine colour, "
+                               f"not {machine_bars} of {machine_bars + 2}")
+                none_said = await page.get_by_text("Called a model (none in this run)").count()
+                if bool(none_said) != (machine_bars == 0):
+                    bad.append(f"{theme} {rid}: the legend {'says' if none_said else 'does not say'} "
+                               "'Called a model (none in this run)'")
+                if shots:
+                    await asyncio.sleep(0.6)
+                    await page.screenshot(path=os.path.join(shots, f"runrole-{rid.rsplit('_', 1)[-1]}-{theme}.png"),
+                                          full_page=True)
+            finally:
+                await ctx.close()
+        ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_role_fail", runs=_ROLE_RUNS, theme=theme,
+                                       before=_role_routes)
+        try:
+            steps = page.get_by_role("list", name="Steps")
+            await steps.wait_for(timeout=20_000)
+            grounds = await steps.locator(":scope > li").evaluate_all(
+                """(rows) => rows.map((li) => {
+                    const icon = li.querySelector('span[aria-hidden]');
+                    const c = icon ? icon.className : '';
+                    return c.includes('bg-machine-subtle') ? 'model' : c.includes('bg-person-subtle') ? 'person'
+                        : c.includes('bg-surface-2') ? 'logic' : c; })""")
+            if grounds != ["logic", "logic", "model"]:
+                bad.append(f"{theme}: the failed run's stepper grounds read {grounds}, not logic, logic, model")
+            if shots:
+                await asyncio.sleep(0.6)
+                await page.screenshot(path=os.path.join(shots, f"runrole-fail-{theme}.png"), full_page=True)
+        finally:
+            await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("a set-arguments Tool step and a Transform draw no model bar, the legend says none; an LLM step that "
+            "spent is the one model bar; the stepper grounds the Tool step as logic; light and dark")
+
+
 @check
 async def check_runfailure(browser) -> str:
     """A failed run leads with one plain sentence and the fix (M2b): the Python step's line, Open in editor and
@@ -12152,6 +12753,76 @@ async def check_runfailure(browser) -> str:
     if bad:
         raise AssertionError("; ".join(bad))
     return "the plain sentence and its fix lead; the traceback waits behind Technical details; the turn limit in words"
+
+
+def _waiting_orchestration(oid: str, name: str) -> dict:
+    """A Human step with no fields, then a Print: a run of it waits for its answer, then finishes at once."""
+    return {
+        "id": oid, "name": name, "description": "Temporary fixture created by scripts/ui-smoke.py (F1662).",
+        "trigger": "manual", "state_schema": {}, "entry_step_id": f"{oid}_ask",
+        "steps": [
+            {"id": f"{oid}_ask", "name": "Go on?", "type": "human", "human_prompt": "Shall the run go on?",
+             "output_key": "answer", "next_step_id": f"{oid}_done"},
+            {"id": f"{oid}_done", "name": "Done", "type": "print", "print_content": "done", "output_key": "done",
+             "next_step_id": f"{oid}_end"},
+            {"id": f"{oid}_end", "name": "End", "type": "end", "next_step_id": None},
+        ],
+    }
+
+
+def _answer_waiting_run(run_id: str, text: str) -> None:
+    """Answer a waiting run's question through the API and read its stream to the end (the run finishes)."""
+    req = urllib.request.Request(
+        f"{API}/api/orchestrations/runs/{run_id}/human-input", method="POST",
+        data=json.dumps({"response": text}).encode(),
+        headers={"Content-Type": "application/json", "X-Synapse-Internal": TOKEN})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        r.read()
+
+
+@check
+async def check_runpagequiet(browser) -> str:
+    """The run page reads a run as its stream moves (F1662): while its events stream follows a live run, the page
+    does not also read the run every few seconds, and it still shows the run's end, carried by the stream. With the
+    stream broken, the page reads the run on its own clock again and still reaches the end. `SMOKE_SHOTS` keeps
+    each page after the answer."""
+    shots = os.environ.get("SMOKE_SHOTS")
+    problems: list[str] = []
+    for broken in (False, True):
+        stamp = int(time.time())
+        oid = f"orch_uismoke_quiet_{stamp}_{int(broken)}"
+        api("/api/orchestrations", "POST", _waiting_orchestration(oid, f"ui-smoke run page quiet {stamp}"))
+        run_id = run_to_end(oid)
+        ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+        if broken:
+            await ctx.route("**/events/stream*", lambda route: route.abort())
+        page = await ctx.new_page()
+        reads: list[float] = []
+        page.on("request", lambda r: reads.append(time.time()) if r.method == "GET" and urllib.parse.urlsplit(
+            r.url).path == f"/api/orchestrations/runs/{run_id}" else None)
+        which = "with the stream broken" if broken else "with the stream following"
+        try:
+            await page.goto(f"{APP}/runs/{run_id}", wait_until="domcontentloaded")
+            await page.locator("main h1").first.wait_for(timeout=30_000)
+            if not broken:
+                await asyncio.sleep(22)
+                if len(reads) > 2:
+                    problems.append(f"{len(reads)} reads of the waiting run in 22 s {which}, not at most 2")
+            await asyncio.to_thread(_answer_waiting_run, run_id, "yes")
+            try:
+                await page.get_by_text("Completed", exact=True).first.wait_for(timeout=6_000 if not broken else 15_000)
+            except Exception:
+                problems.append(f"the page never showed the run Completed {which}")
+            if shots:
+                name = f"runpagequiet-{'broken' if broken else 'following'}.png"
+                await page.screenshot(path=os.path.join(shots, name))
+        finally:
+            await ctx.close()
+            drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return ("a waiting run's page is read at most twice in 22 s while its stream follows, and shows Completed when "
+            "answered; with the stream broken it reads on its own clock and still shows Completed")
 
 
 @check
@@ -14724,7 +15395,8 @@ _FIRSTRUN_MODELS = {"providers": {
 
 
 async def _firstrun_page(browser, path: str, state: dict, theme: str | None = None, width=WIDE,
-                         fresh: bool = False, late: float = 0, new_workspace: bool = False, models: dict | None = None):
+                         fresh: bool = False, late: float = 0, new_workspace: bool = False, models: dict | None = None,
+                         settings_over: dict | None = None):
     """A page over a stubbed install whose model cannot answer (ONB2): `state["closed"]` is the setting,
     `state["posts"]` every settings write. `fresh` is a browser that has seen no tour (`firsttour`); `late` holds the
     readiness answer back that many seconds while the step is still to open, as a slow backend would.
@@ -14739,7 +15411,7 @@ async def _firstrun_page(browser, path: str, state: dict, theme: str | None = No
         await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{theme}')}}catch(e){{}}")
     await ctx.add_init_script("try{localStorage.removeItem('synapseHomeStartHidden')}catch(e){}")
     settings = {"model": "ollama.mistral", "builder_model": "", "gemini_key": "", "gemini_key_set": True,
-                "gemini_key_hint": "x9Q2"}
+                "gemini_key_hint": "x9Q2", **(settings_over or {})}
 
     async def onboarding(route):
         if late and not state["closed"]:
@@ -14842,6 +15514,58 @@ async def check_firstrun(browser) -> str:
         raise AssertionError("; ".join(bad))
     return ("opens once on a model that cannot answer, CLI states and a saved key shown, outside click kept, "
             "two models saved, Escape remembered, Home and Chat reopen it")
+
+
+#: An install with nothing on it: no CLI, no key, Ollama not running, so the first-run step offers its two ways.
+_FIRSTRUN_NOTHING = {"providers": {"ollama": {"available": False, "models": []}}}
+
+
+@check
+async def check_ollamatip(browser) -> str:
+    """The first-run step's Ollama way names a local model Synapse AI runs on (F1592, F1598). With nothing on this
+    computer, "Ollama on this computer" lists its steps, and the pull it names is gpt-oss:20b, which reads 128K, with
+    its download and the memory it runs in: never llama3.1, a small local model Synapse AI's picker leaves out. The
+    command is never broken across lines. The Gemini way is still offered. Light and dark at 1440 and 390: AA contrast in the steps. `SMOKE_SHOTS`, when set,
+    keeps a shot of each."""
+    problems: list[str] = []
+    shots = os.environ.get("SMOKE_SHOTS")
+    scoped = CONTRAST.replace("document.querySelectorAll('*')",
+                              "(document.querySelector('[data-ollama-steps]') || document).querySelectorAll('*')")
+    assert scoped != CONTRAST, "the contrast script no longer reads every element"
+    for scheme in ("light", "dark"):
+        for size in ((1440, 900), (390, 844)):
+            tag = f"{scheme} {size[0]}"
+            state = {"closed": False, "posts": []}
+            ctx, page = await _firstrun_page(browser, "/dashboard", state, theme=scheme, width=size,
+                                             new_workspace=True, models=_FIRSTRUN_NOTHING,
+                                             settings_over={"gemini_key_set": False, "gemini_key_hint": ""})
+            try:
+                dialog = page.get_by_test_id("model-setup")
+                await dialog.wait_for(timeout=30_000)
+                if not await page.locator("[data-way='key']").count():
+                    problems.append(f"{tag}: the Gemini way is not offered")
+                await page.locator("[data-way='ollama']").click()
+                steps = page.locator("[data-ollama-steps]")
+                await steps.wait_for(timeout=5_000)
+                said = " ".join((await steps.inner_text()).split())
+                missing = [w for w in ("ollama pull gpt-oss:20b", "14 GB", "16 GB", "128K") if w not in said]
+                if missing or "llama3.1" in said:
+                    problems.append(f"{tag}: the steps read {said!r}")
+                # The command is copied as one: never broken across lines, at a phone's width either.
+                lines = await steps.locator("code").first.evaluate("el => el.getClientRects().length")
+                if lines != 1:
+                    problems.append(f"{tag}: the pull command breaks across {lines} lines")
+                await steps.scroll_into_view_if_needed()
+                if shots:
+                    await page.screenshot(path=os.path.join(shots, f"ollamatip-{scheme}-{size[0]}.png"))
+                faint = await page.evaluate(scoped)
+                if faint:
+                    problems.append(f"{tag}: under AA in the steps: {faint[:3]}")
+            finally:
+                await ctx.close()
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "the Ollama way names gpt-oss:20b with its download, memory and 128K; light and dark at 1440 and 390, AA"
 
 
 #: A workspace with an Anthropic and an OpenAI key, Gemini's and Claude Code (PICK1, F1482).
@@ -15132,6 +15856,187 @@ async def check_clisignedout(browser) -> str:
     return ("Claude Code signed out: the panel, Settings' Default and Builder model, an agent's Model and a step's offer "
             "none of its models and Gemini's CLI that cannot tell; the default, the agent and the step saved on "
             f"{_CLI_OUT_SAVED} show it, alone of Claude Code's, light and dark at 1440")
+
+
+_F1598_MODELS_LIST = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5", "gpt-4.1",
+                      "gemini-3.1-flash-lite-preview", "gemma-3-4b-it"]
+#: `/api/models` with each model's fit, price and the engine's order (F1598): three Claude models recommended for
+#: building, Gemma 3 4B not for building, two with no mark.
+_F1598_MODELS = {
+    "providers": {
+        "ollama": {"available": False, "models": [], "embedding_models": []},
+        "anthropic": {"available": True, "models": _F1598_MODELS_LIST[:3], "embedding_models": []},
+        "openai": {"available": True, "models": ["gpt-4.1"], "embedding_models": []},
+        "gemini": {"available": True, "models": _F1598_MODELS_LIST[4:], "embedding_models": []},
+    },
+    "all_available": _F1598_MODELS_LIST, "local": [], "cloud": _F1598_MODELS_LIST,
+    "reasoning_capable": [], "reasoning_without_off": [], "reasoning_off_minimum": [],
+    "windows": {"claude-opus-4-6": 1_000_000, "claude-sonnet-4-6": 1_000_000, "claude-haiku-4-5": 200_000,
+                "gpt-4.1": 1_047_576, "gemini-3.1-flash-lite-preview": 1_048_576, "gemma-3-4b-it": 128_000},
+    "synapse_ai_min_window": 128_000,
+    "builder_fit": {"claude-opus-4-6": "recommended", "claude-sonnet-4-6": "recommended",
+                    "claude-haiku-4-5": "recommended", "gemma-3-4b-it": "not_for_building"},
+    "prices": {"claude-opus-4-6": {"in": 5, "out": 25}, "claude-sonnet-4-6": {"in": 3, "out": 15},
+               "claude-haiku-4-5": {"in": 1, "out": 5}, "gpt-4.1": {"in": 2, "out": 8},
+               "gemini-3.1-flash-lite-preview": {"in": 0.125, "out": 0.75}},
+    "ranked": ["claude-opus-4-6", "claude-sonnet-4-6", "gpt-4.1", "claude-haiku-4-5", "gemini-3.1-flash-lite-preview",
+               "gemma-3-4b-it"],
+}
+_F1598_SONNET_LINE = "Large context (1M) · $$$ · $3.00 in / $15.00 out per 1M tokens"
+
+
+@check
+async def check_f1598picker(browser) -> str:
+    """Every model picker says what each model is, and Synapse AI's offer what builds well first (F1598).
+
+    With `/api/models` saying each model's fit, price and the engine's order:
+    - Settings → Models' Builder model and Synapse AI's panel list "Recommended for building" first, each with the
+      word "Recommended", then "Other models" in the engine's order. Gemma 3 4B, not for building, is left out. The
+      Builder model, saved on it, keeps it as the one row saying why, and the note at the foot of the list says what
+      is left out. The panel's Default row, which runs on that saved model, says so too.
+    - The Default model keeps every model, Gemma included, with no rating.
+    - Every picker, an agent's Model and a step's Model override too, shows each model's line: context, cost tier and
+      price. Those two also say how to choose for the job.
+    - The open list reads at AA, the tag included.
+
+    Light and dark at 1440 and 390 (the agent and the step at 1440). `SMOKE_SHOTS`, when set, keeps a shot of each.
+    """
+    aid, oid = "agent_uismoke_f1598", "uismoke_f1598"
+    shots = os.environ.get("SMOKE_SHOTS")
+    bad: list[str] = []
+    scoped = CONTRAST.replace("document.querySelectorAll('*')",
+                              "(document.querySelector('[cmdk-root]') || document).querySelectorAll('*')")
+    assert scoped != CONTRAST, "the contrast script no longer reads every element"
+
+    async def opened(page, trigger) -> tuple[list[str], list[str], list[str]]:
+        """The open picker's rows' names, their whole texts, and its group headings in order."""
+        await trigger.click()
+        await page.locator("[cmdk-item]").first.wait_for(timeout=10_000)
+        await asyncio.sleep(0.4)
+        texts = [" ".join(t.split()) for t in await page.locator("[cmdk-item]").all_inner_texts()]
+        names = [t.split(" ")[0] for t in texts]
+        heads = [" ".join(h.split()) for h in await page.locator("[cmdk-group-heading]").all_inner_texts()]
+        return names, texts, heads
+
+    async def readable(page, tag: str) -> None:
+        faint = await page.evaluate(scoped)
+        if faint:
+            bad.append(f"{tag}: under AA in the open list: {faint[:3]}")
+
+    try:
+        api("/api/agents", "POST", {**_agent(aid, "UI smoke picker facts"), "model": "claude-haiku-4-5"})
+        api("/api/orchestrations", "POST", {
+            "id": oid, "name": "ui-smoke picker facts", "description": "Temporary fixture created by scripts/ui-smoke.py.",
+            "steps": [{"id": f"{oid}_w", "name": "Write", "type": "llm", "prompt_template": "Say hi",
+                       "output_key": "draft", "next_step_id": None, "position_x": 0, "position_y": 0}],
+            "entry_step_id": f"{oid}_w", "state_schema": {}, "trigger": "manual"})
+        settings = {**api("/api/settings"), "model": "claude-sonnet-4-6", "builder_model": "gemma-3-4b-it"}
+        for scheme in ("light", "dark"):
+            for width, height in ((1440, 900), (390, 844)):
+                tag = f"{scheme} {width}"
+                ctx = await browser.new_context(viewport={"width": width, "height": height}, color_scheme=scheme)
+                await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{scheme}')}}catch(e){{}}")
+                await ctx.route(re.compile(r".*/api/models(\?.*)?$"), _answer(_F1598_MODELS))
+                await ctx.route(re.compile(r".*/api/settings$"), _answer(settings))
+                page = await ctx.new_page()
+
+                async def shot(name: str) -> None:
+                    if shots:
+                        await page.screenshot(path=os.path.join(shots, f"f1598picker-{name}-{scheme}-{width}.png"))
+
+                try:
+                    # Settings → Models' Builder model: the saved one not for building, saying why; then the rest.
+                    await page.goto(f"{APP}/settings/models", wait_until="domcontentloaded")
+                    builder = page.locator('button[aria-label="Builder model"]').first
+                    await builder.wait_for(timeout=30_000)
+                    await asyncio.sleep(SETTLE)
+                    names, texts, heads = await opened(page, builder)
+                    want = ["gemma-3-4b-it", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5", "gpt-4.1",
+                            "gemini-3.1-flash-lite-preview"]
+                    if [n for n in names if n in want] != want:
+                        bad.append(f"{tag}: the Builder model lists {names}")
+                    if [h.lower() for h in heads] != ["not for building", "recommended for building", "other models"]:
+                        bad.append(f"{tag}: the Builder model's headings read {heads}")
+                    by = dict(zip(names, texts))
+                    if "Recommended" not in by.get("claude-sonnet-4-6", "") or "Recommended" in by.get("gpt-4.1", ""):
+                        bad.append(f"{tag}: the Recommended words read {by}")
+                    if _F1598_SONNET_LINE not in by.get("claude-sonnet-4-6", ""):
+                        bad.append(f"{tag}: Sonnet's line reads {by.get('claude-sonnet-4-6')!r}")
+                    if "Synapse AI" not in by.get("gemma-3-4b-it", ""):
+                        bad.append(f"{tag}: the saved Gemma row does not say why: {by.get('gemma-3-4b-it')!r}")
+                    if not await page.locator("[cmdk-root]").get_by_text("Some models aren't offered here",
+                                                                          exact=False).count():
+                        bad.append(f"{tag}: the Builder model's note is not at the foot of its list")
+                    await readable(page, f"{tag} builder")
+                    await shot("builder")
+                    await page.keyboard.press("Escape")
+                    await asyncio.sleep(0.3)
+
+                    # The Default model keeps every model, with the line and no rating.
+                    names, texts, _ = await opened(page, page.locator('button[aria-label="Default model"]').first)
+                    if not set(_F1598_MODELS_LIST) <= set(names):
+                        bad.append(f"{tag}: the Default model lists {names}")
+                    if any("Recommended" in t for t in texts):
+                        bad.append(f"{tag}: the Default model rates models")
+                    if not any("Standard context (128K)" in t for t in texts if t.startswith("gemma-3-4b-it")):
+                        bad.append(f"{tag}: the Default model's Gemma row has no line")
+                    await readable(page, f"{tag} default")
+                    await shot("default")
+                    await page.keyboard.press("Escape")
+                    await asyncio.sleep(0.3)
+
+                    # Synapse AI's panel: Recommended first, Gemma left out.
+                    await page.locator('[data-testid="assistant-open"]:visible').first.click()
+                    pill = page.locator('[data-testid="assistant-panel"] [aria-label="Model for this build"]').first
+                    await pill.wait_for(timeout=10_000)
+                    await asyncio.sleep(0.6)
+                    names, texts, heads = await opened(page, pill)
+                    if "gemma-3-4b-it" in names[1:] or not {"claude-opus-4-6", "gpt-4.1"} <= set(names):
+                        bad.append(f"{tag}: the panel lists {names}")
+                    # Its Default runs Synapse AI on the saved Builder model, Gemma: the row says it is not offered.
+                    if not texts[0].startswith("Default (gemma-3-4b-it)") or "Not offered for building" not in texts[0]:
+                        bad.append(f"{tag}: the panel's Default row reads {texts[0]!r}")
+                    if [h.lower() for h in heads] != ["recommended for building", "other models"]:
+                        bad.append(f"{tag}: the panel's headings read {heads}")
+                    await readable(page, f"{tag} panel")
+                    await shot("panel")
+                    await page.keyboard.press("Escape")
+
+                    if width == 1440:
+                        # An agent's Model and a step's Model override: every model, each with its line.
+                        await page.goto(f"{APP}/agents", wait_until="domcontentloaded")
+                        await asyncio.sleep(SETTLE)
+                        await page.get_by_text("UI smoke picker facts", exact=True).first.click()
+                        model = page.locator('button[aria-label="Model"]').first
+                        await model.wait_for(timeout=10_000)
+                        await asyncio.sleep(1.0)
+                        if not await page.get_by_text("Choose for the job this agent does", exact=False).count():
+                            bad.append(f"{tag}: the agent's Model does not say how to choose")
+                        names, texts, _ = await opened(page, model)
+                        if not set(_F1598_MODELS_LIST) <= set(names) or not any(_F1598_SONNET_LINE in t for t in texts):
+                            bad.append(f"{tag}: the agent's Model lists {texts}")
+                        await shot("agent")
+                        await page.keyboard.press("Escape")
+                        await asyncio.sleep(0.3)
+                        await open_step(page, oid, "Write")
+                        override = page.locator('button[aria-label="Model override"]').first
+                        await override.wait_for(timeout=10_000)
+                        if not await page.get_by_text("Choose for the job this step does", exact=False).count():
+                            bad.append(f"{tag}: the step's Model override does not say how to choose")
+                        names, texts, _ = await opened(page, override)
+                        if not set(_F1598_MODELS_LIST) <= set(names) or not any(_F1598_SONNET_LINE in t for t in texts):
+                            bad.append(f"{tag}: the step's Model override lists {texts}")
+                        await shot("step")
+                        await page.keyboard.press("Escape")
+                finally:
+                    await ctx.close()
+    finally:
+        drop_fixtures([oid], [aid])
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("Synapse AI's pickers list Recommended first with its word, then Other models, Gemma 3 4B left out and kept "
+            "saying why where saved; every picker shows each model's context, cost tier and price; AA, light and dark "
+            "at 1440 and 390")
 
 
 # ── the browser inside Synapse: the pane (BRW2, D330) ───────────────────────
@@ -19353,6 +20258,207 @@ async def check_answerfields(browser) -> str:
     if problems:
         raise AssertionError("; ".join(problems))
     return "an LLM step's answer fields read as Yes / No and One of (good, poor), light and dark, wide and phone"
+
+
+#: An answer nested to the depth a declaration may reach (F1618): a list of groups, a group in it, a group in that,
+#: and a field that may be empty at the fourth level.
+ANSWERJSON_FIELDS = [
+    {"name": "leads", "type": "list", "of": {"fields": [
+        {"name": "email", "type": "string"},
+        {"name": "company", "type": "object", "fields": [
+            {"name": "name", "type": "string"},
+            {"name": "address", "type": "object", "fields": [
+                {"name": "city", "type": "string", "may_be_empty": True}]}]}]}},
+    {"name": "total", "type": "number"}]
+#: A schema with two parts outside the answer's subset: each is named, and nothing of it is taken.
+ANSWERJSON_REFUSED = {"type": "object", "properties": {"name": {"type": "string", "minLength": 2},
+                                                       "tags": {"$ref": "#/$defs/tags"}},
+                      "required": ["name", "tags"], "$defs": {"tags": {"type": "array"}}}
+ANSWERJSON_SCHEMA = {"type": "object", "properties": {"risky": {"type": "boolean"}, "why": {"type": "string"}},
+                     "required": ["risky", "why"], "additionalProperties": False}
+ANSWERJSON_EXAMPLE = {"leads": [{"email": "ana@example.com", "score": 0.9}], "total": 1}
+ANSWERJSON_TAKEN = [{"name": "leads", "type": "list", "of": {"fields": [{"name": "email", "type": "string"},
+                                                                        {"name": "score", "type": "number"}]}},
+                    {"name": "total", "type": "number"}]
+#: The controls a person reaches with Tab alone, each by its accessible name.
+ANSWERJSON_REACHED = ("Answer field 1.2.2.1 type", "Answer field 1.2.2.1 may be empty", "Add a field to address",
+                      "Paste an example", "Paste a JSON Schema", "What the model is asked for")
+ANSWERJSON_FOCUS = """() => { const el = document.activeElement; if (!el) return '';
+  return (el.getAttribute('aria-label') || el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 60); }"""
+
+
+@check
+async def check_answerjson(browser) -> str:
+    """A model step's answer fields take a nested shape and show what the model is asked for (F1618, commit d).
+
+    The rows go four levels down: a List of groups, a Group in it, a Group in that, and a field that may be empty at
+    the fourth level, where Group and List of groups are offered but disabled. "What the model is asked for" shows the
+    schema the run sends, read-only. "Paste a JSON Schema" names each part outside the subset and offers nothing to
+    take; a schema inside it is shown before it is taken. "Paste an example" turns a JSON value into fields, and Save
+    sends them. Every type the editor offered before is still offered. Light and dark at 1440 and 390: AA contrast in
+    the panel in each state, and every control reached with Tab alone. `SMOKE_SHOTS`, when set, keeps a shot of each
+    state.
+    """
+    oid = f"orch_uismoke_answerjson_{int(time.time())}"
+    api("/api/orchestrations", "POST", {
+        "id": oid, "name": "UI smoke answer shape", "entry_step_id": "find", "steps": [
+            {"id": "find", "name": "Find Leads", "type": "llm", "prompt_template": "Find the leads in the notes.",
+             "output_key": "find", "output_fields": ANSWERJSON_FIELDS, "next_step_id": "end",
+             "position_x": 0, "position_y": 0},
+            {"id": "end", "name": "End", "type": "end", "position_x": 320, "position_y": 0},
+        ]})
+    scoped = CONTRAST.replace("document.querySelectorAll('*')",
+                              "(document.querySelector('[data-testid=\"answer-fields\"]') || document)"
+                              ".querySelectorAll('*')")
+    assert scoped != CONTRAST, "the contrast script no longer reads every element"
+    problems: list[str] = []
+    shots = os.environ.get("SMOKE_SHOTS")
+    sizes = ((1440, 900), (390, 844))
+    runs = [(scheme, size) for scheme in ("light", "dark") for size in sizes]
+    try:
+        for n, (scheme, size) in enumerate(runs):
+            tag = f"{scheme} {size[0]}"
+            ctx = await browser.new_context(viewport={"width": size[0], "height": size[1]}, color_scheme=scheme)
+            await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{scheme}')}}catch(e){{}}")
+            page = await ctx.new_page()
+            saved: list[dict] = []
+            page.on("request", lambda r: saved.append(json.loads(r.post_data or "{}"))
+                    if r.method == "POST" and urllib.parse.urlsplit(r.url).path == "/api/orchestrations" else None)
+
+            async def shot(state: str) -> None:
+                if shots:
+                    await page.screenshot(path=os.path.join(shots, f"answerjson-{state}-{scheme}-{size[0]}.png"),
+                                          full_page=False)
+
+            async def contrast(state: str) -> None:
+                faint = await page.evaluate(scoped)
+                if faint:
+                    problems.append(f"{tag} {state}: under AA in the panel: {faint[:3]}")
+
+            try:
+                await open_step(page, oid, "Find Leads")
+                panel = page.get_by_test_id("answer-fields")
+                await panel.wait_for(timeout=15_000)
+                await panel.scroll_into_view_if_needed()
+
+                # The rows, four levels down.
+                want = {"1": "List of groups", "1.2": "Group", "1.2.2": "Group", "1.2.2.1": "Text", "2": "Number"}
+                said = {}
+                for path in want:
+                    box = panel.get_by_role("combobox", name=f"Answer field {path} type")
+                    said[path] = (await box.inner_text()).strip() if await box.count() else None
+                if said != want:
+                    problems.append(f"{tag}: the rows read {said}, not {want}")
+                    continue
+                if not await panel.get_by_role("checkbox", name="Answer field 1.2.2.1 may be empty").is_checked():
+                    problems.append(f"{tag}: the fourth level's field does not say it may be empty")
+                deepest = panel.get_by_role("combobox", name="Answer field 1.2.2.1 type")
+                await deepest.scroll_into_view_if_needed()
+                await shot("rows")
+                await contrast("rows")
+
+                # At the fourth level a group is offered, disabled; every type offered before still is.
+                await deepest.click()
+                await page.get_by_role("listbox").wait_for(timeout=5_000)
+                offered = {}
+                for option in await page.get_by_role("option").all():
+                    label = (await option.inner_text()).strip().splitlines()[0].strip()
+                    offered[label] = (await option.get_attribute("aria-disabled") == "true"
+                                      or await option.get_attribute("data-disabled") is not None)
+                for label in ("Yes / No", "One of", "Text", "Number", "List"):
+                    if offered.get(label) is not False:
+                        problems.append(f"{tag}: '{label}' is not offered at the fourth level: {offered}")
+                for label in ("Group", "List of groups"):
+                    if offered.get(label) is not True:
+                        problems.append(f"{tag}: '{label}' is not offered disabled at the fourth level: {offered}")
+                await shot("deepest")
+                await page.keyboard.press("Escape")
+                await asyncio.sleep(0.3)
+
+                # Every control reached with Tab alone, from the first row's name.
+                await panel.get_by_role("textbox", name="Answer field 1 name").focus()
+                reached = set()
+                for _ in range(90):
+                    await page.keyboard.press("Tab")
+                    reached.add(await page.evaluate(ANSWERJSON_FOCUS))
+                missed = [c for c in ANSWERJSON_REACHED if c not in reached]
+                if missed:
+                    problems.append(f"{tag}: Tab never reaches {missed}")
+
+                # What the model is asked for: the schema the run sends, read-only.
+                await panel.get_by_text("What the model is asked for", exact=True).click()
+                asked = panel.get_by_label("The answer's JSON Schema")
+                await asked.wait_for(timeout=5_000)
+                try:
+                    schema = json.loads(await asked.inner_text())
+                    city = (schema["properties"]["leads"]["items"]["properties"]["company"]["properties"]["address"]
+                            ["properties"]["city"])
+                    if city != {"anyOf": [{"type": "string"}, {"type": "null"}]} or schema.get("additionalProperties") is not False:
+                        problems.append(f"{tag}: what the model is asked for reads {schema}")
+                except (ValueError, KeyError, TypeError) as exc:
+                    problems.append(f"{tag}: what the model is asked for is not the schema ({exc!r})")
+                if await asked.evaluate("el => el.isContentEditable || ['TEXTAREA','INPUT'].includes(el.tagName)"):
+                    problems.append(f"{tag}: what the model is asked for can be typed in")
+                await asked.scroll_into_view_if_needed()
+                await shot("asked")
+                await contrast("asked")
+                await panel.get_by_text("What the model is asked for", exact=True).click()
+
+                # A JSON Schema with parts outside the subset: each named, nothing to take.
+                await panel.get_by_role("button", name="Paste a JSON Schema").click()
+                await panel.get_by_role("textbox", name="JSON Schema").fill(json.dumps(ANSWERJSON_REFUSED, indent=1))
+                await panel.get_by_role("button", name="Read it").click()
+                refused = " ".join((await panel.get_by_test_id("answer-paste-refused").inner_text()).split())
+                if not all(w in refused for w in ("`name`", "minLength", "`tags`", "$ref")):
+                    problems.append(f"{tag}: the refused schema reads {refused!r}")
+                if await panel.get_by_role("button", name="Use these fields").count():
+                    problems.append(f"{tag}: a refused schema still offers fields to take")
+                await panel.get_by_test_id("answer-paste-refused").scroll_into_view_if_needed()
+                await shot("schema-refused")
+                await contrast("schema-refused")
+                # One inside the subset: shown before it is taken.
+                await panel.get_by_role("textbox", name="JSON Schema").fill(json.dumps(ANSWERJSON_SCHEMA))
+                await panel.get_by_role("button", name="Read it").click()
+                preview = " ".join((await panel.get_by_test_id("answer-paste-preview").inner_text()).split())
+                if "risky" not in preview or "why" not in preview:
+                    problems.append(f"{tag}: the schema's preview reads {preview!r}")
+                await shot("schema-preview")
+                await contrast("schema-preview")
+                await panel.get_by_role("button", name="Cancel").click()
+                if (await panel.get_by_role("combobox", name="Answer field 1 type").inner_text()).strip() != "List of groups":
+                    problems.append(f"{tag}: Cancel changed the fields")
+
+                # An example, opened from the keyboard, taken, and sent by Save.
+                await panel.get_by_role("button", name="Paste an example").focus()
+                await page.keyboard.press("Enter")
+                await panel.get_by_role("textbox", name="Example answer").fill(json.dumps(ANSWERJSON_EXAMPLE, indent=1))
+                await panel.get_by_role("button", name="Read it").click()
+                preview = " ".join((await panel.get_by_test_id("answer-paste-preview").inner_text()).split())
+                if "a list of groups" not in preview or "score" not in preview:
+                    problems.append(f"{tag}: the example's preview reads {preview!r}")
+                await panel.get_by_test_id("answer-paste-preview").scroll_into_view_if_needed()
+                await shot("example-preview")
+                await contrast("example-preview")
+                await panel.get_by_role("button", name="Use these fields").click()
+                took = (await panel.get_by_role("combobox", name="Answer field 1.2 type").inner_text()).strip()
+                if took != "Number":
+                    problems.append(f"{tag}: the example's leads.score reads {took!r}, not Number")
+                if n == len(runs) - 1:
+                    saved.clear()
+                    await page.get_by_role("button", name=re.compile(r"^Save(?: Unsaved changes)?$")).first.click()
+                    await asyncio.sleep(1.5)
+                    step = {s.get("id"): s for s in ((saved[-1] if saved else {}).get("steps") or [])}.get("find", {})
+                    if step.get("output_fields") != ANSWERJSON_TAKEN:
+                        problems.append(f"{tag}: Save sent {step.get('output_fields')}, not {ANSWERJSON_TAKEN}")
+            finally:
+                await ctx.close()
+    finally:
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return ("answer fields go four levels down with groups disabled at the fourth, show what the model is asked for, "
+            "name each refused part of a pasted schema and take an example; AA and Tab-reachable, light and dark at "
+            "1440 and 390")
 
 
 @check

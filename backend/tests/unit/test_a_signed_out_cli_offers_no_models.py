@@ -156,7 +156,8 @@ PICKERS = [
     ("components/settings/ModelsTab.tsx", r"synapseAIOnly\(buildModelOptions\(providers\), modelWindows, builderModel"),
     ("components/settings/ModelsTab.tsx", r"withUnreachable\(buildModelOptions\(providers\), builderQuickModel\)"),
     ("components/settings/KnowledgeModels.tsx", r"withUnreachable\(modelOptions\(providers\), value\.knowledge_contextual_model"),
-    ("lib/knowledgeHost.tsx", r"chatModels: modelOptions\(providers\)"),
+    # Each model's line added around it (F1598's `withHints`) is the same list.
+    ("lib/knowledgeHost.tsx", r"chatModels: (?:withHints\()?modelOptions\(providers\)"),
     ("components/settings/EvalsScreen.tsx", r"withUnreachable\(modelOptions\(models\.providers \?\? \{\}\), draft\.judge_model"),
     ("components/settings/AgentsTab.tsx", r"withUnreachable\(modelOptions\(providers \?\? \{\}\), draftAgent\.model \|\| undefined\)"),
     ("components/settings/AgentsTab.tsx", r"const models = modelOptions\(providers \?\? \{\}\);"),

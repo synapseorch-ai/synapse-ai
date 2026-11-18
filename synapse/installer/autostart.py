@@ -3,7 +3,9 @@
 
 Each one runs `synapse start --detach --no-browser` — detached, so the service
 manager is not left holding a foreground process, and without a browser, which
-nobody asked to have opened at login. The names are the ones v1.x used, so
+nobody asked to have opened at login. The unit and the LaunchAgent mark the start as theirs
+(`SYNAPSE_STARTED_BY=autostart`, which `start` records in its state, F1641); the Run key carries no mark, a Windows
+launch this repo cannot exercise, so a Windows autostart is recorded as a person's. The names are the ones v1.x used, so
 turning it on replaces a v1.x entry instead of adding a second, and `synapse
 uninstall` finds either.
 
@@ -106,6 +108,8 @@ def enable(python: str | Path, home: Path, path_dirs: list[Path]) -> None:
         <string>{_xml(str(home))}</string>
         <key>PATH</key>
         <string>{_xml(env_path)}</string>
+        <key>SYNAPSE_STARTED_BY</key>
+        <string>autostart</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
@@ -132,6 +136,7 @@ Type=oneshot
 RemainAfterExit=yes
 Environment=SYNAPSE_HOME={_systemd_quote(str(home))}
 Environment=PATH={_systemd_quote(env_path)}
+Environment=SYNAPSE_STARTED_BY=autostart
 ExecStart={quoted}
 ExecStop={stop}
 TimeoutStartSec=600

@@ -4,6 +4,7 @@ Orchestration management endpoints: CRUD, run, human-input, cancel.
 import asyncio
 import os
 import json
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
 from typing import Annotated
@@ -51,16 +52,34 @@ async def list_orchestrations():
 
 
 @router.get("/api/orchestrations/runs")
-async def list_runs(limit: int = 20):
+async def list_runs(limit: int = 20, workflow: str | None = None, before: str | None = None):
     """List recent orchestration runs (newest first).
 
     A run whose workflow has since been deleted is listed too: its page opens it from the definition it kept (F443),
     named "Deleted workflow", and a history left out after an upgrade looked lost (F1337). Synapse AI's own runs and
     nested runs are the store's to leave out, by their ids.
+
+    Every run is reachable (F1639): `before`, the last row's `created_at` and `run_id` joined by a comma as the list
+    gives them, answers the runs strictly older; `workflow`, one workflow's runs, paged the same way.
     """
     from core.orchestration.state import SharedState
-    runs = await SharedState.list_runs(limit=max(1, min(limit, 200)))
+    runs = await SharedState.list_runs(limit=max(1, min(limit, 200)),
+                                       orchestration_ids={workflow} if workflow else None,
+                                       before=_run_cursor(before) if before else None)
     return await _with_scores(runs)
+
+
+def _run_cursor(before: str) -> tuple[datetime, str]:
+    """The run a page of the list ends at, from `<created_at>,<run_id>`: refused with what it takes otherwise."""
+    made, _, run_id = before.partition(",")
+    try:
+        at = datetime.fromisoformat(made.strip().replace("Z", "+00:00"))
+    except ValueError:
+        at = None
+    if at is None or not run_id.strip():
+        raise HTTPException(status_code=422, detail="before is a run's created_at and run_id, joined by a comma, as "
+                                                    "the list gives them.")
+    return (at if at.tzinfo else at.replace(tzinfo=timezone.utc)).astimezone(timezone.utc), run_id.strip()
 
 
 class _RunTabs(BaseModel):

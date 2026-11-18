@@ -201,7 +201,9 @@ from core.native_builder import prompt_lint, seed
 #: which creates the file on the first run, never a read of it first, 07a155b1… (on F1600 hardening's 6f6c9024).
 #: F1623: the talk step may answer from a Vault file the pack holds, which they asked about (the pack reads the
 #: files a message names), c316956a… (on 2.0.14's 07a155b1).
-BUNDLE_SHA256 = "c316956ae403440c12054428283cb0dd26f8d4c0d5fc229ba0f0e246f4635e0d"
+#: F1618: plan_steps.md's `llm` bullet names a nested answer once, a group (`"object"` with `fields`) or a list of
+#: groups (`list` with `"of": {"fields": …}`), with one example and how a later step reads it, 0e53888e… (on c316956a).
+BUNDLE_SHA256 = "0e53888e753c54b1c035e661e2d082111b93821415e5ccb1c0c3f080690d6baf"
 
 
 def _sha(definitions) -> str:

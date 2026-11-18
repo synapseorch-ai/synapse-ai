@@ -217,7 +217,9 @@ async def get_models(refresh: bool = False):
     OPENAI_FALLBACK = ["gpt-4o", "gpt-4-turbo", "gpt-4o-mini"]
     BEDROCK_FALLBACK = ["bedrock.anthropic.claude-3-5-sonnet-20240620-v1:0", "bedrock.anthropic.claude-3-sonnet-20240229-v1:0"]
     GROK_FALLBACK = ["grok-3", "grok-3-mini", "grok-2-1212", "grok-2-vision-1212"]
-    DEEPSEEK_FALLBACK = ["deepseek-chat", "deepseek-reasoner"]
+    # DeepSeek's own names today (api-docs.deepseek.com, read 2026-11-17); its legacy deepseek-chat and
+    # deepseek-reasoner were discontinued on 2026-07-24 and are retired (F1648), so no fallback offers them.
+    DEEPSEEK_FALLBACK = ["deepseek-flash", "deepseek-v4-pro"]
 
     # --- Check API keys ---
     gemini_key = (settings.get("gemini_key") or "").strip()
@@ -716,16 +718,22 @@ async def get_models(refresh: bool = False):
     # Each model's known window, and the least Synapse AI runs on (F1592), so its pickers leave out a model too small
     # for it. An Ollama model's is what Ollama says (`/api/show`, asked once per model in this process); an unknown one
     # is left out.
-    from core.native_builder.models_menu import SYNAPSE_AI_MIN_WINDOW, synapse_ai_window
+    from core.native_builder.models_menu import SYNAPSE_AI_MIN_WINDOW, route_facts, synapse_ai_window
 
     listed = list(dict.fromkeys(all_available))
     known = await asyncio.gather(*(synapse_ai_window(m) for m in listed))
+    # Each model's fit for building, its price and the engine's order (F1598), so Synapse AI's picker shows first what
+    # builds well and leaves out what is not for building, and every picker says a model's size and cost.
+    facts = await route_facts(listed)
 
     return {
         "providers": providers,
         "all_available": all_available,
         "windows": {m: t for m, t in zip(listed, known) if t},
         "synapse_ai_min_window": SYNAPSE_AI_MIN_WINDOW,
+        "builder_fit": facts["builder_fit"],
+        "prices": facts["prices"],
+        "ranked": facts["ranked"],
         "local": ollama_chat,
         "cloud": cloud_models,
         # A Claude CLI model is on it too: it takes the agent's effort as

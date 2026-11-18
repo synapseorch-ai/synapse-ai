@@ -30,6 +30,21 @@ export interface IngestSettings {
     metadata_fields?: string[];
 }
 
+/** A model step's answer field (F1553): a Human step's type, a list (of text unless it says `of`), or a group with
+ * fields of its own, to four levels (F1618). `answerFields.ts` reads and compiles it as the server does. */
+export type OutputField = {
+    name: string;
+    type?: string;
+    description?: string;
+    options?: string[];
+    /** A list's items: `text` (the default), `number`, `boolean`, or a group's fields. */
+    of?: string | { fields?: OutputField[] };
+    /** A group's own fields. */
+    fields?: OutputField[];
+    /** Its value, or nothing (`null`). */
+    may_be_empty?: boolean;
+};
+
 export interface StepConfig {
     id: string;
     name: string;
@@ -122,8 +137,9 @@ export interface StepConfig {
     input_keys?: string[];
     output_key?: string;
     // LLM / AGENT — the fields its answer has (F1553): the step answers that one object, which the run holds the
-    // model to; a later step reads one as {{ state.<output_key>.<name> }}. `answerFields.ts`.
-    output_fields?: { name: string; type?: string; description?: string; options?: string[] }[];
+    // model to; a later step reads one as {{ state.<output_key>.<name> }}, a group's field to its depth (F1618).
+    // `answerFields.ts`.
+    output_fields?: OutputField[];
 
     // Per-step guardrails
     max_turns?: number;

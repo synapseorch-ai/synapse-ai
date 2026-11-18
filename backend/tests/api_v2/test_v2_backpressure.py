@@ -30,16 +30,38 @@ def v2_real(scale_app, monkeypatch):
     return scale_app
 
 
+#: A second the limiter's clock is held in: it keys its window on `int(time.time())`, so two calls a test means to be
+#: in one window are made in one second, whenever the test runs (F1635: a run that crossed a second between them read
+#: as two windows, and the second call was accepted).
+_ONE_SECOND = 1_790_000_000.25
+
+
 class TestRateLimit:
     async def test_second_call_in_window_is_429(self, client, v2_real, api_key, monkeypatch):
+        import time
+
         import core.scale.config as config
         monkeypatch.setattr(config, "get_scale_config", lambda: _cfg(rate_limit_per_tenant_rps=1))
+        monkeypatch.setattr(time, "time", lambda: _ONE_SECOND)
         first = await client.post("/api/v2/orchestrations/o1/run",
                                   json={"message": "a"}, headers=api_key["headers"])
         second = await client.post("/api/v2/orchestrations/o1/run",
                                    json={"message": "b"}, headers=api_key["headers"])
         assert first.status_code == 202
         assert second.status_code == 429
+
+    async def test_two_calls_in_different_seconds_are_both_accepted(self, client, v2_real, api_key, monkeypatch):
+        import time
+
+        import core.scale.config as config
+        monkeypatch.setattr(config, "get_scale_config", lambda: _cfg(rate_limit_per_tenant_rps=1))
+        monkeypatch.setattr(time, "time", lambda: _ONE_SECOND)
+        first = await client.post("/api/v2/orchestrations/o1/run",
+                                  json={"message": "a"}, headers=api_key["headers"])
+        monkeypatch.setattr(time, "time", lambda: _ONE_SECOND + 1)
+        second = await client.post("/api/v2/orchestrations/o1/run",
+                                   json={"message": "b"}, headers=api_key["headers"])
+        assert (first.status_code, second.status_code) == (202, 202)
 
 
 class TestQueueDepth:

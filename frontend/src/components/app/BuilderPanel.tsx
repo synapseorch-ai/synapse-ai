@@ -55,7 +55,7 @@ import { SUGGESTED_LABEL } from '@/components/tabs';
 import { Button, Combobox, Hint, Mark, Markdown, showWhileScrolling } from '@/components/ui';
 import { effortAnswer, isPlanReview, shownInTrail, type BuilderMessage, type BuiltPlace } from '@/lib/builderEvents';
 import { cn, focusRing } from '@/lib/cn';
-import { modelOptions, synapseAIOnly, withUnreachable } from '@/lib/models';
+import { modelOptions, synapseAIDefaultHint, synapseAINote, synapseAIOnly, withHints, withUnreachable } from '@/lib/models';
 
 /** Empty `sessionModel` means "follow the workspace builder model". */
 const DEFAULT_SENTINEL = '__default__';
@@ -184,7 +184,7 @@ export function BuilderConversation({
     const { state, streaming, send, stop, ready, watchBuilt } = chat ?? builder;
     const openChat = onOpenChat ?? ((id: string) => builder.showChat(id));
     const {
-        canAttach, providers, modelWindows, builderModel, sessionModel, setSessionModel, saveBuilderModel, draft,
+        canAttach, providers, modelWindows, builderModel, workspaceModel, sessionModel, setSessionModel, saveBuilderModel, draft,
         draftTaken, takeDraft,
     } = builder;
     const entered = active;
@@ -291,11 +291,14 @@ export function BuilderConversation({
     // pick whose provider has since lost its key shows under "Not reachable"
     // instead of leaving the control looking empty. Never a model too small for
     // Synapse AI (F1592: under 128K, as cloud's).
-    const modelChoices = [
-        { value: DEFAULT_SENTINEL, label: `Default (${builderModel || 'workspace model'})` },
+    const modelChoices = withHints([
+        // Default runs Synapse AI on the Builder model, else the workspace's: its row says when that one is not for
+        // building or too small, as that model's own row would (F1598).
+        { value: DEFAULT_SENTINEL, label: `Default (${builderModel || 'workspace model'})`,
+          hint: synapseAIDefaultHint(builderModel || workspaceModel, modelWindows) },
         ...withUnreachable(synapseAIOnly(modelOptions(providers), modelWindows, sessionModel || undefined),
                            sessionModel || undefined),
-    ];
+    ], modelWindows);
 
     // Consecutive activity collapses into one block; everything else is its own.
     type Group = { type: 'activity'; events: BuilderMessage[] } | { type: 'single'; message: BuilderMessage };
@@ -607,6 +610,7 @@ export function BuilderConversation({
                                     // On a phone the row's own width, not 200 px: "Default (Claude Haik…" (F1131).
                                     className="max-w-[200px] max-md:max-w-full"
                                     options={modelChoices}
+                                    note={synapseAINote(modelChoices, modelWindows)}
                                 />
                             </>
                         )}

@@ -7,7 +7,7 @@
  * engine's `compute_next_run`, both products), and its time says which.
  */
 import { bucketOf, type RunBucket } from './model';
-import { templatePath } from './StepPath';
+import { templatePath, type StepRole } from './model';
 
 /** A schedule as both products' `/schedules` return it (only what the words need). */
 export type ScheduleLike = {
@@ -175,6 +175,8 @@ export type WorkflowListRow = {
     description: string;
     /** The steps' types in reading order, End dropped (`templatePath`). */
     types: string[];
+    /** Each one's role from its config (F1657). */
+    roles: StepRole[];
     hasPerson: boolean;
     stepCount: number;
     trigger: TriggerChip;
@@ -188,7 +190,7 @@ type WorkflowLike = {
     id: string;
     name: string;
     description?: string | null;
-    steps: { id: string; type?: string | null }[];
+    steps: { id: string; type?: string | null; tool_arguments?: unknown }[];
     entry_step_id?: string | null;
     trigger?: string | null;
     updated_at?: string | null;
@@ -201,12 +203,13 @@ export function workflowRow(
     schedules: ScheduleLike[] | undefined,
     runningCount?: number,
 ): WorkflowListRow {
-    const { types, hasPerson } = templatePath(workflow);
+    const { types, roles, hasPerson } = templatePath(workflow);
     return {
         id: workflow.id,
         name: workflow.name,
         description: workflow.description ?? '',
         types,
+        roles,
         hasPerson,
         // The steps the path draws (End is a marker, not work), so the count and the tiles agree.
         stepCount: types.length,

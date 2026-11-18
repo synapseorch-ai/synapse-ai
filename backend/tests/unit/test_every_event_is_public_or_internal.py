@@ -21,12 +21,14 @@ CORE = Path(__file__).resolve().parents[2] / "core"
 
 #: `"type"` keys in `core/` that are not events.
 NOT_EVENTS = frozenset({
-    # JSON schema types.
-    "array", "boolean", "integer", "number", "object", "string", "function",
+    # JSON schema types; `null` is the "or nothing" of an answer field that may be empty (F1618).
+    "array", "boolean", "integer", "number", "object", "string", "null", "function",
     # Model request parts and options.
     "text", "image", "image_url", "base64", "adaptive", "enabled", "ephemeral", "default",
     # OpenAI's structured answer (`response_format`), asked of an llm step that declares its answer fields (F1553).
     "json_schema",
+    # An answer field's own type in a shape the builder proposes from a plan's reads: a list of groups (F1618).
+    "list",
     # Agent, tool and vault kinds; a native-builder step; voice relay frames; ASGI messages; a header name.
     "builder", "conversational", "orchestrator", "mcp_native", "file", "folder", "end",
     "http.response.start", "http.response.body", "SHARED_KEY",

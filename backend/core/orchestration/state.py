@@ -28,6 +28,7 @@ other tenants' jobs; the old blocking `open()`/`write()` stalled all of them.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import Protocol, Sequence
 
 from core.models_orchestration import OrchestrationRun
@@ -56,7 +57,8 @@ class StateBackend(Protocol):
     async def load(self, run_id: str) -> OrchestrationRun | None: ...
 
     async def list_runs(
-        self, limit: int = 20, orchestration_ids: set[str] | None = None
+        self, limit: int = 20, orchestration_ids: set[str] | None = None,
+        before: tuple[datetime, str] | None = None,
     ) -> list[dict]: ...
 
 
@@ -173,17 +175,18 @@ class SharedState:
 
     @classmethod
     async def list_runs(
-        cls, limit: int = 20, orchestration_ids: set[str] | None = None
+        cls, limit: int = 20, orchestration_ids: set[str] | None = None,
+        before: tuple[datetime, str] | None = None,
     ) -> list[dict]:
         """Recent runs for the current tenant, newest first.
 
         `orchestration_ids`, when given, restricts results to runs whose
         orchestration still exists. The limit applies *after* filtering — a
         backlog of runs from deleted orchestrations must not crowd live runs
-        out of the window.
+        out of the window. `before`, a run's created_at and id, gives the runs strictly older (F1639).
         """
         return await get_state_backend().list_runs(
-            limit=limit, orchestration_ids=orchestration_ids
+            limit=limit, orchestration_ids=orchestration_ids, before=before
         )
 
 

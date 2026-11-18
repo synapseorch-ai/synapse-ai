@@ -101,7 +101,7 @@ SHAPES: dict[str, dict[str, list[str]]] = {
     "plan": {"keys": ["items", "note"],
              "item": ["plan", "monthly_credits", "runs_at_once", "credits_left", "model_wallet_left_usd"]},
     "models": {"keys": ["default_model", "builder_model", "builder_model_for_quick_steps", "providers_with_a_key",
-                        "note", "models_you_can_pick?"]},
+                        "note", "models_you_can_pick?", "cli_not_signed_in?"]},
     "agents": {"keys": ["items"], "item": ["name", "type", "model", "tools"]},
     "workflows": {"keys": ["items", "count"], "item": ["name", "steps", "scheduled"]},
     "tool": {"keys": ["name", "kind", "description", "inputs", "note", "code?", "code_cut?", "reads_variables?",
@@ -558,7 +558,21 @@ async def _models(args: dict) -> dict:
     # The models an agent can be set to, by provider: what the agent editor's picker offers (SAI2-P2).
     found = await model_choices.choices()
     if found:
-        out["models_you_can_pick"] = found
+        # A model CLI known to be signed out here is never offered, as the pickers leave it out (F1418); it is named
+        # with how to sign in instead, so Synapse AI never says it can be used straight away (F1676). Its status was
+        # just read by the list above; a CLI whose sign-in cannot be told without a model call stays.
+        from core.providers import cli_status
+
+        not_signed: dict[str, str] = {}
+        for provider in list(found):
+            st = cli_status.known(provider) if provider in cli_status.PROVIDERS else None
+            if st is not None and st.signed_in is False:
+                not_signed[st.label] = st.sign_in_hint or "Sign in to it first."
+                found = {k: v for k, v in found.items() if k != provider}
+        if found:
+            out["models_you_can_pick"] = found
+        if not_signed:
+            out["cli_not_signed_in"] = not_signed
     return out
 
 

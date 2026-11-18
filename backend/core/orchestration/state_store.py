@@ -236,8 +236,11 @@ class StoreStateBackend:
         return OrchestrationRun.model_validate(_to_document(row))
 
     async def list_runs(
-        self, limit: int = 20, orchestration_ids: set[str] | None = None
+        self, limit: int = 20, orchestration_ids: set[str] | None = None,
+        before: tuple[datetime, str] | None = None,
     ) -> list[dict]:
+        from sqlalchemy import and_, or_
+
         from core.orchestration.run_error import failure_reason
         from core.store import session
         from core.store.models import OrchestrationRunDB
@@ -253,11 +256,17 @@ class StoreStateBackend:
             .where(OrchestrationRunDB.tenant_id == get_tenant())
             .where(~OrchestrationRunDB.run_id.contains("__", autoescape=True))
             .where(~OrchestrationRunDB.run_id.startswith("builder_", autoescape=True))
-            .order_by(OrchestrationRunDB.created_at.desc())
+            # Newest first, runs made in one instant told apart by their id, so a page ends where the next begins
+            # (F1639: `before` is the last row's created_at and id).
+            .order_by(OrchestrationRunDB.created_at.desc(), OrchestrationRunDB.run_id.desc())
             .limit(limit)
         )
         if orchestration_ids is not None:
             stmt = stmt.where(OrchestrationRunDB.orchestration_id.in_(orchestration_ids))
+        if before is not None:
+            made, run_id = before
+            stmt = stmt.where(or_(OrchestrationRunDB.created_at < made,
+                                  and_(OrchestrationRunDB.created_at == made, OrchestrationRunDB.run_id < run_id)))
 
         async with session() as s:
             rows = (await s.execute(stmt)).scalars().all()
@@ -273,6 +282,8 @@ class StoreStateBackend:
                 "status": row.status,
                 "started_at": _iso_utc(row.started_at),
                 "ended_at": _iso_utc(row.ended_at),
+                # The list's own order and its cursor (F1639).
+                "created_at": _iso_utc(row.created_at),
                 # Trigger source: "schedule_<id>" (scheduler), a chat session id
                 # (orchestrator agent), or None (manual/API).
                 "session_id": row.session_id,

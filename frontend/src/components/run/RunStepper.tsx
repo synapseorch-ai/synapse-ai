@@ -56,7 +56,7 @@ export function RunStepper({ run, workflow }: { run: RunRecord; workflow: Orches
                 return (
                     <li key={row.stepId} className="border-b border-border">
                         <div className="grid min-h-[50px] grid-cols-[30px_minmax(0,1fr)_auto] items-center gap-x-3.5 px-2.5" style={{ paddingLeft: row.depth ? `${10 + row.depth * 18}px` : undefined }}>
-                            <StepIcon type={row.type} className={cn(row.state === 'not-reached' && 'opacity-60')} />
+                            <StepIcon type={row.type} role={row.role} className={cn(row.state === 'not-reached' && 'opacity-60')} />
                             <span className="grid min-w-0 gap-0.5 py-2">
                                 {expandable ? (
                                     <button

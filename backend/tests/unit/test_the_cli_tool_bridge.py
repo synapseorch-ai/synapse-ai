@@ -245,6 +245,7 @@ class TestTheDispatchHandsTheToolsOver:
 
         monkeypatch.setattr(llm, "call_cli_provider", fake_cli)
         call = type("Call", (), {"model": "cli.codex.gpt-5.6-luna", "system": "S", "tools": ENGINE_TOOLS,
-                                 "reasoning_effort": None, "messages": lambda self: [{"role": "user", "content": "hi"}]})()
+                                 "reasoning_effort": None, "response_schema": None,
+                                 "messages": lambda self: [{"role": "user", "content": "hi"}]})()
         await llm._chat_cli(call, None)
         assert seen["tools"] == ENGINE_TOOLS

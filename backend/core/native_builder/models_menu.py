@@ -51,6 +51,16 @@ class ModelEntry:
     #: A CLI model whose CLI is known to be signed out (F1418): how to sign it in, said where it is passed over; such a
     #: model is never picked. None when it is signed in, or that is not known.
     sign_in: str | None = None
+    #: What it is (F1598, `core.providers.model_facts`): its family, its provider's tier (higher is stronger) and
+    #: generation where the provider orders its own, and whether it is small. None when not known.
+    family: str | None = None
+    tier: int | None = None
+    generation: tuple[int, ...] | None = None
+    small: bool | None = None
+    #: Whether it builds well: "recommended", "not_for_building", or None, no mark (`model_facts.builder_fit`).
+    fit: str | None = None
+    #: The measured pass's rank, higher is stronger; None when not measured. A ranked model runs first (`ordered`).
+    rank: int | None = None
 
 
 @dataclass(frozen=True)
@@ -133,7 +143,7 @@ async def _own(model_id: str, pricing: dict) -> ModelEntry:
 
 def _entry(model_id: str, pricing: dict) -> ModelEntry:
     from core.images import model_can_see_images
-    from core.providers import window_tokens
+    from core.providers import model_facts, window_tokens
     from core.providers.registry import provider_for
     from core.reasoning import supports_native
     from core.usage_tracker import _resolve_pricing_entry
@@ -143,12 +153,50 @@ def _entry(model_id: str, pricing: dict) -> ModelEntry:
     priced = _resolve_pricing_entry(model_id, pricing) if source not in ("cli", "local") else None
     ranked = (_resolve_pricing_entry(model_id.split(".", 2)[2], pricing)
               if source == "cli" and model_id.count(".") >= 2 else None)
+    row = model_facts.size_of(model_id)
+    window = window_tokens(model_id)
     return ModelEntry(
         id=model_id, name=model_id, provider=spec.id, source=source, tools=spec.caps.tools,
         vision=model_can_see_images(model_id), reasoning=supports_native(model_id),
         price_in=0 if source == "local" else (priced or {}).get("input_per_1m"),
         price_out=0 if source == "local" else (priced or {}).get("output_per_1m"),
-        can_pay=True, window=window_tokens(model_id), rank_out=(ranked or {}).get("output_per_1m"))
+        can_pay=True, window=window, rank_out=(ranked or {}).get("output_per_1m"),
+        family=row.family if row else None, tier=row.tier if row else None,
+        generation=row.generation if row else None, small=row.small if row else None,
+        fit=model_facts.builder_fit(model_id, window=window, tools=spec.caps.tools),
+        rank=(model_facts.measured(model_id) or (None, None))[1])
+
+
+async def with_host_facts(entries: list[ModelEntry]) -> list[ModelEntry]:
+    """`entries` with what a host knows of each over self-hosted's own facts (`set_model_facts`), each one's fit read
+    again from the window, tools and fit the host says (F1598): the host's fit first, else the facts on its window."""
+    if _facts is None or not entries:
+        return entries
+    from core.providers import model_facts
+
+    said = await _facts([e.id for e in entries]) or {}
+    out = []
+    for e in entries:
+        mine = {k: v for k, v in (said.get(e.id) or {}).items() if k in ModelEntry.__dataclass_fields__ and k != "id"}
+        e = replace(e, **mine)
+        out.append(replace(e, fit=model_facts.builder_fit(e.id, window=e.window, tools=e.tools,
+                                                          host_fit=mine.get("fit"))))
+    return out
+
+
+async def route_facts(ids: list[str]) -> dict[str, Any]:
+    """What `/api/models` says of each model beside its window (F1598): `builder_fit`, a known fit only; `prices`,
+    `{in, out}` in USD per 1M tokens where both are known (never a CLI's subscription or a local model); and `ranked`,
+    the models in the engine's one order (`ordered`, as for Synapse AI, which calls tools)."""
+    ids = list(dict.fromkeys(i for i in ids if i))
+    if not ids:
+        return {"builder_fit": {}, "prices": {}, "ranked": []}
+    pricing = await _pricing()
+    entries = await with_host_facts([_entry(i, pricing) for i in ids])
+    return {"builder_fit": {e.id: e.fit for e in entries if e.fit},
+            "prices": {e.id: {"in": e.price_in, "out": e.price_out} for e in entries
+                       if e.source not in ("cli", "local") and e.price_in is not None and e.price_out is not None},
+            "ranked": [e.id for e in ordered(entries, has_tools=True)]}
 
 
 async def _pricing() -> dict:
@@ -182,11 +230,7 @@ async def menu() -> list[ModelEntry]:
             return []
         ids = list(dict.fromkeys(m for models in listed.values() for m in models))
         pricing = await _pricing()
-        entries = [await _own(i, pricing) for i in ids]
-        if _facts is not None:
-            said = await _facts(ids) or {}
-            entries = [replace(e, **{k: v for k, v in (said.get(e.id) or {}).items()
-                                     if k in ModelEntry.__dataclass_fields__ and k != "id"}) for e in entries]
+        entries = await with_host_facts([await _own(i, pricing) for i in ids])
         return [replace(e, sign_in=_sign_in(e.provider)) if e.source == "cli" else e for e in entries]
     except Exception:  # noqa: BLE001 — a menu that cannot be read picks nothing: the workspace default, as before
         _log.warning("model menu not read", exc_info=True)
@@ -206,8 +250,10 @@ LONG_WINDOW = 128_000
 #: the engine sends it and holds it under this (`test_self_hosted_synapse_ai_runs_only_on_a_model_that_can_hold_it`).
 SYNAPSE_AI_MIN_WINDOW = LONG_WINDOW
 #: A local model that reads that much, named where Synapse AI refuses a smaller one and in the first-run step's Ollama
-#: tip (Naveen 11-14: "suggest a 128K local model"): Llama 3.1 8B reads 131,072 tokens.
-SYNAPSE_AI_LOCAL_MODEL = "llama3.1"
+#: tip, so a person without one is told one that runs Synapse AI: gpt-oss:20b reads 128K, and is not a dense model of
+#: 9B or less, which Synapse AI's picker leaves out (F1598); its download and the memory it runs in are said beside it.
+SYNAPSE_AI_LOCAL_MODEL = "gpt-oss:20b"
+SYNAPSE_AI_LOCAL_MODEL_SIZE = "about a 14 GB download; it runs in 16 GB of memory"
 
 #: Where to change Synapse AI's model, by what chose it: a pick in its model menu, the Builder model setting, or the
 #: everyday model a turn takes when no Builder model is set. Cloud's words are the same (`model_windows.WHERE`).
@@ -261,7 +307,7 @@ async def synapse_ai_refusal(model: str | None, *, source: str, floor: int = SYN
     return (f"{name or model} reads up to {tokens_short(tokens)} tokens at once, and Synapse AI needs a model that "
             f"reads at least {tokens_short(floor)} to read what it builds with, so it would be refused at its first "
             f"step. {SYNAPSE_AI_WHERE[source]} With Ollama, {SYNAPSE_AI_LOCAL_MODEL} reads "
-            f"{tokens_short(floor)}: ollama pull {SYNAPSE_AI_LOCAL_MODEL}.")
+            f"{tokens_short(floor)} ({SYNAPSE_AI_LOCAL_MODEL_SIZE}): ollama pull {SYNAPSE_AI_LOCAL_MODEL}.")
 
 #: The pools a pick looks in, in order (Naveen, 10-30): the workspace's own keys, then the platform's models.
 POOLS = (("key", "from your own keys"), ("managed", "from the platform's models"))
@@ -306,6 +352,40 @@ def _strongest_first(e: ModelEntry, has_tools: bool = False) -> tuple:
     return (not e.reasoning, has_tools and e.tools != "native", e.price_out is None, -(e.price_out or 0), e.id)
 
 
+def _newer_first(generation: tuple[int, ...] | None) -> tuple:
+    # (5, 5) before (5,) before (4, 8): padded, so a point release is never read as older than its first.
+    return (0, tuple(-g for g in (*generation, 0, 0, 0)[:4])) if generation else (1, ())
+
+
+def ordered(entries: list[ModelEntry], has_tools: bool = False) -> list[ModelEntry]:
+    """The one order models are ranked in (F1598), which the pick, the stronger-model offer, the "strongest" wish and
+    `/api/models` all read:
+    - a measured rank first, the higher first;
+    - then today's order: reasoning, native tools for an agent with tools, then the dearer first;
+    - with each family's models, where its provider orders its own, run by tier, then the newer generation, then
+      today's key, within the places that family holds in it. So Opus 5.5 runs before a dearer Opus 4.6, and across
+      families nothing moves until a measure says so."""
+    measured = sorted((e for e in entries if e.rank is not None), key=lambda e: (-e.rank, _strongest_first(e, has_tools)))
+    rest = sorted((e for e in entries if e.rank is None), key=lambda e: _strongest_first(e, has_tools))
+    places: dict[str, list[int]] = {}
+    for n, e in enumerate(rest):
+        if e.family and e.tier is not None:
+            places.setdefault(e.family, []).append(n)
+    for held in places.values():
+        members = sorted((rest[n] for n in held),
+                         key=lambda e: (-e.tier, _newer_first(e.generation), _strongest_first(e, has_tools)))
+        for n, e in zip(held, members):
+            rest[n] = e
+    return [*measured, *rest]
+
+
+def _not_small(fitting: list[ModelEntry]) -> list[ModelEntry]:
+    """An automatic pick never gives the job to a small model when one that is not small fits too (F1598): the 4B
+    writer. It only rules models out: with only small models fitting, they are kept, and a model the person names is
+    never touched (`resolve_wish`)."""
+    return [e for e in fitting if e.small is not True] or fitting
+
+
 def _no_model(candidates: list[ModelEntry], needs: str, has_tools: bool, *, of: str = "",
               long_inputs: bool = False) -> NoModel:
     """Why nothing here does the job, said by what the candidates lack (SAI2's probe): the wallet first, then tools,
@@ -339,7 +419,7 @@ def _within(fitting: list[ModelEntry], ceiling: bool) -> list[ModelEntry]:
 
 def _by_need(fitting: list[ModelEntry], needs: str, *, ceiling: bool, has_tools: bool) -> ModelEntry:
     if needs == "reasoning":
-        return sorted(_within(fitting, ceiling), key=lambda e: _strongest_first(e, has_tools))[0]
+        return ordered(_within(fitting, ceiling), has_tools)[0]
     return sorted(fitting, key=lambda e: _cheapest_first(e, has_tools))[0]
 
 
@@ -354,7 +434,7 @@ def _best(fitting: list[ModelEntry], needs: str, *, has_tools: bool, narrow: boo
         return _by_need(fitting, "reasoning", ceiling=True, has_tools=has_tools), "reasoning"
     if default and (mine := next((e for e in fitting if e.id == default), None)):
         return mine, "default"
-    return sorted(_within(fitting, True), key=lambda e: _strongest_first(e, has_tools))[0], "best"
+    return ordered(_within(fitting, True), has_tools)[0], "best"
 
 
 #: The price bands a stand-in keeps to (F1369), USD per 1M output tokens: never in a dearer band than the refused one.
@@ -375,18 +455,31 @@ async def stand_in(refused: str, *, has_tools: bool) -> str | None:
     return sorted(fitting, key=lambda e: _cheapest_first(e, has_tools))[0].id if fitting else None
 
 
+#: Said after a pick's reason when the model picked is small (F1598): a fact, never a judgement of it.
+SMALL_PICK = "; it is a small model, as no larger one here fits"
+
+
 def pick(needs: str, *, has_tools: bool, menu: list[ModelEntry], narrow: bool = False, long_inputs: bool = False,
          default: str | None = None) -> Picked | NoModel | None:
     """The model an agent that needs `needs` gets: the best fit among the workspace's own-key models, then among the
     platform's (F1251). `narrow`: a small job with a narrow goal, which gets the cheapest that fits; `default`: the
     workspace's default model. None with no menu (the workspace default, as before); `NoModel` when nothing on it can
-    do the job, said rather than defaulted (SAI2's review)."""
+    do the job, said rather than defaulted, so nothing runs on a model that cannot do it. A small model is picked only
+    when no larger one fits (`_not_small`), and its reason then says it is small (`SMALL_PICK`)."""
+    picked = _pick(needs, has_tools=has_tools, menu=menu, narrow=narrow, long_inputs=long_inputs, default=default)
+    if isinstance(picked, Picked) and any(e.id == picked.id and e.small is True for e in menu):
+        return Picked(picked.id, picked.reason + SMALL_PICK)
+    return picked
+
+
+def _pick(needs: str, *, has_tools: bool, menu: list[ModelEntry], narrow: bool, long_inputs: bool,
+          default: str | None) -> Picked | NoModel | None:
     if not menu:
         return None
     usable = [e for e in menu if e.source not in ("cli", "local")]
     asked = fit_words(needs, has_tools=has_tools, long_inputs=long_inputs)
     said = f": one that {asked}" if asked else ""
-    every = [e for e in usable if _fits(e, needs, has_tools, long_inputs)]
+    every = _not_small([e for e in usable if _fits(e, needs, has_tools, long_inputs)])
     if len(every) == 1:
         return Picked(every[0].id, _ONLY + said)
     for source, where in POOLS:
@@ -403,8 +496,8 @@ def pick(needs: str, *, has_tools: bool, menu: list[ModelEntry], narrow: bool = 
                      if default and e.id == default and _fits(e, needs, has_tools, long_inputs)), None)
         if mine is not None and mine.source in _NO_POOL:
             return Picked(mine.id, f"{_REASONS['default']}, {_NO_POOL[mine.source]}{said}")
-        cli = [replace(e, price_out=e.rank_out) for e in menu
-               if e.source == "cli" and _fits(e, needs, has_tools, long_inputs)]
+        cli = _not_small([replace(e, price_out=e.rank_out) for e in menu
+                          if e.source == "cli" and _fits(e, needs, has_tools, long_inputs)])
         if cli:
             chosen, why = _best(cli, needs, has_tools=has_tools, narrow=narrow, default=None)
             return Picked(chosen.id, f"{_REASONS[why]}, {_NO_POOL['cli']}{said}")
@@ -496,10 +589,6 @@ async def _open_listed_ready(model: str) -> bool:
         return False
 
 
-def _strength(e: ModelEntry | None) -> tuple:
-    return (bool(e and e.reasoning), (e.price_out or 0) if e else 0)
-
-
 def stronger_than(current: str, needs: str, *, has_tools: bool, menu: list[ModelEntry],
                   long_inputs: bool = False) -> Picked | None:
     """The next real step up from `current`, with its price, for Synapse AI to offer (F1018). Below the ceiling, the
@@ -508,14 +597,17 @@ def stronger_than(current: str, needs: str, *, has_tools: bool, menu: list[Model
     `long_inputs`: the job reads long inputs (Synapse AI itself; an agent planned for them), so a model known to hold
     less than `LONG_WINDOW` is no step up (F1591), as `pick` passes it over."""
     now = next((e for e in menu if e.id == current), None)
-    priced = [e for e in menu if e.source not in ("cli", "local") and _fits(e, needs, has_tools, long_inputs)
-              and e.price_out is not None and e.id != current and _strength(e) > _strength(now)]
+    fitting = [e for e in menu if e.source not in ("cli", "local") and _fits(e, needs, has_tools, long_inputs)
+               and e.price_out is not None and e.id != current]
+    # Stronger is ahead of it in the one order (F1598), which the pick reads too.
+    order = ordered([*fitting, *([now] if now is not None else [])], has_tools)
+    priced = order[:next(n for n, e in enumerate(order) if e is now)] if now is not None else order
     at_ceiling = now is not None and (now.price_out or 0) >= AUTO_PICK_CEILING_USD_PER_MTOK_OUT
     within = [e for e in priced if e.price_out <= AUTO_PICK_CEILING_USD_PER_MTOK_OUT]
     pool = [e for e in priced if e.price_out > AUTO_PICK_CEILING_USD_PER_MTOK_OUT] if at_ceiling else within
     if not pool:
         return None
-    best = sorted(pool, key=lambda e: _strongest_first(e, has_tools))[0]
+    best = ordered(pool, has_tools)[0]
     return Picked(best.id, f"about ${best.price_out:g} per 1M output tokens")
 
 
@@ -626,8 +718,7 @@ def resolve_wish(wish: str, needs: str, *, has_tools: bool, menu: list[ModelEntr
                       "you asked for the lowest-cost model")
     strongest = words & _STRONGEST or "most capable" in " ".join(re.findall(r"[a-z0-9]+", wish.casefold()))
     if strongest and fitting:
-        return Picked(sorted(fitting, key=lambda e: _strongest_first(e, has_tools))[0].id,
-                      "you asked for the strongest model")
+        return Picked(ordered(fitting, has_tools)[0].id, "you asked for the strongest model")
     if (words & _CHEAPEST or strongest) and (out := _signed_out(kind_pool, needs, has_tools)):
         return out  # a rule, and every model it could pick is a signed-out CLI (F1418)
     return Ask(f"I don't know which model \"{wish.strip()}\" is. This workspace can use: " + ", ".join(names) + ".",

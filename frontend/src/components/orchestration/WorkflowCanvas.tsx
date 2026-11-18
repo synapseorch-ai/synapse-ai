@@ -13,7 +13,7 @@ import '@xyflow/react/dist/style.css';
 import { Maximize, Minus, Plus, Wand2 } from 'lucide-react';
 import { canvasFlags } from './canvasFlags';
 import { PALETTE_CLEARANCE_PX, StepPalette, usePaletteCollapsed } from './StepPalette';
-import { ROLE_FILL, roleOf } from './roles';
+import { ROLE_FILL, stepRole } from './roles';
 import { nodeTypes, useWorkflowGraph } from './useWorkflowGraph';
 import type { Orchestration } from '@/types/orchestration';
 import { KNOWLEDGE_STEP_TYPES } from '@/types/orchestration';
@@ -145,7 +145,7 @@ export function WorkflowCanvas({
                         pannable
                         zoomable
                         // By who does the work (D211), as the steps themselves are.
-                        nodeColor={(node: any) => ROLE_FILL[roleOf(node.data?.step?.type)]}
+                        nodeColor={(node: any) => ROLE_FILL[stepRole(node.data?.step?.type, node.data?.step)]}
                         maskColor="var(--minimap-mask)"
                     />
                 )}

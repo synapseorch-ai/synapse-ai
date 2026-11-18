@@ -93,6 +93,70 @@ def _kept(value: Any, run: "OrchestrationRun", step: StepConfig, engine: "Orches
         return value
 
 
+#: The most of a value a warning about a tool's answer quotes (F1620): a tool's answer can carry anything.
+_QUOTED_AT_MOST = 40
+
+
+def _quoted(value: Any) -> str:
+    """A value from a tool's answer as a warning shows it: masked as a step's error is (a held secret, anything shaped
+    like a key), then cut short, so neither a long value nor the start of a key is echoed."""
+    from core.orchestration.run_error import clean
+
+    shown = clean(json.dumps(value, ensure_ascii=False, default=str))
+    return shown if len(shown) <= _QUOTED_AT_MOST else shown[:_QUOTED_AT_MOST] + "…"
+
+
+def _answer_lacks(step: StepConfig, tool_obj: Any, custom_tools: list | None,
+                  result: Any) -> tuple[str, list[str], str] | None:
+    """What a Tool step's answer lacks of what its tool declares (F1620): the step's one warning, the problems it names
+    and the tool, or None: when
+    the tool declares nothing, when the answer holds, and for a built-in page read, whose shape lists every key the
+    scraper may answer (held to the scraper's own source by a test). The declaration is a custom tool's output schema
+    (the person's own), else the tool's `outputSchema` (its server's). The answer is never changed and the step
+    never fails on it: a server's declaration can be wrong, and a run that works today goes on as it did."""
+    from core.native_builder.structure import ANSWERS
+    from core.orchestration import output_fields as _answer
+    from core.orchestration.run_error import clean
+    from core.orchestration.step_answers import tool_answers
+
+    try:
+        name = getattr(tool_obj, "name", None) or step.forced_tool
+        if not name or name in ANSWERS or result is None:
+            return None
+        own = next((t for t in custom_tools or [] if isinstance(t, dict) and t.get("name") == name), None)
+        schema = own.get("outputSchema") if own is not None else getattr(tool_obj, "outputSchema", None)
+        if not isinstance(schema, dict):
+            return None
+        answer = tool_answers([{"name": name, "outputSchema": schema}], {name} if own is not None else set()).get(name)
+        if answer is None or answer["owner"] == "page":
+            return None
+        problems = _answer.held(answer["fields"], result, quote=_quoted, first_level=bool(answer.get("first_level")))
+    except Exception as exc:  # noqa: BLE001 — an answer not held is a warning not said, never a step failed
+        _log.warning(f"step '{step.id}': its answer was not held to its tool's declaration: {exc}")
+        return None
+    if not problems:
+        return None
+    whose = ("the tool's output schema, in its settings" if answer["owner"] == "custom"
+             else "its server's own, which may be wrong")
+    return (clean(f"'{step.name}': `{name}` answered without what it declares ({_answer._named(problems)}). Its "
+                  f"declaration is {whose}. The run goes on with the answer as the tool gave it; a later step that "
+                  "reads what is missing finds nothing there."), problems, name)
+
+
+def _with_what_was_left_out(said: str, step: StepConfig, run: "OrchestrationRun", engine: Any) -> str:
+    """`said`, a condition's warning about a value not written (F1433), with which Tool step's answer left out what it
+    reads, where one did (`answers_missed.clause`, F1620)."""
+    from core.orchestration import answers_missed
+
+    try:
+        orch = getattr(engine, "orch", None)
+        missed = answers_missed.clause(step.id, getattr(orch, "steps", None) or [], run.shared_state)
+    except Exception as exc:  # noqa: BLE001 — a reason not added is a word not said, never a step failed
+        _log.warning(f"step '{step.id}': what a tool left out was not said: {exc}")
+        missed = None
+    return f"{said} — {missed}" if missed else said
+
+
 def _preview(value: Any, *, whole: bool = False) -> str:
     """What an event shows of a step's output: an excerpt and the file for a saved one; otherwise its first 500
     characters, or all of it (`whole`) where the event always carried all of it."""
@@ -1283,6 +1347,8 @@ class ToolStepExecutor:
                 result = await self._execute_tool(
                     called_tool, tool_args, engine, resource_events, run_id=run.run_id
                 )
+                # Held from its value, before a big one is kept as a file (F1620).
+                lacks = _answer_lacks(step, tool_obj, custom_tools, result)
                 final_response = _kept(result, run, step, engine)
                 if step.output_key:
                     run.shared_state[step.output_key] = final_response
@@ -1294,6 +1360,13 @@ class ToolStepExecutor:
                     "tool_name": called_tool,
                     "preview": preview,
                 }
+                # Kept for a later step that fails on what it left out, paths only; dropped when it holds again.
+                from core.orchestration import answers_missed
+
+                answers_missed.note(run.shared_state, step.output_key, step.id, step.name, called_tool,
+                                    lacks[1] if lacks else None)
+                if lacks:
+                    yield {"type": "step_warning", "orch_step_id": step.id, "message": lacks[0]}
                 for _saved in resource_events:
                     yield {**_saved, "orch_step_id": step.id, "step_name": step.name}
                 _log.debug(f"TOOL STEP: 📤 Tool Result ({called_tool}): {preview}")
@@ -2367,6 +2440,37 @@ class MergeStepExecutor:
         }
 
 
+def _unbraced_loop_source(expr: str | None) -> str:
+    """A Loop's list as written, without its braces: `state.finder.keywords`."""
+    from core.expressions import _unbraced
+
+    return _unbraced(expr or "").strip() or "its list"
+
+
+def _note_a_zero_run(step: StepConfig, run: OrchestrationRun, engine: "OrchestrationEngine", body_ids: list[str],
+                     iterations_run: int, why: str) -> None:
+    """A Loop that ran zero times hands on nothing from before as its results (F1622): each body step's key is set to
+    `[]` (the shape it holds after iterations, with none), and each of its keys is noted with why, for the readers that
+    say it in words (`context.ran_zero`). A run of the same Loop with iterations takes its keys off the note."""
+    from .context import LOOP_RAN_ZERO
+
+    body_keys = [s.output_key for sid in body_ids if (s := engine.step_map.get(sid)) is not None and s.output_key]
+    notes = dict(run.shared_state.get(LOOP_RAN_ZERO) or {})
+    for key in [*body_keys, *([step.output_key] if step.output_key else [])]:
+        notes.pop(key, None)
+    if iterations_run == 0:
+        said = f"the Loop '{step.name}' ran 0 times: {why}"
+        for key in body_keys:
+            run.shared_state[key] = []
+            notes[key] = said
+        if step.output_key:
+            notes[step.output_key] = said
+    if notes:
+        run.shared_state[LOOP_RAN_ZERO] = notes
+    else:
+        run.shared_state.pop(LOOP_RAN_ZERO, None)
+
+
 def _loop_source_name(expr: str) -> str:
     """What a Loop goes through, as a person reads it: `state.keyword_researcher` is `keyword_researcher`."""
     from core.expressions import _unbraced
@@ -2487,6 +2591,9 @@ class LoopStepExecutor:
             items: list | None = None
             #: More work than the cap allows, said before anything runs (F254).
             over_cap: str | None = None
+            #: Why it would run zero times, said to the steps after it (F1622).
+            zero_why: str | None = None
+            source = _unbraced_loop_source(step.loop_over)
             if step.loop_over:
                 mode = "foreach"
                 # The resolved collection is snapshotted into the progress record
@@ -2499,6 +2606,7 @@ class LoopStepExecutor:
                         yield {"type": "step_warning", "orch_step_id": step.id,
                                "message": f"loop_over '{step.loop_over}' failed to evaluate: {err}"}
                         resolved = []
+                        zero_why = f"its list ({source}) could not be read"
                     if isinstance(resolved, (list, tuple)):
                         items = list(resolved)
                         # An empty source is a legitimate answer, so the run
@@ -2511,6 +2619,7 @@ class LoopStepExecutor:
                             yield {"type": "step_warning", "orch_step_id": step.id,
                                    "message": f"loop_over '{step.loop_over}' is an "
                                               f"empty list — zero iterations"}
+                            zero_why = zero_why or f"its list ({source}) was empty"
                     elif resolved is None:
                         # Unset: what a branch that did not run leaves (U74), so the loop runs zero times and the
                         # run carries on, said in words a person reads on the run (F1613).
@@ -2518,6 +2627,7 @@ class LoopStepExecutor:
                                "message": f"The Loop '{step.name}' ran 0 times: "
                                           f"{_loop_source_name(step.loop_over)} was never set on this path."}
                         items = []
+                        zero_why = f"{source} was never set on this path"
                     else:
                         # Anything else is no list, and going through it zero times read as work done: the run said
                         # Completed and the steps after it summed up nothing (F1613). It fails here, as a list over
@@ -2857,6 +2967,10 @@ class LoopStepExecutor:
                 run.shared_state[step.output_key] = {
                     name: run.shared_state[key] for name, key in promoted.items()
                 }
+            _note_a_zero_run(step, run, engine, body_ids, iterations_run, zero_why or {
+                "condition_false": "its condition was false from the start",
+                "condition_error": "its condition could not be evaluated",
+            }.get(stopped_reason, f"its list ({source}) was empty" if step.loop_over else "it had nothing to go through"))
 
             yield {"type": "loop_complete", "orch_step_id": step.id,
                    "iterations_completed": iterations_run,
@@ -2895,7 +3009,7 @@ def render_state_refs(text: str, state: dict, variables: dict | None = None, sec
     from core.secret_scrub import held_secrets
     from core.step_refs import MissingOutput, for_person, is_ref
 
-    from .context import _not_there
+    from .context import _not_there, ran_zero
 
     if not isinstance(text, str) or "{{" not in text:
         return text
@@ -2908,6 +3022,8 @@ def render_state_refs(text: str, state: dict, variables: dict | None = None, sec
         if parts[0] not in ("state", "global") or len(parts) < 2:
             return match.group(0)
         if parts[0] == "state":
+            if said := ran_zero(state, parts[1]):
+                return f"(nothing: {said})"
             top = state.get(parts[1])
             if top is None or (len(parts) > 2 and not is_ref(top) and top in ("", {}, [])):
                 return f"(no value yet: no step has written state.{parts[1]})"
@@ -3436,7 +3552,11 @@ class LLMStepExecutor:
         fields = _answer.normalised(step.output_fields)
         if fields:
             prompt = f"{prompt}\n\n{_answer.instruction(fields)}"
-        shaped = {"response_schema": _answer.json_schema(fields)} if fields else {}
+        # Where a provider that asked for it in words after a refusal of its schema mode says so (F1618), each line once
+        # for the step however many of its calls note it (a repair is a second call).
+        shape_notes: list[str] = []
+        said_notes: set[str] = set()
+        shaped = {"response_schema": _answer.json_schema(fields), "answer_notes": shape_notes} if fields else {}
 
         yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": prompt,
                "system_prompt_extra": system_prompt_extra,
@@ -3492,6 +3612,11 @@ class LLMStepExecutor:
             response = _wait.result
             if len(_used) > 1:
                 yield {"type": "step_warning", "orch_step_id": step.id, "message": _used[1]}
+            for note in shape_notes:
+                if note not in said_notes:
+                    said_notes.add(note)
+                    yield {"type": "step_warning", "orch_step_id": step.id, "message": note}
+            shape_notes.clear()
         except Exception as e:
             from core.llm_providers import LLMError
             if isinstance(e, LLMError):
@@ -3523,6 +3648,11 @@ class LLMStepExecutor:
                 async for _wait_event in _rwait.events():
                     yield _wait_event
                 response = _rwait.result
+                for note in shape_notes:
+                    if note not in said_notes:
+                        said_notes.add(note)
+                        yield {"type": "step_warning", "orch_step_id": step.id, "message": note}
+                shape_notes.clear()
                 output, again = _answer.read(fields, response)
                 if again:
                     raise RuntimeError(_answer.missing(step.name, again, response))
@@ -3838,7 +3968,8 @@ class IfElseStepExecutor:
         if err:  # a value the run has not written yet: data (F1433), the documented False
             _log.debug(f"IF_ELSE: ⚠ Condition eval failed: {err}")
             yield {"type": "step_warning", "orch_step_id": step.id,
-                   "message": f"Condition eval error (treating as False): {err}"}
+                   "message": _with_what_was_left_out(f"Condition eval error (treating as False): {err}", step, run,
+                                                      engine)}
 
         decision = "true" if result else "false"
         run.shared_state[f"_if_decision_{step.id}"] = decision
@@ -3877,7 +4008,7 @@ class SwitchStepExecutor:
         if err:
             _log.debug(f"SWITCH: ⚠ Expression eval failed: {err}")
             yield {"type": "step_warning", "orch_step_id": step.id,
-                   "message": f"Expression eval error: {err}"}
+                   "message": _with_what_was_left_out(f"Expression eval error: {err}", step, run, engine)}
 
         # Convert to string for case matching
         value_str = str(value) if value is not None else "None"

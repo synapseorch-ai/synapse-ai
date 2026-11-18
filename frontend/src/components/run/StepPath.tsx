@@ -6,41 +6,18 @@
  */
 import { cn } from '@/lib/cn';
 
-import { pathOrder, roleOf, type StepRole } from './model';
+import { pathLabel, roleOf, type StepRole } from './model';
 import { StepIcon } from './StepIcon';
 
 /** The most tiles a path draws; the rest are counted. */
 export const STEP_PATH_MAX = 10;
 
-type PathStep = { id: string; type?: string | null };
-type PathWorkflow = { steps: PathStep[]; entry_step_id?: string | null };
+export { pathLabel, templatePath } from './model';
 
-/**
- * A workflow's step types in reading order, without its End steps, and whether
- * a person takes part (a Human step anywhere, a container's body included).
- */
-export function templatePath(workflow: PathWorkflow | null | undefined): { types: string[]; hasPerson: boolean } {
-    if (!workflow?.steps?.length) return { types: [], hasPerson: false };
-    const byId = new Map(workflow.steps.map((s) => [s.id, s]));
-    // pathOrder reads only ids, links and entry_step_id; the cast widens the step shape.
-    const order = pathOrder(workflow as Parameters<typeof pathOrder>[0]);
-    const types = order.map((id) => byId.get(id)?.type ?? '').filter((t) => t && t !== 'end');
-    return { types, hasPerson: types.some((t) => roleOf(t) === 'person') };
-}
-
-/** "8 steps, 5 calling a model, 1 for a person, 2 logic". */
-export function pathLabel(types: string[]): string {
-    const count = (r: StepRole) => types.filter((t) => roleOf(t) === r).length;
-    return [
-        `${types.length} ${types.length === 1 ? 'step' : 'steps'}`,
-        count('model') && `${count('model')} calling a model`,
-        count('person') && `${count('person')} for a person`,
-        count('logic') && `${count('logic')} logic`,
-    ].filter(Boolean).join(', ');
-}
-
-export function StepPath({ types, max = STEP_PATH_MAX, variant = 'boxed', className }: {
+export function StepPath({ types, roles, max = STEP_PATH_MAX, variant = 'boxed', className }: {
     types: string[];
+    /** Each step's role from its config (`templatePath`, F1657); without them, each type's. */
+    roles?: StepRole[];
     max?: number;
     /**
      * `boxed` (a template card): the path on its own grey ground, tiles on rings.
@@ -54,7 +31,7 @@ export function StepPath({ types, max = STEP_PATH_MAX, variant = 'boxed', classN
     if (!types.length) return null;
     const shown = types.length > max ? types.slice(0, max - 1) : types;
     const more = types.length - shown.length;
-    const label = pathLabel(types);
+    const label = pathLabel(types, roles);
     return (
         <div
             role="img"
@@ -67,7 +44,9 @@ export function StepPath({ types, max = STEP_PATH_MAX, variant = 'boxed', classN
                 className,
             )}
         >
-            {shown.map((type, i) => (
+            {shown.map((type, i) => {
+                const role = roles?.[i] ?? roleOf(type);
+                return (
                 <span key={i} className="contents">
                     {i > 0 && <span aria-hidden className="h-px min-w-1.5 flex-1 bg-border-strong" />}
                     <StepIcon
@@ -75,13 +54,15 @@ export function StepPath({ types, max = STEP_PATH_MAX, variant = 'boxed', classN
                         className={cn(
                             'size-[22px] rounded-md [&>svg]:size-3',
                             inline ? 'bg-surface-2' : 'bg-bg shadow-[0_0_0_1px_var(--border)]',
-                            roleOf(type) === 'model' && 'text-machine',
-                            roleOf(type) === 'logic' && 'text-text-muted',
-                            roleOf(type) === 'person' && 'bg-person text-person-fg shadow-none',
+                            role === 'model' && 'text-machine',
+                            role === 'logic' && 'text-text-muted',
+                            role === 'person' && 'bg-person text-person-fg shadow-none',
                         )}
+                        role={role}
                     />
                 </span>
-            ))}
+                );
+            })}
             {more > 0 && (
                 <>
                     <span aria-hidden className="h-px min-w-1.5 flex-1 bg-border-strong" />

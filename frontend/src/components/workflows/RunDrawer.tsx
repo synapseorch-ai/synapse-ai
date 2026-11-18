@@ -38,7 +38,7 @@ function NestedRunsOf({ runId, refreshKey, names }: { runId: string; refreshKey:
 
 export function RunDrawer({
     view, onClose, runStatus, log, onOpenResponseModal, runId, humanPrompt, orchestrationNames,
-    pastRuns, onRestoreRun,
+    pastRuns, onRestoreRun, onShowOlder,
 }: {
     view: RunDrawerView;
     onClose: () => void;
@@ -52,6 +52,8 @@ export function RunDrawer({
     orchestrationNames: Record<string, string>;
     pastRuns: RunSummary[];
     onRestoreRun: (run: RunSummary) => void;
+    /** Reads the workflow's runs before the last one shown (F1639); absent when there are none. */
+    onShowOlder?: () => void;
 }) {
     // A Team step's lines, answered, stopped and written to where they are drawn (TEAM1e).
     const teamHandlers = useRunTeamHandlers(runId ?? '');
@@ -99,7 +101,7 @@ export function RunDrawer({
                         {pastRuns.length === 0 ? (
                             <div className="text-text-faint italic text-xs">No runs yet.</div>
                         ) : (
-                            pastRuns.slice(0, 20).map(r => (
+                            pastRuns.map(r => (
                                 <div key={r.run_id} className="flex items-center gap-2 rounded-md bg-surface-2 px-2 py-1 text-[11px]">
                                     <span className={`size-1.5 shrink-0 rounded-full ${
                                         r.status === 'completed' ? 'bg-success' :
@@ -124,6 +126,15 @@ export function RunDrawer({
                                     )}
                                 </div>
                             ))
+                        )}
+                        {onShowOlder && (
+                            <button
+                                type="button"
+                                onClick={onShowOlder}
+                                className="mt-1 w-full rounded-md border border-border bg-surface px-2 py-1 text-[11px] text-text-muted hover:bg-surface-2"
+                            >
+                                Show older
+                            </button>
                         )}
                     </div>
                 ) : (

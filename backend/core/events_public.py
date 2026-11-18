@@ -98,6 +98,8 @@ PRIVATE_STATE_PREFIXES = (
     # answer lacks was said (`build_plan._ANSWER_FIELDS_SAID`, F1394), and that an object put into text was
     # (`build_plan._OBJECT_TEXT_SAID`, F1402).
     "_approved_review", "_built_new_beside", "_plan_sendbacks", "_plan_structure_said", "_answer_fields_said", "_object_text_said",
+    # What a Tool step's answer left out of what its tool declares, paths only (`answers_missed.MISSED_KEY`, F1620).
+    "_answers_missed",
     # Where a builder run's model came from: the person's pick, the Builder model setting, or the everyday model
     # (`effort.MODEL_SOURCE_KEY`, F1606).
     "_model_source",

@@ -161,6 +161,15 @@ class CliInvocation:
     bridge_calls: Path | None = None
 
 
+#: Each CLI's own flag for a declared answer's schema (F1618); a CLI with none is asked in words.
+SCHEMA_FLAGS = {"cli.claude": "--json-schema", "cli.codex": "--output-schema"}
+
+
+def schema_flag(base: str) -> str | None:
+    """The schema flag `base` (a `cli.*` id, or its binary's name) takes, or None."""
+    return SCHEMA_FLAGS.get(base if base.startswith("cli.") else f"cli.{base}")
+
+
 def split_cli_model(cli_model: str) -> tuple[str, str | None]:
     """`cli.codex.gpt-5.4` → (`cli.codex`, `gpt-5.4`). The base is matched
     case-insensitively; the variant is kept verbatim (model names can be
@@ -199,7 +208,7 @@ def _strip_system(prompt: str, system: str | None) -> str:
     return prompt
 
 
-def _claude(variant, *, workdir, system_prompt, prompt, effort, environ, **_):
+def _claude(variant, *, workdir, system_prompt, prompt, effort, environ, response_schema=None, **_):
     from core import reasoning as _reasoning
 
     env = {k: v for k, v in environ.items()
@@ -226,6 +235,9 @@ def _claude(variant, *, workdir, system_prompt, prompt, effort, environ, **_):
             if model.endswith(suffix):
                 model = model[: -len(suffix)]
         argv += ["--model", model]
+    if response_schema:
+        # A step's declared answer (F1618): the CLI's own schema flag, read back as `structured_output`.
+        argv += ["--json-schema", json.dumps(response_schema)]
     return CliInvocation(argv, env, workdir / "cwd", _strip_system(prompt, system_prompt))
 
 
@@ -302,7 +314,8 @@ def _bridge_tools(tools: list[dict]) -> list[dict]:
     return out
 
 
-def _codex(variant, *, workdir, system_prompt, prompt, environ, codex_catalog=None, tools=None, **_):
+def _codex(variant, *, workdir, system_prompt, prompt, environ, codex_catalog=None, tools=None, response_schema=None,
+           **_):
     env = dict(environ)
     # Its own system prompt (18 KB: writing style, collaboration modes) gives
     # way to the agent's, as Claude Code's does; never empty, since some
@@ -345,6 +358,9 @@ def _codex(variant, *, workdir, system_prompt, prompt, environ, codex_catalog=No
         argv += ["-c", f"mcp_servers.{BRIDGE_SERVER_NAME}={server}"]
     if variant:
         argv += ["-m", variant]
+    if response_schema:
+        # A step's declared answer (F1618): the final message's shape, from a file in this call's own folder.
+        argv += ["--output-schema", str(_write(workdir / "answer-schema.json", json.dumps(response_schema)))]
     argv += ["-o", str(out), "-"]
     return CliInvocation(argv, env, cwd, _strip_system(prompt, system_prompt), output_file=out,
                          bridge_calls=bridge_calls)
@@ -394,7 +410,7 @@ _BUILDERS = {"cli.claude": _claude, "cli.gemini": _gemini, "cli.codex": _codex, 
 def build_cli_invocation(base: str, variant: str | None, *, workdir: Path, system_prompt: str | None,
                          prompt: str, effort: str | None = None, environ: Mapping[str, str] | None = None,
                          codex_catalog: dict | None = None, github_token: str | None = None,
-                         tools: list[dict] | None = None) -> CliInvocation:
+                         tools: list[dict] | None = None, response_schema: dict | None = None) -> CliInvocation:
     """The command, environment and working directory of one call to `base`.
 
     `prompt` is the whole flat prompt (`_build_cli_prompt`: the system prompt,
@@ -408,4 +424,5 @@ def build_cli_invocation(base: str, variant: str | None, *, workdir: Path, syste
     return builder(variant, workdir=workdir, system_prompt=system_prompt, prompt=prompt, effort=effort,
                    environ=dict(os.environ if environ is None else environ),
                    codex_catalog=codex_catalog, github_token=github_token,
-                   tools=tools if base in BRIDGED_CLIS else None)
+                   tools=tools if base in BRIDGED_CLIS else None,
+                   response_schema=response_schema if isinstance(response_schema, dict) and response_schema else None)

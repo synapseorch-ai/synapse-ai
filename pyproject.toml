@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "synapse-orch-ai"
-version = "2.0.18"
-description = "Synapse - A Multi Agent Orchestrator"
+version = "2.1.0"
+description = "Synapse by SynapseOrch: AI workflows that follow the plan you approved. Self-hosted, any model. https://synapseorch.com/"
 readme = "README.md"
 license = { text = "AGPL-3.0-only" }
 requires-python = ">=3.11,<3.15"
@@ -222,11 +222,12 @@ exclude_lines = [
 # Invoke from the repo root: `python -m pytest`
 testpaths = ["backend/tests"]
 asyncio_mode = "auto"
-# The deploy gate runs the fast suite only; stress/integration are opt-in.
-addopts = "-m 'not stress and not integration' -ra"
+# The deploy gate runs the fast suite only; stress/integration/live are opt-in.
+addopts = "-m 'not stress and not integration and not live' -ra"
 markers = [
     "stress: long-running load tests (5-90s fake-LLM latency); excluded from the gate",
     "integration: needs real Redis/Postgres/ARQ; run nightly, excluded from the gate",
+    "live: fetches real public web pages (backend/tests/live); excluded from the gate, run on purpose with -m live",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",

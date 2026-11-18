@@ -522,12 +522,33 @@ _NO_WAY = {"query": "this API takes its key in the URL, which I can't keep safel
            "basic": "it signs in with a username and password, which I can't take on a card yet"}
 
 
-#: One pair of an endpoint's fixed query (F1485): a plain name, and a literal value or one {param}.
+#: One pair of an endpoint's fixed query (F1485): a plain name, and a literal value or one {param}. A value may hold a
+#: `/`, as a time zone does (`Europe/Lisbon`, F1647), never `//`, which a URL in a value would (`_query_refusal`).
 _QUERY_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.\-\[\]]{0,40}$")
-_QUERY_VALUE = re.compile(r"^(?:[A-Za-z0-9_.,:+*~\-]{0,100}|\{[A-Za-z_][A-Za-z0-9_]*\})$")
-#: A query name that carries a credential: the key-in-the-URL verdict (`_NO_WAY["query"]`), as an auth in the query.
-_QUERY_KEY = re.compile(r"(?i)(^|[_.\-\[])(api[_\-]?key|key|token|access[_\-]?token|secret|password|passwd|auth|"
-                        r"signature|sig|apikey)($|[_.\-\]])")
+_QUERY_VALUE = re.compile(r"^(?:[A-Za-z0-9_.,:+*~/\-]{0,100}|\{[A-Za-z_][A-Za-z0-9_]*\})$")
+#: The words of a query name that carry a credential (F1647): the key-in-the-URL verdict (`_NO_WAY["query"]`), as an
+#: auth in the query. A name is read word by word (`_name_words`), so a word's case and its separator never hide it,
+#: and a name that only shares letters with one (`monkey`, `keyword`, `tokens_used`) is not one. `app_id` is an id.
+_KEY_WORDS = frozenset({
+    "key", "apikey", "appkey", "accesskey", "secretkey", "privatekey",
+    "token", "accesstoken", "authtoken",
+    "secret", "clientsecret", "apisecret", "appsecret",
+    "password", "passwd",
+    "sig", "signature",
+    "auth", "authorization",
+    "appid",
+})
+
+
+def _name_words(name: str) -> list[str]:
+    """A query name's words, in lower case: split at `-`, `_`, `.`, brackets and a camelCase hump (`X-Api-Key` → x,
+    api, key; `clientSecret` → client, secret; `APIKey` → api, key)."""
+    return [w.lower() for w in re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+", name)]
+
+
+def _carries_key(name: str) -> bool:
+    """Whether a query pair's name carries a credential (F1647): one of its words is a credential's."""
+    return any(word in _KEY_WORDS for word in _name_words(name))
 
 
 def _query_refusal(query: str) -> str | None:
@@ -539,10 +560,10 @@ def _query_refusal(query: str) -> str | None:
         return "its query has more than ten pairs"
     for pair in pairs:
         name, sep, value = pair.partition("=")
-        if not sep or not _QUERY_NAME.match(name) or not _QUERY_VALUE.match(value) \
+        if not sep or not _QUERY_NAME.match(name) or not _QUERY_VALUE.match(value) or "//" in value \
                 or value in ("{body}", "{data}", "{global}"):
             return f"its query pair {pair[:40]!r} is not a name and a plain value or one {{param}}"
-        if _QUERY_KEY.search(name):
+        if _carries_key(name):
             return "query"
     return None
 
@@ -570,9 +591,12 @@ def check_api_spec(raw: Any, provider: str, own_domains: list[str], own_pages: l
     if holds_credential(_json.dumps(raw, ensure_ascii=False)):
         return None, "it held a key, so I kept none of it"
     auth = raw.get("auth") if isinstance(raw.get("auth"), dict) else {}
-    # No auth is an API that takes no key (F1411): missing, {}, or the blanks the schema's required fields leave
-    # (`{"in": "header", "name": "", "scheme": ""}`). An auth that is not a dict, or a scheme with no header, names one.
-    keyless = raw.get("auth") is None or (isinstance(raw.get("auth"), dict) and auth.get("in") in (None, "header")
+    # No auth is an API that takes no key (F1411): missing, {}, or the blanks the schema's required fields leave,
+    # whichever `in` they leave it with (F1647: Open-Meteo's came as `{"in": "query", "name": "", "scheme": ""}`). An
+    # auth that is not a dict, or a scheme with no header, names one; a key written as a query pair is still found
+    # (`_query_refusal`).
+    keyless = raw.get("auth") is None or (isinstance(raw.get("auth"), dict)
+                                          and auth.get("in") in (None, "header", "query")
                                           and not auth.get("name") and not auth.get("scheme"))
     if not keyless:
         if auth.get("in") == "query":

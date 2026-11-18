@@ -9,8 +9,9 @@ Self-hosted's floor is Naveen's (11-14, in-tab, his second answer: "lets not hav
 bigger model", then "128K, same as cloud"): the engine's long-input floor, `LONG_WINDOW`, 128K, as cloud's (F1586). The
 planner's first call is about 30,000 tokens (the api_app test measures it), but a build reads more as it goes. Local
 models of 32K-40K (SHN1's qwen3 8B, Mistral 7B) are refused for Synapse AI and still run agents and workflows. Since our
-own first-run step told people to pull qwen3, it now names a local model that reads 128K, `ollama pull llama3.1` (8B,
-131,072 tokens; Naveen: "128K + suggest a 128K local model"), and so does the refusal, with where to change the model.
+own first-run step told people to pull qwen3, it now names a local model that reads 128K, the floor: `ollama pull
+gpt-oss:20b` (F1598: a mixture of experts that reads 128K, about a 14 GB download that runs in 16 GB of memory;
+llama3.1's 8B is left out of Synapse AI's picker), and so does the refusal, with where to change the model.
 A model whose window is not known is never refused for it (a CLI, an OpenAI-compatible or local endpoint, Hugging Face,
 an Ollama that does not say), as the engine's own pick never rules one out. An Ollama model's window is what Ollama says
 it reads (`/api/show`, F1569).
@@ -54,7 +55,8 @@ class TestTheFloor:
         assert said is not None
         assert SMALL in said and "8K" in said and "128K" in said, said
         assert "Synapse AI's model menu" in said, "where to change a pick"
-        assert "ollama pull llama3.1" in said, "a local model that reads 128K, named"
+        assert "ollama pull gpt-oss:20b" in said, "a local model that reads 128K, named"
+        assert "14 GB" in said and "16 GB" in said, "with its download and the memory it runs in"
 
     async def test_a_32k_model_is_refused_now(self):
         said = await MM.synapse_ai_refusal(MISTRAL_7B, source="pick")
@@ -100,11 +102,11 @@ class TestAnOllamaModelReadsWhatOllamaSays:
         ollama["qwen3:8b"] = 40_960  # SHN1's qwen3 8B, which our first-run step suggested
         assert await MM.synapse_ai_window("ollama.qwen3:8b") == 40_960
         said = await MM.synapse_ai_refusal("ollama.qwen3:8b", source="pick")
-        assert said is not None and "40K" in said and "ollama pull llama3.1" in said, said
+        assert said is not None and "40K" in said and "ollama pull gpt-oss:20b" in said, said
 
     async def test_the_one_it_names_runs(self, ollama):
-        ollama["llama3.1:8b"] = 131_072
-        assert await MM.synapse_ai_refusal("ollama.llama3.1:8b", source="pick") is None
+        ollama["gpt-oss:20b"] = 131_072
+        assert await MM.synapse_ai_refusal("ollama.gpt-oss:20b", source="pick") is None
 
 
 # ── the pickers (the frontend's own TypeScript, run in node) ──────────────────────────────────────────────────────
@@ -183,7 +185,8 @@ class TestSynapseAIsPickersOfferWhatCanHoldIt:
 
     def test_the_first_run_steps_ollama_tip_names_a_model_that_reads_128k(self):
         setup = (SRC / "components/onboarding/ModelSetup.tsx").read_text()
-        assert "ollama pull llama3.1" in setup and "ollama pull qwen3" not in setup
+        assert "ollama pull gpt-oss:20b" in setup and "14 GB" in setup and "16 GB" in setup
+        assert "ollama pull llama3.1" not in setup and "ollama pull qwen3" not in setup
 
     def test_the_everyday_and_quick_step_pickers_still_list_every_model(self):
         setup = (SRC / "components/onboarding/ModelSetup.tsx").read_text()

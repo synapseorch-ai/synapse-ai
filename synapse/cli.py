@@ -731,7 +731,8 @@ def _kill_proc_tree(proc: subprocess.Popen, timeout: int = 5) -> None:
     child node.exe processes become orphans.  taskkill /F /T kills the whole
     process tree including every grandchild.
 
-    On Unix, send SIGTERM to the process group so npm -> node children all die.
+    On Unix, SIGTERM to the whole tree so npm -> node children all die, then SIGKILL to what is left
+    (`_signal_tree`).
     """
     if IS_WIN:
         try:
@@ -745,27 +746,74 @@ def _kill_proc_tree(proc: subprocess.Popen, timeout: int = 5) -> None:
             except Exception:
                 pass
     else:
-        # Try to kill the entire process group (handles npm -> node chains)
-        try:
-            pgid = os.getpgid(proc.pid)
-            os.killpg(pgid, signal.SIGTERM)
-        except Exception:
-            try:
-                proc.terminate()
-            except Exception:
-                pass
+        tree = _tree_of(proc)
+        _signal_tree(proc, tree, signal.SIGTERM)
         # Wait then force-kill if still alive
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
+            _signal_tree(proc, tree, signal.SIGKILL)
+
+
+def _shutdown_handler(frontend_proc: subprocess.Popen, backend_proc: subprocess.Popen):
+    """A foreground start's way out, on Ctrl+C or SIGTERM (F1654): said once, both trees stopped, their pidfiles gone,
+    and one result line. A second signal while it runs (another Ctrl+C) is ignored rather than starting it over."""
+    started: list[int] = []
+
+    def _shutdown(sig, frame):
+        if started:
+            return
+        started.append(sig)
+        for s in (signal.SIGINT, signal.SIGTERM):
             try:
-                pgid = os.getpgid(proc.pid)
-                os.killpg(pgid, signal.SIGKILL)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
+                signal.signal(s, signal.SIG_IGN)
+            except (OSError, ValueError):
+                pass
+        print("\nStopping Synapse...")
+        # Kill full process trees -- on Windows terminate() leaves node children alive
+        _kill_proc_tree(frontend_proc)
+        _kill_proc_tree(backend_proc)
+        for name in ("backend", "frontend"):
+            try:
+                _pid_file(name).unlink()
+            except OSError:
+                pass
+        print("Synapse stopped.")
+        sys.exit(0)
+
+    return _shutdown
+
+
+def _tree_of(proc: subprocess.Popen) -> list[int]:
+    """The pids under `proc`, deepest last, read once before anything is signalled: a child that dies first leaves
+    its own children to the system, where they could no longer be found under it."""
+    try:
+        import psutil
+
+        return [p.pid for p in psutil.Process(proc.pid).children(recursive=True)]
+    except Exception:
+        return []
+
+
+def _signal_tree(proc: subprocess.Popen, tree: list[int], sig: int) -> None:
+    """`sig` to `proc` and every process under it (F1654). By its process group where that group is its own (a
+    detached start's: npm's node children are in it too); by each pid where it shares ours (a foreground start's),
+    since signalling that group would signal Synapse itself, whose handler would then stop everything again."""
+    try:
+        pgid = os.getpgid(proc.pid)
+    except Exception:
+        pgid = None
+    if pgid is not None and pgid != os.getpgrp():
+        try:
+            os.killpg(pgid, sig)
+            return
+        except Exception:
+            pass
+    for pid in [*reversed(tree), proc.pid]:
+        try:
+            os.kill(pid, sig)
+        except Exception:
+            pass
 
 
 def _terminate_pid(pid: int, name: str, timeout: int = 5) -> bool:
@@ -1263,8 +1311,24 @@ def _state_file() -> Path:
     return _run_dir() / "state.json"
 
 
-def _write_state(backend_port: int, frontend_port: int) -> None:
-    """What `synapse status` reports: the ports this run actually used."""
+#: What a launcher sets when it starts Synapse itself (F1641): the systemd unit and the launchd plist (autostart).
+STARTED_BY_ENV = "SYNAPSE_STARTED_BY"
+
+
+def _how_it_ran(detach: bool = False, no_browser: bool = False, profile: bool = False, verbose: bool = False,
+                backend_port: int | None = None, frontend_port: int | None = None) -> dict:
+    """How this start ran (F1641), so a later release can bring Synapse back the same way: the flags it was given (a
+    port is None when it was not given, so a restart picks one again) and who started it, "autostart" when its launcher
+    marks the start, else "person". A mark, not a flag: an older Synapse started by a newer launcher ignores it."""
+    return {
+        "detached": bool(detach), "browser": not no_browser, "profile": bool(profile), "verbose": bool(verbose),
+        "backend_port": backend_port, "frontend_port": frontend_port,
+        "by": "autostart" if os.environ.get(STARTED_BY_ENV) == "autostart" else "person",
+    }
+
+
+def _write_state(backend_port: int, frontend_port: int, how: dict | None = None) -> None:
+    """What `synapse status` reports: the ports this run actually used, and how it ran (`_how_it_ran`)."""
     import json as _json
     try:
         _state_file().write_text(_json.dumps({
@@ -1272,6 +1336,7 @@ def _write_state(backend_port: int, frontend_port: int) -> None:
             "frontend_port": frontend_port,
             "version": _get_current_version(),
             "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "how": how,
         }), encoding="utf-8")
     except OSError:
         pass
@@ -1365,7 +1430,8 @@ def _start_command(
             print(f"  Full log: synapse logs {failure.log_name}")
         sys.exit(1)
 
-    _write_state(effective_backend_port, effective_frontend_port)
+    how = _how_it_ran(detach, no_browser, profile, verbose, backend_port, frontend_port)
+    _write_state(effective_backend_port, effective_frontend_port, how)
 
     url = f"http://localhost:{effective_frontend_port}"
     # With login off, the browser is opened with the access link, so the person
@@ -1384,18 +1450,7 @@ def _start_command(
 
     print("Press Ctrl+C to stop.")
 
-    def _shutdown(sig, frame):
-        print("\nStopping Synapse...")
-        # Kill full process trees -- on Windows terminate() leaves node children alive
-        _kill_proc_tree(frontend_proc)
-        _kill_proc_tree(backend_proc)
-        for name in ("backend", "frontend"):
-            try:
-                _pid_file(name).unlink()
-            except OSError:
-                pass
-        sys.exit(0)
-
+    _shutdown = _shutdown_handler(frontend_proc, backend_proc)
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
@@ -1472,7 +1527,9 @@ def _status_command(as_json: bool = False):
             pass
     login = _login_is_on()
     report.update(url=url, ready=ready, login=login,
-                  link=url if login else _access_link(frontend_port))
+                  link=url if login else _access_link(frontend_port),
+                  # How the running Synapse was started (F1641), or None for a start before it was recorded.
+                  how=state.get("how"))
     print(_json.dumps(report))
 
 
@@ -1896,6 +1953,25 @@ def _pip_upgrade_args(target: str, extras=()) -> list:
     return args
 
 
+def _started_link(timeout: int = 60) -> str:
+    """The link a just-started Synapse reports (`status --json`), read as the installer reads its own CLI: the last
+    line that is JSON, within `timeout` seconds; "" when it says nothing usable (F1642)."""
+    import json as _json
+
+    try:
+        out = subprocess.run([sys.executable, "-P", "-m", "synapse", "status", "--json"],
+                             capture_output=True, text=True, timeout=timeout)
+    except (subprocess.SubprocessError, OSError):
+        return ""
+    for line in reversed((out.stdout or "").strip().splitlines()):
+        try:
+            report = _json.loads(line)
+        except ValueError:
+            continue
+        return str(report.get("link") or "") if isinstance(report, dict) else ""
+    return ""
+
+
 def _upgrade_with_pip(current: str, target: str, extras=()) -> int:
     """pip's upgrade, on the installer's screen: stop, back up, install, migrate, start."""
     from synapse.installer import backup
@@ -1918,6 +1994,7 @@ def _upgrade_with_pip(current: str, target: str, extras=()) -> int:
     log = Log(home / "logs" / "install.log")
     screen.open()
     link = ""
+    started = False
     was_running = False
     try:
         was_running = any(_is_running(p) for p in
@@ -1960,10 +2037,13 @@ def _upgrade_with_pip(current: str, target: str, extras=()) -> int:
         if was_running:
             screen.start("start")
             run([sys.executable, "-P", "-m", "synapse", "start", "--detach", "--no-browser"], log)
-            status = subprocess.run([sys.executable, "-P", "-m", "synapse", "status", "--json"],
-                                    capture_output=True, text=True)
-            import json as _json
-            link = (_json.loads(status.stdout.strip().splitlines()[-1]) or {}).get("link", "")
+            started = True
+            # The link is only for the last line: whatever the status read says, or fails to, the upgrade installed,
+            # updated the database and started (F1642), so nothing about that read can make it fail.
+            try:
+                link = _started_link()
+            except Exception:  # noqa: BLE001 — the read alone; the steps before it keep their own failures
+                link = ""
             screen.done("start")
         else:
             screen.skip("start")
@@ -1983,6 +2063,10 @@ def _upgrade_with_pip(current: str, target: str, extras=()) -> int:
     log.close()
     if link:
         screen.close(["", f"  Synapse {target} is running {term.g('arrow')} {link}", ""])
+    elif started:
+        # Started, but its status gave no link (F1642): said as two lines inside 80 columns.
+        screen.close(["", f"  Synapse {target} is installed and was started,",
+                      "  but it didn't say where it is running. Check it with: synapse status", ""])
     else:
         screen.close(["", f"  Synapse {target} is installed. Start it with: synapse start", ""])
     term.close()

@@ -29,7 +29,8 @@ import { knowledgeApi, useKnowledgeEnabled, type KnowledgeBase } from '@/lib/kno
 import { cn } from '@/lib/cn';
 import { ifMatch, problemLabel, saveProblem, type SaveProblem } from '@/components/orchestration/saveConflict';
 import { SaveConflictDialog } from '@/components/orchestration/workbench/SaveConflictDialog';
-import { modelOptions, withUnreachable } from '@/lib/models';
+import { modelOptions, withHints, withUnreachable, type ModelWindows } from '@/lib/models';
+import { chooseForTheJob } from '@/components/orchestration/modelChoice';
 
 /** The longest name the server accepts (core/models.py `AGENT_NAME_MAX`, F217). */
 const AGENT_NAME_MAX = 100;
@@ -50,6 +51,8 @@ interface AgentsTabProps {
     customTools: any[];
     onDeleteAgent: (id: string) => void;
     providers?: Record<string, { available: boolean; models: string[] }>;
+    /** What `/api/models` says of each model: its window and price, for each model's line (F1598). */
+    modelFacts?: ModelWindows;
     /** Models with a native reasoning channel, from the models endpoint. The
      *  list is served rather than restated here: a second copy of the
      *  capability table would be wrong the first time a family ships and only
@@ -87,7 +90,7 @@ import React, { useState, useEffect } from 'react';
 export const AgentsTab = ({
     agents, selectedAgentId, setSelectedAgentId,
     draftAgent, setDraftAgent, loadDraftAgent, guard, availableCapabilities, loadingCapabilities = false, customTools,
-    onDeleteAgent, providers, reasoningCapable, reasoningWithoutOff, reasoningOffMinimum, defaultModel, quickModel = '', workspaceEffort, loadingAgents = false,
+    onDeleteAgent, providers, modelFacts, reasoningCapable, reasoningWithoutOff, reasoningOffMinimum, defaultModel, quickModel = '', workspaceEffort, loadingAgents = false,
     dirty, onDiscard, agentStatus, testOpen, setTestOpen, aiBuilderOpen, setAiBuilderOpen,
 }: AgentsTabProps) => {
     const dispatch = useDispatch<AppDispatch>();
@@ -789,14 +792,15 @@ export const AgentsTab = ({
                                                         onChange={v => setDraftAgent({ ...draftAgent, model: v === '__default__' ? null : v })}
                                                         aria-label="Model"
                                                         searchPlaceholder="Search models or providers…"
-                                                        options={[
+                                                        options={withHints([
                                                             { value: '__default__', label: `Use default (${defaultModel || 'not set'})` },
                                                             // The one model list, with each provider's mark (F1482),
-                                                            // and the agent's own model when it is no longer offered (F1603).
+                                                            // and the agent's own model when it is no longer offered (F1603),
+                                                            // each with its line: context, cost tier, price (F1598).
                                                             ...withUnreachable(modelOptions(providers ?? {}), draftAgent.model || undefined),
-                                                        ]}
+                                                        ], modelFacts)}
                                                     />
-                                                    <p className="mt-1 text-xs text-text-faint">Override the default model for this agent. Leave empty to use the system default.</p>
+                                                    <p className="mt-1 text-xs text-text-faint">Override the default model for this agent. Leave empty to use the system default. {chooseForTheJob('agent')}</p>
                                                 </div>
                                             </div>
 
@@ -1561,7 +1565,7 @@ export const AgentsTab = ({
                                                                     onChange={v => setDraftAgent({ ...draftAgent, helper_model: v === '__same__' ? null : v })}
                                                                     aria-label="Helper model"
                                                                     searchPlaceholder="Search models or providers…"
-                                                                    options={helperModelOptions(providers, draftAgent.model || defaultModel || '', quickModel, draftAgent.helper_model)}
+                                                                    options={withHints(helperModelOptions(providers, draftAgent.model || defaultModel || '', quickModel, draftAgent.helper_model), modelFacts)}
                                                                 />
                                                                 <p className="mt-1 text-xs text-text-faint">What its helpers run on. The quick-step model is set in Settings → Models.</p>
                                                             </div>

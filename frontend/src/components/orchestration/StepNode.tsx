@@ -10,7 +10,7 @@ import { reasonHeadline } from '@/lib/runErrors';
 import { Spinner } from '@/components/ui';
 import { StepIcon } from '../run/StepIcon';
 import { pillText } from '../run/model';
-import { roleOf } from './roles';
+import { stepRole } from './roles';
 import { KIND_WORD, type AgentKind } from './agentKind';
 import { EditorBoundary } from './EditorBoundary';
 
@@ -113,7 +113,7 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
     const openResult = data.openResult as StepNodeData['openResult'];
     const meta = STEP_TYPE_META[step.type as StepType];
     if (!meta) return null;
-    const role = roleOf(step.type);
+    const role = stepRole(step.type, step);
 
     // Run state paints the frame; selection paints the ring. Both are tokens,
     // so the card is legible on either theme. A working step glows by who does
@@ -211,7 +211,7 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
 
             {/* Header: the type's icon on its role's tint (D211), the name, Start */}
             <div className={cn('flex items-center gap-2 px-3 pb-1 pt-2.5', hasResult && 'pr-9')}>
-                <StepIcon type={step.type} kind={agentKindOf} />
+                <StepIcon type={step.type} kind={agentKindOf} role={stepRole(step.type, step)} />
                 <span className="min-w-0 flex-1 truncate text-[13px] font-semibold tracking-[-0.01em] text-text" translate="no">{step.name}</span>
                 {isEntry && (
                     <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-accent-ink">

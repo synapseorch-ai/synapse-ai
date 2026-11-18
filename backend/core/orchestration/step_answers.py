@@ -16,8 +16,8 @@ a later step reads out of it can be checked before any run (`builder_tools._vali
 
 Any other step's answer is not known from the step: a tool's text (JSON or not, F801), a Transform's or an Extract
 JSON step's data, a Switch's value, a Merge's, a Loop's, a called workflow's, a Browser step's, an Agent step's whose
-agent is not known. A Tool step's is known only from the workspace's tools, and is F1394's
-(`build_plan._fields_its_answer_lacks`, said once).
+agent is not known. A Tool step's is known only from the workspace's tools (`tool_answers`), and every read of it is
+held by one rule (`builder_tools.tool_answer_misses`, F1620) in the saved workflow's validator and at the plan check.
 """
 from __future__ import annotations
 
@@ -78,6 +78,44 @@ def answer_fields(step: dict[str, Any], agents: dict | None = None) -> tuple[str
 
         return tuple((RetrieveStepOutput if kind == "retrieve" else IngestStepOutput).model_fields)
     return None
+
+
+#: A page read's fields that are not text, by name: the rest of its answer is text (`structure.ANSWERS`).
+_PAGE_FIELD_TYPES = {"success": "boolean", "wait_missed": "boolean", "count": "number", "scrolls_executed": "number"}
+
+
+def tool_answers(tools: list[dict[str, Any]], custom: set[str] | frozenset[str] = frozenset()) -> dict[str, dict]:
+    """What each tool here declares it answers, as answer fields, with who owns the declaration (F1620): `custom` for a
+    tool named in `custom` (the person's own HTTP or Python tool, its output schema theirs to edit), `mcp` for any other
+    tool's `outputSchema` (its server's word), and `page` for the built-in page reads (ours, `structure.ANSWERS`).
+
+    A declaration inside the answer's subset is known to its depth. One with a part outside it is known at its first
+    level only (`first_level`): the fields it names (`structure.answer_fields`, as F1394 knew it), never what is under
+    them, as a page read's lists' items are not known either. A tool that declares nothing, or names no fields, is not
+    known and is left out: its answer is never checked."""
+    from core.native_builder.structure import ANSWER_LISTS, ANSWERS, answer_fields
+    from core.orchestration.output_fields import from_json_schema
+
+    out: dict[str, dict] = {}
+    for name, has in ANSWERS.items():
+        lists = set(ANSWER_LISTS.get(name, ()))
+        out[name] = {"owner": "page", "first_level": True, "fields": [
+            {"name": f, "type": "list" if f in lists else _PAGE_FIELD_TYPES.get(f, "string")} for f in has]}
+    for tool in tools:
+        name, schema = tool.get("name"), tool.get("outputSchema")
+        if not isinstance(name, str) or not name or not isinstance(schema, dict):
+            continue
+        owner = "custom" if name in custom else "mcp"
+        fields, refused = from_json_schema(schema)
+        if fields and not refused:
+            out[name] = {"owner": owner, "fields": fields}
+        elif (named := answer_fields(name, [{"name": name, "outputSchema": schema}])) is not None and \
+                name not in ANSWERS:
+            # A field the schema does not require may be left out of the answer, as `from_json_schema` reads it.
+            required = set(schema["required"]) if isinstance(schema.get("required"), list) else set()
+            out[name] = {"owner": owner, "first_level": True, "fields": [
+                {"name": f, **({} if f in required else {"may_be_empty": True})} for f in named]}
+    return out
 
 
 def keys_written(step: dict[str, Any]) -> list[str]:
@@ -163,20 +201,24 @@ def annotation_kind(annotation: Any) -> str:
     return {list: "list", dict: "object"}.get(origin, "string")
 
 
-def loops_over_an_answer(steps: list) -> list[str]:
+def loops_over_an_answer(steps: list, entry: str | None = None) -> list[str]:
     """Each Loop whose list is a whole answer object, or a field of one that is no list, with its fix (F1613).
 
     A step that says its answer's fields answers one object: `{"keywords": [...]}`. A Loop over `state.<its key>` went
     through the object, ran zero times and the run said Completed. Checked only where every step writing the key says
     its fields, as `_fields_never_written` is: what a Tool or a Transform writes may be a list, and the run checks it.
-    A field the writers never declare is that check's to say."""
+    A field the writers never declare is that check's to say.
+
+    From `entry`, a Loop is judged by the writers a run brings to it (`state_reads.Walk.judged_by`, F1621), and a field
+    any one of them declares as no list is refused naming that one: the loop fails on a way through it. Without
+    `entry`, every writer of the key judges it, their fields taken together, as before."""
     from core.expressions import _unbraced
 
-    writers: dict[str, list[dict]] = {}
-    for s in steps:
-        if isinstance(s, dict):
-            for key in keys_written(s):
-                writers.setdefault(key, []).append(s)
+    from core.orchestration.state_reads import Walk
+    from core.orchestration.state_reads import writers as _writers
+
+    writers = _writers(steps)
+    ways = Walk({"steps": steps, "entry_step_id": entry}) if entry else None
     said: list[str] = []
     for s in steps:
         if not (isinstance(s, dict) and s.get("type") == "loop" and isinstance(s.get("loop_over"), str)):
@@ -184,15 +226,22 @@ def loops_over_an_answer(steps: list) -> list[str]:
         m = _LOOP_SOURCE.fullmatch(_unbraced(s["loop_over"]).strip())
         if not m or m[1] not in writers:
             continue
-        key, field, ws = m[1], m[2], writers[m[1]]
+        key, field = m[1], m[2]
+        ws = ways.judged_by(s.get("id"), key, writers[key]) if ways else writers[key]
         typed = [typed_answer(w) for w in ws]
         if any(t is None for t in typed):
             continue
         fields: dict[str, str] = {}
         for t in typed:
             fields.update(t or {})
-        lists = [f for f, kind in fields.items() if kind == "list"]
         w = ws[0]
+        if ways is not None and field is not None:
+            # Each way's own writer: the first one declaring the field as no list is the way the loop fails on.
+            own = next(((x, t) for x, t in zip(ws, typed) if field in (t or {}) and (t or {})[field] != "list"), None)
+            if own is None:
+                continue
+            w, fields = own[0], dict(own[1] or {})
+        lists = [f for f, kind in fields.items() if kind == "list"]
         who = f"{kind_words(w)} step '{w.get('id', '?')}'"
         if len(lists) == 1:
             fix = f"point loop_over at state.{key}.{lists[0]}, its one list"
@@ -240,11 +289,9 @@ def _typed(step: dict[str, Any]) -> list[dict[str, Any]] | None:
 def fielded(steps: list) -> dict[str, tuple[dict[str, Any], dict[str, dict[str, Any]]]]:
     """Each key every step writing which declares its fields: (its first writer, {field: {kind, options}}). A field's
     kind is kept only where every writer that has the field gives it one (a choice's options are each one's)."""
-    writers: dict[str, list[dict]] = {}
-    for s in steps:
-        if isinstance(s, dict):
-            for key in keys_written(s):
-                writers.setdefault(key, []).append(s)
+    from core.orchestration.state_reads import writers as _writers
+
+    writers = _writers(steps)
     out: dict[str, tuple[dict[str, Any], dict[str, dict[str, Any]]]] = {}
     for key, ws in writers.items():
         typed = [_typed(w) for w in ws]

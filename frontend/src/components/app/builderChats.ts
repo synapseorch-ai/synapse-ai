@@ -22,6 +22,7 @@ import {
     type SavedResource,
 } from '@/lib/builderEvents';
 import { isPanelEvent, reattachedState, type OpenConversation } from '@/lib/builderReattach';
+import { builderRefusal } from './builderRefusal';
 import { newSessionId } from '@/lib/sessionId';
 import { readWithStallTimeout } from '@/lib/sse';
 
@@ -442,7 +443,8 @@ export class BuilderChat {
                       }),
                   });
 
-            if (!response.ok) throw new Error(`The builder could not be reached (${response.status}).`);
+            // A refusal that says why is said in its own words; anything else could not be reached (F1666).
+            if (!response.ok) throw new Error(await builderRefusal(response));
             // The answer is the person's once the run has taken it: its first event says so, unless that event is the
             // box holding back a card number or a password, when nothing of what was typed is drawn.
             await this.consume(response, undefined, pending && !retryOf ? (event) => {

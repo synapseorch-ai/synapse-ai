@@ -32,11 +32,17 @@ DEFAULT_MODEL_PRICING: dict[str, dict] = {
     "gemini-2.5-flash": {"provider": "gemini", "input_per_1m": 0.3, "output_per_1m": 2.5},
     "grok-3": {"provider": "grok", "input_per_1m": 3, "output_per_1m": 15},
     "grok-3-mini": {"provider": "grok", "input_per_1m": 0.3, "output_per_1m": 0.5},
+    # DeepSeek's changelog (2026-04-24): deepseek-chat and deepseek-reasoner to be discontinued on 2026-07-24, mapped
+    # meanwhile to deepseek-v4-flash's two modes. Its pages no longer list them, nor say they are gone (read 2026-11-17).
     "deepseek-chat": {"provider": "deepseek", "input_per_1m": 0.27, "output_per_1m": 1.1},
     "deepseek-reasoner": {"provider": "deepseek", "input_per_1m": 0.55, "output_per_1m": 2.19},
     "gemini-3.1-pro-preview": {"provider": "gemini", "input_per_1m": 2, "output_per_1m": 12},
     "gemini-3-flash-preview": {"provider": "gemini", "input_per_1m": 0.5, "output_per_1m": 3},
-    "gemini-3.1-flash-lite-preview": {"provider": "gemini", "input_per_1m": 0.125, "output_per_1m": 0.75},
+    # Gemini 3.1 Flash-Lite — aistudio.google.com/docs/pricing (Paid tier, Standard, text), read 2026-11-17 (F1648).
+    # The preview id was shut down on 2026-05-25 (aistudio.google.com/docs/deprecations); its row stays for a step
+    # saved on it, and the live id is gemini-3.1-flash-lite, Stable (aistudio.google.com/docs/models).
+    "gemini-3.1-flash-lite-preview": {"provider": "gemini", "input_per_1m": 0.25, "output_per_1m": 1.5},
+    "gemini-3.1-flash-lite": {"provider": "gemini", "input_per_1m": 0.25, "output_per_1m": 1.5},
     "gemini-2.5-flash-lite": {"provider": "gemini", "input_per_1m": 0.1, "output_per_1m": 0.4},
     "claude-sonnet-4-5-20250929": {"provider": "anthropic", "input_per_1m": 3, "output_per_1m": 15},
     "claude-sonnet-4-6": {"provider": "anthropic", "input_per_1m": 3, "output_per_1m": 15},
@@ -78,7 +84,9 @@ DEFAULT_MODEL_PRICING: dict[str, dict] = {
     "mistral.mistral-medium-latest": {"provider": "mistral", "input_per_1m": 1.5, "output_per_1m": 7.5},
     "mistral.mistral-small-latest": {"provider": "mistral", "input_per_1m": 0.15, "output_per_1m": 0.6},
     "mistral.ministral-14b-latest": {"provider": "mistral", "input_per_1m": 0.2, "output_per_1m": 0.2},
-    "mistral.mistral-large-4": {"provider": "mistral", "input_per_1m": 1.36, "output_per_1m": 4.18, "cache_read_per_1m": 0.14},
+    # Mistral Large 4 — docs.mistral.ai/models/mistral-large-4-0, read 2026-11-17 (F1648): the GA page of 2026-11-05,
+    # its standing price; the launch's half price ended in October (docs.mistral.ai/resources/changelogs).
+    "mistral.mistral-large-4": {"provider": "mistral", "input_per_1m": 0.7, "output_per_1m": 2.1, "cache_read_per_1m": 0.07},
     # Qwen — Alibaba Cloud Model Studio international, model-pricing (updated 2026-10-09), read 2026-10-10.
     "qwen.qwen3.8-max": {"provider": "qwen", "input_per_1m": 2.0, "output_per_1m": 6.0},
     "qwen.qwen3.8-flash": {"provider": "qwen", "input_per_1m": 0.15, "output_per_1m": 0.47},
@@ -103,7 +111,8 @@ DEFAULT_MODEL_PRICING: dict[str, dict] = {
     "cerebras.qwen-3.8-27b": {"provider": "cerebras", "input_per_1m": 0.99, "output_per_1m": 1.49, "cache_read_per_1m": 0.99},
     # Together AI — docs.together.ai/docs/serverless/models, read 2026-10-10.
     "together.openai/gpt-oss-120b": {"provider": "together", "input_per_1m": 0.15, "output_per_1m": 0.6},
-    "together.moonshotai/Kimi-K3": {"provider": "together", "input_per_1m": 2.7, "output_per_1m": 13.5, "cache_read_per_1m": 0.3},
+    # Kimi K3 — together.ai/pricing (serverless), read 2026-11-17 (F1648).
+    "together.moonshotai/Kimi-K3": {"provider": "together", "input_per_1m": 3.0, "output_per_1m": 15.0, "cache_read_per_1m": 0.3},
     "together.zai-org/GLM-5.3": {"provider": "together", "input_per_1m": 1.4, "output_per_1m": 4.4, "cache_read_per_1m": 0.26},
     "together.deepseek-ai/DeepSeek-V4.1-Flash": {"provider": "together", "input_per_1m": 0.3, "output_per_1m": 1.2, "cache_read_per_1m": 0.006},
     "together.Qwen/Qwen3.7-Plus": {"provider": "together", "input_per_1m": 0.32, "output_per_1m": 1.28},
