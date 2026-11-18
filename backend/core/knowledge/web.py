@@ -1403,9 +1403,14 @@ async def _page(c: _Crawl, url: str, *, links_needed: bool) -> PageLinks | None:
         c.note(f"{url} answered {got.status}.")
         c.keep(held)
         if held is None and named:
-            # A sign-in wall, then a named bot check with the way on (F1632); otherwise the status's plain words.
-            said = (sign_in_wall(url, str(got.url), got.status) or bot_check(got.status, got.headers)
-                    or f"The server answered {got.status}.")
+            # A sign-in wall, then a named bot check with the way on (F1632); otherwise the status's plain words, with
+            # the wait a 429 or 503 asked for when it was longer than the fetcher waits.
+            from core.knowledge.fetch import retry_after_s
+
+            wait = retry_after_s(got.headers) if got.status in (429, 503) else None
+            plain = (f"The server answered {got.status} and asked to wait {wait:g} seconds; it is tried again at "
+                     "the next crawl." if wait else f"The server answered {got.status}.")
+            said = sign_in_wall(url, str(got.url), got.status) or bot_check(got.status, got.headers) or plain
             await _outcome(c, url, "failed", "fetch_failed", said, http_status=got.status)
         return None
     if (wall := sign_in_wall(url, str(got.url), got.status) or bot_check(got.status, got.headers)) is not None:
