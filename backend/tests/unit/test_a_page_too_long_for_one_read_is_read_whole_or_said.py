@@ -58,7 +58,7 @@ def test_a_page_too_long_for_one_read_says_so_and_names_its_table():
     facts = _facts(_page(_table(206)))
     assert facts["text_chars"] > MAX_MARKDOWN_LEN
     assert facts["too_long_for_one_read"] is True
-    assert facts["table"]["selector"] == "table.wikitable"
+    assert facts["table"]["selector"] == "table.wikitable.sortable"
     assert facts["table"]["rows"] == 207  # the header row and 206 countries
     assert facts["table"]["columns"] == ["Common and formal names", "Membership within the UN System"]
 
@@ -157,7 +157,7 @@ async def test_a_whole_read_or_a_short_page_is_not_sent_back(tool, url):
 def test_a_tables_class_wins_over_an_id_its_site_generates():
     html = _page(_table(206).replace('<table class="wikitable sortable">',
                                      '<table class="wikitable sortable" id="mwdA">'))
-    assert _facts(html)["table"]["selector"] == "table.wikitable"
+    assert _facts(html)["table"]["selector"] == "table.wikitable.sortable"
 
 
 def test_a_table_with_only_an_id_is_found_by_it():

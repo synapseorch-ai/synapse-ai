@@ -176,8 +176,11 @@ def _largest_table(body: str) -> dict[str, Any] | None:
     rows, attrs, inner = best
     # A class before an id: a site's own class names its tables the same way on every page and revision, where an id
     # can be generated per render (Wikipedia's `mwdA`).
-    if (found := _ATTR["class"].search(attrs)) and found.group(1).strip():
-        selector = f"table.{found.group(1).split()[0]}"
+    found = _ATTR["class"].search(attrs)
+    classes = [c for c in (found.group(1).split() if found else ()) if re.fullmatch(r"[A-Za-z_][\w-]*", c)]
+    if classes:
+        # Every class it has, so a selector for one table never also takes a page's other tables of a shared class.
+        selector = "table." + ".".join(classes)
     elif (found := _ATTR["id"].search(attrs)) and found.group(1).strip():
         selector = f"table#{found.group(1).split()[0]}"
     else:
@@ -229,6 +232,7 @@ async def read(url: str) -> NamedPage:
 
     from core import safe_fetch
     from core.builder_research import web_call
+    from core.knowledge.fetch import USER_AGENT
 
     page = NamedPage(url=url)
     if (over := await web_call()) is not None:
@@ -236,8 +240,11 @@ async def read(url: str) -> NamedPage:
         return page
     try:
         async with httpx.AsyncClient(timeout=READ_SECONDS) as client:
+            # As SynapseBot, the user agent Knowledge's crawl sends (F1691): a site that refuses an unnamed client
+            # (Wikipedia answers an HTTP library's default 403) reads a client that says who it is.
             got = await safe_fetch.fetch(url, client=client, max_bytes=READ_BYTES, timeout_s=READ_SECONDS,
-                                         headers={"Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5"})
+                                         headers={"User-Agent": USER_AGENT,
+                                                  "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5"})
     except safe_fetch.FetchBlocked as exc:
         page.why_not = f"not read: {exc}"
         return page
@@ -286,6 +293,7 @@ async def _look_for_spec(page: NamedPage) -> NamedPage:
 
     from core import safe_fetch
     from core.builder_research import web_call
+    from core.knowledge.fetch import USER_AGENT
     from core.mcp_client import host_url_refusal
 
     got_url = urlsplit(page.final_url or page.url)
@@ -301,7 +309,8 @@ async def _look_for_spec(page: NamedPage) -> NamedPage:
             async with httpx.AsyncClient(timeout=READ_SECONDS) as client:
                 got = await safe_fetch.fetch(origin + path, client=client, max_bytes=READ_BYTES,
                                              timeout_s=READ_SECONDS,
-                                             headers={"Accept": "application/json, application/yaml;q=0.9"})
+                                             headers={"User-Agent": USER_AGENT,
+                                                      "Accept": "application/json, application/yaml;q=0.9"})
         except (safe_fetch.FetchBlocked, safe_fetch.FetchTooLarge, safe_fetch.FetchRefused):
             return page
         if 200 <= got.status < 300 and (doc := _a_spec(got.body)) is not None:
