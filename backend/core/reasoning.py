@@ -80,6 +80,12 @@ def _openai_off(name: str) -> str | None:
 #: model still has to write something after it finishes thinking.
 _ANSWER_HEADROOM = 4096
 
+#: What adaptive thinking (`ADAPTIVE`: Claude 5, Opus and Sonnet 4.6 and later) is expected to think at each effort,
+#: for sizing its cap (F1682). It takes an effort, not a budget, so nothing sent bounds its thinking but the cap, and
+#: a cap sized from `_BUDGET` ran out in thinking: Sonnet 4.6 at medium thought through 10,240 tokens three calls
+#: running and wrote no answer. A larger cap only costs what the model writes.
+_ADAPTIVE_THINKING = {"off": 0, "low": 6144, "medium": 16384, "high": 28672}
+
 #: What Gemini 3 is expected to think at each level, for sizing the cap (F263).
 #: It takes a level, not a budget, so nothing we send bounds its thinking — only
 #: the cap does, and the cap counts the thinking too. Sized from `_GEMINI_BUDGET`
@@ -506,6 +512,10 @@ def plan_for(
     # What the cap must make room for: the budget where one is sent, and for
     # Gemini 3, which is sent a level, what that level is expected to think.
     thinking = _GEMINI3_THINKING[resolved] if name.startswith("gemini-3") else budget
+    # And for Claude's adaptive thinking, which takes an effort and no budget, what that effort is expected to think
+    # (F1682): sized from a budget it doesn't honour, the cap ran out in thinking.
+    if anthropic_thinking(name) == ADAPTIVE:
+        thinking = max(thinking, _ADAPTIVE_THINKING.get(resolved, 0))
 
     # The cap has to clear the thinking with room for an answer after it. Raising
     # it is safe in a way that lowering the budget is not: a smaller budget
