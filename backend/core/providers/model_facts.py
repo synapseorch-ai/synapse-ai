@@ -248,7 +248,10 @@ _DATED = re.compile(r"-\d{4}-?\d{2}-?\d{2}$")
 
 
 def _ids(model_id: str) -> list[str]:
+    from core.providers.cli_aliases import resolved
+
     model_id = (model_id or "").strip().lower()
+    model_id = resolved(model_id) or model_id  # a CLI's alias is the model it runs (F1598 D)
     if model_id.startswith("ollama.") and ":" not in model_id:
         model_id += ":latest"  # Ollama's name alone is its `:latest` tag (F1598)
     return [model_id, *(model_id[n + 1:] for n, c in enumerate(model_id) if c in "./")] if model_id else []
