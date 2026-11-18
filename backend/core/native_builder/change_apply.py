@@ -24,7 +24,7 @@ from core import http_tool
 from core.builder_registry import register_builder_tool
 from core.native_builder import change_ops as C, one_writer
 from core.native_builder.change_tools import (_NEW, CHANGED, SET_ASIDE, _caller, _card, _quoted, _run, _text,
-                                              candidates, read, reviewed_of)
+                                              candidates, read, reviewed_of, said_to_the_person)
 from core.product_tools.errors import AlreadySpent, ToolRefusal
 
 _log = logging.getLogger(__name__)
@@ -387,7 +387,7 @@ def _unmade_lines(state: dict, checked: dict) -> list[str]:
         said = _NEW[item["kind"]][0]
         what = f"the {said} {_quoted(item['name'])}" if item["name"] else f"another {said}"
         lines.append(f"It didn't also make {what}: one thing is made for each yes. Ask for it next.")
-    lines += [str(op["say"]).strip() for op in checked.get("ops") or []
+    lines += [said_to_the_person(op["say"]) for op in checked.get("ops") or []
               if isinstance(op, dict) and op.get("status") != "ready" and str(op.get("say") or "").strip()]
     return lines
 

@@ -199,6 +199,12 @@ class _NotOffered(Exception):
         self.field, self.options = field, options or []
 
 
+#: Said when a card would ask, set or answer as Synapse AI itself (F1674): it answers here, in Chat, and every agent
+#: picker leaves it out, so "No agent is called 'agent_synapse_ai'" reached the person with its own id.
+ASSISTANT_NAMED = ("That's Synapse AI itself: it answers here, in this chat, so a card can't ask it or set it to "
+                   "answer anywhere else. Name one of the workspace's own agents instead.")
+
+
 class _FeatureOff(_NotOffered):
     """The action needs a feature that is off: what is said names where it is turned on, and its switch is a card of
     its own for one who may press it (`feature_switch`, F1203)."""
@@ -240,6 +246,32 @@ def listed(items: list[dict], wanted: str) -> dict | None:
         if len(match) == 1:
             return match[0]
     return None
+
+
+async def _is_the_assistant(wanted: str) -> bool:
+    """Whether `wanted` names Synapse AI itself: its default agent's id or name, or one of its own builder agents (on
+    cloud each workspace's copy has ids of its own, so they are read from the store, never matched on these ids)."""
+    from core.default_agent import DEFAULT_AGENT_ID
+    from core.store.resources import load_agents
+
+    needle = (wanted or "").strip().casefold()
+    if not needle:
+        return False
+    if needle in (DEFAULT_AGENT_ID, "synapse ai"):
+        return True
+    return any(needle in (str(a.get("id") or "").casefold(), str(a.get("name") or "").casefold())
+               for a in await load_agents() if a.get("type") == "builder" or a.get("system"))
+
+
+async def _pick_agent(agents: list[dict], wanted: str) -> dict:
+    """One of `agents` by name or id, as `_pick`; Synapse AI itself, which no agent picker offers, is said in plain
+    words, never by its id (F1674)."""
+    try:
+        return _pick(agents, wanted, "agent", "Topic `agents` lists them.")
+    except _NotOffered:
+        if await _is_the_assistant(wanted):
+            raise _NotOffered(ASSISTANT_NAMED) from None
+        raise
 
 
 def _pick(items: list[dict], wanted: str, what: str, list_hint: str) -> dict:
@@ -660,7 +692,7 @@ async def _talk(args: dict) -> dict:
     from core.routes.agents import load_user_agents
 
     agents = [a for a in await load_user_agents() if not a.get("system") and a.get("type") != "builder"]
-    agent = _pick(agents, str(args.get("agent") or ""), "agent", "Topic `agents` lists them.")
+    agent = await _pick_agent(agents, str(args.get("agent") or ""))
     message = str(args.get("message") or "").strip()
     if not message:
         raise _NotOffered("Say what to ask it.")
@@ -953,7 +985,7 @@ async def _widget_agent(wanted: str) -> dict:
     from core.store.resources import load_agents
 
     agents = [a for a in await load_agents() if not a.get("system") and a.get("type") != "builder"]
-    return _pick(agents, wanted, "agent", "Topic `agents` lists them.")
+    return await _pick_agent(agents, wanted)
 
 
 def _widget_changes(args: dict) -> dict:
@@ -1152,10 +1184,9 @@ async def _channel(action: str, args: dict) -> dict:
         if not wanted:
             raise _NotOffered("Say which agents answer on it.")
         mine = [a for a in await _all_agents() if not a.get("system") and a.get("type") != "builder"]
-        picked = [_pick(mine, w, "agent", "Topic `agents` lists them.") for w in wanted]
+        picked = [await _pick_agent(mine, w) for w in wanted]
         ids = list(dict.fromkeys(a["id"] for a in picked))
-        first = _pick(mine, str(args["agent"]), "agent", "Topic `agents` lists them.")["id"] \
-            if str(args.get("agent") or "").strip() else ids[0]
+        first = (await _pick_agent(mine, str(args["agent"])))["id"] if str(args.get("agent") or "").strip() else ids[0]
         if first not in ids:
             raise _NotOffered("The agent that answers first is one of the agents that answer.")
         before = {"agents": [agents.get(a, a) for a in channel.get("agent_ids") or []],

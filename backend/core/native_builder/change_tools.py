@@ -1717,9 +1717,27 @@ def _with_says(line: str, says: Any) -> str:
     return f"{head}\n  {DESCRIBED_AS}: {said}" + (f"\n{rest}" if rest else "")
 
 
+#: A hint a refusal gives the model (where to read the names from), which a person has no use for (F1674).
+_MODEL_HINT = re.compile(r"\s*\(\s*topic `[^`]+`(?: or `[^`]+`)* lists? them\s*\)|\s*Topic `[^`]+`(?: or `[^`]+`)* lists? "
+                         r"them\.", re.I)
+#: A kind said by its op's name ("No knowledge_base is called …"), said in words.
+_KIND_NAMED = re.compile(r"\b(No|the|a|an) ([a-z]+(?:_[a-z]+)+) (is|isn't)\b")
+
+
+def said_to_the_person(line: str) -> str:
+    """A change's line as the person reads it (F1674): a refusal is written for the model, and its hint (which topic
+    lists the names), a kind by its op's name, or Synapse AI's own agent id is no part of what a person reads."""
+    from core.default_agent import DEFAULT_AGENT_ID
+
+    text = _MODEL_HINT.sub("", str(line))
+    text = _KIND_NAMED.sub(lambda m: f"{m.group(1)} {m.group(2).replace('_', ' ')} {m.group(3)}", text)
+    return text.replace(f"'{DEFAULT_AGENT_ID}'", "Synapse AI").replace(DEFAULT_AGENT_ID, "Synapse AI").strip()
+
+
 def _said(ops: list[dict]) -> str:
     """What the person is told when nothing waits for approval: each card, no-op, refusal and op left out."""
-    out = [item["say"] for item in ops if item["status"] in ("card", "noop", "refused", "left_out") and item.get("say")]
+    out = [said_to_the_person(item["say"]) for item in ops
+           if item["status"] in ("card", "noop", "refused", "left_out") and item.get("say")]
     return " ".join(out) or "There was nothing to change."
 
 
