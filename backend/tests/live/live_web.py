@@ -60,6 +60,7 @@ _SCRAPE_REASONS = (
     ("URL blocked", "egress"),
     ("Page returned no extractable content", "empty"),
     ("Needs a sign-in", "sign_in"),
+    ("The page is not there", "not_found"),
 )
 
 SAMPLE = Path(__file__).with_name("sites.sample.json")

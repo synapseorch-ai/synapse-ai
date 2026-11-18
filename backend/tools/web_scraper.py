@@ -538,7 +538,9 @@ def _refusal(response, html: str, *, asked: str | None = None, landed: str | Non
     a 403, 429 or 503, Cloudflare's challenge header, or a block page's own signs is a failure as crawl4ai reported
     it, never a page of content: a reader handed a block page as the site's words is misled. A page that loaded is
     its content whatever bot manager's routine script it carries (F1633). A sign-in wall (a 401, or a read of `asked`
-    that `landed` on a sign-in page) says it needs a sign-in, never hands the login form back as the page (F1632)."""
+    that `landed` on a sign-in page) says it needs a sign-in, never hands the login form back as the page, and a page
+    that is not there (404, 410) says so, never hands the site's "not found" page back as its words (F1632). Only the
+    status says a page is missing: a page that loads and talks about 404s is its content."""
     headers = getattr(response, "headers", None) or {}
     if response is not None and headers.get("x-synapse-egress") == "refused":
         return "URL blocked: the egress proxy refused this address"
@@ -553,6 +555,8 @@ def _refusal(response, html: str, *, asked: str | None = None, landed: str | Non
             return f"Blocked by anti-bot protection: {name}"
     if _CF_ORCHESTRATION.search(html):
         return "Blocked by anti-bot protection: Cloudflare challenge"
+    if response is not None and response.status in (404, 410):
+        return f"The page is not there (HTTP {response.status})"
     if response is not None and response.status in (403, 429, 503):
         whose = next((name for sign, name in _VENDOR_SIGNS if sign in html), None)
         return (f"Blocked by anti-bot protection: {whose} (HTTP {response.status})" if whose
