@@ -4,7 +4,7 @@
  * state on the left; what to check, Change with AI, Run now or Stop, help and
  * ⋯ on the right. Two floating groups over the canvas, not a header.
  */
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import * as RPopover from '@radix-ui/react-popover';
 import { AlertTriangle, ArrowLeft, ChevronDown, ClipboardList, Clock, MoreHorizontal, Play, Save, SlidersHorizontal, Square } from 'lucide-react';
 import {
@@ -12,6 +12,9 @@ import {
 } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import type { WorkbenchIssue, WorkbenchMenuItem, WorkbenchRunPhase } from './types';
+
+/** How much wider the row must grow than where the bar was squeezed before its labels come back (F1695). */
+const UNSQUEEZE_PX = 160;
 
 /** One floating group: the surface, a hairline and the shadow, as every piece of chrome on the canvas. */
 export const FLOAT = 'rounded-[10px] border border-border bg-surface shadow-elevated';
@@ -63,13 +66,49 @@ export function TopBar({
     const warnings = issues.filter((i) => i.severity === 'warning');
     const ordered = [...errors, ...warnings];
 
+    // Save is never under the right-hand bar (F1695): with something to check, Board and Last run beside a long
+    // name, the right bar took the row and the left bar's name and Save slid beneath it, so a click on Save landed on
+    // the other bar. Measured, never guessed from the width: while the left bar's content overflows it, the right bar
+    // first shows its icons alone (and the save state its button alone), and if that is still not enough, or on a
+    // phone where its labels are already gone, it moves to a line of its own under the left bar. It comes back once
+    // the row is well wider than where it was squeezed.
+    const rowRef = useRef<HTMLDivElement>(null);
+    const leftRef = useRef<HTMLDivElement>(null);
+    const squeezedAt = useRef(0);
+    const [squeeze, setSqueeze] = useState<0 | 1 | 2>(0);
+    const hasBoard = !!board;
+    const hasLastRun = !!lastRun;
+    useLayoutEffect(() => {
+        const row = rowRef.current;
+        const left = leftRef.current;
+        if (!row || !left) return;
+        const check = () => {
+            if (squeeze < 2 && left.scrollWidth > left.clientWidth + 1) {
+                if (squeeze === 0) squeezedAt.current = row.clientWidth;
+                setSqueeze(phone || squeeze === 1 ? 2 : 1);
+            } else if (squeeze > 0 && row.clientWidth > squeezedAt.current + UNSQUEEZE_PX) {
+                setSqueeze(0);
+            }
+        };
+        check();
+        const watch = new ResizeObserver(check);
+        watch.observe(row);
+        return () => watch.disconnect();
+    }, [squeeze, phone, name, dirty, saveProblem, ordered.length, hasBoard, hasLastRun, compact]);
+    const squeezed = squeeze > 0;
+    const tight = compact || squeezed;
+
     return (
         <div
-            className="nokey pointer-events-none absolute left-2 top-2 z-10 flex items-start justify-between gap-2 md:left-3 md:top-3"
+            ref={rowRef}
+            className={cn(
+                'nokey pointer-events-none absolute left-2 top-2 z-10 flex items-start justify-between gap-2 md:left-3 md:top-3',
+                squeeze === 2 && 'flex-wrap',
+            )}
             style={{ right: (phone ? 8 : 12) + insetRight }}
         >
             {/* Left: back, the name (and the switcher), the save state */}
-            <div data-canvas-chrome="bar" className={cn(FLOAT, 'pointer-events-auto flex h-10 min-w-0 items-center gap-0.5 p-1 md:h-[42px]')}>
+            <div ref={leftRef} data-canvas-chrome="bar" className={cn(FLOAT, 'pointer-events-auto flex h-10 min-w-0 items-center gap-0.5 p-1 md:h-[42px]')}>
                 <button
                     type="button"
                     onClick={onBack}
@@ -104,7 +143,7 @@ export function TopBar({
                 {switcher}
                 {!readOnly && <>
                 <span className="mx-1 h-5 w-px shrink-0 bg-border" aria-hidden />
-                {!phone && (
+                {!phone && !squeezed && (
                     <span className={cn('hidden whitespace-nowrap px-1 text-xs lg:inline', saveProblem ? 'font-medium text-danger' : 'text-text-faint')} aria-live="polite">
                         {saveProblem ?? (dirty ? 'Unsaved changes' : 'Saved')}
                     </span>
@@ -117,6 +156,7 @@ export function TopBar({
                     title={dirty ? 'Unsaved changes (Ctrl+S)' : 'Saved (Ctrl+S)'}
                     iconOnly={phone}
                     aria-label={phone ? 'Save' : undefined}
+                    className="shrink-0"
                 >
                     {saving ? <Spinner size={16} /> : <Save className="size-3.5" aria-hidden />}
                     {!phone && 'Save'}
@@ -126,20 +166,20 @@ export function TopBar({
             </div>
 
             {/* Right: what to check, Change with AI, Run now or Stop, help, ⋯ */}
-            <div data-canvas-chrome="bar" className={cn(FLOAT, 'pointer-events-auto flex h-10 shrink-0 items-center gap-1 p-1 md:h-[42px]')}>
+            <div data-canvas-chrome="bar" className={cn(FLOAT, 'pointer-events-auto flex h-10 shrink-0 items-center gap-1 p-1 md:h-[42px]', squeeze === 2 && 'ml-auto')}>
                 {ordered.length > 0 && !live && !readOnly && (
                     <Menu
                         align="end"
                         trigger={
                             <button
                                 type="button"
-                                aria-label={phone ? `${ordered.length} to check` : undefined}
+                                aria-label={phone || tight ? `${ordered.length} to check` : undefined}
                                 className={cn(buttonStyles({ variant: 'ghost', size: 'sm' }), 'gap-1.5 font-medium text-text')}
                             >
                                 <span className="grid size-[18px] place-items-center rounded-full bg-text text-[11px] font-bold leading-none text-bg" aria-hidden>
                                     !
                                 </span>
-                                {!phone && <span>{ordered.length} to check</span>}
+                                {!phone && !tight && <span>{ordered.length} to check</span>}
                             </button>
                         }
                     >
@@ -168,15 +208,15 @@ export function TopBar({
                         onClick={onOpenSettings}
                         aria-pressed={settingsOpen}
                         data-tour="canvas-settings"
-                        aria-label={compact ? 'Workflow settings' : undefined}
+                        aria-label={tight ? 'Workflow settings' : undefined}
                         title="Workflow settings"
                         className={cn(
-                            buttonStyles({ variant: 'ghost', size: 'sm', iconOnly: compact }),
+                            buttonStyles({ variant: 'ghost', size: 'sm', iconOnly: tight }),
                             settingsOpen && 'bg-surface-2 text-text',
                         )}
                     >
                         <SlidersHorizontal className="size-3.5" aria-hidden />
-                        {!compact && 'Workflow settings'}
+                        {!tight && 'Workflow settings'}
                     </button>
                 )}
                 {board && !phone && (
@@ -184,15 +224,15 @@ export function TopBar({
                         type="button"
                         onClick={board.onOpen}
                         aria-pressed={board.open}
-                        aria-label={compact ? `Board, ${board.count} open` : undefined}
+                        aria-label={tight ? `Board, ${board.count} open` : undefined}
                         title="This workflow's board"
                         className={cn(
-                            buttonStyles({ variant: 'ghost', size: 'sm', iconOnly: compact }),
+                            buttonStyles({ variant: 'ghost', size: 'sm', iconOnly: tight }),
                             board.open && 'bg-surface-2 text-text',
                         )}
                     >
                         <ClipboardList className="size-3.5" aria-hidden />
-                        {!compact && <>Board <span className="tabular-nums text-text-faint">· {board.count}</span></>}
+                        {!tight && <>Board <span className="tabular-nums text-text-faint">· {board.count}</span></>}
                     </button>
                 )}
                 {lastRun && !phone && (
@@ -201,15 +241,15 @@ export function TopBar({
                         onClick={() => lastRun.onShow(!lastRun.shown)}
                         aria-pressed={lastRun.shown}
                         aria-busy={lastRun.loading || undefined}
-                        aria-label={compact ? 'Last run' : undefined}
+                        aria-label={tight ? 'Last run' : undefined}
                         title="Show each step's time from the last run"
                         className={cn(
-                            buttonStyles({ variant: 'ghost', size: 'sm', iconOnly: compact }),
+                            buttonStyles({ variant: 'ghost', size: 'sm', iconOnly: tight }),
                             lastRun.shown && 'bg-surface-2 text-text',
                         )}
                     >
                         {lastRun.loading ? <Spinner size={14} /> : <Clock className="size-3.5" aria-hidden />}
-                        {!compact && 'Last run'}
+                        {!tight && 'Last run'}
                     </button>
                 )}
                 {onChangeWithAI && !phone && !readOnly && (
@@ -217,13 +257,13 @@ export function TopBar({
                         size="sm"
                         variant="ghost"
                         onClick={onChangeWithAI}
-                        aria-label={compact ? 'Change with AI' : undefined}
+                        aria-label={tight ? 'Change with AI' : undefined}
                         data-tour="canvas-change-ai"
-                        title={compact ? 'Change with AI' : undefined}
+                        title={tight ? 'Change with AI' : undefined}
                         className="text-text"
                     >
                         <Mark size={20} compact={false} className="-my-0.5 text-accent" />
-                        {!compact && 'Change with AI'}
+                        {!tight && 'Change with AI'}
                     </Button>
                 )}
                 {readOnly ? null : live ? (
