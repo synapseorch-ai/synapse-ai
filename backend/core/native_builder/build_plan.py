@@ -807,6 +807,51 @@ def _instructions_whole(plan: O.Plan, state: dict, notes: list[str]) -> tuple[O.
     return out, errors
 
 
+#: A widget on the person's own site, as a request asks for one (F1668): a site, website or chat widget; a widget, a
+#: chat or an embed on their site. Never a widget elsewhere ("a dashboard widget", "a widget on the Boards screen").
+_SITE_WIDGET = re.compile(
+    r"\b(?:web\s?site|site|web)\s+(?:chat\s+)?widget"
+    r"|\bchat\s?widget"
+    r"|\bwidget\b[^.?!]{0,30}\b(?:on|for|in|to)\s+(?:my|our|their|the)\s+(?:web\s?)?site"
+    r"|\bembed\w*\b[^.?!]{0,60}\b(?:on|in|into)\s+(?:my|our|their|the)\s+(?:web\s?)?site"
+    r"|\bchat\w*\s+(?:on|for|in)\s+(?:my|our|their)\s+(?:web\s?)?site", re.I)
+#: A plan sent back once for a website widget it leaves unsaid (F1668): then code says it on the card.
+WIDGET_SENT_BACK = "_widget_sent_back"
+
+
+def asks_for_a_website_widget(words: str) -> bool:
+    """Whether the request asks for a widget on the person's own site (F1668)."""
+    return bool(_SITE_WIDGET.search(words or ""))
+
+
+def _widget_said(plan: O.Plan) -> bool:
+    return any(a.how == "not_done" and "widget" in a.part.lower() for a in plan.asked)
+
+
+def _widget_left_out(plan: O.Plan, state: dict) -> list[str]:
+    """A new workflow asked as a website widget whose plan doesn't say the widget is not made (F1668): a build makes
+    the agent; the widget is made on its own card once that agent exists. Sent back once a run, then said on the card
+    (`widget_said`)."""
+    if (plan.kind != "create" or state.get(WIDGET_SENT_BACK) or _widget_said(plan)
+            or not asks_for_a_website_widget(_request_words(state))):
+        return []
+    state[WIDGET_SENT_BACK] = True
+    return ["asked: they asked for a website widget, which a build doesn't make: a widget is made on its own card "
+            "once the agent that answers exists. Put it in `asked` as not_done, with why_not saying it is made next, "
+            "on its card or under Widgets, so nothing says one is made"]
+
+
+def widget_said(plan: O.Plan, state: dict) -> None:
+    """The website widget they asked for, said under "Not in this plan" with where it is made, when the plan still
+    leaves it unsaid after it was sent back (F1668): the card never says a widget is made."""
+    if plan.kind != "create" or _widget_said(plan) or not asks_for_a_website_widget(_request_words(state)):
+        return
+    agent = plan.agents[0].name if plan.agents else "the agent that answers"
+    plan.asked.append(O.PlanPart(part="A website widget", how="not_done", why_not=(
+        f"a build doesn't make one: once it's built, ask for a website widget for {agent}, or make one under "
+        "Widgets")))
+
+
 #: A plan sent back once for an llm step reading a page, a crawl or a file (F1677): a second plan in the run is built,
 #: and its validator says the warning instead, so this is never a loop.
 LONG_FETCH_SENT_BACK = "_long_fetch_sent_back"
@@ -942,6 +987,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
                for a in plan.asked if a.how == "not_done" and not (a.why_not or "").strip()]
     # A chart they asked for has its route (F1288): something in the plan writes the Vault.
     errors += charts.issues(plan, ws, _request_words(state))
+    # A website widget they asked for, which a build doesn't make, is said as not done (F1668).
+    errors += _widget_left_out(plan, state)
     errors += await _knowledge_parts(plan, ws)
     errors += _knowledge_unread(plan, ws)
     # The person's own server first (F1225): a connected one's name is what its agents' `servers` are held to.
@@ -2944,6 +2991,7 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     cap_assumed += unsaid_said
     # Every part of the ask (F1515, eb's QA B13): what this plan does not do is said with why, never dropped; one they
     # asked to run once after it is built is a Run card after the save, pressed by them, since a run spends credits.
+    widget_said(plan, state)
     not_done = [f"{' '.join(a.part.split())}: {' '.join((a.why_not or '').split())}" for a in plan.asked
                 if a.how == "not_done" and (a.why_not or "").strip()]
     said += [f"Not in this plan: {n}." for n in not_done]
