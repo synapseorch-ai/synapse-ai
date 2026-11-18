@@ -172,6 +172,19 @@ class Schedule(_Written):
                                                 "about (F155)")
 
 
+class AskedStart(_Written):
+    """How the person said a run starts, and how the plan makes it start (F1645): a drawing's "new email to the support
+    inbox" was built to start when someone runs it, and the card never said so."""
+
+    said: str = Field(description="How they said a run starts, in their words, e.g. when a new email reaches the "
+                                   "support inbox; every Monday at 9")
+    made: Literal["schedule", "form", "cannot"] = Field(
+        description="schedule: this plan's schedule starts it; form: its first step is a human step, a form someone "
+                    "fills in; cannot: nothing here starts a workflow that way, and why_not says why")
+    why_not: str | None = Field(None, description="cannot: why, and what starts it instead (it runs when someone "
+                                                  "runs it, or a schedule that checks for new ones)")
+
+
 class InnerWorkflow(_Written):
     title: str
     does: str
@@ -312,6 +325,9 @@ class PlanDraft(_Written):
     agents: list[NewAgent] = Field(default_factory=list, description="New agents only")
     reuse_agents: list[str] = Field(default_factory=list, description="Ids of existing agents the steps use")
     schedule: Schedule | None = None
+    asked_start: AskedStart | None = Field(None, description=(
+        "Only when they said how or when a run starts: what they said, and how this plan makes it start. Left out "
+        "when they did not say, or said they run it themselves"))
     inner_workflows: list[InnerWorkflow] = Field(default_factory=list, description="Workflows this one runs, "
                                                                                     "saved first")
     caps: Caps | None = None
@@ -777,7 +793,27 @@ def check_structure(plan: PlanDraft, inventory: Inventory) -> tuple[list[str], l
             notes.append(f"missing tool: {name}")
     if plan.schedule:
         errors += schedule_issues(plan.schedule)
+    errors += asked_start_issues(plan)
     return errors, sorted(set(notes))
+
+
+def asked_start_issues(plan: PlanDraft) -> list[str]:
+    """The start they asked for, held to the plan (F1645): a schedule start has the plan's schedule, a form start a
+    human step first, and a start this product cannot make says why and what starts it instead."""
+    asked = plan.asked_start
+    if asked is None or plan.kind != "create":
+        return []
+    said = f"asked_start '{asked.said}'"
+    if asked.made == "schedule" and plan.schedule is None:
+        return [f"{said} is made by a schedule, but the plan has no schedule: add the schedule that starts it, or say "
+                "made cannot with why_not"]
+    first = next((s for s in plan.steps if s.type != "end"), None)
+    if asked.made == "form" and (first is None or first.type != "human"):
+        return [f"{said} is made by a form, but the first step is no human step: start with the form they fill in, "
+                "or say made cannot with why_not"]
+    if asked.made == "cannot" and not (asked.why_not or "").strip():
+        return [f"{said} cannot be made here: say why in why_not, and what starts it instead"]
+    return []
 
 
 def schedule_issues(schedule: Schedule) -> list[str]:

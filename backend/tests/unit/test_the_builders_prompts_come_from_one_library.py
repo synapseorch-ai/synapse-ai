@@ -211,7 +211,9 @@ from core.native_builder import prompt_lint, seed
 #: that answers a one-off read of named pages in the chat, b80ff176… (on F1677's c6c7e724).
 #: F1689: the planner and the maker open as Synapse AI and name speak_as_synapse_ai; the prompt writer and the
 #: researchers' passage name no role, 976c0d59… (on F1687's b80ff176).
-BUNDLE_SHA256 = "976c0d594d0bcfc4304a2fba99c923cf4421ba5721d8424438c6b09038ecbd7e"
+#: F1645: the planner writes `asked_start` (how they said a run starts, and schedule, form or cannot with why_not),
+#: 5d1e630e… (on F1689's 976c0d59).
+BUNDLE_SHA256 = "5d1e630efcc65125bf2d68cc557d946b2bf316ee78ce83fc2b9283b01afb8ae1"
 
 
 def _sha(definitions) -> str:

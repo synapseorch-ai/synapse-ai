@@ -2981,7 +2981,7 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     # What this plan changed from the one the person last saw (F1245), on the card and the panel alike.
     plan.since_last = since_last(plan, plan_before_of(state, prior))
     # F1600: how a run starts, from the plan; what it assumed, the planner's and code's own; a part done on one arm.
-    from core.native_builder.render import start_words
+    from core.native_builder.render import start_off, start_words
 
     plan.starts = start_words(plan)
     # A crawl's cap is code's alone (F1669): an assumption giving another for it says code's.
@@ -2989,6 +2989,8 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
         *plan.assumed, *cap_assumed,
         *(own_terms_assumed(step, thing) for step, thing in own_terms_unsaid(plan))])), plan.knowledge)
     plan.off += [off_a_path_words(p, arm) for p, arm in parts_off_a_path(plan)]
+    # The start they asked for that it cannot make, said with why (F1645).
+    plan.off += [o for o in start_off(plan) if o not in plan.off]
     review = render(plan, agent_names=names)
     if answer.get("outcome") == "replan" and answer.get("refused"):
         # A save refused after the yes (F1295): why it is asked again, in the save's own words.

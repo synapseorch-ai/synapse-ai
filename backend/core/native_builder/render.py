@@ -268,6 +268,14 @@ def eval_lines(plan: Any) -> list[str]:
     return out
 
 
+def start_off(plan: Plan) -> list[str]:
+    """The start they asked for that this plan cannot make, with why, for "Missing here" (F1645); none otherwise."""
+    asked = getattr(plan, "asked_start", None)
+    if asked is None or asked.made != "cannot" or not (asked.why_not or "").strip():
+        return []
+    return [f"It doesn't start “{asked.said.strip()}”: {asked.why_not.strip()}"]
+
+
 def start_words(plan: Plan) -> str:
     """How a new workflow's run starts, from the plan (F1600): its schedule; a person's form, when its first step is
     one; else when someone runs it. A change to a workflow says none: it starts as it did."""
