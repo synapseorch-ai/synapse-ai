@@ -397,13 +397,13 @@ def _newer_first(generation: tuple[int, ...] | None) -> tuple:
 def ordered(entries: list[ModelEntry], has_tools: bool = False) -> list[ModelEntry]:
     """The one order models are ranked in (F1598), which the pick, the stronger-model offer, the "strongest" wish and
     `/api/models` all read:
-    - a measured rank first, the higher first;
-    - then today's order: reasoning, native tools for an agent with tools, then the dearer first;
+    - today's order: reasoning, native tools for an agent with tools, then the dearer first;
     - with each family's models, where its provider orders its own, run by tier, then the newer generation, then
-      today's key, within the places that family holds in it. So Opus 5.5 runs before a dearer Opus 4.6, and across
-      families nothing moves until a measure says so."""
-    measured = sorted((e for e in entries if e.rank is not None), key=lambda e: (-e.rank, _strongest_first(e, has_tools)))
-    rest = sorted((e for e in entries if e.rank is None), key=lambda e: _strongest_first(e, has_tools))
+      today's key, within the places that family holds in it. So Opus 5.5 runs before a dearer Opus 4.6;
+    - and a measured rank orders only the measured models of one family's tier among themselves, in the places they
+      hold (F1598 D): a few asks are too thin to lift a model past a stronger tier, so an unmeasured Opus stays above
+      a measured Haiku, and across families nothing moves."""
+    rest = sorted(entries, key=lambda e: _strongest_first(e, has_tools))
     places: dict[str, list[int]] = {}
     for n, e in enumerate(rest):
         if e.family and e.tier is not None:
@@ -413,7 +413,14 @@ def ordered(entries: list[ModelEntry], has_tools: bool = False) -> list[ModelEnt
                          key=lambda e: (-e.tier, _newer_first(e.generation), _strongest_first(e, has_tools)))
         for n, e in zip(held, members):
             rest[n] = e
-    return [*measured, *rest]
+    tiers: dict[tuple[str, int], list[int]] = {}
+    for n, e in enumerate(rest):
+        if e.rank is not None and e.family and e.tier is not None:
+            tiers.setdefault((e.family, e.tier), []).append(n)
+    for held in tiers.values():
+        for n, e in zip(held, sorted((rest[n] for n in held), key=lambda e: -e.rank)):
+            rest[n] = e
+    return rest
 
 
 def _not_small(fitting: list[ModelEntry]) -> list[ModelEntry]:
