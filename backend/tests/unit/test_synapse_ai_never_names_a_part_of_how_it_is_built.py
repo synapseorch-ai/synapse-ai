@@ -7,6 +7,10 @@ that role's name and "I cannot build". Its instructions now open as Synapse AI, 
 change is asked for and a plan drafted for the person to check, never that it can't be done.
 
 Near miss: the talk step, the other one that answers the person directly, names no role either.
+
+No builder agent names a role either: the planner's and the maker's words reach the person too, so they speak as
+Synapse AI from the same passage; the prompt writer writes each new agent's own instructions, in that agent's voice,
+so it is told never to name a part of how Synapse AI is built there, and never to speak as Synapse AI.
 """
 from __future__ import annotations
 
@@ -14,10 +18,19 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 import core.native_builder as nb
 
 AGENTS = Path(nb.__file__).parent / "agents"
-ROLES = re.compile(r"\b(Reporter|Talker|Planner|Classifier|Maker|Prompt Writer|Researcher)\b")
+ROLES = re.compile(r"\b(Reporter|Talker|Planner|Classifier|Maker|Prompt Writer|Researcher|Page Reader)\b")
+SPEAKS = "{{PROMPT:speak_as_synapse_ai}}"
+
+
+def _raw(name: str) -> str:
+    agent = json.loads((AGENTS / f"{name}.json").read_text(encoding="utf-8"))
+    agent = agent if isinstance(agent, dict) else agent[0]
+    return str(agent.get("system_prompt") or "")
 
 
 def _prompt(name: str) -> str:
@@ -44,3 +57,21 @@ def test_asked_to_build_it_says_how_to_ask_never_that_it_cannot():
 
 def test_the_talk_step_names_no_role_either():
     assert not ROLES.search(_prompt("talker"))
+
+
+@pytest.mark.parametrize("name", sorted(p.stem for p in AGENTS.glob("*.json")))
+def test_no_builder_agent_names_a_role(name):
+    assert not ROLES.search(_prompt(name)), (name, ROLES.search(_prompt(name)))
+
+
+@pytest.mark.parametrize("name", ["planner", "maker", "reporter", "page_reader"])
+def test_an_agent_whose_words_reach_the_person_speaks_as_synapse_ai(name):
+    assert SPEAKS in _raw(name), f"{name} names the one passage"
+    assert "You are Synapse AI" in _prompt(name)[:200], _prompt(name)[:200]
+
+
+def test_the_prompt_writer_writes_each_agents_own_words():
+    """Its words are the new agent's instructions, in that agent's voice: never Synapse AI's, never a part's name."""
+    text = _prompt("prompt_writer")
+    assert SPEAKS not in _raw("prompt_writer") and "Speak as Synapse AI" not in text, text[:300]
+    assert re.search(r"never name a part of how Synapse AI is built", text), text
