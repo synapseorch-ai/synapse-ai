@@ -1,6 +1,6 @@
 {
   "name": "synapse-orch-ai",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "Synapse by SynapseOrch: AI workflows that follow the plan you approved. Self-hosted, any model. https://synapseorch.com/",
   "keywords": [
     "ai",
