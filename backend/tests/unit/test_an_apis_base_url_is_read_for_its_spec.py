@@ -38,7 +38,8 @@ def _answers(monkeypatch, routes: dict[str, tuple[int, str, str]]) -> list[str]:
     calls: list[str] = []
 
     async def fetch(url, **_):
-        calls.append(url)
+        if not url.endswith("/robots.txt"):  # asked before each read (F1691): none here, so every page is allowed
+            calls.append(url)
         status, kind, body = routes.get(url, (404, "text/plain", ""))
         return safe_fetch.Fetched(url=url, status=status, headers=httpx.Headers({"content-type": kind}),
                                   body=body.encode() if 200 <= status < 300 else b"")
@@ -92,7 +93,8 @@ class TestNotLookedFor:
 
         monkeypatch.setattr(safe_fetch, "fetch", blocked)
         page = await read(BASE)
-        assert calls == [BASE], "not one request past the guard's refusal"
+        # The first ask, its robots.txt (F1691), is refused, and nothing more is asked.
+        assert calls == [f"{BASE}/robots.txt"], "not one request past the guard's refusal"
         assert page.api_spec is None and page.why_not.startswith("not read:")
 
     async def test_a_host_the_hosts_rule_refuses_is_probed_nowhere(self, monkeypatch):

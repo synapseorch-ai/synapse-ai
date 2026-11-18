@@ -51,7 +51,11 @@ def _answer(body: str, *, status: int = 200, kind: str = "text/html; charset=utf
 
 
 def _raise(exc):
+    """The page's own fetch fails with `exc`; its robots.txt, asked first (F1691), allows it."""
     async def fetch(u, **_):
+        if u.endswith("/robots.txt"):
+            return safe_fetch.Fetched(url=u, status=404, headers=httpx.Headers({"content-type": "text/plain"}),
+                                      body=b"", redirects=())
         raise exc
     return fetch
 
@@ -130,7 +134,9 @@ class TestOncePerConversation:
         monkeypatch.setattr(safe_fetch, "fetch", fetch)
         first = await read_named("Use synapseorch.com and stripe.com")
         again = await read_named("Use synapseorch.com and stripe.com, and x.com", already=first)
-        assert calls == ["https://synapseorch.com", "https://stripe.com", "https://x.com"]
+        # Each page once; robots.txt, asked before each (F1691), is not a page.
+        assert [c for c in calls if not c.endswith("/robots.txt")] == [
+            "https://synapseorch.com", "https://stripe.com", "https://x.com"]
         assert again["https://synapseorch.com"] == first["https://synapseorch.com"]
 
 

@@ -6,7 +6,7 @@ reads each site the message names, once, and hands the planner what code found, 
 * `named(text)`: the URLs and bare domains a message names, at most three. A bare domain counts by `core.sites`'
   rule and a common ending; an email's domain is the person's address, not a site (F1253's net); a version (`v2.0`) or
   a file (`main.py`) is neither; a domain already inside a counted URL is not counted twice.
-* `read(url)`: one plain GET through `safe_fetch` (the egress guard at every redirect hop, NAT64-aware since F1238), 8
+* `read(url)`: robots.txt first, as SynapseBot obeys it (F1691), then one plain GET through `safe_fetch` (the egress guard at every redirect hop, NAT64-aware since F1238), 8
   seconds, 2 MB, no browser and no model (Naveen: a plain fetch, cheap on every turn). What comes back is a
   `NamedPage` of short typed facts: the title, a line of what it is (the page's own words, quoted), one page or a
   site, an API spec it links to, or why it could not be read. A page that is only JavaScript (no title, no heading,
@@ -28,6 +28,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import weakref
 from dataclasses import asdict, dataclass, field
 from typing import Any
 from urllib.parse import urljoin, urlsplit
@@ -226,6 +227,43 @@ def _facts(page: NamedPage, body: str) -> NamedPage:
     return page
 
 
+#: Each host's robots.txt as this event loop read it (F1691): read once, then every page and spec address on the host is
+#: judged by it. Bounded; a new loop (a new process, a test) starts empty.
+_ROBOTS_SEEN: "weakref.WeakKeyDictionary[Any, dict[str, Any]]" = weakref.WeakKeyDictionary()
+_ROBOTS_KEPT = 256
+
+
+async def _robots_refusal(url: str) -> str:
+    """Why SynapseBot may not read `url` by its site's robots.txt, in Knowledge's own words, or "" (F1691): the read
+    says it is SynapseBot, and SynapseBot obeys robots.txt. Knowledge's own reading of it (`fetch.Fetcher.robots`:
+    RFC 9309, its pace per host), once per host; one that cannot be read fetches nothing, as a crawl's does."""
+    import asyncio
+
+    from core import safe_fetch
+    from core.knowledge import fetch as F
+
+    seen = _ROBOTS_SEEN.setdefault(asyncio.get_running_loop(), {})
+    host = F.host_key(url)
+    robots = seen.get(host)
+    if robots is None:
+        try:
+            async with F.Fetcher() as fetcher:
+                robots = await fetcher.robots(url)
+        except safe_fetch.FetchBlocked as exc:
+            return f"not read: {exc}"
+        except F.EgressUnavailable as exc:
+            return f"not read: {exc}"
+        if len(seen) >= _ROBOTS_KEPT:
+            seen.clear()
+        seen[host] = robots
+    if robots.unreachable_:
+        why = getattr(robots, "why", "")
+        return str(F.RobotsUnreachable(url, why) if why else F.RobotsUnreachable(url))
+    if not robots.allows(url):
+        return str(F.RobotsDisallowed(url))
+    return ""
+
+
 async def read(url: str) -> NamedPage:
     """One guarded read of `url` (see the module): its `NamedPage`, a refusal or failure said in `why_not`."""
     import httpx
@@ -237,6 +275,9 @@ async def read(url: str) -> NamedPage:
     page = NamedPage(url=url)
     if (over := await web_call()) is not None:
         page.why_not = over
+        return page
+    if refused := await _robots_refusal(url):
+        page.why_not = refused
         return page
     try:
         async with httpx.AsyncClient(timeout=READ_SECONDS) as client:
@@ -305,6 +346,8 @@ async def _look_for_spec(page: NamedPage) -> NamedPage:
     for path in SPEC_PATHS:
         if await web_call() is not None:
             return page
+        if await _robots_refusal(origin + path):
+            continue  # an address robots.txt keeps from SynapseBot is never asked (F1691)
         try:
             async with httpx.AsyncClient(timeout=READ_SECONDS) as client:
                 got = await safe_fetch.fetch(origin + path, client=client, max_bytes=READ_BYTES,
