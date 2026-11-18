@@ -179,3 +179,21 @@ def test_the_planner_that_reads_these_is_a_workflow_agent_step():
     step = next(s for s in bundled_definitions()["orchestration"]["steps"] if s["id"] == "step_plan")
     assert step["type"] == "agent"
     assert NamedPage(url="https://x.com").as_dict().keys() >= {"title", "what", "kind", "api_spec", "why_not"}
+
+
+async def test_the_read_says_it_is_synapsebot(monkeypatch):
+    """A site that refuses an unnamed client (Wikipedia answers its library's default user agent 403) is read: the
+    builder's read before planning sends SynapseBot's own user agent, the one Knowledge's crawl sends (F1691)."""
+    from core.knowledge import fetch as F
+
+    sent: dict = {}
+
+    async def fetch(u, **kw):
+        sent.update(kw.get("headers") or {})
+        return safe_fetch.Fetched(url=u, status=200, headers=httpx.Headers({"content-type": "text/html"}),
+                                  body=PAGE.encode(), redirects=())
+
+    monkeypatch.setattr(safe_fetch, "fetch", fetch)
+    page = await read("https://en.wikipedia.org/wiki/List_of_sovereign_states")
+    assert page.reached
+    assert sent.get("User-Agent") == F.USER_AGENT and "SynapseBot" in sent["User-Agent"]
