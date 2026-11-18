@@ -16158,7 +16158,8 @@ async def check_f1598picker(browser) -> str:
                         await page.screenshot(path=os.path.join(shots, f"f1598picker-{name}-{scheme}-{width}.png"))
 
                 try:
-                    # Settings → Models' Builder model: the saved one not for building, saying why; then the rest.
+                    # Settings → Models' Builder model: the saved one not for building, headed as the person's own
+                    # saved model (F1699), saying why; then the rest.
                     await page.goto(f"{APP}/settings/models", wait_until="domcontentloaded")
                     builder = page.locator('button[aria-label="Builder model"]').first
                     await builder.wait_for(timeout=30_000)
@@ -16168,7 +16169,7 @@ async def check_f1598picker(browser) -> str:
                             "gemini-3.1-flash-lite-preview"]
                     if [n for n in names if n in want] != want:
                         bad.append(f"{tag}: the Builder model lists {names}")
-                    if [h.lower() for h in heads] != ["not for building", "recommended for building", "other models"]:
+                    if [h.lower() for h in heads] != ["your saved model", "recommended for building", "other models"]:
                         bad.append(f"{tag}: the Builder model's headings read {heads}")
                     by = dict(zip(names, texts))
                     if "Recommended" not in by.get("claude-sonnet-4-6", "") or "Recommended" in by.get("gpt-4.1", ""):
