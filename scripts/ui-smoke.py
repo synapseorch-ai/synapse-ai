@@ -2321,6 +2321,112 @@ def _agent(aid: str, name: str) -> dict:
 
 
 @check
+async def check_editorsave(browser) -> str:
+    """The editor's Save is what a click on it reaches, beside everything else the canvas floats at the top (F1695).
+
+    At 1280x720 the canvas's right-hand bar (what to check, Workflow settings, Board, Last run, Change with AI, Run)
+    took its whole width and the left-hand one, which holds the workflow's name and Save, was squeezed under it: a
+    click on Save landed on the other bar, and only Ctrl+S saved. Measured with everything both bars can show at
+    once, as on Cloud: Boards on (Board), a step nothing leads to (what to check), a run done (Last run), unsaved
+    changes and a long name; at 1280x720 and 390x844, light and dark. The point at Save's centre must be Save, and a
+    click there must send the save.
+    """
+    _boards_on()
+    oid = f"orch_uismoke_save_{int(time.time())}"
+    fixture = human_gate_orchestration(oid)
+    fixture["name"] = "Weekly client report to Google Docs for every account"
+    api("/api/orchestrations", "POST", fixture)
+    shots = os.environ.get("SMOKE_SHOTS")
+    problems: list[str] = []
+    seen: list[str] = []
+    ran = False
+    try:
+        for size in ((1280, 720), (390, 844)):
+            for scheme in ("light", "dark"):
+                ctx = await browser.new_context(viewport={"width": size[0], "height": size[1]}, color_scheme=scheme)
+                await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{scheme}')}}catch(e){{}}")
+                page = await ctx.new_page()
+                sent: list[str] = []
+                page.on("request", lambda req: sent.append(req.method) if (
+                    req.method in ("POST", "PUT") and "/api/orchestrations" in req.url and "/run" not in req.url)
+                    else None)
+                where = f"{size[0]}x{size[1]} {scheme}"
+                try:
+                    await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+                    await asyncio.sleep(SETTLE + 2.0)
+                    if not ran:
+                        # One run, parked on its person: the editor then offers Last run.
+                        await page.get_by_role("button", name="Run now", exact=True).click()
+                        for _ in range(25):
+                            await asyncio.sleep(1.0)
+                            if await page.evaluate("() => [...document.querySelectorAll('button')]"
+                                                   ".some(b => /Waiting for your input/.test(b.innerText || ''))"):
+                                break
+                        ran = True
+                        # Then a step nothing leads to, so the bar has something to check too.
+                        fixture["steps"].append({"id": f"{oid}_loose", "name": "Loose end", "type": "print",
+                                                 "print_content": "nothing leads here", "next_step_id": None,
+                                                 "output_key": "loose"})
+                        api("/api/orchestrations", "POST", fixture)
+                        await page.reload(wait_until="domcontentloaded")
+                        await asyncio.sleep(SETTLE + 2.0)
+                    name = page.get_by_role("textbox", name="Workflow name")
+                    await name.click()
+                    await name.press("End")
+                    await name.type(" now")
+                    await page.mouse.click(size[0] // 2, size[1] - 120)
+                    await asyncio.sleep(0.8)
+                    found = await page.evaluate(
+                        """() => {
+                          const save = [...document.querySelectorAll('[data-canvas-chrome="bar"] button')]
+                              .find(b => (b.getAttribute('aria-label') || b.innerText || '').trim().startsWith('Save'));
+                          if (!save) return {found: false};
+                          const r = save.getBoundingClientRect();
+                          const x = r.x + r.width / 2, y = r.y + r.height / 2;
+                          const el = document.elementFromPoint(x, y);
+                          const named = (re) => [...document.querySelectorAll('[data-canvas-chrome="bar"] button')]
+                              .some(b => re.test(b.getAttribute('aria-label') || b.innerText || ''));
+                          const lastRun = named(/Last run/), board = named(/^Board/), toCheck = named(/to check/);
+                          const what = !el ? 'nothing' : save.contains(el) ? 'Save'
+                              : ((el.closest('button') || el).getAttribute('aria-label')
+                                 || (el.closest('button') || el).innerText || el.tagName).trim().slice(0, 40);
+                          const bars = [...document.querySelectorAll('[data-canvas-chrome="bar"]')].slice(0, 2)
+                              .map(b => { const q = b.getBoundingClientRect(); return `${Math.round(q.left)}-${Math.round(q.right)}`; });
+                          return {found: true, x, y, what, lastRun, board, toCheck, bars: bars.join(' and '),
+                                  inside: x >= 0 && x <= innerWidth};
+                        }"""
+                    )
+                    if shots:
+                        await page.screenshot(path=os.path.join(shots, f"editorsave-{size[0]}x{size[1]}-{scheme}.png"))
+                    if not found.get("found"):
+                        problems.append(f"{where}: no Save in the canvas's bars")
+                        continue
+                    if size[0] >= 1024 and not (found["lastRun"] and found["board"] and found["toCheck"]):
+                        problems.append(f"{where}: the bar was not at its widest (Last run {found['lastRun']}, Board "
+                                        f"{found['board']}, to check {found['toCheck']})")
+                    if found["what"] != "Save" or not found["inside"]:
+                        problems.append(f"{where}: the point at Save's centre is {found['what']!r} (bars {found['bars']})")
+                        continue
+                    before = len(sent)
+                    await page.mouse.click(found["x"], found["y"])
+                    for _ in range(10):
+                        await asyncio.sleep(0.3)
+                        if len(sent) > before:
+                            break
+                    if len(sent) == before:
+                        problems.append(f"{where}: a click at Save's centre sent no save")
+                    else:
+                        seen.append(f"{where} (bars {found['bars']})")
+                finally:
+                    await ctx.close()
+    finally:
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "a click on Save saves, with Last run and unsaved changes showing: " + ", ".join(seen)
+
+
+@check
 async def check_unsaved(browser) -> str:
     """An unsaved agent edit is not thrown away without asking.
 
