@@ -1,5 +1,5 @@
 {
- "commit": "82e443441688987a2868aa39e07c0a6e24c31d60",
+ "commit": "e8b555bec55ece98dba53aa7b2037790226f9926",
  "pages": [
   {
    "description": "AI automation without the surprises. Describe a recurring job in plain words, and get a workflow you can read, that runs the same way every time and checks with you before anything goes out.",
@@ -1951,7 +1951,7 @@
     },
     {
      "anchor": "synapse-stop",
-     "excerpt": "Stops both processes, found through the PID files start wrote. Nothing to pass.",
+     "excerpt": "Stops both processes, found through the PID files start wrote, and everything each of them started, such as the web server's own workers, so a port is free once it says so. Nothing to pass. It prints two lines (since 2.1.1): The second line is Synapse was not running. when nothing was, or Could not stop: the backend (pid 1234). naming what is still running. A PID file left by another program, one…",
      "heading": "stop"
     },
     {
@@ -1971,7 +1971,7 @@
     },
     {
      "anchor": "synapse-autostart",
-     "excerpt": "synapse autostart on starts SynapseOrch in the background when you log in; off stops that; status prints on or off. It is the question the installer asks. | System | What it adds | |---|---| | Linux | A systemd user unit, ~/.config/systemd/user/synapse-ai.service | | macOS | A LaunchAgent, ~/Library/LaunchAgents/com.synapse-ai.server.plist, logging to ~/.synapse/logs/launchd.log | | Windows | A…",
+     "excerpt": "synapse autostart on starts SynapseOrch in the background again after a restart; off stops that; status prints on or off. It is the question the installer asks, and since 2.1.1 its answer is Yes unless you say no. In a CI run, a container, or where there is no service manager it stays off, and the end of the install says why and how to start SynapseOrch yourself. An upgrade never asks again and…",
      "heading": "autostart"
     },
     {
@@ -3308,7 +3308,7 @@
    "sections": [
     {
      "anchor": "",
-     "excerpt": "SynapseOrch is an MCP server. Any MCP client — Claude Code, Claude Desktop, Codex, Cursor, VS Code, an agent you wrote — can connect to your workspace and use it: list its agents and workflows, run them, answer them when they stop for a person, search its knowledge bases, chat with its agents, and build. Every workflow you offer to MCP clients (the Offer to MCP clients switch in its settings) is…",
+     "excerpt": "SynapseOrch is an MCP server. Any MCP client — Claude Code, Claude Desktop, Codex, Cursor, VS Code, an agent you wrote — can connect to your workspace and use it: list its agents and workflows, run them, answer them when they stop for a person, search its knowledge bases, chat with its agents, and build. Every workflow you offer to MCP clients (the Offer to MCP clients switch in its settings, or…",
      "heading": ""
     },
     {
@@ -4598,7 +4598,7 @@
     },
     {
      "anchor": "start-on-login-or-not",
-     "excerpt": "Start Synapse when you log in? — Yes registers it with launchd on macOS, or as a systemd user service on Linux. It is not asked on WSL, or on a Linux without a systemd user session. synapse autostart on turns it on later, where it is available.",
+     "excerpt": "Start Synapse when your computer starts? on Linux, Start Synapse when you log in? on macOS — Yes, the default since 2.1.1, registers it as a systemd user service on Linux, which starts at boot when your user may linger and otherwise when you log in, or with launchd on macOS. It is not asked on WSL, on a Linux without a systemd user session, in a container or in a CI run, and stays off there.…",
      "heading": "Start on login, or not"
     },
     {
@@ -4608,7 +4608,7 @@
     },
     {
      "anchor": "on-windows",
-     "excerpt": "Open PowerShell and paste: The same steps and the same questions. Everything goes in %USERPROFILE%\\.synapse. Start Synapse when you log in? adds a SynapseAI entry to your user's Run list. An older console draws the screen with plain characters instead of ✓ and the spinner.",
+     "excerpt": "Open PowerShell and paste: The same steps and the same questions. Everything goes in %USERPROFILE%\\.synapse. Start Synapse when you log in? (Yes by default) adds a SynapseAI entry to your user's Run list. An older console draws the screen with plain characters instead of ✓ and the spinner.",
      "heading": "On Windows"
     },
     {
@@ -5885,7 +5885,7 @@
     },
     {
      "anchor": "claude-cli",
-     "excerpt": "Models: cli.claude, or cli.claude. Uses the claude CLI (Claude Code), through your Claude subscription. The aliases fable, opus, sonnet and haiku always mean the newest model of that kind your plan allows, so they never go stale. Setup: 1. Install Claude Code: claude.ai/download 2. Run claude in a terminal on the SynapseOrch host and sign in 3. In SynapseOrch, pick a cli.claude model Models and…",
+     "excerpt": "Models: cli.claude, or cli.claude. Uses the claude CLI (Claude Code), through your Claude subscription. The aliases fable, opus, sonnet and haiku always mean the newest model of that kind your plan allows, so they never go stale. In the model pickers each alias has the line of the model Claude Code runs for it today (since 2.1.1): haiku reads as Claude Haiku 5.5, sonnet as Sonnet 5.5, opus as…",
      "heading": "Claude CLI"
     },
     {
@@ -6503,7 +6503,7 @@
     },
     {
      "anchor": "research",
-     "excerpt": "Before it plans, Synapse AI reads each site or API your message names (up to three), once a conversation: the page's title, what it says it is, and any API spec it links to. A page that is only JavaScript is fetched with the scraper or a Browser step instead of an HTTP tool. While it plans, it can stop to look things up, up to four questions a round: - How SynapseOrch does something is answered…",
+     "excerpt": "Before it plans, Synapse AI reads each site or API your message names (up to three), once a conversation: the page's title, what it says it is, and any API spec it links to. A page that is only JavaScript is fetched with the scraper or a Browser step instead of an HTTP tool. It reads as SynapseBot and obeys the site's robots.txt, as a Knowledge crawl does: a page robots.txt disallows is never…",
      "heading": "Research"
     },
     {
@@ -6523,7 +6523,7 @@
     },
     {
      "anchor": "asking-for-something-now",
-     "excerpt": "Synapse AI explains the product and builds; it does not look things up for you in the chat. Ask what's the weather in Chennai and it offers a workflow that fetches it, once now or each morning, and asks where to send it. Say yes and the build starts from there. Ask what can you do for me and it answers with what the product can do, with an example of each.",
+     "excerpt": "Synapse AI explains the product and builds; it does not look things up for you in the chat. Ask what's the weather in Chennai and it offers a workflow that fetches it, once now or each morning, and asks where to send it. Say yes and the build starts from there. Ask what can you do for me and it answers with what the product can do, with an example of each. Pages you name are read here (since…",
      "heading": "Asking for something now"
     },
     {
@@ -7461,7 +7461,7 @@
     },
     {
      "anchor": "comparison-with-web-scraper",
-     "excerpt": "| | Browser | Web Scraper | |---|---|---| | JavaScript rendering | Yes | Yes (crawl4ai) | | You watch and can take over | Yes | No | | Forms and signed-in sites | Yes, with you pressing what is yours | No | | CAPTCHAs and bot checks | Handed to you | Stealth mode tries to avoid them | | Many pages at once | No, one page at a time | Yes | | Best for | Interactive sites, forms, sites you sign in to…",
+     "excerpt": "| | Browser | Web Scraper | |---|---|---| | JavaScript rendering | Yes | Yes (headless Chromium) | | You watch and can take over | Yes | No | | Forms and signed-in sites | Yes, with you pressing what is yours | No | | CAPTCHAs and bot checks | Handed to you | Never solved: the call fails and names whose check it was | | Many pages at once | No, one page at a time | Yes | | Best for | Interactive…",
      "heading": "Browser or Web Scraper"
     }
    ],
@@ -7696,7 +7696,7 @@
     },
     {
      "anchor": "available-tools",
-     "excerpt": "| Tool | Description | Requires | |---|---|---| | Sandbox | Execute Python in an isolated Docker container | Docker | | Vault | Read and write persistent files | — | | SQL | Query any SQLAlchemy-compatible database | DB config | | Browser | A browser inside Synapse that agents work in while you watch | Node, and Playwright's Chromium | | Web Scraper | Anti-bot evasion web scraping | — | | Code…",
+     "excerpt": "| Tool | Description | Requires | |---|---|---| | Sandbox | Execute Python in an isolated Docker container | Docker | | Vault | Read and write persistent files | — | | SQL | Query any SQLAlchemy-compatible database | DB config | | Browser | A browser inside Synapse that agents work in while you watch | Node, and Playwright's Chromium | | Web Scraper | Reads web pages in headless Chromium…",
      "heading": "Available tools"
     },
     {
@@ -7941,7 +7941,7 @@
     },
     {
      "anchor": "for-one-tool",
-     "excerpt": "Under For one tool, Add a rule for one tool… picks a tool by name and gives it its own Allow, Ask first or Block, whatever its row says. It is stored beside the categories as tool: , and it wins over the tool's category. A tool's answers come from different places, and are trusted differently: - Your own custom tools say what they do in the tool editor; see Custom tools. Imported from a file, a…",
+     "excerpt": "Under For one tool, Add a rule for one tool… picks a tool by name and gives it its own Allow, Ask first or Block, whatever its row says. It is stored beside the categories as tool: , and it wins over the tool's category. A fourth choice for one tool, Ask unless it only reads (since 2.1.1, stored as check), is decided each time a run calls the tool, from what the tool says it does then: it runs…",
      "heading": "For one tool"
     },
     {
@@ -7980,7 +7980,7 @@
     },
     {
      "anchor": "tools",
-     "excerpt": "| Tool | Arguments | Description | |---|---|---| | vaultcreate | content, optional filename, format | Create a new file. Fails if the file already exists. Without a filename, a timestamped name is generated, with the extension from format (json, text, csv, python, markdown; default json). | | vaultread | path | Read a file as text (up to 10 MB) | | vaultwrite | path, content | Write a file…",
+     "excerpt": "| Tool | Arguments | Description | |---|---|---| | vaultcreate | content, optional filename, format | Create a new file. Fails if the file already exists. Without a filename, a timestamped name is generated, with the extension from format (json, text, csv, python, markdown; default json). | | vaultread | path, optional missingok | Read a file as text (up to 10 MB). With missingok, a file that…",
      "heading": "Tools"
     },
     {
@@ -8028,13 +8028,13 @@
    "title": "Vault Tools for Agents"
   },
   {
-   "description": "The web scraper tool uses crawl4ai to extract content from web pages with advanced anti-bot evasion and JavaScript rendering.",
+   "description": "The web scraper reads web pages in a real headless Chromium, JavaScript-rendered pages included, and returns their text, links, rows or a screenshot.",
    "edition": "both",
    "kind": "guide",
    "sections": [
     {
      "anchor": "",
-     "excerpt": "Built on crawl4ai, it's optimised for high-volume scraping of sites that block standard scrapers.",
+     "excerpt": "It reads pages the way a browser does, in headless Chromium, so pages built by JavaScript come back with their words.",
      "heading": ""
     },
     {
@@ -8049,18 +8049,23 @@
     },
     {
      "anchor": "arguments",
-     "excerpt": "| Argument | Type | Description | |---|---|---| | url | string | The URL to scrape | | waitfor | string | Optional CSS selector to wait for before extracting | | scroll | boolean | Scroll to bottom to trigger infinite scroll loading |",
+     "excerpt": "| Argument | Type | Description | |---|---|---| | url | string | The URL to scrape | | waitfor | string | A CSS selector, or a js: expression, to wait for before reading | | jscode | string | A script run on the page before reading, for example to dismiss a popup or click a button | | headers | object | Extra HTTP headers, sent to the page's own site only | | removeoverlays | boolean | Remove…",
      "heading": "Arguments"
     },
     {
+     "anchor": "how-much-it-returns",
+     "excerpt": "scrapeurl returns up to the first 50,000 characters of a page, and says how much was left out. For a whole table or list on a long page, use scrapestructured with the table's selector; Synapse AI plans it that way for a long page you name (see Research).",
+     "heading": "How much it returns"
+    },
+    {
      "anchor": "use-cases",
-     "excerpt": "- Scraping news articles, blog posts, documentation - Extracting content from sites with bot protection (LinkedIn, financial news sites) - Crawling dynamic React/Vue/Angular apps - Monitoring competitor pricing or product listings",
+     "excerpt": "- Scraping news articles, blog posts, documentation - Crawling dynamic React/Vue/Angular apps - Monitoring competitor pricing or product listings",
      "heading": "Use cases"
     },
     {
-     "anchor": "anti-bot-evasion",
-     "excerpt": "The scraper uses crawl4ai's stealth features: - Headless browser with realistic browser fingerprints - Randomised request timing - Cookie and session handling - User-agent rotation This makes it significantly more effective against sites that block requests-based scrapers or require JavaScript.",
-     "heading": "Anti-bot evasion"
+     "anchor": "when-a-site-says-no",
+     "excerpt": "The scraper presents as an ordinary Chrome browser, but it never solves CAPTCHAs or takes bot checks. Since 2.1.1, a read that doesn't get the page you asked for fails with what happened, never with another page's text as the content: - A bot check, a CAPTCHA, or a refusal (HTTP 403, 429, 503) fails the call with Blocked by anti-bot protection and, where it can tell, whose protection it is…",
+     "heading": "When a site says no"
     },
     {
      "anchor": "example",
