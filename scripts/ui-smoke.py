@@ -429,8 +429,11 @@ async def _build_with_ai(page):
     raise AssertionError("no visible Synapse AI row or mark to open the builder with")
 
 
-async def _open_builder(browser, width=WIDE):
-    ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]})
+async def _open_builder(browser, width=WIDE, scheme: str | None = None):
+    ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]},
+                                    **({"color_scheme": scheme} if scheme else {}))
+    if scheme:
+        await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{scheme}')}}catch(e){{}}")
     await ctx.add_init_script(BUILDER_STUB)
     page = await ctx.new_page()
     await page.goto(APP, wait_until="domcontentloaded")
@@ -694,6 +697,72 @@ async def check_codetestpress(browser) -> str:
         return "a press of Test this fix is busy for the whole test, then says how it went in the test's own words"
     finally:
         await ctx.close()
+
+
+@check
+async def check_chaincard(browser) -> str:
+    """A card waiting on what another card makes comes up right under it when that card is pressed (F1670, A): pressed
+    "Make it" on a new knowledge base, the press's answer brings the card for its note, drawn under the card that made
+    it, its own Needs your go-ahead and button, never asked for again; a line for one that couldn't be prepared is said
+    on the pressed card. Model-free: the cards are the stub's, the act's answer a route's. 1440 and 390, light and dark;
+    with SMOKE_SHOTS, each is kept."""
+    shots = os.environ.get("SMOKE_SHOTS")
+    seen: list[str] = []
+    note = {"type": "action_needed", "id": "act_f1670a_note", "title": 'Add a note to "IRS Tax Forms"',
+            "detail": "Deadline: Due each year by January 31.", "danger": False,
+            "buttons": [{"label": "Add note", "tool": "add_knowledge_note", "arguments": {"base": "IRS Tax Forms"},
+                         "token": "t_f1670a_note", "expires_in_seconds": 600, "run_id": RUN_ID}]}
+
+    async def act(route):
+        await route.fulfill(status=200, json={"done": True, "result": {"say": 'Made the knowledge base "IRS Tax Forms".'},
+                                              "cards": [note], "said": []})
+
+    for width in (WIDE, (390, 844)):
+        for scheme in ("light", "dark"):
+            ctx, page = await _open_builder(browser, width, scheme)
+            await ctx.route(re.compile(r".*/api/assistant/act$"), act)
+            where = f"{width[0]} {scheme}"
+            try:
+                await page.evaluate("(id) => window.__stub.push({type: 'orchestration_start', run_id: id})", RUN_ID)
+                await page.evaluate("(e) => window.__stub.push(e)", {
+                    "type": "action_needed", "id": "act_f1670a_make", "title": 'Make a knowledge base "IRS Tax Forms"',
+                    "detail": "On the Vault folder knowledge/irs-tax-forms.", "danger": False,
+                    "buttons": [{"label": "Make it", "tool": "create_knowledge_base",
+                                 "arguments": {"name": "IRS Tax Forms"}, "token": "t_f1670a", "expires_in_seconds": 600}]})
+                panel = page.locator('[data-testid="assistant-panel"]')
+                made = panel.get_by_role("region", name="Make a knowledge base \"IRS Tax Forms\"")
+                await made.wait_for(timeout=8_000)
+                await made.get_by_role("button", name="Make it").click()
+                waiting = panel.get_by_role("region", name="Add a note to \"IRS Tax Forms\"")
+                await waiting.wait_for(timeout=6_000)
+                placed = await page.evaluate("""() => {
+                    const r = [...document.querySelectorAll('[data-testid="assistant-panel"] section[aria-label]')];
+                    const made = r.find((s) => s.getAttribute('aria-label').startsWith('Make a knowledge base'));
+                    const note = r.find((s) => s.getAttribute('aria-label').startsWith('Add a note'));
+                    if (!made || !note) return {found: false};
+                    const a = made.getBoundingClientRect(), b = note.getBoundingClientRect();
+                    const after = made.nextElementSibling;
+                    return {found: true, next: !!after && (after === note || after.contains(note)),
+                            gap: Math.round(b.top - a.bottom),
+                            inside: b.right <= innerWidth + 1 && b.left >= -1};
+                }""")
+                if not placed.get("found") or not placed["next"] or not (0 <= placed["gap"] <= 32) or not placed["inside"]:
+                    raise AssertionError(f"{where}: the note's card is not right under the card that made it: {placed}")
+                add = waiting.get_by_role("button", name="Add note")
+                if not await add.is_enabled():
+                    raise AssertionError(f"{where}: the note's card has no button to press")
+                await asyncio.sleep(0.8)  # the scroll into view is smooth
+                seen_at = await add.evaluate("""(b) => { const r = b.getBoundingClientRect();
+                    const x = r.left + r.width / 2, y = r.top + r.height / 2, e = document.elementFromPoint(x, y);
+                    return !!e && b.contains(e); }""")
+                if not seen_at:
+                    raise AssertionError(f"{where}: the note's Add note is not in view: the card came up out of sight")
+                if shots:
+                    await panel.screenshot(path=os.path.join(shots, f"chaincard-{width[0]}-{scheme}.png"))
+                seen.append(where)
+            finally:
+                await ctx.close()
+    return "a press of Make it brings the waiting card right under it, its own button ready: " + ", ".join(seen)
 
 
 @check
