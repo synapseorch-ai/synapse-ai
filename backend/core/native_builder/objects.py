@@ -59,6 +59,9 @@ class Step(_Written):
                                                      "step ids")
     workflow: str | None = Field(None, description="workflow steps: an inner workflow's title from "
                                                    "`inner_workflows`, or an existing workflow's id")
+    uses_fields: list[str] = Field(default_factory=list, description=(
+        "llm/agent steps whose prompt reads a tool step's whole answer: each field of it this step uses, as "
+        "<that step's id>.<field>, e.g. get_weather.humidity"))
     config: dict[str, Any] | None = Field(None, description="Optional engine settings for this step, by their "
                                                             "names (e.g. human_fields, loop_max_iterations)")
 

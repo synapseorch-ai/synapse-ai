@@ -1438,6 +1438,8 @@ def _answers_read_past(plan: O.Plan, ws: Workspace, readers: set[str]) -> tuple[
             step = _engine_step(x, agent_ids={}, workflow_ids={}, end_id=None, issues=[])
             if "output_key" not in step and step["type"] in _RESULT_TYPES:
                 step["output_key"] = step["id"]
+            if x.uses_fields:
+                step["uses_fields"] = list(x.uses_fields)
             saved.append(step)
         firsts: dict[tuple[str, str, str], list] = {}
         # Held to the Tool step a run brings to each read, from the plan's first step, as the validator holds them
@@ -1448,7 +1450,8 @@ def _answers_read_past(plan: O.Plan, ws: Workspace, readers: set[str]) -> tuple[
             if m.first:
                 firsts.setdefault((m.reader, m.where, m.key), []).append(m)
                 continue
-            line = (f"step {m.reader}: its {m.where} reads `{'.'.join(m.parts)}` from `state.{m.key}`, the answer of "
+            reads = "uses" if m.where == "uses_fields" else f"its {m.where} reads"
+            line = (f"step {m.reader}: {reads} `{'.'.join(m.parts)}` from `state.{m.key}`, the answer of "
                     f"step {m.writer}, which calls `{m.tool}`: {m.problem}")
             if m.owner == "mcp":
                 line = (f"{line}. `{m.tool}`'s own declaration of its answer does not list it, so it is said here and "
@@ -1461,12 +1464,17 @@ def _answers_read_past(plan: O.Plan, ws: Workspace, readers: set[str]) -> tuple[
             lacks = list(dict.fromkeys(x.parts[0] for x in found))
             page = (" (a page's text is in `markdown`, and so is an API's JSON fetched as a page: parse it there)"
                     if "markdown" in m.has else "")
-            line = (f"step {reader}: its {where} reads {', '.join(f'`{f}`' for f in lacks)} from `state.{key}`, an "
+            reads = "uses" if where == "uses_fields" else f"its {where} reads"
+            line = (f"step {reader}: {reads} {', '.join(f'`{f}`' for f in lacks)} from `state.{key}`, an "
                     f"answer with no such field: step {m.writer} calls `{m.tool}`, which answers an object with "
                     f"{', '.join(f'`{f}`' for f in m.has)}")
             if m.owner == "mcp":
                 notes.append(f"{line}, by its own declaration, which may be wrong: the run reads whatever the tool "
                              "answers")
+            elif where == "uses_fields":
+                # A field it assumed the tool answers (F1675): what it has, another tool, or said as not done.
+                errors.append(f"{line}. Use a field it has, find a tool that answers it, or say in `asked` that this "
+                              "part is not done, with why_not")
             else:
                 errors.append(f"{line}. Read a field it has{page}, or call a JSON API with a GET tool, which answers "
                               "its JSON (a tool nothing here provides is looked up, and made after the yes)")

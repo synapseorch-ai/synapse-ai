@@ -213,7 +213,10 @@ from core.native_builder import prompt_lint, seed
 #: researchers' passage name no role, 976c0d59… (on F1687's b80ff176).
 #: F1645: the planner writes `asked_start` (how they said a run starts, and schedule, form or cannot with why_not),
 #: 5d1e630e… (on F1689's 976c0d59).
-BUNDLE_SHA256 = "5d1e630efcc65125bf2d68cc557d946b2bf316ee78ce83fc2b9283b01afb8ae1"
+#: F1675: plan_steps.md says a tool answers what its outputSchema declares, never a field it doesn't list, and an llm
+#: or agent step that reads a tool's whole answer names the fields it uses in `uses_fields`, 486f8e21… (on F1645's
+#: 5d1e630e).
+BUNDLE_SHA256 = "486f8e215a10274e9913ae1ba719cf2d19988a0f608b31923c1c68484545d9ba"
 
 
 def _sha(definitions) -> str:

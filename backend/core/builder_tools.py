@@ -4514,6 +4514,12 @@ def answer_reads(steps: list, keys: set[str]) -> dict[str, list[tuple[str, list[
         if not isinstance(s, dict):
             continue
         sid = str(s.get("id", "?"))
+        # The fields a plan's step says it uses of an answer its prompt reads whole (F1675): held as reads. Only the
+        # plan check sets them; a saved step never carries them.
+        for ref in s.get("uses_fields") or []:
+            key, _, rest = str(ref).partition(".")
+            if key in keys and rest:
+                reads.setdefault(key, []).append((sid, rest.split("."), False, "uses_fields"))
         firsts = [("code", s.get("transform_code")), *(("condition", s.get(f)) for f in _EXPRESSION_FIELDS)]
         for where, text in firsts:
             if not isinstance(text, str):
