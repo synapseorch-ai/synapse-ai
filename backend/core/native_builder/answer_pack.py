@@ -638,13 +638,49 @@ def offer_line(fact: str) -> str:
             "email or a chat channel. Want it?")
 
 
+#: Something to make, in an offer's words: "build", "set … up", "plan", "schedule".
+_BUILDS = r"(?:build|set\s+(?:\w+\s+){0,3}?up|setup|make|create|plan|draft|schedule|automate)"
+#: A question that offers to build or plan (F1671, F1697): an offer ("would you like me to", "shall I", "want me to")
+#: and something to make, or a workflow, in one sentence that ends asking. A question about anything else ("Which page
+#: did you mean?", "Would you like the summary shorter?") is none.
+_OFFER_ASK = re.compile(
+    r"(?i)\b(?:would\s+you\s+like(?:\s+me)?|do\s+you\s+want(?:\s+me)?|want\s+me|like\s+me|shall\s+i|should\s+i|"
+    r"can\s+i|may\s+i|ready\s+for\s+me)\b[^?]{0,160}?\b(?:" + _BUILDS + r"|workflow)")
+#: An offer said, not asked: "I can set up a workflow that gets it", "I'll build it", never "I can't make that".
+_OFFER_SAID = re.compile(r"(?i)\b(?:i\s+can(?![’']t|not)|i\s+could|i[’']ll|i\s+will|happy\s+to|glad\s+to)\b"
+                         r"[^.?!]{0,120}?\b" + _BUILDS + r"\b")
+
+
+def offers_to_build(text: str) -> bool:
+    """Whether the reply offers to build or plan something and asks about it (F1671, F1697): a question that offers
+    ("Shall I go ahead and plan this out?"), or an offer said beside a question ("I can set up a workflow that gets it.
+    Want it?"). A reply that offers and asks nothing has not asked; one that asks only something else offers nothing."""
+    sentences = [s.strip().rstrip("\"'”’)*_ ") for line in str(text or "").split("\n")
+                 for s in _SENTENCE_END.split(line)]
+    asks = [s for s in sentences if s.endswith("?")]
+    return any(_OFFER_ASK.search(q) or _OFFER_SAID.search(q) for q in asks) or (
+        bool(asks) and any(_OFFER_SAID.search(s) for s in sentences))
+
+
 def offer_kept(text: str, offered: Any) -> str:
-    """`text`, ending with the offer when this turn kept one (`classify.OFFERED_KEY`) and the reply does not end
-    asking (F1382): the next turn's yes takes it, so a yes always has an offer behind it."""
+    """`text`, ending with the offer when this turn kept one (`classify.OFFERED_KEY`) and the reply does not already
+    offer it (F1382, F1671): the next turn's yes takes it, so a yes always has an offer behind it, and it is made
+    once. A reply that asks something else still gets it."""
     fact = str(offered.get("fact") or "").strip() if isinstance(offered, dict) else ""
-    if not fact or str(text or "").rstrip().endswith("?"):
+    if not fact or offers_to_build(text):
         return text
     return f"{str(text or '').rstrip()}\n\n{offer_line(fact)}".strip()
+
+
+def offer_to_keep(said: str, offered: Any, message: str, *, may_build: bool) -> dict | None:
+    """The offer to keep for an answer that offers to build or plan where this turn kept none (F1697): the person's
+    own ask, which the next turn's yes builds (`classify`'s offer_taken). None for a viewer, an offer already kept, or
+    a reply that offers nothing."""
+    if not may_build or (isinstance(offered, dict) and (str(offered.get("ask") or "").strip()
+                                                        or str(offered.get("fact") or "").strip())):
+        return None
+    ask = str(message or "").strip()
+    return {"fact": "", "ask": ask} if ask and offers_to_build(said) else None
 
 
 def checked_answer(said: str, writes: Any, offered: Any) -> str:
@@ -667,7 +703,12 @@ async def check_answer(args: dict, server_module: Any, events: list[dict]) -> di
     _, run = _run()
     state = run.shared_state if run is not None else {}
     said = state.get("summary") or ""
-    return {"object": "answer_checked", "text": checked_answer(said, state.get(WRITES_KEY), state.get(OFFERED_KEY))}
+    offered = state.get(OFFERED_KEY)
+    # An answer that offers to build or plan keeps the person's ask, so the yes that follows builds it (F1697).
+    if kept := offer_to_keep(said, offered, str(state.get("user_message") or ""),
+                             may_build=state.get("may_change") is not False):
+        state[OFFERED_KEY] = offered = kept
+    return {"object": "answer_checked", "text": checked_answer(said, state.get(WRITES_KEY), offered)}
 
 
 CHECK_SCHEMA = {"type": "function", "function": {

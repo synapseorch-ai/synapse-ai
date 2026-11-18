@@ -50,6 +50,7 @@ def test_a_reply_that_offers_to_build_or_plan_is_an_offer(reply):
     "Do you want me to explain how its loads function reads a file?",
     "It runs every Monday at 9am. The last run failed on its second step.",
     "Your workflow 'Build report' ran today. Anything else?",
+    "I can't make that here. Which page did you mean?",
 ])
 def test_a_reply_that_asks_something_else_is_no_offer(reply):
     assert not _ap().offers_to_build(reply), reply
