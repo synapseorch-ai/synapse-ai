@@ -59,8 +59,12 @@ class ModelEntry:
     small: bool | None = None
     #: Whether it builds well: "recommended", "not_for_building", or None, no mark (`model_facts.builder_fit`).
     fit: str | None = None
-    #: The measured pass's rank, higher is stronger; None when not measured. A ranked model runs first (`ordered`).
+    #: The measured pass's rank, higher is stronger; None when not measured. It orders only the measured models of one
+    #: family's tier among themselves (`ordered`).
     rank: int | None = None
+    #: A host's own rank for its model (cloud's staff strength rank, given as `rank` through `with_host_facts`), higher
+    #: first; None where the host ranks nothing. A host-ranked model runs first, ahead of every tier (`ordered`).
+    host_rank: int | None = None
 
 
 @dataclass(frozen=True)
@@ -178,6 +182,9 @@ async def with_host_facts(entries: list[ModelEntry]) -> list[ModelEntry]:
     out = []
     for e in entries:
         mine = {k: v for k, v in (said.get(e.id) or {}).items() if k in ModelEntry.__dataclass_fields__ and k != "id"}
+        # The host's `rank` is its own decision, never the measured pass's: it puts the model first (`host_rank`).
+        if "rank" in mine:
+            mine["host_rank"] = mine.pop("rank")
         e = replace(e, **mine)
         out.append(replace(e, fit=model_facts.builder_fit(e.id, window=e.window, tools=e.tools,
                                                           host_fit=mine.get("fit"))))
@@ -402,8 +409,12 @@ def ordered(entries: list[ModelEntry], has_tools: bool = False) -> list[ModelEnt
       today's key, within the places that family holds in it. So Opus 5.5 runs before a dearer Opus 4.6;
     - and a measured rank orders only the measured models of one family's tier among themselves, in the places they
       hold (F1598 D): a few asks are too thin to lift a model past a stronger tier, so an unmeasured Opus stays above
-      a measured Haiku, and across families nothing moves."""
-    rest = sorted(entries, key=lambda e: _strongest_first(e, has_tools))
+      a measured Haiku, and across families nothing moves.
+    A host's own rank (`host_rank`, cloud's staff strength rank) is a deliberate decision: its models run first, the
+    higher first, ahead of every tier, and where a model has both, the host's rank wins."""
+    hosted = sorted((e for e in entries if e.host_rank is not None),
+                    key=lambda e: (-e.host_rank, _strongest_first(e, has_tools)))
+    rest = sorted((e for e in entries if e.host_rank is None), key=lambda e: _strongest_first(e, has_tools))
     places: dict[str, list[int]] = {}
     for n, e in enumerate(rest):
         if e.family and e.tier is not None:
@@ -420,7 +431,7 @@ def ordered(entries: list[ModelEntry], has_tools: bool = False) -> list[ModelEnt
     for held in tiers.values():
         for n, e in zip(held, sorted((rest[n] for n in held), key=lambda e: -e.rank)):
             rest[n] = e
-    return rest
+    return [*hosted, *rest]
 
 
 def _not_small(fitting: list[ModelEntry]) -> list[ModelEntry]:
