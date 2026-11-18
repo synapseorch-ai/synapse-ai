@@ -1469,29 +1469,98 @@ def _start_command(
     sys.exit(code or 1)
 
 
+#: How much later than its pidfile a process may have started and still be the one the pidfile names: the pidfile
+#: is written just after the process starts, never long before it.
+_PIDFILE_SLACK_S = 2.0
+
+
+def _ours(pid: int, pidfile: Path) -> bool:
+    """Whether `pid` is still the process `pidfile` was written for (F1694). A pid the system has since given to
+    another program started after the pidfile was written; that program is never Synapse's to stop."""
+    import psutil
+
+    try:
+        return psutil.Process(pid).create_time() <= pidfile.stat().st_mtime + _PIDFILE_SLACK_S
+    except (psutil.Error, OSError):
+        return False
+
+
+def _stop_tree(pid: int, timeout: float = 5) -> list[int]:
+    """Stop `pid` and every process under it; the pids still running after, [] when every one is gone (F1694).
+
+    The tree is read once, before anything is signalled, so a child that outlives its parent (npm's web server) is
+    still found. A process that leads its own group (a detached start) is stopped by its group, which also takes a
+    grandchild that already left the tree; any other (a foreground start's, in its supervisor's group) pid by pid,
+    deepest first, never the group. SIGTERM, then SIGKILL to what is left after `timeout`. A zombie is stopped: only
+    its parent can reap it."""
+    import psutil
+
+    try:
+        root = psutil.Process(pid)
+        everyone = [root, *root.children(recursive=True)]
+    except psutil.Error:
+        return []
+
+    def running() -> list:
+        alive = []
+        for proc in everyone:
+            try:
+                if proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE:
+                    alive.append(proc)
+            except psutil.Error:
+                pass
+        return alive
+
+    def send(sig: int, procs: list) -> None:
+        try:
+            if os.getpgid(pid) == pid and pid != os.getpgrp():
+                os.killpg(pid, sig)
+        except OSError:
+            pass
+        for proc in reversed(procs):
+            try:
+                proc.send_signal(sig)
+            except psutil.Error:
+                pass
+
+    send(signal.SIGTERM, everyone)
+    deadline = time.time() + timeout
+    while running() and time.time() < deadline:
+        time.sleep(0.1)
+    if left := running():
+        send(signal.SIGKILL, left)
+        deadline = time.time() + 3
+        while running() and time.time() < deadline:
+            time.sleep(0.1)
+    return [proc.pid for proc in running()]
+
+
 def _stop_command():
-    for name, pidfile in (("frontend", _pid_file("frontend")), ("backend", _pid_file("backend"))):
+    """Stop what this install started, and say so in two lines: "Stopping Synapse..." and one result (F1694)."""
+    print("Stopping Synapse...")
+    stopped, left = False, []
+    for name in ("frontend", "backend"):
+        pidfile = _pid_file(name)
         pid = _read_pidfile(pidfile)
         if not pid:
-            print(f"{name.capitalize()}: not running (no pidfile)")
             continue
-        if not _is_running(pid):
-            print(f"{name.capitalize()}: process {pid} not running; removing pidfile.")
-            try:
-                pidfile.unlink()
-            except Exception:
-                pass
+        if not _is_running(pid) or not _ours(pid, pidfile):
+            pidfile.unlink(missing_ok=True)  # gone, or its pid now another program's: never signalled
             continue
-        print(f"Stopping {name} (pid {pid})...")
-        ok = _terminate_pid(pid, name)
-        if ok:
-            print(f"  {name} stopped.")
-            try:
-                pidfile.unlink()
-            except Exception:
-                pass
+        stopped = True
+        if IS_WIN:
+            # taskkill /F /T already ends the whole tree.
+            still = [] if _terminate_pid(pid, name) and not _is_running(pid) else [pid]
         else:
-            print(f"  Failed to stop {name}.")
+            still = _stop_tree(pid)
+        if still:
+            left.append(f"the {name} (pid {', '.join(str(p) for p in still)})")
+        else:
+            pidfile.unlink(missing_ok=True)
+    if left:
+        print(f"Could not stop: {'; '.join(left)}.")
+    else:
+        print("Synapse stopped." if stopped else "Synapse was not running.")
 
 
 def _status_command(as_json: bool = False):
