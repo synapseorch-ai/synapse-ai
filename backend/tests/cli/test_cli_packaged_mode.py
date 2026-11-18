@@ -329,11 +329,12 @@ def test_autostart_on_registers_this_interpreter_and_records_it(monkeypatch, cap
     monkeypatch.setenv("SYNAPSE_HOME", str(tmp_path))
     calls = []
     monkeypatch.setattr(autostart, "supported", lambda: True)
-    monkeypatch.setattr(autostart, "enable", lambda python, home, dirs: calls.append(("on", python, home)))
-    monkeypatch.setattr(autostart, "disable", lambda: calls.append(("off",)))
+    monkeypatch.setattr(autostart, "enable", lambda python, home, dirs: calls.append(("on", python, home))
+                        or autostart.Starts(at_boot=False))
+    monkeypatch.setattr(autostart, "disable", lambda home=None: calls.append(("off",)))
     monkeypatch.setattr(autostart, "is_on", lambda: bool(calls) and calls[-1][0] == "on")
 
-    assert "will start when you log in" in _run(monkeypatch, capsys, ["autostart", "on"])
+    assert "starts again when you log in after a restart" in _run(monkeypatch, capsys, ["autostart", "on"])
     assert calls == [("on", sys.executable, tmp_path)]
     assert _run(monkeypatch, capsys, ["autostart", "status"]).strip() == "on"
     from synapse import _store

@@ -224,7 +224,7 @@ def test_uninstall_keeps_the_data_when_asked(monkeypatch, tmp_path, capsys):
     (home / ".env").write_text("K=v")
     monkeypatch.setenv("SYNAPSE_HOME", str(home))
     monkeypatch.setattr(cli, "_install_method", lambda: "pip")
-    monkeypatch.setattr(autostart, "disable", lambda: None)
+    monkeypatch.setattr(autostart, "disable", lambda home=None: None)
     calls = []
     monkeypatch.setattr(cli.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
     monkeypatch.setattr("builtins.input", lambda prompt="": "yes")

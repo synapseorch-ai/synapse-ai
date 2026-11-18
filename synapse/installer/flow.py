@@ -321,8 +321,13 @@ class Installer:
         if mode == "legacy":
             # v1.x asked this already; its answer is whether it left an entry.
             self.s.autostart = legacy.had_autostart()
-        elif autostart.supported():
-            self.s.autostart = self.asker.confirm("Start Synapse when you log in?", default=False)
+        elif (why := autostart.unavailable_reason()) is not None:
+            # On unless the person says no (F1693), except where it cannot work or would surprise: then it says why.
+            self.s.autostart = False
+            self.s.notes.append(f"Synapse will not start on its own after a restart: {why}. "
+                                "Start it with: synapse start")
+        else:
+            self.s.autostart = self.asker.confirm(autostart.question(), default=True)
         background = ("python", "install", "node", "browser")
         if self.asker.interactive and not nothing_asked and any(
                 s.key in background and s.state in ("pending", "running") for s in self.screen.steps):
@@ -622,7 +627,7 @@ class Installer:
         """Here, not in Starting: an install that does not start now still starts at login."""
         if self.s.autostart and autostart.supported():
             path_dirs = [d for d in (self._runtime_bin(),) if d]
-            autostart.enable(self.s.tool_python, self.home, path_dirs)
+            self.s.notes += autostart.said(autostart.enable(self.s.tool_python, self.home, path_dirs))
 
     def _update_database(self) -> str:
         report = self._cli_json(["migrate", "--json"])

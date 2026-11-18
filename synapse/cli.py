@@ -1570,12 +1570,12 @@ def _autostart_command(action: str) -> None:
             sys.exit(1)
         runtime = _runtime_dir()
         node_bin = runtime / "node" / ("" if IS_WIN else "bin") if runtime else None
-        autostart.enable(sys.executable, synapse_home() or Path.home() / ".synapse",
-                         [node_bin] if node_bin and node_bin.is_dir() else [])
-        print("Synapse will start when you log in.")
+        starts = autostart.enable(sys.executable, synapse_home() or Path.home() / ".synapse",
+                                  [node_bin] if node_bin and node_bin.is_dir() else [])
+        print("\n".join(autostart.said(starts)))
     else:
-        autostart.disable()
-        print("Synapse will no longer start when you log in.")
+        autostart.disable(synapse_home() or Path.home() / ".synapse")
+        print("Synapse will no longer start on its own after a restart.")
     try:
         from synapse import _store
         with _quiet_stdout():
@@ -2102,7 +2102,7 @@ def _uninstall_command(keep_data: bool = False):
             _stop_command()
         except Exception:
             pass
-    autostart.disable()
+    autostart.disable(home)
 
     if method == "uv":
         from synapse.installer import runtime
@@ -2529,7 +2529,7 @@ def main():
     sub.add_parser("reset-password", help="Reset the Synapse UI login password")
 
     # access-link: the link that opens a login-off Synapse (D124)
-    p_autostart = sub.add_parser("autostart", help="Start Synapse when you log in: on, off, or status")
+    p_autostart = sub.add_parser("autostart", help="Start Synapse again after a restart: on, off, or status")
     p_autostart.add_argument("action", choices=["on", "off", "status"])
 
     p_access = sub.add_parser("access-link", help="Print the link that opens Synapse while login is off")
