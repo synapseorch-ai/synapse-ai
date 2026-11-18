@@ -1366,3 +1366,12 @@ class TestABotCheck:
         await add(on, kb["id"], f"{site}/closed", kind="page")
         [row] = (await docs(kb["id"])).values()
         assert row.status == "failed" and row.error == "The server answered 403.", row.error
+
+
+class TestAPageThatAsksToWait:
+    async def test_a_long_wait_is_named_in_the_pages_failure(self, on, site, jobs, indexer):
+        _Site.pages["/queue"] = (429, {"Retry-After": "120"}, b"")
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/queue", kind="page")
+        [row] = (await docs(kb["id"])).values()
+        assert row.status == "failed" and "120 seconds" in (row.error or ""), row.error
