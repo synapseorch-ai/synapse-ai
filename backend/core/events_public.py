@@ -142,6 +142,9 @@ PRIVATE_STATE_PREFIXES = (
     # That a plan went back once for a scrape_url of a page too long for one read (`build_plan.CUT_READ_SENT_BACK`,
     # F1691).
     "_cut_read_sent_back",
+    # That a plan went back once for code going through a tool's whole object answer (`build_plan.WALK_SENT_BACK`,
+    # F1704).
+    "_answer_walk_sent_back",
 )
 
 

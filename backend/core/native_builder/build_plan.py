@@ -991,6 +991,29 @@ async def _cut_page_reads(plan: O.Plan, state: dict) -> tuple[list[str], list[st
     return errors, []
 
 
+#: A plan sent back once for code that goes through a tool's whole object answer (F1704): a second such plan in the run
+#: is built, with a line on its card, so this is never a loop.
+WALK_SENT_BACK = "_answer_walk_sent_back"
+
+
+def _whole_answer_walks(plan: O.Plan, state: dict, ws: Workspace | None) -> tuple[list[str], list[str]]:
+    """(errors, card lines) for each Transform that goes through a Tool step's whole answer as a list where that answer
+    is a known object (F1704): it walks the object's names and none of its rows. Sent back once a run with the field to
+    go through; a second such plan is built and its card says it."""
+    from core.native_builder.structure import walk_words, whole_answer_walks
+
+    steps = [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)]
+    engine = [{"id": s.id, "name": s.name, "type": s.type, "forced_tool": s.tool, "output_key": s.id,
+               "transform_code": (s.config or {}).get("transform_code")} for s in steps]
+    hits = whole_answer_walks(engine, list(getattr(ws, "tools", None) or []))
+    if not hits:
+        return [], []
+    if state.get(WALK_SENT_BACK):
+        return [], [f"'{h['reader']['name']}' {walk_words(h)}." for h in hits]
+    state[WALK_SENT_BACK] = True
+    return [f"step '{h['reader']['id']}' {walk_words(h)}" for h in hits], []
+
+
 def first_reads_kept_empty(plan: O.Plan) -> tuple[O.Plan, list[str]]:
     """Each Tool step that reads a Vault file a later step writes, before any step writes it on some way there (F1692),
     set to read a missing file as empty, with the card's line for it: a workflow's first run has not written the file
@@ -1106,6 +1129,9 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     # A named page too long for one read, read with scrape_url (F1691): sent back once, then said on the card.
     cut_errors, cut_notes = await _cut_page_reads(plan, state)
     errors += cut_errors
+    # Code that goes through a tool's whole object answer (F1704): sent back once, then said on the card.
+    walk_errors, walk_notes = _whole_answer_walks(plan, state, ws)
+    errors += walk_errors
     # A Vault file read before the plan's own first write of it reads as empty on its first run (F1692), on the card.
     plan, first_read_notes = first_reads_kept_empty(plan)
     # Its eval (F1255, D340 F): only where this host offers Evals' tools (cloud withholds them until its own Evals
@@ -1168,7 +1194,7 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         _log.warning("run cost not estimated: %s", exc)
     return Examined(filled, [_hinted(i) for i in issues], missing=list(filled.missing), issues=issues,
                     blocks={**blocked(filled, state), **{f: _feature_block(f) for f in needed}},
-                    notes=[*took_out, *room_notes, *eval_notes, *answer_notes, *first_read_notes, *cut_notes,
+                    notes=[*took_out, *room_notes, *eval_notes, *answer_notes, *first_read_notes, *cut_notes, *walk_notes,
                            *structure.as_notes(shaped)],
                     features=needed, structure=shaped)
 

@@ -219,7 +219,9 @@ from core.native_builder import prompt_lint, seed
 #: F1691: the planner's Structure says scrape_url keeps a page's first 50,000 characters, and a named page marked
 #: too_long_for_one_read is read whole with scrape_structured from its table, or the plan says it is too large for
 #: one read, b40af047… (on F1675's 486f8e21).
-BUNDLE_SHA256 = "b40af047b2828490244fcfd9f703de9fae15338d6f3e7de1325cd6a3edcdbffa"
+#: F1704: plan_steps.md's transform bullet says a page read answers an object, to go through its list field
+#: (scrape_structured: data; extract_links: links), never the answer itself, f2fb27f2… (on b40af047).
+BUNDLE_SHA256 = "f2fb27f2e0b5d184204f4a8c7df5a40724360bdd051afa79280d8b03543fc6df"
 
 
 def _sha(definitions) -> str:

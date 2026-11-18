@@ -61,6 +61,55 @@ ANSWER_LISTS: dict[str, tuple[str, ...]] = {
 }
 
 
+def answer_lists(tool: str | None, tools: list[dict] | tuple = ()) -> tuple[str, ...]:
+    """The fields of `tool`'s answer that are a list (F1704): a page read's own (`ANSWER_LISTS`), or the array
+    properties a tool here declares in its `outputSchema`; () when none is known."""
+    if not tool:
+        return ()
+    if tool in ANSWER_LISTS:
+        return ANSWER_LISTS[tool]
+    schema = next((t.get("outputSchema") for t in tools if isinstance(t, dict) and t.get("name") == tool), None)
+    props = schema.get("properties") if isinstance(schema, dict) else None
+    return tuple(k for k, v in (props or {}).items() if isinstance(v, dict) and v.get("type") == "array")
+
+
+def whole_answer_walks(steps: list[dict], tools: list[dict] | tuple = ()) -> list[dict]:
+    """Each code step that goes through a Tool step's whole answer as a list where that answer is a known object
+    (F1704): a Transform's `for`, `len`, `[0]` over a parsed page read walks the object's keys, never its rows, so
+    the rows it read come to nothing. Steps in the engine's form (`forced_tool`, `output_key`, `transform_code`)."""
+    from core.native_builder.compile import _structure_reads
+    from core.orchestration.state_reads import tool_part
+
+    answers: dict[str, dict] = {}
+    for d in steps:
+        tool = d.get("forced_tool")
+        if d.get("type") == "tool" and isinstance(tool, str) and d.get("output_key"):
+            name = tool_part(tool)
+            if (fields := answer_fields(name, list(tools))) is not None:
+                answers[d["output_key"]] = {"writer": d, "tool": name, "fields": fields,
+                                            "lists": answer_lists(name, tools)}
+    if not answers:
+        return []
+    hits: list[dict] = []
+    for d in steps:
+        code = d.get("transform_code")
+        if d.get("type") != "transform" or not isinstance(code, str):
+            continue
+        for key, kind in _structure_reads(code, set(answers)).items():
+            if kind == "list":
+                hits.append({"reader": d, "key": key, **answers[key]})
+    return hits
+
+
+def walk_words(hit: dict) -> str:
+    """What a whole-answer walk does, and the read that does what was meant (F1704)."""
+    key, tool, lists = hit["key"], hit["tool"], hit["lists"]
+    through = (f"go through its `{lists[0]}` (`json.loads(state['{key}'])['{lists[0]}']`)" if lists
+               else "go through the field of it that holds the list")
+    return (f"goes through state.{key} as a list, but {tool} answers an object ({', '.join(hit['fields'])}), so "
+            f"its code walks the object's names and none of its rows: {through}")
+
+
 def answer_fields(tool: str | None, tools: list[dict]) -> tuple[str, ...] | None:
     """Every field a Tool step calling `tool` gets in its answer, or None when that is not known (F1394): a page read's
     own shape, or the properties a tool here declares in its `outputSchema` (an HTTP tool's answer is narrowed to

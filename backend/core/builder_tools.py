@@ -5479,13 +5479,20 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
     # (U74): said, never refused — a feedback loop's first pass is a real pattern.
     # An LLM step reading a page, a crawl or a file a Tool step fetched (F1677): said with its fix, never refused.
     # A Vault file read before the workflow's own first write of it fails its first run (F1692): said with its fix.
+    # Code that goes through a tool's whole object answer as a list walks its names, never its rows (F1704): said.
+    from core.native_builder.structure import walk_words, whole_answer_walks
     from core.orchestration.state_reads import reads_a_long_fetch
     from core.orchestration.vault_reads import first_read_warnings
 
+    declared = [{"name": name, "outputSchema": {"properties": {
+        f["name"]: {"type": "array" if f.get("type") == "list" else "string"} for f in a.get("fields") or []
+        if isinstance(f, dict) and f.get("name")}}} for name, a in (tool_answers or {}).items() if isinstance(a, dict)]
+    walks = [f"Step '{h['reader'].get('id')}' {walk_words(h)}." for h in whole_answer_walks(
+        [d for d in steps if isinstance(d, dict)], declared)]
     return {"ok": not issues, "issues": issues,
             "warnings": [*unset_reads(orch), *_decisions_on_words(steps, agents),
                          *step_answers_never_followed(steps), *tool_warnings, *field_warnings,
-                         *reads_a_long_fetch(steps), *first_read_warnings(orch)]}
+                         *reads_a_long_fetch(steps), *first_read_warnings(orch), *walks]}
 
 
 def _parse_json_field(value: Any, fallback: Any) -> Any:
