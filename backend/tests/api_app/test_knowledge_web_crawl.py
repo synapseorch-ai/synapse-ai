@@ -1375,3 +1375,121 @@ class TestAPageThatAsksToWait:
         await add(on, kb["id"], f"{site}/queue", kind="page")
         [row] = (await docs(kb["id"])).values()
         assert row.status == "failed" and "120 seconds" in (row.error or ""), row.error
+
+#: A page whose words only JavaScript writes: the plain fetch reads a skip link and an empty root (F1660's case).
+_JS_ONLY = ('<html><head><title>App</title></head><body><a href="#main">Skip to main content</a><div id="root"></div>'
+            '<script>document.getElementById("root").textContent = "Rendered words"</script></body></html>')
+
+
+@pytest.fixture
+def renderer():
+    """A stand-in for the headless render (F1632 c): records each call, answers what the test sets."""
+    from core.knowledge import render
+
+    class Stand:
+        calls: list[tuple[str, str]] = []
+        answer = None  # a render.Rendered, or None as when Chromium is not installed
+
+        async def __call__(self, url: str, *, user_agent: str):
+            self.calls.append((url, user_agent))
+            return self.answer(url) if callable(self.answer) else self.answer
+
+    stand = Stand()
+    stand.calls = []
+    render.set_renderer(stand)
+    yield stand
+    render.set_renderer(None)
+
+
+class TestAPageThatNeedsJavaScript:
+    """A page whose plain fetch has no real text is rendered once in headless Chromium, still as SynapseBot, and its
+    rendered text indexed (F1632 c). Never a page that already has text, never a refusal or a bot check, never past a
+    sign-in, and never more than a crawl's cap; without Chromium, F1660's words stand."""
+
+    async def test_a_javascript_only_page_is_rendered_once_as_synapsebot_and_indexed(self, on, site, jobs, indexer,
+                                                                                    renderer):
+        from core.knowledge import render
+
+        _Site.pages["/app"] = _raw(_JS_ONLY)
+        renderer.answer = lambda url: render.Rendered(
+            html='<html><head><title>App</title></head><body><main><p>Rendered words about the termination clause.'
+                 '</p></main></body></html>', url=url)
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/app", kind="page")
+        await drain(jobs)
+        assert renderer.calls == [(f"{site}/app", F.USER_AGENT)]
+        [row] = (await docs(kb["id"])).values()
+        assert row.status == "indexed" and row.sha256
+        assert "Rendered words about the termination clause." in get_blob_store().get(f"vault/{row.path}")
+
+    async def test_a_page_that_has_text_is_never_rendered(self, on, site, jobs, indexer, renderer):
+        _Site.pages["/text"] = html("Text", "Plain words a fetch can read.")
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/text", kind="page")
+        await drain(jobs)
+        assert renderer.calls == []
+        [row] = (await docs(kb["id"])).values()
+        assert row.status == "indexed"
+
+    @pytest.mark.parametrize("answer", [
+        (403, {"Content-Type": "text/html"}, _JS_ONLY.encode()),
+        (403, {"cf-mitigated": "challenge", "Server": "cloudflare", "Content-Type": "text/html"}, _JS_ONLY.encode()),
+        (200, {"cf-mitigated": "challenge", "Server": "cloudflare", "Content-Type": "text/html"}, _JS_ONLY.encode()),
+    ])
+    async def test_a_refusal_or_a_bot_check_is_never_rendered(self, answer, on, site, jobs, indexer, renderer):
+        _Site.pages["/guarded-app"] = answer
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/guarded-app", kind="page")
+        assert renderer.calls == []
+        [row] = (await docs(kb["id"])).values()
+        assert row.status == "failed" and row.sha256 is None
+
+    async def test_without_chromium_the_page_says_it_needs_javascript(self, on, site, jobs, indexer, renderer):
+        _Site.pages["/app"] = _raw(_JS_ONLY)
+        renderer.answer = None
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/app", kind="page")
+        assert len(renderer.calls) == 1
+        [row] = (await docs(kb["id"])).values()
+        assert (row.status, row.status_reason, row.sha256) == ("skipped", "empty_document", None)
+        assert "JavaScript" in (row.error or "")
+
+    async def test_a_render_with_no_real_text_still_says_so(self, on, site, jobs, indexer, renderer):
+        from core.knowledge import render
+
+        _Site.pages["/app"] = _raw(_JS_ONLY)
+        renderer.answer = lambda url: render.Rendered(
+            html='<html><body><a href="#main">Skip to main content</a><div id="root"></div></body></html>', url=url)
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/app", kind="page")
+        [row] = (await docs(kb["id"])).values()
+        assert (row.status, row.status_reason, row.sha256) == ("skipped", "empty_document", None)
+
+    async def test_a_render_that_lands_on_a_sign_in_page_is_not_indexed(self, on, site, jobs, indexer, renderer):
+        from core.knowledge import render
+
+        _Site.pages["/app"] = _raw(_JS_ONLY)
+        renderer.answer = lambda url: render.Rendered(
+            html="<html><body><h1>Sign in</h1><p>Enter your password.</p></body></html>",
+            url=url.rsplit("/", 1)[0] + "/login?next=%2Fapp")
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/app", kind="page")
+        [row] = (await docs(kb["id"])).values()
+        assert (row.status, row.sha256) == ("failed", None)
+        assert (row.error or "").startswith("Needs a sign-in:"), row.error
+
+    async def test_a_crawl_renders_no_more_than_its_cap(self, on, site, jobs, indexer, renderer, monkeypatch):
+        from core.knowledge import render
+
+        monkeypatch.setattr(render, "MAX_RENDERS_PER_CRAWL", 2)
+        _Site.pages["/docs/"] = html("Docs", "Index of the apps.", *(f"/docs/app{i}" for i in range(4)))
+        for i in range(4):
+            _Site.pages[f"/docs/app{i}"] = _raw(_JS_ONLY)
+        renderer.answer = lambda url: render.Rendered(
+            html=f"<html><body><main><p>Rendered words of {url.rsplit('/', 1)[1]}.</p></main></body></html>", url=url)
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/")
+        await drain(jobs)
+        assert len(renderer.calls) == 2
+        indexed = [r for r in (await docs(kb["id"])).values() if r.status == "indexed"]
+        assert len(indexed) == 3  # the index page and two rendered apps; the other two keep F1660's words
