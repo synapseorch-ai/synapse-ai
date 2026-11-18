@@ -943,6 +943,7 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     # A chart they asked for has its route (F1288): something in the plan writes the Vault.
     errors += charts.issues(plan, ws, _request_words(state))
     errors += await _knowledge_parts(plan, ws)
+    errors += _knowledge_unread(plan, ws)
     # The person's own server first (F1225): a connected one's name is what its agents' `servers` are held to.
     errors += await own_api.server_parts(plan, server_module)
     # And the server the person gave is in it (F1290, cap-03 A2: given in an answer, planned without it).
@@ -1063,6 +1064,39 @@ async def _knowledge_parts(plan: O.Plan, ws: Workspace) -> list[str]:
                 errors.append(f"knowledge '{part.name}': {path}: {why}")
         errors += _pages_issues(part)
     return errors
+
+
+def _knowledge_unread(plan: O.Plan, ws: Workspace) -> list[str]:
+    """Each knowledge base the plan makes or uses that nothing in it reads or fills (F1646), sent back as an inner
+    workflow nothing runs is: built from a drawing, a plan made the FAQ base and an Answerer "to answer from the FAQ",
+    and gave neither the other. A base is read by a new agent's `knowledge`, by an agent the plan reuses that already
+    answers from it, or by a retrieve step; an ingest step that fills it uses it too."""
+    if ws.kbs is None or not plan.knowledge:
+        return []
+    name_of = {str(i): str(getattr(kb, "name", "") or "") for i, kb in ws.kbs.items()}
+    named: set[str] = set()
+
+    def add(ref: Any) -> None:
+        named.add(name_of.get(str(ref), str(ref)).casefold())
+
+    for agent in plan.agents:
+        for ref in agent.knowledge:
+            add(ref)
+    steps = [*plan.steps, *(s for w in plan.inner_workflows for s in w.steps)]
+    for agent_id in {*plan.reuse_agents, *(s.agent for s in steps if s.agent)}:
+        for ref in (ws.agents.get(agent_id) or {}).get("knowledge") or []:
+            add(ref)
+    for step in steps:
+        config = step.config if isinstance(step.config, dict) else {}
+        retrieve = config.get("retrieve") if isinstance(config.get("retrieve"), dict) else {}
+        ingest = config.get("ingest") if isinstance(config.get("ingest"), dict) else {}
+        for ref in retrieve.get("kb_ids") or []:
+            add(ref)
+        if ingest.get("kb_id"):
+            add(ingest["kb_id"])
+    return [f"knowledge '{part.name}' is never read: no agent's `knowledge` names it and no retrieve or ingest step "
+            "does. Name it in the `knowledge` of the agent that answers from it, add a retrieve step that searches "
+            "it, or drop it" for part in plan.knowledge if part.name.casefold() not in named]
 
 
 def _pages_issues(part: O.KnowledgePart) -> list[str]:
