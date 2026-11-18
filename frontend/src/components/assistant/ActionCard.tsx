@@ -26,7 +26,13 @@ import { ChangeRows } from './ChangeRows';
 /** What a host's act route answered. `spent`: the card cannot be pressed again (done before, expired, not theirs).
  *  `reply`: an agent's answer, for a card that asked it something (F1274). */
 export type ActResult =
-    | { ok: true; runId?: string | null; message?: string; publicKey?: string | null; reply?: string | null }
+    | {
+        ok: true; runId?: string | null; message?: string; publicKey?: string | null; reply?: string | null;
+        /** The cards that waited on what this one made, prepared by the press (F1670, A): drawn under it. */
+        next?: ActionSpec[];
+        /** A waiting card that couldn't be prepared now, in its own words. */
+        said?: string[];
+    }
     | { ok: false; message: string; spent?: boolean };
 
 export interface Actor {
@@ -40,7 +46,10 @@ export interface Actor {
 }
 
 type Phase = { at: 'idle' } | { at: 'working'; label: string }
-    | { at: 'done'; message: string; runId?: string | null; publicKey?: string | null; reply?: string | null }
+    | {
+        at: 'done'; message: string; runId?: string | null; publicKey?: string | null; reply?: string | null;
+        next?: ActionSpec[]; said?: string[];
+    }
     | { at: 'refused'; message: string; spent: boolean };
 
 /** What a pressed button did, in the card's words. */
@@ -79,7 +88,7 @@ export function ActionCard({ spec, actor }: { spec: ActionSpec; actor: Actor }) 
             if (result.ok) {
                 setPhase({
                     at: 'done', message: doneLine(button, result), runId: result.runId, publicKey: result.publicKey,
-                    reply: result.reply,
+                    reply: result.reply, next: result.next, said: result.said,
                 });
             } else setPhase({ at: 'refused', message: result.message, spent: !!result.spent });
         } catch (exc) {
@@ -87,6 +96,14 @@ export function ActionCard({ spec, actor }: { spec: ActionSpec; actor: Actor }) 
         }
     }
 
+    const next = phase.at === 'done' ? phase.next ?? [] : [];
+    const said = phase.at === 'done' ? phase.said ?? [] : [];
+    // The cards a press brought are brought into view, so a phone shows them, not the composer over them (F1670, A).
+    const nextRef = React.useRef<HTMLDivElement>(null);
+    const brought = next.length;
+    React.useEffect(() => {
+        if (brought) nextRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }, [brought]);
     const runId = phase.at === 'done' ? phase.runId : null;
     const publicKey = phase.at === 'done' ? phase.publicKey : null;
     const snippet = publicKey && actor.embedSnippet ? actor.embedSnippet(publicKey) : null;
@@ -97,6 +114,7 @@ export function ActionCard({ spec, actor }: { spec: ActionSpec; actor: Actor }) 
     }
 
     return (
+        <>
         <section
             aria-label={spec.title}
             className={cn(
@@ -187,6 +205,16 @@ export function ActionCard({ spec, actor }: { spec: ActionSpec; actor: Actor }) 
                     <span className="[overflow-wrap:anywhere]">{phase.message}</span>
                 </p>
             )}
+            {said.map((line) => (
+                <p key={line} className="text-[13px] text-text-muted [overflow-wrap:anywhere]">{line}</p>
+            ))}
         </section>
+        {/* What waited on what this card made, prepared by the press (F1670, A): right under it, each its own card. */}
+        {next.length > 0 && (
+            <div ref={nextRef} className="flex min-w-0 flex-col gap-3">
+                {next.map((card) => <ActionCard key={card.id} spec={card} actor={actor} />)}
+            </div>
+        )}
+        </>
     );
 }

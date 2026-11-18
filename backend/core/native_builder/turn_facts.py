@@ -17,7 +17,9 @@ def card_fact(card: dict) -> dict:
     """An action card as it was shown, without its tokens: a record of a card is never a way to press it."""
     return {"id": card.get("id"), "title": card.get("title") or "",
             "buttons": [{"label": b.get("label") or "", "tool": b.get("tool") or "",
-                         "arguments": b.get("arguments") or {}} for b in card.get("buttons") or []]}
+                         "arguments": b.get("arguments") or {}} for b in card.get("buttons") or []],
+            # The cards waiting on what this one makes (F1670, A): prepared when it is pressed, from this record only.
+            **({"after": card["after"]} if card.get("after") else {})}
 
 
 def connect_what(card: dict) -> str:
@@ -141,6 +143,40 @@ async def keep_press(run_id: str | None, user_id: str | None, tool: str, argumen
              "say": say[:300]}])
     except Exception as exc:  # noqa: BLE001
         _log.warning("turn %s: press not kept: %s", run_id, exc)
+
+
+async def after_press(run_id: str | None, caller: Any, tool: str, arguments: dict) -> tuple[list[dict], list[str]]:
+    """The cards that waited on what a pressed card made, prepared now for the person who pressed it (F1670, A): read
+    from the turn's own record of that card, never from the browser, and kept on the turn as any card it put up is.
+    A waiting card that can't be prepared now is said in its own words. ([cards], [said])"""
+    if not run_id:
+        return [], []
+    from core.boards import assistant
+    from core.builder_actions import _NotOffered, _offer
+    from core.builder_tools import _the_act_of
+
+    facts = await assistant.turn(run_id)
+    if not facts or (facts.get("owner_id") or None) != (getattr(caller, "user_id", None) or None):
+        return [], []
+    shown = [card for card in facts.get("cards") or [] for b in card.get("buttons") or []
+             if b.get("tool") == tool and b.get("arguments") == arguments and card.get("after")]
+    if not shown:
+        return [], []
+    cards: list[dict] = []
+    said: list[str] = []
+    with _the_act_of(caller):
+        for waiting in shown[-1]["after"]:
+            try:
+                card = await _offer(str(waiting.get("action") or ""), dict(waiting.get("args") or {}))
+            except _NotOffered as why:
+                said.append(str(why))
+                continue
+            for button in card.get("buttons") or []:
+                button["run_id"] = run_id
+            cards.append(card)
+    if cards:
+        await keep(run_id, facts.get("owner_id"), cards=[card_fact(c) for c in cards])
+    return cards, said
 
 
 async def answer_card_refusal(run_id: str | None, tool: str, args: dict) -> str | None:

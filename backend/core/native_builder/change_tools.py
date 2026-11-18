@@ -533,6 +533,12 @@ def made_first_said(op: C.Op, maker: dict) -> str:
     return f"{op.verb} {name} comes once {name} is made: press Make it on its card, then ask me for it again."
 
 
+def after_press_said(op: C.Op, maker: dict) -> str:
+    """An op on what this change makes that is a card of its own (F1670, A): it comes up as soon as Make it works."""
+    name = _quoted(_text(maker["target"].get("name")))
+    return f"{op.verb} {name} comes up as its own card once {name} is made: press Make it."
+
+
 def not_done(asked: Any) -> str:
     """The parts of the ask a change says it isn't doing, and why, as the review and the answer say them (F1364)."""
     # Each why_not without its own closing stop, so the line never ends ".." (F1670).
@@ -2159,6 +2165,11 @@ async def _check_change(args: dict, server_module: Any, events: list[dict]) -> d
             # other op on it is said as coming once it is made, never looked for among what is there.
             if _folded(maker, op, fields):
                 item.update(status="noop", say="")
+            elif op.is_act and C.OPS[maker["op"]].is_act:
+                # A card of its own (F1670, A): kept on the maker's card, prepared when that card is pressed and works.
+                maker.setdefault("after", []).append(
+                    {"action": op.name, "args": C.act_arguments(op, _text(target.get("name")), fields)})
+                item.update(status="noop", say=after_press_said(op, maker))
             else:
                 item.update(status="noop", say=made_first_said(op, maker))
             continue
@@ -2244,6 +2255,9 @@ async def _check_change(args: dict, server_module: Any, events: list[dict]) -> d
             except _NotOffered as why:
                 item.update(status="noop", say=str(why))
                 continue
+            if item.get("after"):
+                # What waits on what this card makes (F1670, A): kept with the card on the turn's own record.
+                card["after"] = item["after"]
             events.append(card)
             pressed = _pressed(card)
             item.update(status="card", say=f"A card is up: {card['title']}. Press {pressed} to do it.")
