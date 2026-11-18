@@ -180,7 +180,8 @@ MISSED = ("run_immediately", "skip")
 _WRITES = (
     Op("rename_workflow", "write", "workflow", "set_orchestration_meta", ("name",), ("name",), verb="Rename"),
     Op("update_workflow", "write", "workflow", "set_orchestration_meta",
-       ("description", "max_total_turns", "timeout_minutes", "max_run_credits", "max_run_usd"), any_of=True,
+       ("description", "max_total_turns", "timeout_minutes", "max_run_credits", "max_run_usd", "offer_to_mcp"),
+       any_of=True,
        verb="Change the settings of"),
     Op("delete_workflow", "delete", "workflow", "delete_orchestration", verb="Delete"),
     Op("set_schedule", "write", "schedule", "update_schedule",
@@ -444,6 +445,8 @@ def _field_issue(op: Op, key: str, value: Any) -> str | None:
     if key in ("max_run_credits", "max_run_usd"):
         return None if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0 else \
             f"`{key}` is a number above 0"
+    if key == "offer_to_mcp":
+        return None if isinstance(value, bool) else "`offer_to_mcp` is true or false"
     if key == "needs" and op.name == "talk_to_agent":
         return None if _is_list_of_text(value) else \
             "`needs` is a list of the tools and knowledge bases its answer needs, by name"

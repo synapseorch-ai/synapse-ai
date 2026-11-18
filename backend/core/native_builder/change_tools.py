@@ -111,7 +111,8 @@ SUBMIT = {"type": "function", "function": {
     "description": (
         "Finish with the change to make: one op per thing to do. Nothing happens yet: code checks each op, puts up "
         "a card for each button act, and shows the person the rest to approve. Fields per op: rename_* {name}; "
-        "update_workflow {description, max_total_turns, timeout_minutes, max_run_credits, max_run_usd}; "
+        "update_workflow {description, max_total_turns, timeout_minutes, max_run_credits, max_run_usd, offer_to_mcp: "
+        "true | false (its own Offer to MCP clients switch: offered, MCP clients see it as a tool of its own)}; "
         "set_schedule {cron_expression (on the schedule's own clock, the time as they said it, never converted to "
         "UTC) | interval_value + interval_unit, prompt, description, missed_run_policy: run_immediately | skip}; "
         "create_schedule {runs: {kind: workflow | agent, id}, prompt, cron_expression (on its own clock, never "
@@ -1638,6 +1639,10 @@ def _words(op: C.Op, target: dict, fields: dict, says: str, want: dict | None = 
     itself is built from; a new schedule says what it starts by name. `says` is code's own note (an undo's), never
     the planner's gloss on a write."""
     kind = "workflow" if op.target == "workflow" else op.target.replace("_", " ")
+    if op.name == "update_workflow" and set(fields) == {"offer_to_mcp"}:
+        # The workflow's own switch (F1696), in the words of what it does.
+        offered = "Offer" if fields["offer_to_mcp"] else "Stop offering"
+        return f"{offered} {_quoted(target['name'])} to MCP clients" + (f" — {says}" if says else "")
     what = f"{op.verb} the {kind} {_quoted(target['name'])}"
     if op.name in ("rename_workflow", "rename_schedule", "rename_agent"):
         detail = f"to {_quoted(fields['name'])}"

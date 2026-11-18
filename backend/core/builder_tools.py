@@ -1202,6 +1202,13 @@ BUILDER_TOOL_SCHEMAS = [
                     "max_total_turns": {"type": "integer"},
                     "timeout_minutes": {"type": "integer"},
                     **RUN_CAP_PROPERTIES,
+                    "offer_to_mcp": {
+                        "type": "boolean",
+                        "description": (
+                            "The workflow's own Offer to MCP clients switch: true offers it to apps connected over "
+                            "MCP as a tool of its own, false stops offering it (they can still run it by name)."
+                        ),
+                    },
                     "strict_state_types": {
                         "type": "boolean",
                         "description": (
@@ -3487,14 +3494,14 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         # works for callers that haven't migrated yet.
         raw_fields = dict(args.get("fields") or {})
         for key in ("name", "description", "entry_step_id", "state_schema_json",
-                    "max_total_turns", "timeout_minutes", "strict_state_types", "result_key"):
+                    "max_total_turns", "timeout_minutes", "strict_state_types", "result_key", "offer_to_mcp"):
             if key in args and args[key] is not None:
                 raw_fields[key] = args[key]
         _normalize_state_schema_arg(raw_fields)
         if (refused := _refuse_engine_key_defaults(raw_fields)) is not None:
             return refused
         allowed = {"name", "description", "entry_step_id", "state_schema",
-                   "max_total_turns", "timeout_minutes", "strict_state_types", "result_key"}
+                   "max_total_turns", "timeout_minutes", "strict_state_types", "result_key", "offer_to_mcp"}
         fields = {k: v for k, v in raw_fields.items() if k in allowed}
         try:
             fields.update(_run_cap_args({**dict(args.get("fields") or {}), **args}))

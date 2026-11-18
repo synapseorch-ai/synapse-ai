@@ -276,7 +276,8 @@ _EVERY = {"language": "english", "visitor_access": True, "budget_monthly_usd": 2
           "runs": {"kind": "workflow", "id": "w1", "name": "Nightly digest"}, "add": ["send_email"],
           "remove": ["read_file"], "system_prompt": "BE BRIEF", "tools": {"send_email": "deny"},
           "destructive": "confirm", "open_world": "deny", "undeclared": "allow", "max_total_turns": 7,
-          "timeout_minutes": 9, "max_run_credits": 3, "max_run_usd": 2.5, "body": "THE SKILL'S TEXT",
+          "timeout_minutes": 9, "max_run_credits": 3, "max_run_usd": 2.5, "offer_to_mcp": True,
+          "body": "THE SKILL'S TEXT",
           "needs": "reasoning", "wish": "A MODEL WISH",
           # An agent's sections (F1259): `mode` is a team's or a browser's, one value serves both lines.
           "memory": True, "knowledge": ["kb_handbook"], "boards_own": True, "planning": False,
