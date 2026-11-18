@@ -44,3 +44,55 @@ def sign_in_wall(asked: str, landed: str, status: int | None) -> str | None:
     where = urlsplit(landed)
     page = f"{where.hostname or host}{where.path}" if where.hostname != urlsplit(asked).hostname else where.path
     return f"Needs a sign-in: {host} sent this page to its sign-in page ({page or '/'})."
+
+
+#: A protection's own response headers, read only on a refusing status (403, 429, 503): the name the person can look
+#: up. (header, sign, vendor): an empty sign means the header's presence is the sign; for `server` the sign is in its
+#: value; for `set-cookie` it starts a cookie's name. All case-blind.
+_VENDOR_HEADERS: tuple[tuple[str, str, str], ...] = (
+    ("server", "cloudflare", "Cloudflare"),
+    ("cf-ray", "", "Cloudflare"),
+    ("server", "akamaighost", "Akamai"),
+    ("akamai-grn", "", "Akamai"),
+    ("x-datadome", "", "DataDome"),
+    ("set-cookie", "datadome", "DataDome"),
+    ("set-cookie", "_px", "PerimeterX"),
+    ("x-iinfo", "", "Imperva"),
+    ("set-cookie", "incap_ses", "Imperva"),
+    ("x-amzn-waf-action", "", "AWS WAF"),
+    ("x-sucuri-id", "", "Sucuri"),
+)
+
+
+def _values(headers, name: str) -> list[str]:
+    """Every value of header `name` (a Set-Cookie can repeat), lower-cased; [] when it is absent."""
+    found = headers.get_list(name) if hasattr(headers, "get_list") else [headers.get(name)]
+    return [str(v).lower() for v in found if v]
+
+
+def _signed(headers, name: str, sign: str) -> bool:
+    values = _values(headers, name)
+    if not sign:
+        return bool(values)
+    if name == "set-cookie":
+        return any(v.split("=", 1)[0].strip().startswith(sign) for v in values)
+    return any(sign in v for v in values)
+#: The honest way on: SynapseBot never takes a browser check or claims to be a browser.
+_WAY_ON = ("SynapseBot does not take browser checks. To use the page, add it as a file, or connect a scraping "
+           "service such as Firecrawl with your own key.")
+
+
+def bot_check(status: int, headers) -> str | None:
+    """Why a response is a bot check, naming whose, with the way on; None when it shows no sign of one (F1632).
+
+    Cloudflare's challenge header is one at any status. Otherwise only a refusing status (403, 429, 503) that carries a
+    protection's own header is one: a page merely served through Cloudflare is a page, and a plain 403 is a refusal
+    whose plain words stand."""
+    if str(headers.get("cf-mitigated") or "").strip().lower() == "challenge":
+        return f"Cloudflare asked for a browser check (HTTP {status}). {_WAY_ON}"
+    if status not in (403, 429, 503):
+        return None
+    vendor = next((v for name, sign, v in _VENDOR_HEADERS if _signed(headers, name, sign)), None)
+    if vendor is None:
+        return None
+    return f"The site's protection ({vendor}) refused SynapseBot (HTTP {status}). {_WAY_ON}"

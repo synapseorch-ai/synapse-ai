@@ -1396,18 +1396,20 @@ async def _page(c: _Crawl, url: str, *, links_needed: bool) -> PageLinks | None:
                 await _outcome(c, url, "failed", "fetch_failed", f"The page is gone: the server answered {got.status}.",
                                http_status=got.status)
         return None
-    from core.web_refusals import sign_in_wall
+    from core.web_refusals import bot_check, sign_in_wall
 
     if not 200 <= got.status < 300:
         c.counts["failed"] += 1
         c.note(f"{url} answered {got.status}.")
         c.keep(held)
         if held is None and named:
-            said = sign_in_wall(url, str(got.url), got.status) or f"The server answered {got.status}."
+            # A sign-in wall, then a named bot check with the way on (F1632); otherwise the status's plain words.
+            said = (sign_in_wall(url, str(got.url), got.status) or bot_check(got.status, got.headers)
+                    or f"The server answered {got.status}.")
             await _outcome(c, url, "failed", "fetch_failed", said, http_status=got.status)
         return None
-    if (wall := sign_in_wall(url, str(got.url), got.status)) is not None:
-        # A private page arrives as the site's sign-in page (F1632): never written as the page asked for.
+    if (wall := sign_in_wall(url, str(got.url), got.status) or bot_check(got.status, got.headers)) is not None:
+        # A private page arrives as the site's sign-in page, or a challenge as a 2xx (F1632): never written as the page.
         c.counts["failed"] += 1
         c.note(wall)
         c.keep(held)
