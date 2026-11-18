@@ -99,6 +99,47 @@ class TestAcrossFamilies:
             assert MM._entry(model, {}).fit == facts, model
 
 
+class TestAHostsRank:
+    """A host's own rank (cloud's staff strength rank, through `with_host_facts`) is a deliberate decision: its model
+    runs first, ahead of every tier, as the host's console says. The engine's measured rank stays within a tier, and
+    where a model has both, the host's wins."""
+
+    @pytest.fixture
+    def host(self):
+        said: dict[str, dict] = {}
+
+        async def facts(ids):
+            return {i: said[i] for i in ids if i in said}
+
+        MM.set_model_facts(facts)
+        yield said
+        MM.set_model_facts(None)
+
+    async def test_a_host_ranked_model_runs_first_ahead_of_its_tier(self, host):
+        host["claude-haiku-4-5"] = {"rank": 99}
+        menu = await MM.with_host_facts([entry("claude-opus-4-6", 25), entry("claude-haiku-4-5", 5),
+                                         entry("claude-sonnet-5-5", 15)])
+        assert ids(MM.ordered(menu, has_tools=True)) == ["claude-haiku-4-5", "claude-opus-4-6", "claude-sonnet-5-5"]
+
+    async def test_two_host_ranked_models_follow_their_ranks(self, host):
+        host.update({"claude-haiku-4-5": {"rank": 3}, "gpt-4.1": {"rank": 8}})
+        menu = await MM.with_host_facts([entry("claude-opus-4-6", 25), entry("claude-haiku-4-5", 5),
+                                         entry("gpt-4.1", 8)])
+        assert ids(MM.ordered(menu, has_tools=True))[:2] == ["gpt-4.1", "claude-haiku-4-5"]
+
+    async def test_where_a_model_has_both_the_hosts_rank_wins(self, host):
+        F.set_measured({"claude-haiku-4-5": (None, 1), "claude-haiku-5-5": (None, 9)})
+        host["claude-haiku-4-5"] = {"rank": 5}
+        menu = await MM.with_host_facts([entry("claude-opus-4-6", 25), entry("claude-haiku-4-5", 5),
+                                         entry("claude-haiku-5-5", 5)])
+        assert ids(MM.ordered(menu, has_tools=True)) == ["claude-haiku-4-5", "claude-opus-4-6", "claude-haiku-5-5"]
+
+    async def test_with_no_host_rank_the_order_is_as_before(self, host):
+        host["claude-haiku-4-5"] = {"price_out": 5.0}
+        menu = [entry("claude-haiku-4-5", 5), entry("claude-opus-4-6", 25), entry("claude-sonnet-5-5", 15)]
+        assert ids(MM.ordered(await MM.with_host_facts(menu), has_tools=True)) == ids(MM.ordered(menu, has_tools=True))
+
+
 class TestEveryReaderReadsIt:
     MENU = [("claude-opus-4-6", 14.5), ("claude-opus-5-5", 12), ("gpt-4.1", 8), ("claude-sonnet-4-6", 10)]
 
