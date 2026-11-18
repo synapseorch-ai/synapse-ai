@@ -71,7 +71,7 @@ class TestABoardWithItsCards:
         out, cards = await _check(_board_ops(), f'Make a board "{BOARD}" with three cards')
         switches = [c for c in cards if c.get("title") == "Turn on Boards"]
         assert len(switches) == 1, [c.get("title") for c in cards]
-        assert _said(out).count("Boards are switched off") == 1, _said(out)
+        assert str(out.get("say") or "").count("Boards are switched off") == 1, out.get("say")
 
     async def test_its_cards_go_on_the_card_that_makes_it(self, monkeypatch):
         from _fakes.knowledge_env import use_saved_settings

@@ -465,12 +465,23 @@ async def _knowledge(action: str, args: dict) -> dict:
         name = str(args.get("name") or "").strip()
         if not name:
             raise _NotOffered("Say what the knowledge base is called.")
+        # Made with the pages it is filled from (F1670): one card, and one press makes it and adds them.
+        urls = [str(u).strip() for u in (args.get("urls") or []) if str(u).strip()]
+        kind = args.get("kind") if args.get("kind") in ("page", "sitemap", "site") else "page"
         call = {"name": name, "description": str(args.get("text") or "").strip(),
-                **({"folder": str(args["folder"]).strip()} if str(args.get("folder") or "").strip() else {})}
+                **({"folder": str(args["folder"]).strip()} if str(args.get("folder") or "").strip() else {}),
+                **({"urls": urls, "kind": kind} if urls else {})}
         button = await _button("Make it", "create_knowledge_base", call)
         folder = call.get("folder") or knowledge._folder_for(name)
+        pages = ""
+        if urls:
+            pages = {"page": "\nFilled from " + ", ".join(urls[:10]) + (f" and {len(urls) - 10} more" if len(urls) > 10
+                                                                        else ""),
+                     "sitemap": f"\nFilled from the pages {urls[0]} lists",
+                     "site": f"\nFilled from {urls[0]}, crawled"}[kind] + ", fetched once it is made."
         return _card(f'Make a knowledge base "{name}"',
-                     detail=f"On the Vault folder {folder}. Files already there are indexed with your embedding model.",
+                     detail=f"On the Vault folder {folder}. Files already there are indexed with your embedding model."
+                            + pages,
                      buttons=[button])
     if action == "knowledge_add_file":
         kb = await _resolved(knowledge._base(str(args.get("knowledge_base") or "")))
@@ -804,8 +815,15 @@ async def _board(action: str, args: dict) -> dict:
             raise _NotOffered(f'There is a shared board called "{there.name}" already: nothing new is made. A '
                               "workflow is given it to post to on the board's access list.")
         text = str(args.get("text") or "").strip()
-        return _card(f'Make a shared board "{name}"', detail=text[:300],
-                     buttons=[await _button("Make it", "create_board", {"name": name, "description": text})])
+        # Made with its first cards (F1670): one card, and one press makes it and adds them.
+        cards = [{"title": str(c["title"]).strip(), **({"text": str(c["text"]).strip()} if str(c.get("text") or "").strip()
+                                                        else {})}
+                 for c in args.get("cards") or [] if isinstance(c, dict) and str(c.get("title") or "").strip()]
+        detail = text[:300] + ("\n" if text and cards else "") + (
+            "With its cards: " + "; ".join(c["title"] for c in cards[:12]) if cards else "")
+        return _card(f'Make a shared board "{name}"', detail=detail,
+                     buttons=[await _button("Make it", "create_board", {"name": name, "description": text,
+                                                                        **({"cards": cards} if cards else {})})])
     if action in ("board_rename", "board_describe", "board_access"):
         return await _board_settings(action, args)
     card = await store.get_card(str(args.get("card_id") or ""))

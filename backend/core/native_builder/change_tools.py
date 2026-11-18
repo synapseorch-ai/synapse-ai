@@ -127,8 +127,8 @@ SUBMIT = {"type": "function", "function": {
         "agent) {repos, db_configs: [names]}; edit_agent_memory {content} and delete_agent_memory, each naming the "
         "item by its id from read_workspace agent_memory; set_tool_policy {destructive | open_world | undeclared: allow | "
         "confirm | deny | inherit, tools: {name: decision}}; update_skill {description, body}; run_workflow "
-        "{message}; knowledge_create {text, folder}; knowledge_add_file {path}; knowledge_rename {name, text}; knowledge_add_pages {urls}; knowledge_add_note {title, text}; board_add_card {title, text}; "
-        "board_update_card {status, result}; board_comment {text}; board_create {text}; board_rename {name}; "
+        "{message}; knowledge_create {text, folder, urls, kind: the pages it is filled from, made with it}; knowledge_add_file {path}; knowledge_rename {name, text}; knowledge_add_pages {urls}; knowledge_add_note {title, text}; board_add_card {title, text}; "
+        "board_update_card {status, result}; board_comment {text}; board_create {text, cards: [{title, text}], its first cards, made with it}; board_rename {name}; "
         "board_describe {text}; board_access {who, access: add | work | none}; board_card_text {title, text}; recording_approve_edit and "
         "recording_discard_edit {edit_id}; recording_rename {name}; settings_set (target {kind: settings, id: "
         "workspace}) {<setting's name>: <new value>, …}, only the settings topic `settings` lists; talk_to_agent "
@@ -493,9 +493,49 @@ def _kept_plan(state: dict, ops: list) -> str:
     return words
 
 
+#: An op on what the same change makes that goes on the card making it (F1670), with that op.
+_FOLDS = frozenset({("board_add_card", "board_create"), ("knowledge_add_pages", "knowledge_create")})
+
+
+def _made_here(earlier: list[dict], op: C.Op, target: dict) -> dict | None:
+    """The op of this change, before this one, that makes the thing this op names, by its kind and name (F1670)."""
+    name = _text(target.get("name")).casefold()
+    if not name or target.get("id"):
+        return None
+    return next((i for i in earlier if i.get("status") == "resolved" and i["op"] in C.MAKES_TARGET
+                 and C.OPS[i["op"]].target == op.target and _text(i["target"].get("name")).casefold() == name), None)
+
+
+def _folded(maker: dict, op: C.Op, fields: dict) -> bool:
+    """This op's part put on its maker's card, which makes the thing with it (F1670): a board's first card, a base's
+    pages (of the one kind its card reads). False when it can't go there."""
+    if (op.name, maker["op"]) not in _FOLDS:
+        return False
+    made = maker["fields"]
+    if op.name == "board_add_card":
+        title, text = _text(fields.get("title")), _text(fields.get("text"))
+        if not title:
+            return False
+        made.setdefault("cards", []).append({"title": title, **({"text": text} if text else {})})
+        return True
+    urls = [u.strip() for u in fields.get("urls") or [] if isinstance(u, str) and u.strip()]
+    kind = fields.get("kind") or "page"
+    if not urls or (made.get("urls") and (made.get("kind") or "page") != kind):
+        return False
+    made.update(urls=[*made.get("urls", []), *urls], kind=kind)
+    return True
+
+
+def made_first_said(op: C.Op, maker: dict) -> str:
+    """An op on what this change makes that its card can't take (F1670): said as coming once it is made."""
+    name = _quoted(_text(maker["target"].get("name")))
+    return f"{op.verb} {name} comes once {name} is made: press Make it on its card, then ask me for it again."
+
+
 def not_done(asked: Any) -> str:
     """The parts of the ask a change says it isn't doing, and why, as the review and the answer say them (F1364)."""
-    lines = [f"{_text(p.get('part'))}: {_text(p.get('why_not'))}" for p in asked or []
+    # Each why_not without its own closing stop, so the line never ends ".." (F1670).
+    lines = [f"{_text(p.get('part'))}: {_text(p.get('why_not')).rstrip(' .;')}" for p in asked or []
              if isinstance(p, dict) and _text(p.get("why_not")) and not p.get("ops")]
     return ("Not done by this change: " + "; ".join(lines) + ".") if lines else ""
 
@@ -2091,6 +2131,14 @@ async def _check_change(args: dict, server_module: Any, events: list[dict]) -> d
         elif op.name in C.MAKES_TARGET:
             # What it makes is named, not found: its card's own check says when the name is taken (F1200).
             target["name"] = _text(target.get("name")) or _text(fields.get("name"))
+        elif (maker := _made_here(checked[:-1], op, target)) is not None:
+            # Aimed at what this change makes (F1670): a board's first cards and a base's pages go on its card; any
+            # other op on it is said as coming once it is made, never looked for among what is there.
+            if _folded(maker, op, fields):
+                item.update(status="noop", say="")
+            else:
+                item.update(status="noop", say=made_first_said(op, maker))
+            continue
         else:
             if _answers(chosen, n, "target", op.target, target):
                 target["id"] = chosen["id"]
@@ -2143,6 +2191,8 @@ async def _check_change(args: dict, server_module: Any, events: list[dict]) -> d
     leaves: dict[tuple[str, str], dict | None] = {}
     #: The HTTP tools this change makes, by name: an agent may be given one (F1322).
     made: set[str] = set()
+    #: The features found off in this change: each said once, with one switch (F1698).
+    switched: set[str] = set()
     for item in checked:
         if item.get("status") != "resolved":
             continue
@@ -2157,7 +2207,12 @@ async def _check_change(args: dict, server_module: Any, events: list[dict]) -> d
                 card = await _offer(op.name, C.act_arguments(op, target["id"] if target.get("id") else
                                                              target.get("name", ""), fields))
             except _FeatureOff as off:
-                # What is off and where, with its switch as a card for one who may press it (F1203).
+                # What is off and where, with its switch as a card for one who may press it (F1203); once a change,
+                # however many of its ops need it (F1698).
+                if off.feature in switched:
+                    item.update(status="noop", say="")
+                    continue
+                switched.add(off.feature)
                 said, switch = await feature_switch(off)
                 if switch is not None:
                     events.append(switch)
