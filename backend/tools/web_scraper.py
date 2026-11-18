@@ -1042,7 +1042,8 @@ async def list_tools() -> list[types.Tool]:
             annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True),
             description=(
                 "Scrape a URL and return its content as clean markdown. "
-                "Handles JavaScript-rendered pages, anti-bot protections, and dynamic content. "
+                "Reads JavaScript-rendered pages and dynamic content; a page behind a bot check, a sign-in or a 404 "
+                "fails with the reason. "
                 "Optionally returns all links and images found on the page."
             ),
             inputSchema={
