@@ -157,7 +157,7 @@ export function synapseAIOnly(options: ComboboxOption[], said: ModelWindows, cur
     const label = options.find((o) => o.value === current)?.label ?? current;
     const why = synapseAIDefaultHint(current, said);
     if (why === undefined) return listed;
-    return [{ value: current, label, group: small(current) ? TOO_SMALL_FOR_SYNAPSE_AI : NOT_FOR_BUILDING, hint: why },
+    return [{ value: current, label, group: small(current) ? TOO_SMALL_FOR_SYNAPSE_AI : YOUR_SAVED_MODEL, hint: why },
             ...listed];
 }
 
@@ -236,7 +236,11 @@ export function modelHints(models: string[], said: ModelWindows | undefined): Re
 /** Where Synapse AI's pickers list the models recommended for building, then the rest, and a saved one left out. */
 export const RECOMMENDED_FOR_BUILDING = "Recommended for building";
 export const OTHER_MODELS = "Other models";
-export const NOT_FOR_BUILDING = "Not for building";
+/**
+ * The heading over a saved model Synapse AI's pickers leave out (F1699): neutral, never a verdict on the model. A
+ * picker's only mark is "Recommended"; its hint says, as a fact, that it is not offered here and what to pick.
+ */
+export const YOUR_SAVED_MODEL = "Your saved model";
 const RECOMMENDED: { text: string; tone: "success" } = { text: "Recommended", tone: "success" };
 /** What Synapse AI's pickers say at the foot of their list (F1598). */
 export const SYNAPSE_AI_NOTE = "Some models aren't offered here, such as ones too small for what Synapse AI reads.";
