@@ -29,6 +29,8 @@ def test_a_scraped_page_that_talks_about_blocks_is_content():
     ("URL blocked: the egress proxy refused this address", "egress"),
     ("Page returned no extractable content. Try adding a wait_for selector", "empty"),
     ("Crawl failed: net::ERR_NAME_NOT_RESOLVED", "error"),
+    ("Crawl failed: The page is not there (HTTP 404)", "not_found"),
+    ("Crawl failed: The page is not there (HTTP 410)", "not_found"),
 ])
 def test_a_scraper_failure_is_sorted_by_its_own_reason(error, outcome):
     assert _scrape({"success": False, "error": error})[:2] == (outcome, error)
