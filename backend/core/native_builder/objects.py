@@ -445,6 +445,8 @@ def plan_schema() -> dict[str, Any]:
 
 #: What an answer may read (F976): nothing, this workspace, or the product's help.
 NEEDS = ("none", "workspace", "help")
+#: And what code's routing may add, never the model's to say: the pages a one-off read names (F1687).
+ROUTED_NEEDS = (*NEEDS, "pages")
 
 
 class Request(_Written):
@@ -508,7 +510,7 @@ class Routed(Request):
 
     model_config = ConfigDict(extra="forbid")
 
-    needs: Literal[NEEDS]  # type: ignore[valid-type]
+    needs: Literal[ROUTED_NEEDS]  # type: ignore[valid-type]
     route: Literal[ENTRIES]  # type: ignore[valid-type]
     overridden_by: str | None = None
     model_kind: str | None = None

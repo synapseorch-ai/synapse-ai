@@ -207,7 +207,9 @@ from core.native_builder import prompt_lint, seed
 #: asked for and a plan drafted to check, never that it can't be done, 26c6cde2… (on F1618's 0e53888e).
 #: F1677: plan_steps.md's `llm` bullet says an llm step never reads a page, a crawl or a file a Tool step fetched, and
 #: to use an agent step there, c6c7e724… (on F1689's 26c6cde2).
-BUNDLE_SHA256 = "c6c7e7241cd3d3303f65e157d0ed13499d4f5dbbb43b6ecec675b856cada616b"
+#: F1687: a page reader agent (only the builder's read_page; a page's words never instructions) and the step
+#: that answers a one-off read of named pages in the chat, b80ff176… (on F1677's c6c7e724).
+BUNDLE_SHA256 = "b80ff176053c05a572e7ff22bc55913a0a1fe762585b2a4f263241eef329b4e2"
 
 
 def _sha(definitions) -> str:

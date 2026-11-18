@@ -232,6 +232,26 @@ def _fix_half(message: str, said: str | None) -> str:
     return rest or FIX_IT
 
 
+#: A page named by its address (F1687).
+_PAGE_URL = re.compile(r"https?://[^\s<>\"')\]]+", re.I)
+#: Words that ask for pages to be read and told about: read them, summarise, compare, say what they say.
+_READ_ONCE = re.compile(r"\b(?:read|summari[sz]e|summary|compare|comparison|explain|describe|tell me|what (?:does|do|"
+                        r"is|are)|list|table)\b", re.I)
+#: Words that make it more than one read here: again, kept, sent somewhere, or built (F1687's near misses).
+_NOT_ONCE_HERE = re.compile(r"\b(?:every|each|daily|weekly|monthly|hourly|schedule[ds]?|whenever|monitor|watch|track|"
+                            r"keep an eye|alert|notify|remind|e-?mail|mail|send|post|slack|telegram|whatsapp|webhook|"
+                            r"save|store|download|file|sheet|build|workflow|automat\w*|agent)\b", re.I)
+
+
+def one_off_pages(message: str) -> list[str]:
+    """The pages a message names by address to be read and told about once (F1687), or none: never when it asks for
+    it again, kept, sent somewhere or built."""
+    urls = list(dict.fromkeys(u.rstrip(".,;:!?") for u in _PAGE_URL.findall(message or "")))
+    if not urls or not _READ_ONCE.search(message) or _NOT_ONCE_HERE.search(message):
+        return []
+    return urls
+
+
 #: A question about Synapse AI itself (F1382): answered by the talk step, with things it could build here.
 _ABOUT_YOU = re.compile(r"\b(?:what|how) (?:can|could) (?:you|synapse ai) (?:do|help)\b|\bwhat (?:do|are) you\b|"
                         r"\bwho are you\b|\bwhat can i (?:ask|use) you for\b")
@@ -395,6 +415,10 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
     elif kind == "answer" and by in _MAY_TALK and offers(request, text, things):
         # A fact from outside that changes: the talk step offers the workflow that gets it, never a read here (F1382).
         needs, by = "none", "live_fact"
+    if kind in ("answer", "build") and by in (*_MAY_TALK, "live_fact", "about_you") and one_off_pages(message):
+        # Pages named by their address, to be read and told about once: read and answered here (F1687), never a build
+        # and a question about where to send it. An ask to repeat it, send it or build it is never one.
+        kind, needs, by = "answer", "pages", "read_pages"
     # What a recording's request names is the recording: not the conversation's last build (F1229's "it"), nor a
     # workflow found by the recording's own name.
     source = state.get("current_orchestration_source")
