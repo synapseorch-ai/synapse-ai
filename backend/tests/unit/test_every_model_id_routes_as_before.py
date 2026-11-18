@@ -27,6 +27,9 @@ entries were rewritten; every other id is sent exactly as before. F1682 gives a
 Claude model that thinks as it goes room for its thinking and an answer: the
 corpus's one such id, `claude-opus-4-8`, is now given 20,480 output tokens and
 the same thinking cap in each chat call, not 10,240. Only that entry was rewritten.
+F1703 adds Claude's API-path ids as written today (`claude-sonnet-4-6`,
+`claude-opus-5-5`, `claude-fable-5-2`): their three entries were recorded from the
+code as it routes them and added, and no other entry was rewritten.
 
 `PF1_WRITE_GOLDEN=1` rewrites the file from whatever the code does now — only
 ever from the chains' code, or to record a change a commit makes on purpose.
