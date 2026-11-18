@@ -2950,8 +2950,10 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     from core.native_builder.render import start_words
 
     plan.starts = start_words(plan)
-    plan.assumed = list(dict.fromkeys([*plan.assumed, *cap_assumed,
-                                       *(own_terms_assumed(step, thing) for step, thing in own_terms_unsaid(plan))]))
+    # A crawl's cap is code's alone (F1669): an assumption giving another for it says code's.
+    plan.assumed = caps_as_code_says(list(dict.fromkeys([
+        *plan.assumed, *cap_assumed,
+        *(own_terms_assumed(step, thing) for step, thing in own_terms_unsaid(plan))])), plan.knowledge)
     plan.off += [off_a_path_words(p, arm) for p, arm in parts_off_a_path(plan)]
     review = render(plan, agent_names=names)
     if answer.get("outcome") == "replan" and answer.get("refused"):
@@ -3326,6 +3328,27 @@ def own_terms_unsaid(plan: O.Plan) -> list[tuple[O.Step, str]]:
 def own_terms_finding(step: O.Step, thing: str) -> str:
     return (f"**{step.name}** checks against their own {thing}, but nothing in the plan gives them: ask for the "
             f"document in a form step, use a knowledge base of it, or write in `assumed` that it uses general {thing}.")
+
+
+#: A page count in words: "50 pages", "up to 1,000 pages" (F1669).
+_PAGE_COUNT = re.compile(r"\b(\d[\d,]*)(\s+pages?)\b", re.I)
+
+
+def caps_as_code_says(assumed: list[str], bases: list[O.KnowledgePart]) -> list[str]:
+    """What the plan assumed, with any page count it gives for a base's crawl saying the cap that crawl is held to
+    (F1669): the step's line says code's figure (`pages_cap`, Knowledge's crawl limit), and a card gives one. A line
+    names the base by its name or its start address; a base of given pages has no cap, and any other line is kept."""
+    capped = [b for b in bases if b.pages_cap and b.urls and b.kind != "page"]
+    out: list[str] = []
+    for line in assumed:
+        low = line.lower()
+        base = next((b for b in capped if b.name.lower() in low or b.urls[0].lower().rstrip("/") in low), None)
+        if base is not None:
+            cap = base.pages_cap
+            line = _PAGE_COUNT.sub(lambda m: m.group(0) if int(m.group(1).replace(",", "")) == cap
+                                   else f"{cap:,}{m.group(2)}", line)
+        out.append(line)
+    return out
 
 
 def own_terms_assumed(step: O.Step, thing: str) -> str:
