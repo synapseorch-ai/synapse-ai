@@ -59,19 +59,19 @@ def _line(pack: str, url: str) -> str:
 
 def test_a_page_on_a_site_with_a_kept_session_is_marked_and_no_other_is():
     pack = _pack(kept_sites=["github.com"])
-    assert "github.com" in _line(pack, GITHUB).split(GITHUB, 1)[1], _line(pack, GITHUB)
+    assert {"github.com"} <= sites(_line(pack, GITHUB).split(GITHUB, 1)[1]), _line(pack, GITHUB)
     assert _line(pack, WIKI).strip() == f"- {WIKI}", _line(pack, WIKI)
 
 
 def test_a_page_read_is_read_as_no_one_and_a_sign_in_is_said_plainly():
     pack = _pack(kept_sites=[])
     assert "as no one" in pack and "sign-in" in pack, pack
-    assert "github.com" not in pack.replace(GITHUB, ""), "no session is said for a site that has none"
+    assert sites(pack.replace(GITHUB, "")).isdisjoint({"github.com"}), "no session is said for a site that has none"
 
 
 def test_the_sessions_kept_are_named_and_any_other_site_needs_a_sign_in_first():
     said = ap.sessions_said(["github.com", "notion.so"])
-    assert "github.com" in said and "notion.so" in said, said
+    assert {"github.com", "notion.so"} <= sites(said), said
     assert SCREEN in said and "never" in said.lower(), said
 
 
@@ -83,7 +83,7 @@ def test_with_no_session_kept_none_is_said_as_ready():
 def test_where_a_browser_agent_cant_be_used_its_reason_is_said_and_no_screen_offered():
     reason = "Browser agents come with Solo and up."
     said = ap.sessions_said(["github.com"], refused=reason)
-    assert reason in said and SCREEN not in said and "github.com" not in said, said
+    assert reason in said and SCREEN not in said and sites(said).isdisjoint({"github.com"}), said
 
 
 def test_every_answer_reads_the_sessions_line():
