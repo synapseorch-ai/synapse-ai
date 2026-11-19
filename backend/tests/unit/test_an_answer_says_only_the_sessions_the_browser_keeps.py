@@ -9,7 +9,10 @@ Browser screen's Sessions, before it can be; and where a Browser agent can't be 
 """
 from __future__ import annotations
 
+import ast
 import inspect
+import re
+from pathlib import Path
 
 import pytest
 
@@ -19,6 +22,29 @@ from core.product_tools.roles import Role
 GITHUB = "https://github.com/settings/profile"
 WIKI = "https://en.wikipedia.org/wiki/Special:Random"
 SCREEN = "Agents › Browser › Sessions"
+
+#: A site's name as it is written in text: labels of letters, digits and hyphens, joined by dots, ending in a word.
+_SITE = re.compile(r"(?<![\w.-])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?![\w-])", re.IGNORECASE)
+
+
+def sites(text: str) -> set[str]:
+    """Every site's name the text says, whole: a site is found by its name, never as a part of another's (F1706)."""
+    return {m.group(0).lower().rstrip(".") for m in _SITE.finditer(text)}
+
+
+def test_a_site_is_found_by_its_whole_name_and_a_near_miss_is_not():
+    assert {"github.com", "notion.so"} <= sites("Signed in: github.com, notion.so. See https://github.com/x.")
+    assert sites("notgithub.com and github.com.example.org") == {"notgithub.com", "github.com.example.org"}
+
+
+def test_this_file_finds_a_site_by_its_name_never_by_a_part_of_the_text():
+    """A check that a site's name is somewhere in a text is a part-of-text check, which also passes on a near miss
+    (`notgithub.com`): each is a comparison of the sites the text names (F1706)."""
+    looked_up = [node.lineno for node in ast.walk(ast.parse(Path(__file__).read_text()))
+                 if isinstance(node, ast.Compare) and isinstance(node.left, ast.Constant)
+                 and isinstance(node.left.value, str) and _SITE.fullmatch(node.left.value)
+                 and any(isinstance(op, (ast.In, ast.NotIn)) for op in node.ops)]
+    assert looked_up == [], f"a site looked for inside text on lines {looked_up}"
 
 
 def _pack(**kw) -> str:
