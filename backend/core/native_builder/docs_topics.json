@@ -1,5 +1,5 @@
 {
- "commit": "e8b555bec55ece98dba53aa7b2037790226f9926",
+ "commit": "6a91a0741fbb2a6fb7890f12d7ba2248fa6ffc4f",
  "pages": [
   {
    "description": "AI automation without the surprises. Describe a recurring job in plain words, and get a workflow you can read, that runs the same way every time and checks with you before anything goes out.",
@@ -6498,13 +6498,18 @@
     },
     {
      "anchor": "building-a-workflow",
-     "excerpt": "Describe the job in plain words: what starts it, what it does, where the result goes, what it should ask you first. A build goes the same way every time: 1. You describe it. Name the site, the API or the app if you know it. 2. Synapse AI researches what it doesn't know (below), and asks you, in one form, what only you can answer. 3. It shows The plan, in plain words. 4. You approve it, or say…",
+     "excerpt": "Describe the job in plain words: what starts it, what it does, where the result goes, what it should ask you first. A build goes the same way every time: 1. You describe it. Name the site, the API or the app if you know it. 2. Synapse AI researches what it doesn't know (below), and asks you, in one form, what only you can answer. 3. It shows The plan, in plain words, once it has tried it on…",
      "heading": "Building a workflow"
     },
     {
      "anchor": "research",
      "excerpt": "Before it plans, Synapse AI reads each site or API your message names (up to three), once a conversation: the page's title, what it says it is, and any API spec it links to. A page that is only JavaScript is fetched with the scraper or a Browser step instead of an HTTP tool. It reads as SynapseBot and obeys the site's robots.txt, as a Knowledge crawl does: a page robots.txt disallows is never…",
      "heading": "Research"
+    },
+    {
+     "anchor": "practice-run",
+     "excerpt": "Once a plan passes its check, and before you see it, Synapse AI runs it once on made-up answers (since 2.1.2). Each answer a step declares (a model step's answer fields, a Human step's form, a tool's declared answer) and the run's input are made up in their declared shape. Conditions, Switches, Loops, Merges, Extract JSON and Print steps run as a run runs them, a Tool step's set arguments are…",
+     "heading": "Tried before you see it"
     },
     {
      "anchor": "the-plan",
