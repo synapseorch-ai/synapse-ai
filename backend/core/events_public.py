@@ -131,6 +131,22 @@ PRIVATE_STATE_PREFIXES = (
     # That a plan or a change went back once for a schedule whose words and cron disagree
     # (`build_plan.SCHEDULE_SENT_KEY`, `change_tools._SCHEDULE_SENT`, F1393).
     "_schedule_clock_sent_back",
+    # That a plan went back once for an llm step reading what a Tool step fetched (`build_plan.LONG_FETCH_SENT_BACK`,
+    # F1677).
+    "_long_fetch_sent_back",
+    # That a plan went back once for a website widget it left unsaid (`build_plan.WIDGET_SENT_BACK`, F1668).
+    "_widget_sent_back",
+    # That a plan went back once for a step reading a tool's whole answer with no fields named
+    # (`build_plan.USES_FIELDS_SENT_BACK`, F1705).
+    "_uses_fields_sent_back",
+    # That a plan went back once for a scrape_url of a page too long for one read (`build_plan.CUT_READ_SENT_BACK`,
+    # F1691).
+    "_cut_read_sent_back",
+    # That a plan went back once for code going through a tool's whole object answer (`build_plan.WALK_SENT_BACK`,
+    # F1704).
+    "_answer_walk_sent_back",
+    # How often a plan went back for what its practice run found (`build_plan.PRACTICE_SENT_BACK`, F1619).
+    "_practice_sent_back",
 )
 
 

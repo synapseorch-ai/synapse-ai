@@ -171,9 +171,13 @@ MIXED_CASE = [
 #: their id on as written.
 _MIXED_CASE_AS_BEFORE = ["GPT-4o", "O3-mini", "Ollama.llama3", "HF.model", "CLI.claude.sonnet"]
 
+#: Claude's API-path ids as they are written today (F1703): the current Sonnet and Opus, and a Fable id. The corpus had
+#: their CLI forms and older API ids only, so a change that routed today's API ids differently was not seen.
+_API_PATH_CLAUDE = ["claude-sonnet-4-6", "claude-opus-5-5", "claude-fable-5-2"]
+
 CORPUS: list[str] = list(dict.fromkeys(
     _OFFERED_CHAT + _OFFERED_EMBEDDING + _GEMINI_CATALOGUE + _OPENAI_ACCOUNT + _PINNED_BY_TESTS
-    + _ONE_PER_PREFIX + _NEAR_MISSES + MIXED_CASE + _MIXED_CASE_AS_BEFORE + _HOSTED
+    + _ONE_PER_PREFIX + _NEAR_MISSES + MIXED_CASE + _MIXED_CASE_AS_BEFORE + _HOSTED + _API_PATH_CLAUDE
 ))
 
 #: `generate_response_ex` is handed a mode, and the mode picks the branch family

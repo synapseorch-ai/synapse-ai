@@ -180,22 +180,47 @@ async def _new_base(args: dict[str, Any]):
         raise ToolRefusal(str(exc)) from None
 
 
+def _pages_given(args: dict[str, Any]):
+    """The web pages a new base is filled from (F1670), held to what `add_knowledge_pages` takes; None for none."""
+    from pydantic import ValidationError
+
+    from core.knowledge.api_models import UrlIngestRequest
+
+    urls = [str(u) for u in (args.get("urls") or []) if str(u).strip()]
+    if not urls:
+        return None
+    try:
+        return UrlIngestRequest(urls=urls, kind=args.get("kind") or "page")
+    except ValidationError as exc:
+        raise ToolRefusal(f"Those pages can't be added: {exc.errors()[0].get('msg')}") from None
+
+
 async def _preview_create_base(caller: Any, args: dict[str, Any]) -> dict:
     body = await _new_base(args)
-    return {"will_create": {"type": "knowledge_base", "name": body.name, "folder": body.folder},
+    pages = _pages_given(args)
+    return {"will_create": {"type": "knowledge_base", "name": body.name, "folder": body.folder,
+                            **({"pages": pages.urls, "kind": pages.kind} if pages else {})},
             "note": "Files already in its folder are indexed with its embedding model."}
 
 
 async def _create_base(caller: Any, args: dict[str, Any]) -> dict:
+    from core.knowledge import web
     from core.knowledge.errors import KnowledgePathError
 
     body = await _new_base(args)
+    pages = _pages_given(args)  # refused before anything is made, as its preview does
     try:
         kb = await _host.create_base(caller, body)
     except (KnowledgePathError, ValueError) as exc:  # the route's 422s, in its words
         raise ToolRefusal(str(exc)) from None
-    return {"knowledge_base": kb.name, "id": kb.id, "folder": kb.folder, "status": kb.status,
-            "note": "Files already in its folder are being indexed; add files, pages or notes to fill it."}
+    out = {"knowledge_base": kb.name, "id": kb.id, "folder": kb.folder, "status": kb.status,
+           "note": "Files already in its folder are being indexed; add files, pages or notes to fill it."}
+    if pages is not None:
+        # Made with the pages it is filled from (F1670): added as `add_knowledge_pages` adds them.
+        accepted = await web.add_urls(kb, pages)
+        out.update(pages=accepted.model_dump(mode="json"),
+                   note="Its pages are being fetched and indexed with its embedding model.")
+    return out
 
 
 async def _preview_add_file(caller: Any, args: dict[str, Any]) -> dict:
@@ -396,7 +421,13 @@ def entries() -> list[ProductTool]:
                     input_schema={"type": "object", "properties": {
                         "name": {"type": "string", "description": "What it holds, e.g. 'Price list'."},
                         "description": {"type": "string", "description": "What agents find in it."},
-                        "folder": {"type": "string", "description": "A Vault folder; omit for knowledge/<name>."}},
+                        "folder": {"type": "string", "description": "A Vault folder; omit for knowledge/<name>."},
+                        "urls": {"type": "array", "items": {"type": "string"},
+                                 "description": "Public web pages it is filled from once made, as add_knowledge_pages "
+                                                "takes them."},
+                        "kind": {"type": "string", "enum": ["page", "sitemap", "site"],
+                                 "description": "How `urls` are read: each a page, a sitemap's pages, or a site "
+                                                "crawled from it."}},
                         "required": ["name"]},
                     handler=_create_base, preview=_preview_create_base, additive=True,
                     audit_action="knowledge.base.created",

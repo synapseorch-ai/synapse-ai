@@ -137,13 +137,95 @@ async def _known_names(server_module: Any) -> list[str]:
         return []
 
 
+def _set_up(app: str, server_module: Any) -> bool:
+    """Whether this workspace has set `app` up: in a self-hosted install's record of its apps, or among the apps a
+    cloud worker could not open (`tool_availability`'s two hosts)."""
+    manager = getattr(server_module, "mcp_manager", None)
+    if manager is not None and hasattr(manager, "get_server_config") and manager.get_server_config(app) is not None:
+        return True
+    return any(app in (getattr(server_module, attr, None) or ())
+               for attr in ("mcp_disabled", "mcp_reauth_needed", "mcp_errors", "_user_configs"))
+
+
+def unreachable(name: Any, server_module: Any) -> str | None:
+    """Why `name` can't be checked right now, in its app's own words (F1679): a tool of an app this workspace has set
+    up that isn't connected at the moment (asleep, down, or waiting to be signed in again), so the run's lookup has none
+    of its tools now and a later run may. None for anything else: a connected app without that tool, an app nobody set
+    up, one turned off (`turned_off`), a name with no app, or one of the product's own."""
+    from core import tool_availability as availability
+
+    if not isinstance(name, str) or availability.SEP not in name:
+        return None
+    app = availability._app_named(name, server_module)
+    if not app or availability.is_native(app) or not _set_up(app, server_module):
+        return None
+    status, reason = availability.app_state(server_module, app)
+    if status in ("connected", "disabled") or (status is None and not reason):
+        return None
+    return availability.why_unavailable(name, server_module).why
+
+
+def turned_off(name: Any, server_module: Any) -> str | None:
+    """The app `name` is a tool of, when this workspace has it turned off: a run would fail on it."""
+    from core import tool_availability as availability
+
+    if not isinstance(name, str) or availability.SEP not in name:
+        return None
+    app = availability._app_named(name, server_module)
+    if not app or not _set_up(app, server_module):
+        return None
+    return app if availability.app_state(server_module, app)[0] == "disabled" else None
+
+
+async def mark_checks(orch: dict, server_module: Any) -> dict:
+    """A workflow's Tool steps as a save keeps them (F1679): one whose tool's app is set up but not connected right now
+    is marked `tool_check`, so each run decides whether it asks from what the tool declares, never a hold made now
+    that would stick; one whose tool can be read now has the mark taken off, as a build that read it decides."""
+    exists = await _resolver(server_module)
+    for step in orch.get("steps") or []:
+        if not isinstance(step, dict) or step.get("type") != "tool" or not isinstance(step.get("forced_tool"), str):
+            continue
+        name = step["forced_tool"]
+        if unreachable(name, server_module):
+            step["tool_check"] = True
+        elif step.get("tool_check") and await exists(name):
+            step.pop("tool_check", None)
+    return orch
+
+
+async def checked_policy(policy: Any, tools: Any, server_module: Any) -> dict:
+    """An agent's tool policy as a save keeps it (F1679): each of its tools whose app is set up but not connected right
+    now, that its policy doesn't already decide, is `check` (decided each call from what it declares); a `check` whose
+    tool can be read now becomes what a build that read it decides: `confirm` when it acts, nothing when it reads."""
+    from core.tool_policy import CHECK, TOOL_KEY, clean_policy
+
+    out = clean_policy(policy)
+    exists = None
+    for name in tools or []:
+        if not isinstance(name, str) or not name or name in _NOT_A_NAME or name.startswith("group:"):
+            continue
+        key = f"{TOOL_KEY}{name}"
+        if key not in out and unreachable(name, server_module):
+            out[key] = CHECK
+        elif out.get(key) == CHECK and not unreachable(name, server_module):
+            exists = exists or await _resolver(server_module)
+            if await exists(name):
+                if await acting_tool(name, server_module) is not None:
+                    out[key] = "confirm"
+                else:
+                    out.pop(key)
+    return out
+
+
 async def missing(names: list[Any], server_module: Any, *, cutoff: float = 0.75) -> list[tuple[str, list[str]]]:
     """Each name nothing provides, with the nearest names that do exist, for a person to read (F526, VOX1f): an
     agent saved through its editor or the API, or shown on its page. `all` and `group:` are lists, not names.
     The cutoff is closer than `unknown()`'s for the builder model: at 0.5 `smtp_send_mail` came back
     "nearest: list_schedules" (BWA1, F492)."""
     exists = await _resolver(server_module)
-    gone = [n for n in dict.fromkeys(names) if isinstance(n, str) and n and not await exists(n)]
+    # A tool of an app set up here that isn't connected right now is not missing: it can't be checked (F1679).
+    gone = [n for n in dict.fromkeys(names) if isinstance(n, str) and n and not await exists(n)
+            and unreachable(n, server_module) is None]
     if not gone:
         return []
     known = await _known_names(server_module)
@@ -184,8 +266,17 @@ async def missing_in(workflows: list[dict], agents: dict[str, dict], server_modu
                 issues.append(f"Step '{label}' calls the board tool '{forced}' as a Tool step, which has no board: "
                               "board tools are an agent's. Give it to the agent of an agent step.")
             elif isinstance(forced, str) and forced and not await exists(forced):
-                issues.append(f"Step '{label}' calls the tool '{forced}', which nothing here provides: its first run "
-                              "would fail. Use a tool that exists, or create it first.")
+                # Its app set up but not connected right now: warned with why, never failed (F1679). Turned off: a
+                # run would fail, said in its own words.
+                if why := unreachable(forced, server_module):
+                    warnings.append(f"Step '{label}' calls the tool '{forced}', which can't be checked right now "
+                                    f"({why}). Its runs need that app connected.")
+                elif app := turned_off(forced, server_module):
+                    issues.append(f"Step '{label}' calls the tool '{forced}', but its app {app} is turned off: its "
+                                  f"first run would fail. Turn {app} on under Apps, or use another tool.")
+                else:
+                    issues.append(f"Step '{label}' calls the tool '{forced}', which nothing here provides: its first "
+                                  "run would fail. Use a tool that exists, or create it first.")
             agent_id = step.get("agent_id") or ""
             agent = agents.get(agent_id)
             if not agent or agent_id in seen_agents:
@@ -193,8 +284,12 @@ async def missing_in(workflows: list[dict], agents: dict[str, dict], server_modu
             seen_agents.add(agent_id)
             for name in agent.get("tools") or []:
                 if isinstance(name, str) and not await exists(name):
-                    warnings.append(f"The agent '{agent.get('name')}' (step '{label}') names the tool '{name}', which "
-                                    "nothing here provides; it will run without it.")
+                    if why := unreachable(name, server_module):
+                        warnings.append(f"The agent '{agent.get('name')}' (step '{label}') names the tool '{name}', "
+                                        f"which can't be checked right now ({why}).")
+                    else:
+                        warnings.append(f"The agent '{agent.get('name')}' (step '{label}') names the tool '{name}', "
+                                        "which nothing here provides; it will run without it.")
     return issues, warnings
 
 

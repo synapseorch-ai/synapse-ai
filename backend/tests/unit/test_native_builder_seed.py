@@ -38,7 +38,7 @@ class TestTheBundle:
         re-seed matches on the role. A missing one would orphan that agent."""
         roles = [a["system_role"] for a in bundled_definitions()["agents"]]
         assert sorted(roles) == [
-            "classifier", "classifier_at_plan", "maker", "orchestrator", "plan_researcher",
+            "classifier", "classifier_at_plan", "maker", "orchestrator", "page_reader", "plan_researcher",
             "planner", "prompt_writer", "reporter", "researcher", "talker",
         ]
 
@@ -147,7 +147,7 @@ class TestSeeding:
         # (the build's own, an E2 finish on report_findings; P5 may fold the two researchers into one); 9 with the front
         # door's classifier (SAI2-P4: its one call, an E2 finish on classify_request); 10 with talk's, which holds
         # no tool; 11 with the classifier at a waiting plan (F1241's follow-up: its one call requires `continues`).
-        assert len(result["agents_added"]) == 10
+        assert len(result["agents_added"]) == 11  # with the page reader (F1687)
         assert result["version"] == bundle_version()
 
         from core.store.resources import get_orchestration

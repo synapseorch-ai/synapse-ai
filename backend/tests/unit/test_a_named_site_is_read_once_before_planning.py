@@ -51,7 +51,11 @@ def _answer(body: str, *, status: int = 200, kind: str = "text/html; charset=utf
 
 
 def _raise(exc):
+    """The page's own fetch fails with `exc`; its robots.txt, asked first (F1691), allows it."""
     async def fetch(u, **_):
+        if u.endswith("/robots.txt"):
+            return safe_fetch.Fetched(url=u, status=404, headers=httpx.Headers({"content-type": "text/plain"}),
+                                      body=b"", redirects=())
         raise exc
     return fetch
 
@@ -130,7 +134,9 @@ class TestOncePerConversation:
         monkeypatch.setattr(safe_fetch, "fetch", fetch)
         first = await read_named("Use synapseorch.com and stripe.com")
         again = await read_named("Use synapseorch.com and stripe.com, and x.com", already=first)
-        assert calls == ["https://synapseorch.com", "https://stripe.com", "https://x.com"]
+        # Each page once; robots.txt, asked before each (F1691), is not a page.
+        assert [c for c in calls if not c.endswith("/robots.txt")] == [
+            "https://synapseorch.com", "https://stripe.com", "https://x.com"]
         assert again["https://synapseorch.com"] == first["https://synapseorch.com"]
 
 
@@ -179,3 +185,86 @@ def test_the_planner_that_reads_these_is_a_workflow_agent_step():
     step = next(s for s in bundled_definitions()["orchestration"]["steps"] if s["id"] == "step_plan")
     assert step["type"] == "agent"
     assert NamedPage(url="https://x.com").as_dict().keys() >= {"title", "what", "kind", "api_spec", "why_not"}
+
+
+async def test_the_read_says_it_is_synapsebot(monkeypatch):
+    """A site that refuses an unnamed client (Wikipedia answers its library's default user agent 403) is read: the
+    builder's read before planning sends SynapseBot's own user agent, the one Knowledge's crawl sends (F1691)."""
+    from core.knowledge import fetch as F
+
+    sent: dict = {}
+
+    async def fetch(u, **kw):
+        sent.update(kw.get("headers") or {})
+        return safe_fetch.Fetched(url=u, status=200, headers=httpx.Headers({"content-type": "text/html"}),
+                                  body=PAGE.encode(), redirects=())
+
+    monkeypatch.setattr(safe_fetch, "fetch", fetch)
+    page = await read("https://en.wikipedia.org/wiki/List_of_sovereign_states")
+    assert page.reached
+    assert sent.get("User-Agent") == F.USER_AGENT and "SynapseBot" in sent["User-Agent"]
+
+
+# ── SynapseBot keeps its word: robots.txt first (F1691) ─────────────────────────
+
+def _site(robots: tuple[int, str] | None, page: str = PAGE):
+    """A fetch stand-in: robots.txt answers `robots` (status, body); every other address answers `page`. Each
+    address asked is recorded."""
+    asked: list[str] = []
+
+    async def fetch(u, **_):
+        asked.append(u)
+        if u.endswith("/robots.txt"):
+            if robots is None:
+                raise safe_fetch.FetchRefused("the site did not answer the connection")
+            status, body = robots
+            return safe_fetch.Fetched(url=u, status=status, headers=httpx.Headers({"content-type": "text/plain"}),
+                                      body=body.encode(), redirects=())
+        return safe_fetch.Fetched(url=u, status=200, headers=httpx.Headers({"content-type": "text/html"}),
+                                  body=page.encode(), redirects=())
+
+    return fetch, asked
+
+
+PAGE_URL = "https://en.wikipedia.org/wiki/List_of_sovereign_states"
+
+
+async def test_a_page_robots_txt_allows_is_read(monkeypatch):
+    fetch, asked = _site((200, "User-agent: *\nDisallow: /w/\n"))
+    monkeypatch.setattr(safe_fetch, "fetch", fetch)
+    page = await read(PAGE_URL)
+    assert page.reached and asked[0].endswith("/robots.txt") and PAGE_URL in asked
+
+
+async def test_a_page_robots_txt_disallows_for_synapsebot_is_never_fetched(monkeypatch):
+    fetch, asked = _site((200, "User-agent: SynapseBot\nDisallow: /wiki/\n"))
+    monkeypatch.setattr(safe_fetch, "fetch", fetch)
+    page = await read(PAGE_URL)
+    assert not page.reached and PAGE_URL not in asked
+    assert "robots.txt disallows" in page.why_not
+
+
+@pytest.mark.parametrize("robots", [None, (503, "")])
+async def test_a_robots_txt_that_cannot_be_read_fetches_nothing(robots, monkeypatch):
+    fetch, asked = _site(robots)
+    monkeypatch.setattr(safe_fetch, "fetch", fetch)
+    page = await read(PAGE_URL)
+    assert not page.reached and PAGE_URL not in asked
+    assert "robots.txt" in page.why_not and "not fetched" in page.why_not
+
+
+async def test_an_api_spec_address_robots_txt_disallows_is_never_asked(monkeypatch):
+    fetch, asked = _site((200, "User-agent: *\nDisallow: /openapi.json\n"), page="{}")
+    monkeypatch.setattr(safe_fetch, "fetch", fetch)
+
+    async def json_root(u, **kw):
+        got = await fetch(u, **kw)
+        if not u.endswith("/robots.txt") and not u.endswith(".json") and not u.endswith("api-docs"):
+            return safe_fetch.Fetched(url=u, status=404, headers=httpx.Headers({"content-type": "text/plain"}),
+                                      body=b"", redirects=())
+        return got
+
+    monkeypatch.setattr(safe_fetch, "fetch", json_root)
+    await read("https://api.example.com/")
+    assert "https://api.example.com/openapi.json" not in asked
+    assert "https://api.example.com/swagger.json" in asked

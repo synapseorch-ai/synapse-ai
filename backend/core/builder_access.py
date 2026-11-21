@@ -39,7 +39,7 @@ READS: frozenset[str] = frozenset({
     "list_repos", "list_db_configs", "list_orchestrations", "get_orchestration", "validate_orchestration",
     "list_custom_tools", "list_skills", "list_knowledge_bases", "get_skill", "list_schedules", "list_variables",
     "list_recent_runs", "get_run_summary", "read_workspace", "search_help", "product_capabilities", "check_plan",
-    "find_in_catalog", "search_mcp_registry", "search_the_web", "read_web_page", "read_change_context",
+    "find_in_catalog", "search_mcp_registry", "search_the_web", "read_web_page", "read_page", "read_change_context",
     "read_plan_context", "read_plan_answer", "look_up_providers",
     # The planner's read of the person's own API spec (F1225): it fetches the spec, and changes nothing.
     "read_api_spec",
@@ -100,7 +100,8 @@ ANYWHERE: frozenset[str] = frozenset({
     "create_schedule", "update_schedule", "turn_on_schedule", "pause_schedule",
     "set_schedule_enabled", "delete_agent", "delete_orchestration", "delete_schedule", "delete_custom_tool",
     "list_variables", "list_recent_runs", "get_run_summary", "read_workspace", "search_help", "product_capabilities",
-    "find_in_catalog", "search_mcp_registry", "search_the_web", "read_web_page", "look_up_providers", "read_api_spec",
+    "find_in_catalog", "search_mcp_registry", "search_the_web", "read_web_page", "read_page", "look_up_providers",
+    "read_api_spec",
     "search_knowledge",
 })
 

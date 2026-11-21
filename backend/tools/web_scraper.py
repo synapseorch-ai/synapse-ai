@@ -41,7 +41,7 @@ from html_to_markdown import ConversionOptions, convert as _html_markdown
 from playwright.async_api import Error as PlaywrightError, async_playwright
 from playwright_stealth import Stealth
 
-from core import egress_proxy, tool_scope
+from core import egress_proxy, tool_scope, web_refusals
 from core.file_roots import within
 from core.egress_guard import BlockedEgress, check_host, check_url
 
@@ -482,7 +482,7 @@ async def _read_page(page, url: str, config: RunConfig) -> CrawlResult:
     if config.remove_overlay_elements:
         await _quietly(page.evaluate(_REMOVE_OVERLAYS))
     html = await page.content()
-    if (blocked := _refusal(response, html)) is not None:
+    if (blocked := _refusal(response, html, asked=url, landed=page.url)) is not None:
         return CrawlResult(success=False, error_message=blocked)
     found = await page.evaluate(_LINKS_AND_IMAGES, ", ".join(config.excluded_tags))
     markdown = None
@@ -533,14 +533,21 @@ _VENDOR_SIGNS = (
 )
 
 
-def _refusal(response, html: str) -> str | None:
+def _refusal(response, html: str, *, asked: str | None = None, landed: str | None = None) -> str | None:
     """Why the page is a refusal rather than the page asked for, or None. The egress proxy's own refusal says so;
     a 403, 429 or 503, Cloudflare's challenge header, or a block page's own signs is a failure as crawl4ai reported
     it, never a page of content: a reader handed a block page as the site's words is misled. A page that loaded is
-    its content whatever bot manager's routine script it carries (F1633)."""
+    its content whatever bot manager's routine script it carries (F1633). A sign-in wall (a 401, or a read of `asked`
+    that `landed` on a sign-in page) says it needs a sign-in, never hands the login form back as the page, and a page
+    that is not there (404, 410) says so, never hands the site's "not found" page back as its words (F1632). Only the
+    status says a page is missing: a page that loads and talks about 404s is its content."""
     headers = getattr(response, "headers", None) or {}
     if response is not None and headers.get("x-synapse-egress") == "refused":
         return "URL blocked: the egress proxy refused this address"
+    if asked is not None:
+        wall = web_refusals.sign_in_wall(asked, landed or asked, getattr(response, "status", None))
+        if wall is not None:
+            return wall
     if str(headers.get("cf-mitigated") or "").strip().lower() == "challenge":
         return "Blocked by anti-bot protection: Cloudflare challenge"
     for sign, name in _BLOCK_PAGE_SIGNS:
@@ -548,6 +555,8 @@ def _refusal(response, html: str) -> str | None:
             return f"Blocked by anti-bot protection: {name}"
     if _CF_ORCHESTRATION.search(html):
         return "Blocked by anti-bot protection: Cloudflare challenge"
+    if response is not None and response.status in (404, 410):
+        return f"The page is not there (HTTP {response.status})"
     if response is not None and response.status in (403, 429, 503):
         whose = next((name for sign, name in _VENDOR_SIGNS if sign in html), None)
         return (f"Blocked by anti-bot protection: {whose} (HTTP {response.status})" if whose
@@ -1033,7 +1042,8 @@ async def list_tools() -> list[types.Tool]:
             annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True),
             description=(
                 "Scrape a URL and return its content as clean markdown. "
-                "Handles JavaScript-rendered pages, anti-bot protections, and dynamic content. "
+                "Reads JavaScript-rendered pages and dynamic content; a page behind a bot check, a sign-in or a 404 "
+                "fails with the reason. "
                 "Optionally returns all links and images found on the page."
             ),
             inputSchema={

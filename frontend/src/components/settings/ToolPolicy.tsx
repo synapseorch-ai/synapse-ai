@@ -53,7 +53,17 @@ export const POLICY_MEANING: Record<string, string> = {
     allow: 'The call runs.',
     confirm: 'The run stops and a person decides. In chat that is a card in the conversation; in a workflow the run waits for input.',
     deny: 'The call never runs, and the model is told why.',
+    check: 'Decided each time it is called, from what the tool says it does: it runs when it only reads, and stops for a person otherwise.',
 };
+
+/** A rule for one tool has one more choice than a category (F1679, `core/tool_policy.py`'s `check`): decided at each
+ *  call from the tool's own declaration. The builder sets it on a tool whose app wasn't connected when it was built. */
+export const ONE_TOOL_CHOICES = [
+    { value: 'allow', label: 'Allow' },
+    { value: 'check', label: 'Ask unless it only reads' },
+    { value: 'confirm', label: 'Ask first' },
+    { value: 'deny', label: 'Block' },
+] as const;
 
 /** Built-in defaults, then the workspace’s, then the agent’s — the order in
  *  `core/tool_policy.py::resolve_policy`. Unknown keys and values are ignored
@@ -204,10 +214,11 @@ function OneToolRules({ value, onChange, tools, disabled }: {
             <span className="block text-xs font-medium text-text-muted">For one tool</span>
             <p className="text-2xs text-text-faint">A rule here wins over the tool’s category above: ask before one tool books or sends, while the rest run freely.</p>
             {rules.map(([name, decision]) => (
-                <div key={name} className="flex items-center gap-2">
+                <div key={name} className="space-y-1">
+                <div className="flex flex-wrap items-center gap-2">
                     <span className="min-w-0 flex-1 truncate font-mono text-xs text-text">{name}</span>
-                    <div className="flex gap-1">
-                        {POLICY_CHOICES.map(choice => (
+                    <div className="flex flex-wrap gap-1">
+                        {ONE_TOOL_CHOICES.map(choice => (
                             <button
                                 key={choice.value}
                                 type="button"
@@ -234,6 +245,10 @@ function OneToolRules({ value, onChange, tools, disabled }: {
                     >
                         Remove
                     </button>
+                </div>
+                {decision === 'check' && (
+                    <p className="text-2xs text-text-muted" data-testid="one-tool-check-meaning">{POLICY_MEANING.check}</p>
+                )}
                 </div>
             ))}
             {left.length > 0 && (

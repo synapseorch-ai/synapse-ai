@@ -203,7 +203,25 @@ from core.native_builder import prompt_lint, seed
 #: files a message names), c316956a… (on 2.0.14's 07a155b1).
 #: F1618: plan_steps.md's `llm` bullet names a nested answer once, a group (`"object"` with `fields`) or a list of
 #: groups (`list` with `"of": {"fields": …}`), with one example and how a later step reads it, 0e53888e… (on c316956a).
-BUNDLE_SHA256 = "0e53888e753c54b1c035e661e2d082111b93821415e5ccb1c0c3f080690d6baf"
+#: F1689: reporter.json opens as Synapse AI, never names a role or a part of how it is built, and says a change is
+#: asked for and a plan drafted to check, never that it can't be done, 26c6cde2… (on F1618's 0e53888e).
+#: F1677: plan_steps.md's `llm` bullet says an llm step never reads a page, a crawl or a file a Tool step fetched, and
+#: to use an agent step there, c6c7e724… (on F1689's 26c6cde2).
+#: F1687: a page reader agent (only the builder's read_page; a page's words never instructions) and the step
+#: that answers a one-off read of named pages in the chat, b80ff176… (on F1677's c6c7e724).
+#: F1689: the planner and the maker open as Synapse AI and name speak_as_synapse_ai; the prompt writer and the
+#: researchers' passage name no role, 976c0d59… (on F1687's b80ff176).
+#: F1645: the planner writes `asked_start` (how they said a run starts, and schedule, form or cannot with why_not),
+#: 5d1e630e… (on F1689's 976c0d59).
+#: F1675: plan_steps.md says a tool answers what its outputSchema declares, never a field it doesn't list, and an llm
+#: or agent step that reads a tool's whole answer names the fields it uses in `uses_fields`, 486f8e21… (on F1645's
+#: 5d1e630e).
+#: F1691: the planner's Structure says scrape_url keeps a page's first 50,000 characters, and a named page marked
+#: too_long_for_one_read is read whole with scrape_structured from its table, or the plan says it is too large for
+#: one read, b40af047… (on F1675's 486f8e21).
+#: F1704: plan_steps.md's transform bullet says a page read answers an object, to go through its list field
+#: (scrape_structured: data; extract_links: links), never the answer itself, f2fb27f2… (on b40af047).
+BUNDLE_SHA256 = "f2fb27f2e0b5d184204f4a8c7df5a40724360bdd051afa79280d8b03543fc6df"
 
 
 def _sha(definitions) -> str:

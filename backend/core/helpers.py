@@ -322,7 +322,7 @@ def build(args: dict, *, parent_agent: dict | None, parent_model: str, available
         "max_turns": MAX_TURNS,
         # The parent's resolved policy, with nobody to ask: a backstop for a
         # name the helper is offered that was never judged above.
-        "tool_policy": {c: ("deny" if d == "confirm" else d) for c, d in policy.items()},
+        "tool_policy": _tool_policy.as_visitor(policy),
         # And the parent's scoping: a `run_sql_query` the parent may run
         # against `sales` only must not reach `hr` through a helper (an
         # empty `db_configs` is no restriction), nor may a parent that

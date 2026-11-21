@@ -132,6 +132,62 @@ _CODE_ITEM = re.compile(r"\bstate\[\s*(['\"])([^'\"]+)\1\s*\]")
 _DICT_NAMES = frozenset(dir(dict))
 
 
+def read_by_another(key: str | None, steps: object, *, but: str) -> bool:
+    """Whether a step other than `but` reads `key` (F1677): by its input keys, a `{{ state.key }}` in its prompt, or a
+    Transform's code or a Loop's list."""
+    if not key:
+        return False
+    for step in steps or []:
+        d = step.model_dump(mode="json") if hasattr(step, "model_dump") else step
+        if not isinstance(d, dict) or d.get("id") == but:
+            continue
+        if key in (d.get("input_keys") or []) or key in prompt_reads(d) or key in hard_reads(d):
+            return True
+    return False
+
+
+#: The product's own tools that answer with a page, a crawl or a file's text (F1677): their answer can run past the
+#: spill line and is then a file, which a step with no tools can't read. Matched by a name's last part, so an app's own
+#: `read_file` counts as the vault's does. An HTTP or MCP tool's answer of unknown size is left to the run-time floor.
+LONG_READERS = frozenset({"scrape_url", "scrape_with_session", "scrape_structured", "crawl_multiple", "search_page",
+                          "read_file", "read_json", "read_file_by_lines", "parse_pdf", "parse_xlsx"})
+
+
+def tool_part(name: str) -> str:
+    """A tool's own name, without its app or server (`web_scraper__scrape_url`, `web_scraper.scrape_url`)."""
+    return str(name).rsplit("__", 1)[-1].rsplit(".", 1)[-1]
+
+
+def reads_a_long_fetch(steps: object) -> list[str]:
+    """A warning for each LLM step that reads what a Tool step fetched with one of `LONG_READERS`, or a Loop collected
+    from one (F1677), naming the fix: over the spill line it is a file, which this step can't read. Never a refusal."""
+    from core.vault import VAULT_THRESHOLD
+
+    ds = [s.model_dump(mode="json") if hasattr(s, "model_dump") else s for s in steps or []]
+    ds = [d for d in ds if isinstance(d, dict)]
+    fetches: dict[str, dict] = {}
+    for d in ds:
+        tool = d.get("forced_tool")
+        if d.get("type") == "tool" and isinstance(tool, str) and tool_part(tool) in LONG_READERS and d.get("output_key"):
+            fetches.setdefault(d["output_key"], d)
+    by_id = {d.get("id"): d for d in ds}
+    for d in ds:
+        if d.get("type") == "loop" and d.get("output_key") and any(
+                (by_id.get(b) or {}).get("output_key") in fetches for b in d.get("loop_step_ids") or []):
+            fetches.setdefault(d["output_key"], d)
+    out: list[str] = []
+    for d in ds:
+        if d.get("type") != "llm":
+            continue
+        for key in sorted((set(d.get("input_keys") or []) | prompt_reads(d)) & fetches.keys()):
+            who = fetches[key]
+            out.append(f"'{d.get('name') or d.get('id')}' is an LLM step and reads '{key}', which "
+                       f"'{who.get('name') or who.get('id')}' fetches: over {VAULT_THRESHOLD:,} characters it is saved "
+                       "as a file, which this step can't read. Make it an Agent step, or have it read only the part it "
+                       "needs.")
+    return out
+
+
 def guarded(code: str, key: str) -> bool:
     """The code asks whether `key` is there before it reads it, or writes it itself first."""
     k = re.escape(key)

@@ -16,6 +16,7 @@ this product and the commercial one.
 """
 import asyncio
 import json
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -492,6 +493,26 @@ def _stream(source) -> StreamingResponse:
     )
 
 
+#: What a builder turn whose model did not answer in time tells the person (F1682): what happened, and what to do.
+NO_ANSWER_IN_TIME = ("The model didn't answer in time, even after it was asked again. Try again, ask for a smaller part "
+                     "of it, or pick another model for Synapse AI.")
+_TIMED_OUT = re.compile(r"timed out|timeout|did not answer within", re.IGNORECASE)
+
+
+def _panel_words(event: dict) -> dict:
+    """A turn that failed on its model, said plainly (F1682): the panel shows a failure's `reason`, which was the call's
+    own text ("Claude LLM Error: failed after 5 attempts…"). Its model failure's sentence instead (F1502), and what to
+    do next; any other failure keeps its words."""
+    failure = event.get("model_failure") if event.get("type") == "step_error" else None
+    if not isinstance(failure, dict):
+        return event
+    if failure.get("code") == "provider_unavailable" and _TIMED_OUT.search(str(event.get("reason") or "")):
+        said = NO_ANSWER_IN_TIME
+    else:
+        said = f"{failure.get('said') or 'The model call failed.'} You can also pick another model for Synapse AI."
+    return {**event, "error": said, "reason": said}
+
+
 async def _queue_events(queue):
     """The pump's queue as the panel's events."""
     while True:
@@ -499,7 +520,7 @@ async def _queue_events(queue):
         if event is SENTINEL:
             return
         if not _is_internal(event.get("type", "")):
-            yield event
+            yield _panel_words(event)
 
 
 def _one(event: dict) -> StreamingResponse:

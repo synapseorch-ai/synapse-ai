@@ -508,6 +508,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Copy the setup and paste it where the page says: a terminal for Claude Code and Codex, a config file for the others.',
             'Ask the tool “List my Synapse workflows.” The page says “Connected” once its first call arrives.',
             'Remove the key in Settings → API keys whenever you want to cut the tool off. Home’s “Use Synapse from your AI tools” connects most tools in one click.',
+            'To give a tool one workflow as a tool of its own, open the workflow and turn on Workflow settings › Offer to MCP clients; off, the tool can still run it by name.',
         ],
         guide: '/guides/developers/mcp',
     },

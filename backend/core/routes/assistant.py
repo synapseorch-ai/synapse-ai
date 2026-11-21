@@ -61,7 +61,11 @@ async def press(caller: Caller, body: Press) -> dict:
             await keep_press(body.run_id, caller.user_id, body.tool, body.arguments, done=False, say=detail)
         raise HTTPException(status_code=code, detail=detail) from None
     await keep_press(body.run_id, caller.user_id, body.tool, body.arguments, done=True, say=_said(result))
-    return {"done": True, "result": result}
+    # What waited on what this card made comes up now, under it (F1670, A).
+    from core.native_builder.turn_facts import after_press
+
+    cards, said = await after_press(body.run_id, caller, body.tool, body.arguments)
+    return {"done": True, "result": result, "cards": cards, "said": said}
 
 
 def _said(result: Any) -> str:

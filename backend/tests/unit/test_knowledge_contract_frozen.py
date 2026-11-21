@@ -60,8 +60,8 @@ LANE_MODULES = {
     "tools.py", "citations.py",
     # B2a — embeddings, rerank, the re-embed backfill
     "profiles.py", "embedders.py", "rerankers.py", "backfill.py",
-    # S1 — web sources: the crawl, its HTTP, sitemaps
-    "web.py", "fetch.py", "sitemaps.py",
+    # S1 — web sources: the crawl, its HTTP, sitemaps, the headless render of a JavaScript-only page (F1632 c)
+    "web.py", "fetch.py", "sitemaps.py", "render.py",
     # R1 — the Retrieve and Ingest workflow steps
     "workflow_steps.py",
     # B2b — budgets, cost previews and costs, presets

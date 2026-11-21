@@ -426,6 +426,7 @@
             "switch_expression": "state.answer_pack.needs or \"workspace\"",
             "switch_cases": {
                 "none": "step_answer_talk",
+                "pages": "step_answer_pages",
                 "help": "step_answer_help",
                 "workspace": "step_answer_workspace"
             },
@@ -464,6 +465,39 @@
             "pass_images": true,
             "position_x": 300,
             "position_y": 750
+        },
+        {
+            "id": "step_answer_pages",
+            "name": "Read the Pages",
+            "type": "agent",
+            "agent_id": "agent_native_builder_page_reader",
+            "prompt_template": "Read the pages the person named and answer them here, once, as they asked: a summary, a comparison, what a page says. Read only those pages, and answer from what they say.\n\nWhat they asked:\n{{ state.user_message }}\n\nThe conversation so far:\n{{ state.chat_history }}\n\n{{ state.answer_pack.pack }}",
+            "route_map": {},
+            "route_descriptions": {},
+            "evaluator_prompt": null,
+            "model": null,
+            "parallel_branches": [],
+            "merge_strategy": "list",
+            "loop_count": 3,
+            "loop_step_ids": [],
+            "transform_code": null,
+            "human_prompt": null,
+            "human_fields": [],
+            "human_channel_id": null,
+            "human_timeout_seconds": 3600,
+            "input_keys": [],
+            "output_key": "summary",
+            "forced_tool": null,
+            "max_turns": 40,
+            "timeout_seconds": 600,
+            "allowed_tools": [
+                "read_page"
+            ],
+            "next_step_id": "step_answer_checked",
+            "max_iterations": 3,
+            "pass_images": false,
+            "position_x": 300,
+            "position_y": 900
         },
         {
             "id": "step_answer_help",

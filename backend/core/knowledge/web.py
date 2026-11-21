@@ -822,6 +822,7 @@ class _Crawl:
     took: list[str] = field(default_factory=list)  # addresses taken, in order
     landed: set[str] = field(default_factory=set)  # redirect and canonical addresses pages landed on
     sitemap_urls: list[str] | None = None  # a sitemap's pages, once listed
+    renders: int = 0  # pages this crawl rendered in headless Chromium (F1632 c), at most render.MAX_RENDERS_PER_CRAWL
     sitemap_next: int = 0  # how far down them it got
     resumed: bool = False
     max_pages: int = 0
@@ -1396,13 +1397,30 @@ async def _page(c: _Crawl, url: str, *, links_needed: bool) -> PageLinks | None:
                 await _outcome(c, url, "failed", "fetch_failed", f"The page is gone: the server answered {got.status}.",
                                http_status=got.status)
         return None
+    from core.web_refusals import bot_check, sign_in_wall
+
     if not 200 <= got.status < 300:
         c.counts["failed"] += 1
         c.note(f"{url} answered {got.status}.")
         c.keep(held)
         if held is None and named:
-            await _outcome(c, url, "failed", "fetch_failed", f"The server answered {got.status}.",
-                           http_status=got.status)
+            # A sign-in wall, then a named bot check with the way on (F1632); otherwise the status's plain words, with
+            # the wait a 429 or 503 asked for when it was longer than the fetcher waits.
+            from core.knowledge.fetch import retry_after_s
+
+            wait = retry_after_s(got.headers) if got.status in (429, 503) else None
+            plain = (f"The server answered {got.status} and asked to wait {wait:g} seconds; it is tried again at "
+                     "the next crawl." if wait else f"The server answered {got.status}.")
+            said = sign_in_wall(url, str(got.url), got.status) or bot_check(got.status, got.headers) or plain
+            await _outcome(c, url, "failed", "fetch_failed", said, http_status=got.status)
+        return None
+    if (wall := sign_in_wall(url, str(got.url), got.status) or bot_check(got.status, got.headers)) is not None:
+        # A private page arrives as the site's sign-in page, or a challenge as a 2xx (F1632): never written as the page.
+        c.counts["failed"] += 1
+        c.note(wall)
+        c.keep(held)
+        if held is None and named:
+            await _outcome(c, url, "failed", "fetch_failed", wall, http_status=got.status)
         return None
 
     final = normalize_url(got.url)
@@ -1444,7 +1462,22 @@ async def _page(c: _Crawl, url: str, *, links_needed: bool) -> PageLinks | None:
             elif named:
                 await _outcome(c, url, "skipped", "excluded", "The page asks not to be indexed (noindex).")
             return links
-        if not extract.markdown.strip():
+        from core.knowledge.parse.html import has_real_text
+
+        if not has_real_text(extract.markdown) and (shown := await _rendered(c, final)) is not None:
+            # Its words are written by JavaScript (F1632 c): read as headless Chromium rendered it, as SynapseBot.
+            if (wall := sign_in_wall(url, shown.url, None)) is not None:
+                c.counts["failed"] += 1
+                c.keep(held)
+                if held is None and named:
+                    await _outcome(c, url, "failed", "fetch_failed", wall)
+                return links
+            rendered_links, rendered = await asyncio.to_thread(_render, shown.html.encode("utf-8"),
+                                                               "text/html; charset=utf-8", final,
+                                                               got.headers.get("x-robots-tag"))
+            if has_real_text(rendered.markdown) and not rendered_links.noindex:
+                links, extract = rendered_links, rendered
+        if not has_real_text(extract.markdown):  # a lone skip link is no content (F1660): the page needs JavaScript
             c.counts["skipped"] += 1
             c.keep(held)
             if held is None and named:
@@ -1465,6 +1498,21 @@ async def _page(c: _Crawl, url: str, *, links_needed: bool) -> PageLinks | None:
         return None
     await _write(c, page_rel(final, ext=ext), final, got.body, validator_of(got.headers), media or None)
     return None
+
+
+async def _rendered(c: _Crawl, url: str):
+    """`url` rendered in headless Chromium as SynapseBot, once, within the crawl's cap (F1632 c), or None: Chromium is
+    not here, the render failed, or the crawl has rendered its share."""
+    from core.knowledge import fetch as F, render
+
+    if c.renders >= render.MAX_RENDERS_PER_CRAWL:
+        return None
+    c.renders += 1
+    try:
+        return await render.render(url, user_agent=F.USER_AGENT)
+    except Exception as exc:  # noqa: BLE001 — a render that fails is the page as the plain fetch read it
+        _log.info("the render of %s failed: %s", url, exc)
+        return None
 
 
 async def _write(c: _Crawl, rel: str, url: str, data: bytes, validator: str | None, mime: str | None) -> None:

@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-Decision = Literal["allow", "confirm", "deny"]
+Decision = Literal["allow", "confirm", "deny", "check"]
 
 #: The categories a policy can speak about, riskiest first — the first one a
 #: tool matches decides.
@@ -50,9 +50,22 @@ _VALID: frozenset[str] = frozenset(("allow", "confirm", "deny"))
 #: when it builds the agent. A visitor's `confirm` is a `deny` for these keys too (the rewrites map every key).
 TOOL_KEY = "tool:"
 
+#: One tool's "ask unless it only reads" (F1679): decided each call from the tool's real declaration, as a build that
+#: could read it decides (`builder_guard.acts`). Saved for a tool whose app wasn't connected when it was built, so
+#: what it does couldn't be read then; a person may choose it too. A tool key's decision only, never a category's.
+CHECK = "check"
+#: A visitor's `check` (`as_visitor`): its ask is a refusal, as a visitor's `confirm` is. Never stored.
+_CHECK_DENY = "check_deny"
+_TOOL_VALID: frozenset[str] = frozenset((*_VALID, CHECK, _CHECK_DENY))
+
 
 def _is_tool_key(key) -> bool:
     return isinstance(key, str) and key.startswith(TOOL_KEY) and len(key) > len(TOOL_KEY)
+
+
+def as_visitor(policy: dict) -> dict:
+    """A policy as a visitor's turn holds it: nobody is there to approve, so every ask is a refusal, a `check`'s too."""
+    return {c: ("deny" if d == "confirm" else _CHECK_DENY if d == CHECK else d) for c, d in policy.items()}
 
 
 def resolve_policy(agent: dict | None, settings: dict | None) -> dict[str, Decision]:
@@ -63,7 +76,7 @@ def resolve_policy(agent: dict | None, settings: dict | None) -> dict[str, Decis
         if not isinstance(source, dict):
             continue
         for category, decision in source.items():
-            if (category in CATEGORIES or _is_tool_key(category)) and decision in _VALID:
+            if (category in CATEGORIES and decision in _VALID) or (_is_tool_key(category) and decision in _TOOL_VALID):
                 policy[category] = decision
     return policy
 
@@ -80,6 +93,15 @@ def decide(tool, policy: dict[str, Decision]) -> tuple[Decision, str]:
     own = policy.get(f"{TOOL_KEY}{name}") if name else None
     if own in _VALID:
         return own, "tool"
+    if own in (CHECK, _CHECK_DENY):
+        # Decided now, from what the tool declares (F1679): it runs when it only reads, and asks (a visitor: is
+        # refused) for anything else, saying why as its category does.
+        from core.builder_guard import acts
+
+        if not acts(name, tool):
+            return "allow", "read_only"
+        _, category = decide(tool, {k: v for k, v in policy.items() if k != f"{TOOL_KEY}{name}"})
+        return ("confirm" if own == CHECK else "deny"), (category if category in REASONS else "undeclared")
 
     hints = tool_hints(tool, trusted=getattr(tool, "trusted", True))
 
@@ -133,5 +155,6 @@ def clean_policy(value) -> dict[str, Decision]:
     if not isinstance(value, dict):
         return {}
     out = {c: value[c] for c in CATEGORIES if value.get(c) in _VALID}
-    out.update({k: value[k] for k in sorted(value) if _is_tool_key(k) and value[k] in _VALID})
+    # A tool's `check` is stored too (F1679); a visitor's form of it never is.
+    out.update({k: value[k] for k in sorted(value) if _is_tool_key(k) and value[k] in (*_VALID, CHECK)})
     return out

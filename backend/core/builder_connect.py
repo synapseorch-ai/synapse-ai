@@ -244,12 +244,12 @@ async def _channel(args: dict, options: Options) -> dict:
     out: dict[str, Any] = {"platform": platform, "label": entry.get("label") or platform.title(),
                            "name": (args.get("name") or "").strip()[:100] or entry.get("label") or platform}
     if wanted := (args.get("agent") or "").strip():
-        from core.builder_actions import _NotOffered, _pick
+        from core.builder_actions import _NotOffered, _pick_agent
         from core.store.resources import load_agents
 
         agents = [a for a in await load_agents() if not a.get("system") and a.get("type") != "builder"]
         try:
-            agent = _pick(agents, wanted, "agent", "Topic `agents` lists them.")
+            agent = await _pick_agent(agents, wanted)
         except _NotOffered as why:
             return {"error": str(why)}
         out["agent"] = {"id": agent["id"], "name": agent.get("name") or agent["id"]}

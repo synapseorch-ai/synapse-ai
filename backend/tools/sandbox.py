@@ -176,6 +176,13 @@ async def list_tools() -> list[Tool]:
                             "or a relative path inside the vault."
                         ),
                     },
+                    "missing_ok": {
+                        "type": "boolean",
+                        "description": (
+                            "True to read a file that is not there yet as empty (content \"\", missing true) instead of "
+                            "failing: for a file a later step writes, which a workflow's first run has not written yet."
+                        ),
+                    },
                 },
                 "required": ["path"],
             },
@@ -417,6 +424,9 @@ def _handle_read(args: dict) -> list[TextContent]:
         return _err("Invalid path or path escapes the vault")
     _vault().ensure_local(target)
     if not target.exists():
+        if args.get("missing_ok") is True:
+            # A file a later step writes, read before its first write (F1692): empty, and said as not there yet.
+            return _ok({"path": _rel(target), "content": "", "size": 0, "missing": True})
         return _err(f"File not found: {_rel(target)}")
     if target.is_dir():
         return _err("Path is a directory. Use vault_list instead.")

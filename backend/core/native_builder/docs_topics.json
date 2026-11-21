@@ -1,5 +1,5 @@
 {
- "commit": "82e443441688987a2868aa39e07c0a6e24c31d60",
+ "commit": "6a91a0741fbb2a6fb7890f12d7ba2248fa6ffc4f",
  "pages": [
   {
    "description": "AI automation without the surprises. Describe a recurring job in plain words, and get a workflow you can read, that runs the same way every time and checks with you before anything goes out.",
@@ -32,24 +32,24 @@
      "heading": "Rely on it"
     },
     {
-     "anchor": "what-you-can-count-on-what-makes-synapse-different",
+     "anchor": "what-makes-synapse-different",
      "excerpt": "",
-     "heading": "What you can count on [#what-makes-synapse-different]"
+     "heading": "What you can count on"
     },
     {
-     "anchor": "same-path-every-run-workflows-that-do-exactly-what-you-designed",
+     "anchor": "workflows-that-do-exactly-what-you-designed",
      "excerpt": "A workflow is a fixed path of steps, and execution follows it — no detours the model invents on the way. Where the next action is already known, Tool and LLM steps skip the agent loop entirely: no reasoning overhead, the same shape of output every time, and far cheaper. When a step fails, the run says so instead of carrying on as if it worked.",
-     "heading": "Same path, every run [#workflows-that-do-exactly-what-you-designed]"
+     "heading": "Same path, every run"
     },
     {
-     "anchor": "nothing-goes-out-without-a-yes-never-blocked-on-a-human-decision",
+     "anchor": "never-blocked-on-a-human-decision",
      "excerpt": "Human steps pause a run and wait — for minutes or for days — then resume exactly where they stopped when someone answers, in the app or from a chat app. Runs survive restarts, and on Cloud, time spent waiting for a person never costs a credit.",
-     "heading": "Nothing goes out without a yes [#never-blocked-on-a-human-decision]"
+     "heading": "Nothing goes out without a yes"
     },
     {
-     "anchor": "the-bill-stops-where-you-set-it-cut-costs-without-cutting-quality",
+     "anchor": "cut-costs-without-cutting-quality",
      "excerpt": "Every step names its model. A small, fast one routes and classifies; a strong one handles only the steps that need judgement; and some steps need no model at all. On Cloud, a plan stops at its allowance, and nothing is billed past it; managed models draw from a prepaid wallet.",
-     "heading": "The bill stops where you set it [#cut-costs-without-cutting-quality]"
+     "heading": "The bill stops where you set it"
     },
     {
      "anchor": "yours-to-keep",
@@ -57,9 +57,9 @@
      "heading": "Yours to keep"
     },
     {
-     "anchor": "any-model-switch-any-time-no-lock-in-on-models",
+     "anchor": "no-lock-in-on-models",
      "excerpt": "Fourteen-plus hosted providers, local models through Ollama, and CLI mode for Claude, Gemini and Codex with no API key at all. Switch an agent's model in the middle of a conversation and it keeps its prompt, memory, tools and plan. On Cloud, managed models need no key.",
-     "heading": "Any model, switch any time [#no-lock-in-on-models]"
+     "heading": "Any model, switch any time"
     },
     {
      "anchor": "turn-anything-into-a-tool",
@@ -67,9 +67,9 @@
      "heading": "Turn anything into a tool"
     },
     {
-     "anchor": "what-people-build-what-can-you-build-with-synapse",
+     "anchor": "what-can-you-build-with-synapse",
      "excerpt": "} title=\"Inbox triage\" description=\"Classify each message, escalate the urgent ones and draft the reply — you approve it before it goes.\" /> } title=\"Reports and briefs\" description=\"The weekly report, the market brief, the competitor watch: the same shape every time, reviewed before it is filed.\" /> } title=\"Scheduled automation\" href=\"/integrations/scheduling\" description=\"Runs every morning…",
-     "heading": "What people build [#what-can-you-build-with-synapse]"
+     "heading": "What people build"
     },
     {
      "anchor": "two-ways-to-run-it",
@@ -82,14 +82,14 @@
      "heading": "Key concepts"
     },
     {
-     "anchor": "capabilities-capabilities-at-a-glance",
+     "anchor": "capabilities-at-a-glance",
      "excerpt": "| Capability | Detail | |---|---| | Synapse AI | Describe what you want; it designs and builds the workflow | | Team agents | A lead hands work to its members — one at a time or as a team working in parallel — and answers with what they found | | Multi-model workflows | A model per step — mix hosted, local and CLI models in one run | | Workflows as agents | Promote any workflow to an agent; nest…",
-     "heading": "Capabilities [#capabilities-at-a-glance]"
+     "heading": "Capabilities"
     },
     {
-     "anchor": "next-quick-links",
+     "anchor": "quick-links",
      "excerpt": "} title=\"Cloud vs self-host\" href=\"/getting-started/cloud-or-self-host\" description=\"Pick a path.\" /> } title=\"Guides\" href=\"/guides\" description=\"Build real things step by step, on one example workspace.\" /> } title=\"Agents\" href=\"/agents/overview\" description=\"System prompts, tools and a model of their own.\" /> } title=\"Workflows\" href=\"/orchestrations/overview\" description=\"Multi-step…",
-     "heading": "Next [#quick-links]"
+     "heading": "Next"
     }
    ],
    "slug": "/",
@@ -126,9 +126,9 @@
      "heading": "Team"
     },
     {
-     "anchor": "browser-browser",
+     "anchor": "browser",
      "excerpt": "Works in a browser inside Synapse while you watch: it reads and clicks, payments are always yours, and it presses Submit or Send only when you've asked it to. It holds every browser tool beside its own tools. Its Browser section sets how it works the page (Reads only, the default, or Works with you), the sites it may use and the sessions it signs in with, and its actions per task. See A Browser…",
-     "heading": "Browser [#browser]"
+     "heading": "Browser"
     },
     {
      "anchor": "helpers-splitting-work-without-a-team-agent",
@@ -387,14 +387,14 @@
      "heading": "Session memory"
     },
     {
-     "anchor": "when-a-conversation-outgrows-the-model-context-window-limits",
+     "anchor": "context-window-limits",
      "excerpt": "Long conversations eventually exceed the context window. Auto context compaction is on by default and fires at autocompactthreshold (80,000 characters), first by trimming the oldest tool outputs and then, if that is not enough, by summarising. The pre-compaction history is archived to the vault, so nothing is lost. ---",
-     "heading": "When a conversation outgrows the model [#context-window-limits]"
+     "heading": "When a conversation outgrows the model"
     },
     {
-     "anchor": "vault-as-explicit-memory-vault-as-external-memory",
+     "anchor": "vault-as-external-memory",
      "excerpt": "For material you curate rather than material the agent notices — documents, reference files — use the vault, and make a folder of documents searchable as a knowledge base. Reference a vault file from a system prompt and it is loaded as context every request: Agents write to it with the vault tools. See the vault tool. ---",
-     "heading": "Vault as explicit memory [#vault-as-external-memory]"
+     "heading": "Vault as explicit memory"
     },
     {
      "anchor": "which-to-use",
@@ -749,7 +749,7 @@
      "heading": "POST /api/v1/chat/stream"
     },
     {
-     "anchor": "request",
+     "anchor": "request-1",
      "excerpt": "Same as /chat — same fields, same auth.",
      "heading": "Request"
     },
@@ -759,7 +759,7 @@
      "heading": "SSE Event Stream"
     },
     {
-     "anchor": "curl-example",
+     "anchor": "curl-example-1",
      "excerpt": "Example stream output:",
      "heading": "cURL example"
     },
@@ -774,14 +774,14 @@
      "heading": "The turn is not the connection"
     },
     {
-     "anchor": "post-apiv1chat-cancel",
+     "anchor": "post-apiv1chatsession_idcancel",
      "excerpt": "Stop the turn running in a session. stopped is false when nothing was running — the turn had already finished. That is not an error. A turn inside a long model call stops when that call returns; its stream ends with cancelled, then done. ---",
      "heading": "POST /api/v1/chat/ /cancel"
     },
     {
-     "anchor": "post-apiv1chat-approve-approve",
+     "anchor": "approve",
      "excerpt": "Answer the tool call a conversation stopped on (status: \"awaitingapproval\"), and carry the turn on. The answer is a stream, in the same events as /chat/stream. | Field | Type | Required | Description | |---|---|---|---| | approve | boolean | Yes | true runs the call; false refuses it | | reason | string | No | Why it was refused — the agent is told | | approvalid | string | No | The approvalid…",
-     "heading": "POST /api/v1/chat/ /approve [#approve]"
+     "heading": "POST /api/v1/chat/ /approve"
     },
     {
      "anchor": "get-apiv1agents",
@@ -789,7 +789,7 @@
      "heading": "GET /api/v1/agents"
     },
     {
-     "anchor": "get-apiv1agents",
+     "anchor": "get-apiv1agentsagent_id",
      "excerpt": "Get details for a specific agent. Returns 404 if there is no agent with that ID, or if it is one of Synapse AI's own.",
      "heading": "GET /api/v1/agents/"
     }
@@ -877,9 +877,9 @@
      "heading": ""
     },
     {
-     "anchor": "connect-claude-by-signing-in-synapseorch-cloud-claude",
+     "anchor": "claude",
      "excerpt": "Claude — claude.ai, the Claude desktop app and Claude Code — connects to SynapseOrch Cloud by signing in, with no key to make or paste. From a chat, Claude can then run your workflows, answer what they ask, search your knowledge bases, and build or change agents and workflows, as far as you allow.",
-     "heading": "Connect Claude by signing in (SynapseOrch Cloud) [#claude]"
+     "heading": "Connect Claude by signing in (SynapseOrch Cloud)"
     },
     {
      "anchor": "in-claudeai-and-the-claude-desktop-app",
@@ -892,9 +892,9 @@
      "heading": "In Claude Code"
     },
     {
-     "anchor": "what-you-allow-consent",
+     "anchor": "consent",
      "excerpt": "The consent screen names the app and the address it sends you back to. An app SynapseOrch has not verified is shown by that address rather than by the name it gave itself, so continue only if you started the connection there. Workspace — the workspace the app connects to: any you belong to, picked from a list if you have several. Then what it may do, as you, on the SynapseOrch MCP server. Each is…",
-     "heading": "What you allow [#consent]"
+     "heading": "What you allow"
     },
     {
      "anchor": "once-its-connected",
@@ -1045,12 +1045,12 @@
      "heading": "GET /api/v1/orchestrations"
     },
     {
-     "anchor": "get-apiv1orchestrations",
+     "anchor": "get-apiv1orchestrationsorch_id",
      "excerpt": "Get one workflow's definition: its steps and how they connect, the entry step, the state schema and the guardrails. Returns 404 if there is no workflow with that ID. Every step carries all of its fields, including those left at their defaults, so a step is much longer than shown here. Step fields are described in Step Types. ---",
      "heading": "GET /api/v1/orchestrations/"
     },
     {
-     "anchor": "post-apiv1orchestrations-run",
+     "anchor": "post-apiv1orchestrationsorch_idrun",
      "excerpt": "Start a workflow and wait for it to finish or pause (synchronous).",
      "heading": "POST /api/v1/orchestrations/ /run"
     },
@@ -1075,9 +1075,9 @@
      "heading": "Response — failed"
     },
     {
-     "anchor": "post-apiv1orchestrations-runstream-streaming",
+     "anchor": "streaming",
      "excerpt": "Start a workflow and receive every event as Server-Sent Events. The request body is the same as /run.",
-     "heading": "POST /api/v1/orchestrations/ /run/stream [#streaming]"
+     "heading": "POST /api/v1/orchestrations/ /run/stream"
     },
     {
      "anchor": "sse-event-types",
@@ -1085,37 +1085,37 @@
      "heading": "SSE event types"
     },
     {
-     "anchor": "get-apiv1orchestrationsruns-read",
+     "anchor": "read",
      "excerpt": "A run's state, and its result once it has ended. This is the way back for a caller whose /run/stream or /resume/stream connection dropped: the run carried on, and this returns what the stream would have ended with. The answer has the shapes of /run: | status | Also carries | |---|---| | completed, failed, cancelled | response, sharedstate, stephistory — the same fields /run returns for that…",
-     "heading": "GET /api/v1/orchestrations/runs/ [#read]"
+     "heading": "GET /api/v1/orchestrations/runs/"
     },
     {
-     "anchor": "get-apiv1orchestrationsruns-list-runs",
+     "anchor": "list-runs",
      "excerpt": "The workspace's recent runs, newest first. Runs of Synapse AI's own workflow, and of workflows deleted since, are left out, and so is a nested run — it is part of the run that started it. | Query | Default | Description | |---|---|---| | limit | 20 | How many runs, 1–200 | | status | — | Only runs with this status: running, paused, completed, failed or cancelled, and on SynapseOrch Cloud queued |…",
-     "heading": "GET /api/v1/orchestrations/runs [#list-runs]"
+     "heading": "GET /api/v1/orchestrations/runs"
     },
     {
-     "anchor": "get-apiv1orchestrationsruns-events-events",
+     "anchor": "events",
      "excerpt": "The run's recorded events, oldest first — the run log, as JSON. Pass after (an event id) to read only what came after it; the answer's lastid is the value to pass next time. limit caps the page (default and most 5000). An unknown runid returns 404. ---",
-     "heading": "GET /api/v1/orchestrations/runs/ /events [#events]"
+     "heading": "GET /api/v1/orchestrations/runs/ /events"
     },
     {
-     "anchor": "get-apiv1orchestrationsruns-eventsstream-events-stream",
+     "anchor": "events-stream",
      "excerpt": "The same events as a stream: everything after after (or the Last-Event-ID header), then the run followed live. Each frame carries an id: line, so a client that drops can reconnect from the last one it saw. streamcomplete ends the stream once the run has ended. Open it at any point in a run's life, as often as you like — it does not affect the run. Read it with fetch and the Authorization header…",
-     "heading": "GET /api/v1/orchestrations/runs/ /events/stream [#events-stream]"
+     "heading": "GET /api/v1/orchestrations/runs/ /events/stream"
     },
     {
-     "anchor": "follow-a-run-from-a-react-app-react-hook",
+     "anchor": "react-hook",
      "excerpt": "A hook that follows a run live through /api/v2/orchestrations/runs/ /stream and reconnects where it dropped, sending the last id: it saw as Last-Event-ID. Read streams with fetch, not EventSource: the key goes in the Authorization header, which EventSource cannot send, and a key in the URL is refused. Keep the key on a server — a browser app calls your own backend, which adds it. Self-hosted…",
-     "heading": "Follow a run from a React app [#react-hook]"
+     "heading": "Follow a run from a React app"
     },
     {
-     "anchor": "post-apiv1orchestrationsruns-resume-resume",
+     "anchor": "resume",
      "excerpt": "Submit the human's answer and continue a paused run (synchronous).",
-     "heading": "POST /api/v1/orchestrations/runs/ /resume [#resume]"
+     "heading": "POST /api/v1/orchestrations/runs/ /resume"
     },
     {
-     "anchor": "request",
+     "anchor": "request-1",
      "excerpt": "response is required: an object or a plain string. questionid names which of a Team step's questions it answers; an id the run is not asking is refused. A Human step with no fields holds a plain answer as its text — \"yes\" and both store yes — and a step with fields holds the object as sent, keyed by the fields' names. It is written to the Human step's output key and to humanresponse — see Human…",
      "heading": "Request"
     },
@@ -1125,14 +1125,14 @@
      "heading": "Response"
     },
     {
-     "anchor": "post-apiv1orchestrationsruns-resumestream",
+     "anchor": "post-apiv1orchestrationsrunsrun_idresumestream",
      "excerpt": "Resume with an SSE stream instead of a synchronous response. Same request body as /resume, same events as /run/stream. ---",
      "heading": "POST /api/v1/orchestrations/runs/ /resume/stream"
     },
     {
-     "anchor": "post-apiv1orchestrationsruns-cancel-cancel",
+     "anchor": "cancel",
      "excerpt": "Stop a run. stopped is false for a run that had already finished; it keeps the status it finished with. An unknown runid returns 404. ---",
-     "heading": "POST /api/v1/orchestrations/runs/ /cancel [#cancel]"
+     "heading": "POST /api/v1/orchestrations/runs/ /cancel"
     },
     {
      "anchor": "complete-example-run--human-gate--resume",
@@ -1945,24 +1945,24 @@
      "heading": ""
     },
     {
-     "anchor": "start-synapse-start",
+     "anchor": "synapse-start",
      "excerpt": "Starts the backend API and the frontend web UI, prints the address — with login off, the access link — and opens a browser on it: The two servers' output goes to ~/.synapse/logs/backend.log and frontend.log — see logs. If one does not come up, start says which, with the last lines of its log. In a terminal, with nothing set up yet, it brings a 1.x install's data across, then runs setup only if…",
-     "heading": "start [#synapse-start]"
+     "heading": "start"
     },
     {
-     "anchor": "stop-synapse-stop",
-     "excerpt": "Stops both processes, found through the PID files start wrote. Nothing to pass.",
-     "heading": "stop [#synapse-stop]"
+     "anchor": "synapse-stop",
+     "excerpt": "Stops both processes, found through the PID files start wrote, and everything each of them started, such as the web server's own workers, so a port is free once it says so. Nothing to pass. It prints two lines (since 2.1.1): The second line is Synapse was not running. when nothing was, or Could not stop: the backend (pid 1234). naming what is still running. A PID file left by another program, one…",
+     "heading": "stop"
     },
     {
-     "anchor": "status-synapse-status",
+     "anchor": "synapse-status",
      "excerpt": "Reports whether each process is running: A process that is not up reads not running, or stale pid 1234 when its PID file names a process that is gone. --json prints one line with the version, the home folder, each process, the address, whether the UI answers (ready), whether login is on, and the access link.",
-     "heading": "status [#synapse-status]"
+     "heading": "status"
     },
     {
-     "anchor": "logs-synapse-logs",
+     "anchor": "synapse-logs",
      "excerpt": "Prints the last lines of a log — backend (the default), frontend or install, the installer's own. | Flag | Does | |---|---| | -n N, --lines N | How many lines (default 50) | | -f, --follow | Keep printing new lines until Ctrl+C | The logs are in ~/.synapse/logs/, kept to three files of 10 MB each.",
-     "heading": "logs [#synapse-logs]"
+     "heading": "logs"
     },
     {
      "anchor": "restart",
@@ -1970,14 +1970,14 @@
      "heading": "restart"
     },
     {
-     "anchor": "autostart-synapse-autostart",
-     "excerpt": "synapse autostart on starts SynapseOrch in the background when you log in; off stops that; status prints on or off. It is the question the installer asks. | System | What it adds | |---|---| | Linux | A systemd user unit, ~/.config/systemd/user/synapse-ai.service | | macOS | A LaunchAgent, ~/Library/LaunchAgents/com.synapse-ai.server.plist, logging to ~/.synapse/logs/launchd.log | | Windows | A…",
-     "heading": "autostart [#synapse-autostart]"
+     "anchor": "synapse-autostart",
+     "excerpt": "synapse autostart on starts SynapseOrch in the background again after a restart; off stops that; status prints on or off. It is the question the installer asks, and since 2.1.1 its answer is Yes unless you say no. In a CI run, a container, or where there is no service manager it stays off, and the end of the install says why and how to start SynapseOrch yourself. An upgrade never asks again and…",
+     "heading": "autostart"
     },
     {
-     "anchor": "setup-setup-wizard",
+     "anchor": "setup-wizard",
      "excerpt": "Runs the setup wizard in the terminal: the default agent's name, the AI to use — provider, key and model — and the backend and frontend ports. start runs it by itself the first time, in a terminal, when nothing is set up yet. synapse setup --apply - reads the settings as JSON on stdin instead, and writes only the keys it knows — what the installer uses. synapse setup --knowledge-models fetches…",
-     "heading": "setup [#setup-wizard]"
+     "heading": "setup"
     },
     {
      "anchor": "migrate",
@@ -1985,14 +1985,14 @@
      "heading": "migrate"
     },
     {
-     "anchor": "upgrade-synapse-upgrade",
+     "anchor": "synapse-upgrade",
      "excerpt": "Installs the newest release over this one; your data and settings stay. It stops SynapseOrch, backs up the database to ~/.synapse/backups/, installs — with that release's own installer for a one-command install, with pip for a pip install — updates the database, and starts SynapseOrch again if it was running. It keeps the five newest backups. The optional parts installed stay installed. | Flag |…",
-     "heading": "upgrade [#synapse-upgrade]"
+     "heading": "upgrade"
     },
     {
-     "anchor": "uninstall-synapse-uninstall",
+     "anchor": "synapse-uninstall",
      "excerpt": "Stops SynapseOrch, removes its start-on-login entry, uninstalls the program and deletes ~/.synapse. It asks you to type yes first. | Flag | Does | |---|---| | --keep-data | Keep your data: var/ (the database, the vault, run logs), .env, backups/, and the CLI's cli.json and chathistory | Without --keep-data , your data goes too }> An installed SynapseOrch keeps everything in ~/.synapse — your…",
-     "heading": "uninstall [#synapse-uninstall]"
+     "heading": "uninstall"
     },
     {
      "anchor": "reset-password",
@@ -2000,9 +2000,9 @@
      "heading": "reset-password"
     },
     {
-     "anchor": "access-link-access-link",
+     "anchor": "access-link",
      "excerpt": "Prints the link that opens Synapse while login is off — the access link start printed. | Flag | Does | |---|---| | --rotate | Make a new link. It applies at the next restart (synapse restart), and everyone signed in with the old one is signed out then | With login on, it says so instead: the link does not open Synapse while a password does.",
-     "heading": "access-link [#access-link]"
+     "heading": "access-link"
     },
     {
      "anchor": "api-keys",
@@ -2010,9 +2010,9 @@
      "heading": "api-keys"
     },
     {
-     "anchor": "driving-a-synapse-client",
+     "anchor": "client",
      "excerpt": "The rest of synapse does what an API key does, on this machine's Synapse, another install, or SynapseOrch Cloud: the v1 API's routes, and the MCP server's door for what has no route (building, deletes, Boards, what waits, activity and usage). On Cloud, building and deleting need a key made with Can also build. synapse --help lists the commands in sections and ends with where to start: | Section |…",
-     "heading": "Driving a Synapse [#client]"
+     "heading": "Driving a Synapse"
     },
     {
      "anchor": "profile",
@@ -2494,14 +2494,14 @@
      "heading": "Object storage"
     },
     {
-     "anchor": "upgrading-from-synapsedatadir",
+     "anchor": "upgrading-from-synapse_data_dir",
      "excerpt": "Before 2.0 a single DATADIR held everything — JSON documents, tenant content and real directories in one tree. It is no longer a runtime path. On first boot SynapseOrch looks for an existing data directory and imports it into the store; see Store and upgrade. SYNAPSEDATADIR is still read for exactly that: if your deployment sets it, the importer uses it to find the tree to import. It configures…",
      "heading": "Upgrading from SYNAPSEDATADIR"
     },
     {
-     "anchor": "ports-and-urls-ports",
+     "anchor": "ports",
      "excerpt": "SYNAPSEBACKENDPORT — the FastAPI backend. Default 8765. SYNAPSEFRONTENDPORT — the Next.js frontend. Default 3000. BACKENDURL — the backend as the Next.js server sees it, read when that server starts. Unset, it is http://127.0.0.1: and the port in SYNAPSEBACKENDPORT, or 8765 if that is unset too. Changing it needs a restart of the frontend, not a rebuild. Set it for Docker or split deployments…",
-     "heading": "Ports and URLs [#ports]"
+     "heading": "Ports and URLs"
     },
     {
      "anchor": "secrets",
@@ -2509,9 +2509,9 @@
      "heading": "Secrets"
     },
     {
-     "anchor": "egress-egress-allow-hosts",
+     "anchor": "egress-allow-hosts",
      "excerpt": "EGRESSALLOWHOSTS — comma-separated host names that custom HTTP tools, the web scraper and the PDF and Excel parsers and a knowledge base's web crawls may call even though they resolve to loopback or private address space. Empty by default, which refuses them all. Use it for a service on your own network — a self-hosted n8n, an intranet API — and name the host as the tool's URL spells it: A…",
-     "heading": "Egress [#egress-allow-hosts]"
+     "heading": "Egress"
     },
     {
      "anchor": "timeouts",
@@ -2529,14 +2529,14 @@
      "heading": "Telemetry"
     },
     {
-     "anchor": "the-clis-client-commands-cli",
+     "anchor": "cli",
      "excerpt": "The CLI's commands that drive a Synapse — synapse run, synapse runs, synapse chat, synapse mcp and the rest — read these. The command line's --url and --api-key win over them. | Variable | Default | Effect | |---|---|---| | SYNAPSEAPIURL | This machine's backend | The Synapse to drive — an origin such as https://api.synapseorch.com; the CLI adds /api/v1 | | SYNAPSEAPIKEY | — | The API key to use.…",
-     "heading": "The CLI's client commands [#cli]"
+     "heading": "The CLI's client commands"
     },
     {
-     "anchor": "knowledge-knowledge",
+     "anchor": "knowledge",
      "excerpt": "How knowledge bases read files. Each file is read in a separate process, which sees these variables and a short list of others — never a database URL or a provider key. | Variable | Default | | |---|---|---| | SYNAPSEKNOWLEDGEPARSETIMEOUTS | 1800 | Seconds one file may take to read; the pages read by then are kept | | SYNAPSEKNOWLEDGEPARSEMEMORYMB | 1024 | Memory for reading one file | |…",
-     "heading": "Knowledge [#knowledge]"
+     "heading": "Knowledge"
     },
     {
      "anchor": "other",
@@ -2568,14 +2568,14 @@
      "heading": "Security"
     },
     {
-     "anchor": "the-access-link-the-access-link",
+     "anchor": "the-access-link",
      "excerpt": "With login off, Synapse still does not open for whoever can reach its port. It opens with a link carrying this install's access token, SYNAPSEACCESSTOKEN: http://localhost:3000/?token=…. - synapse start makes the token once, keeps it in the install's .env, opens the browser with the link, and prints it: Anyone with this link can use this Synapse. synapse access-link prints it again. - The Docker…",
-     "heading": "The access link [#the-access-link]"
+     "heading": "The access link"
     },
     {
-     "anchor": "calling-the-settings-api-from-a-script-calling-the-settings-api-from-a-script",
+     "anchor": "calling-the-settings-api-from-a-script",
      "excerpt": "A few settings have no field on these screens — promptcacheenabled and ollamabaseurl among them — and are set through the app's own settings API, POST /api/settings, on the app's port. It takes the same session the browser does, so sign the script in once and keep the cookie: The session lasts 7 days. What the API does with the body: - Only the fields you send change. A field the settings do not…",
-     "heading": "Calling the settings API from a script [#calling-the-settings-api-from-a-script]"
+     "heading": "Calling the settings API from a script"
     },
     {
      "anchor": "models",
@@ -2651,7 +2651,7 @@
      "heading": ""
     },
     {
-     "anchor": "the-syntax",
+     "anchor": "the---syntax",
      "excerpt": "One syntax for the three places you type a value that is not yet known — a custom HTTP tool's URL, headers and body; an agent's system prompt; a workflow step's prompt template. | Reference | Resolves to | |---|---| | { } | A variable from Settings → Variables | | { } | Workflow shared state | | { } · { } | Inside a tool: an input argument, or a path into one | | { } | Inside a tool: every…",
      "heading": "The { } syntax"
     },
@@ -2724,9 +2724,9 @@
      "heading": "How they work"
     },
     {
-     "anchor": "what-it-answers-what-it-answers",
+     "anchor": "what-it-answers",
      "excerpt": "A tool's editor has What it answers (since 2.1), after what the tool needs: the fields of the tool's answer, as a step's answer fields are, with the same rows to four levels, Paste an example and Paste a JSON Schema. Its output schema shows, read-only, the schema the fields make, which is what Save keeps. A schema set through the API or an import that fields can't hold is shown read-only, each…",
-     "heading": "What it answers [#what-it-answers]"
+     "heading": "What it answers"
     },
     {
      "anchor": "managing-custom-tools",
@@ -2945,9 +2945,9 @@
      "heading": "Golden sets"
     },
     {
-     "anchor": "scoring-earlier-runs-backfilling",
+     "anchor": "backfilling",
      "excerpt": "Binding a rubric to a workflow that already has history does not leave that history unscored. Pick the workflow: while nothing is scored yet, Score earlier runs judges its past runs against the rubric, so a floor or a baseline has something to work with immediately. In SynapseOrch Cloud the button is in the rubric pane.",
-     "heading": "Scoring earlier runs [#backfilling]"
+     "heading": "Scoring earlier runs"
     },
     {
      "anchor": "feedback",
@@ -3249,9 +3249,9 @@
      "heading": "If something was missed"
     },
     {
-     "anchor": "going-back-to-193-going-back",
+     "anchor": "going-back",
      "excerpt": "Nothing undoes an upgrade automatically, but the backup holds everything 1.x had: its data, logs and .env, with a manifest.json naming where each came from. To go back: 1. Run synapse stop. 2. Reinstall 1.9.3: 3. Stop the new, empty 1.9.3: synapse stop. 4. Unpack the newest ~/.synapse/backups/synapse-1..tar.gz and put each part back where its manifest.json says it came from. 5. Run synapse start.…",
-     "heading": "Going back to 1.9.3 [#going-back]"
+     "heading": "Going back to 1.9.3"
     },
     {
      "anchor": "docker-compose-and-source-checkouts",
@@ -3308,28 +3308,28 @@
    "sections": [
     {
      "anchor": "",
-     "excerpt": "SynapseOrch is an MCP server. Any MCP client — Claude Code, Claude Desktop, Codex, Cursor, VS Code, an agent you wrote — can connect to your workspace and use it: list its agents and workflows, run them, answer them when they stop for a person, search its knowledge bases, chat with its agents, and build. Every workflow you offer to MCP clients (the Offer to MCP clients switch in its settings) is…",
+     "excerpt": "SynapseOrch is an MCP server. Any MCP client — Claude Code, Claude Desktop, Codex, Cursor, VS Code, an agent you wrote — can connect to your workspace and use it: list its agents and workflows, run them, answer them when they stop for a person, search its knowledge bases, chat with its agents, and build. Every workflow you offer to MCP clients (the Offer to MCP clients switch in its settings, or…",
      "heading": ""
     },
     {
-     "anchor": "1-connect-from-home-in-one-click-from-home",
+     "anchor": "from-home",
      "excerpt": "Until a key has been used, Home has a card, Use Synapse from your AI tools, with a button for each tool: - Add to Cursor and Add to VS Code open the tool, which asks to add Synapse. Say yes, and it is connected. - Claude Code and Codex copy a command: paste it in a terminal, and the tool is connected. Each makes a key for that tool, named after it (Cursor, from Home), and shows it only there. A…",
-     "heading": "1. Connect from Home, in one click [#from-home]"
+     "heading": "1. Connect from Home, in one click"
     },
     {
-     "anchor": "2-or-set-it-up-in-settings-settings",
+     "anchor": "settings",
      "excerpt": "Settings → MCP server walks through it, in four steps: 1. Pick your AI tool: Claude Code, Claude Desktop, Codex, Cursor or VS Code. 2. Make a key for the tool, so you can remove it on its own later. It is filled into the setup and shown only on that page. Or paste a key you already have: it fills in the setup and isn't saved. On SynapseOrch Cloud, only an owner or admin makes keys, and a key…",
-     "heading": "2. Or set it up in Settings [#settings]"
+     "heading": "2. Or set it up in Settings"
     },
     {
-     "anchor": "what-to-ask-once-its-connected-what-to-ask",
+     "anchor": "what-to-ask",
      "excerpt": "| Ask | What it does | |---|---| | Run my \"Invoice follow-up\" workflow and tell me what it returned. | Every workflow you offer to MCP is a tool of its own. | | What is waiting for my approval? Approve the refund one. | Answers a run's questions and approvals, as you would in the app. | | Build an agent that sorts my support inbox by urgency. | Builds agents and workflows, when its key may build.…",
-     "heading": "What to ask once it's connected [#what-to-ask]"
+     "heading": "What to ask once it's connected"
     },
     {
-     "anchor": "3-see-what-it-can-do-tools",
+     "anchor": "tools",
      "excerpt": "The tools come in four groups: | Group | For | |---|---| | Read | Agents, workflows, tools, skills, schedules and runs; what waits on a person (listwaiting); activity, usage, boards and recordings — and, while Knowledge is on, listknowledgebases and searchknowledge | | Build | Creating and changing agents, workflows and their steps, HTTP and Python tools, skills, schedules (turning one on asks…",
-     "heading": "3. See what it can do [#tools]"
+     "heading": "3. See what it can do"
     },
     {
      "anchor": "4-run-a-workflow-and-answer-it",
@@ -4598,7 +4598,7 @@
     },
     {
      "anchor": "start-on-login-or-not",
-     "excerpt": "Start Synapse when you log in? — Yes registers it with launchd on macOS, or as a systemd user service on Linux. It is not asked on WSL, or on a Linux without a systemd user session. synapse autostart on turns it on later, where it is available.",
+     "excerpt": "Start Synapse when your computer starts? on Linux, Start Synapse when you log in? on macOS — Yes, the default since 2.1.1, registers it as a systemd user service on Linux, which starts at boot when your user may linger and otherwise when you log in, or with launchd on macOS. It is not asked on WSL, on a Linux without a systemd user session, in a container or in a CI run, and stays off there.…",
      "heading": "Start on login, or not"
     },
     {
@@ -4608,7 +4608,7 @@
     },
     {
      "anchor": "on-windows",
-     "excerpt": "Open PowerShell and paste: The same steps and the same questions. Everything goes in %USERPROFILE%\\.synapse. Start Synapse when you log in? adds a SynapseAI entry to your user's Run list. An older console draws the screen with plain characters instead of ✓ and the spinner.",
+     "excerpt": "Open PowerShell and paste: The same steps and the same questions. Everything goes in %USERPROFILE%\\.synapse. Start Synapse when you log in? (Yes by default) adds a SynapseAI entry to your user's Run list. An older console draws the screen with plain characters instead of ✓ and the spinner.",
      "heading": "On Windows"
     },
     {
@@ -4961,9 +4961,9 @@
      "heading": "At the limit"
     },
     {
-     "anchor": "the-monthly-model-allowance-the-free-plans-model-grant",
+     "anchor": "the-free-plans-model-grant",
      "excerpt": "Every plan, Free included, comes with a $2.00 monthly model allowance of SynapseOrch models, so you can try them without a card. It pays for any model offered, before your balance, and does not roll over. A balance you buy works on any model too.",
-     "heading": "The monthly model allowance [#the-free-plans-model-grant]"
+     "heading": "The monthly model allowance"
     },
     {
      "anchor": "keep-an-eye-on-it",
@@ -5005,7 +5005,7 @@
      "heading": "Importing"
     },
     {
-     "anchor": "via-the-ui",
+     "anchor": "via-the-ui-1",
      "excerpt": "1. Go to Settings → Import / Export and choose Import 2. Drop your export file on Drop your export file here (or click to browse) 3. Review the contents — workflows, agents, apps and tools 4. Click Import Now (or Configure Secrets → first, when the bundle needs secret values) Existing items with the same ID are updated. New items are created.",
      "heading": "Via the UI"
     },
@@ -5157,9 +5157,9 @@
      "heading": "Step 1 — Create a Google Cloud OAuth app"
     },
     {
-     "anchor": "step-2--paste-credentials-into-synapseorch-step-2--upload-credentials-to-synapse",
+     "anchor": "step-2--upload-credentials-to-synapse",
      "excerpt": "Go to Settings → Integrations. On the Google Workspace card, click + Paste credentials.json content, open the downloaded file, and paste its whole content. It is saved as soon as it is valid JSON. There is no file upload. To change the client later, use Replace / re-upload credentials.json.",
-     "heading": "Step 2 — Paste credentials into SynapseOrch [#step-2--upload-credentials-to-synapse]"
+     "heading": "Step 2 — Paste credentials into SynapseOrch"
     },
     {
      "anchor": "step-3--authenticate",
@@ -5246,9 +5246,9 @@
      "heading": "Microsoft Teams"
     },
     {
-     "anchor": "whatsapp-whatsapp",
+     "anchor": "whatsapp",
      "excerpt": "WhatsApp connects through Meta's WhatsApp Cloud API only: a Meta Business account and a verified number. 1. Create a Meta Developer App at developers.facebook.com, of type Business 2. Add the WhatsApp product, and pick a test or production number under Phone Numbers 3. Under WhatsApp → Configuration, set the webhook URL to https:// /api/messaging/whatsapp/webhook/ — the public address of the…",
-     "heading": "WhatsApp [#whatsapp]"
+     "heading": "WhatsApp"
     },
     {
      "anchor": "how-agents-respond",
@@ -5305,9 +5305,9 @@
      "heading": "Setup"
     },
     {
-     "anchor": "step-1--configure-n8n-in-synapseorch-settings-step-1--configure-n8n-in-synapse-settings",
+     "anchor": "step-1--configure-n8n-in-synapse-settings",
      "excerpt": "Go to Settings → Integrations and fill the n8n card: | Field | Setting | Description | |---|---|---| | n8n URL | n8nurl | Your n8n instance's base URL (default http://localhost:5678) | | n8n API key | n8napikey | Used server-side to list workflows and find their webhook URLs | Click Save changes. The card shows Configured once an API key is saved — it does not test the connection.",
-     "heading": "Step 1 — Configure n8n in SynapseOrch settings [#step-1--configure-n8n-in-synapse-settings]"
+     "heading": "Step 1 — Configure n8n in SynapseOrch settings"
     },
     {
      "anchor": "step-2--get-your-n8n-api-key",
@@ -5369,34 +5369,34 @@
      "heading": ""
     },
     {
-     "anchor": "what-you-need-what-you-need",
+     "anchor": "what-you-need",
      "excerpt": "- A Twilio account with a voice number in it. A number bought in Twilio appears in Synapse's list; buying one from Synapse isn't offered yet. - A Twilio API key on that account, which you create in the steps below. Synapse never asks for your auth token. - Self-hosted, a public https address Twilio can reach: the Webhook address on the Channels screen (messagingwebhookbaseurl). A tunnel such as…",
-     "heading": "What you need [#what-you-need]"
+     "heading": "What you need"
     },
     {
-     "anchor": "connecting-a-number-connecting",
+     "anchor": "connecting",
      "excerpt": "1. Open Channels › Phone and press Add a number. 2. Press Open API keys in Twilio's console, and create a key there. Pick the same kind in Synapse: - Restricted (recommended) can only do what calls need. Tick the permissions Synapse lists: reading and updating calls, and listing, reading and updating your active numbers. Add calls.recordings/create only if you will record calls, and…",
-     "heading": "Connecting a number [#connecting]"
+     "heading": "Connecting a number"
     },
     {
-     "anchor": "what-a-call-sounds-like-the-call",
+     "anchor": "the-call",
      "excerpt": "What callers hear first is said on every call before the agent speaks. Left empty, it is Hi, you're speaking with , an AI assistant for . How can I help?, with the agent's and the workspace's names filled in for and . Unless your own words end with a question, How can I help? is added, so callers know it's their turn. With recording on, This call may be recorded. is added. While the agent looks…",
-     "heading": "What a call sounds like [#the-call]"
+     "heading": "What a call sounds like"
     },
     {
-     "anchor": "what-the-agent-may-do-visitor-tools",
+     "anchor": "visitor-tools",
      "excerpt": "Callers are always visitors: a phone number can be faked, so it never makes someone a member of your workspace. Under Who calls this number, tick what the agent may do for them, as for a chat widget. Nothing is ticked until you tick it. The agent can also: - Transfer the call to the Hand off to a person number, after its last words. If nobody answers, the caller can leave a voicemail. With no…",
-     "heading": "What the agent may do [#visitor-tools]"
+     "heading": "What the agent may do"
     },
     {
-     "anchor": "every-call-is-kept-call-log",
+     "anchor": "call-log",
      "excerpt": "The number's Recent calls list each call. Open one for its transcript and anything Waiting on you: an approval the call asked for, which an approver, builder or admin can answer. Recording is off by default. Turned on, recordings stay in your Twilio account; Synapse keeps only the transcript, which it always keeps.",
-     "heading": "Every call is kept [#call-log]"
+     "heading": "Every call is kept"
     },
     {
-     "anchor": "on-synapseorch-cloud-cloud",
+     "anchor": "cloud",
      "excerpt": "The Phone screen and the calls work the same way. A call costs 4 credits for each started minute, charged once when it ends; the agent's turns inside it aren't charged again. Your plan sets how many calls run at once and the longest a call may last: see Settings → Plan.",
-     "heading": "On SynapseOrch Cloud [#cloud]"
+     "heading": "On SynapseOrch Cloud"
     }
    ],
    "slug": "/integrations/phone",
@@ -5418,9 +5418,9 @@
      "heading": "Fields"
     },
     {
-     "anchor": "turning-a-schedule-on-and-pausing-it-on-and-paused",
+     "anchor": "on-and-paused",
      "excerpt": "Each row in Workflows › Schedules has an On / Paused switch in its status column, and Turn on or Pause in its ⋮ menu. - Pausing is one click. A paused schedule starts no runs until it is turned on again; nothing else about it changes. - Turning on asks first — Turn on Weekly digest? It runs on its own from now on, until it is paused. — with the message each run starts with and when the first run…",
-     "heading": "Turning a schedule on, and pausing it [#on-and-paused]"
+     "heading": "Turning a schedule on, and pausing it"
     },
     {
      "anchor": "interval-schedules",
@@ -5546,9 +5546,9 @@
      "heading": "Untrusted content"
     },
     {
-     "anchor": "widgets-and-channels-visitors",
+     "anchor": "visitors",
      "excerpt": "A chat widget answer and a messaging channel reply come without [K#] labels or Sources: a chat app cannot show them, and they point into your Vault. Visitors — everyone on a widget, and a channel's senders when its Everyone who messages this bot is a workspace user is off — search a base only when both are true: 1. the base's Visitors may search it is on, in its settings; and 2. searchknowledge…",
-     "heading": "Widgets and channels [#visitors]"
+     "heading": "Widgets and channels"
     },
     {
      "anchor": "workflows",
@@ -5781,9 +5781,9 @@
      "heading": "Rerankers"
     },
     {
-     "anchor": "settings--models--knowledge-models-knowledge",
+     "anchor": "models-knowledge",
      "excerpt": "The workspace's defaults for knowledge bases, which a base uses unless it names its own. | Field | Self-hosted | SynapseOrch Cloud | |---|---|---| | Embedding model | Embedding model for knowledge: empty uses the workspace's embedding model | Knowledge embedding model: SynapseOrch's Titan unless you choose another | | Rerank model | Empty: no rerank unless a base names one | SynapseOrch's…",
-     "heading": "Settings → Models → Knowledge [#models-knowledge]"
+     "heading": "Settings → Models → Knowledge"
     },
     {
      "anchor": "rebuilds",
@@ -5885,7 +5885,7 @@
     },
     {
      "anchor": "claude-cli",
-     "excerpt": "Models: cli.claude, or cli.claude. Uses the claude CLI (Claude Code), through your Claude subscription. The aliases fable, opus, sonnet and haiku always mean the newest model of that kind your plan allows, so they never go stale. Setup: 1. Install Claude Code: claude.ai/download 2. Run claude in a terminal on the SynapseOrch host and sign in 3. In SynapseOrch, pick a cli.claude model Models and…",
+     "excerpt": "Models: cli.claude, or cli.claude. Uses the claude CLI (Claude Code), through your Claude subscription. The aliases fable, opus, sonnet and haiku always mean the newest model of that kind your plan allows, so they never go stale. In the model pickers each alias has the line of the model Claude Code runs for it today (since 2.1.1): haiku reads as Claude Haiku 5.5, sonnet as Sonnet 5.5, opus as…",
      "heading": "Claude CLI"
     },
     {
@@ -6100,9 +6100,9 @@
      "heading": "Per-step model override"
     },
     {
-     "anchor": "what-the-pickers-say-pickers",
+     "anchor": "pickers",
      "excerpt": "Every model picker shows each model's line under its name (since 2.1): its context — Small under 128K tokens, Standard from 128K, Large from 500K — a cost tier from $ to $$$$, and its price per 1M tokens, for example Large context (1M) · $$$ · $3.00 in / $15.00 out per 1M tokens. What isn't known is left out; a CLI's or a local model's has no price. Synapse AI's own pickers — the panel's model…",
-     "heading": "What the pickers say [#pickers]"
+     "heading": "What the pickers say"
     },
     {
      "anchor": "cost-limits",
@@ -6124,34 +6124,34 @@
    "kind": "guide",
    "sections": [
     {
-     "anchor": "runs-runs",
+     "anchor": "runs",
      "excerpt": "Runs lists every workflow run, newest first and grouped by day, including the ones a schedule or the API started: each run's workflow, the path of its steps, how long it took, its cost and start time, and under the name its status (Running · Draft reply, Needs input · Approve payment, Failed · Fetch orders). Pick All, Needs you, Running, Queued, Failed, Completed or Cancelled at the top to show…",
-     "heading": "Runs [#runs]"
+     "heading": "Runs"
     },
     {
-     "anchor": "a-runs-page-run-page",
+     "anchor": "run-page",
      "excerpt": "The page is named after the workflow, with the run's ID under it, and Open in editor; Cancel while it runs or waits in line, and Replay once it failed or was cancelled. Under the name: its status (Queued, Running, Needs input, Completed, Failed or Cancelled), when it started, its wall-clock time, its steps (3 of 5 steps done), its tokens and its model cost, with the workflow's cap on a run when…",
-     "heading": "A run's page [#run-page]"
+     "heading": "A run's page"
     },
     {
-     "anchor": "cost-cost",
+     "anchor": "cost",
      "excerpt": "Costs are in dollars (see Usage and cost): $0 for a free model, — where no price is known, <$0.0001 for a tiny one. The run's model cost is the sum of its steps', nested runs included; each step's is on its row and in its opened detail. On SynapseOrch Cloud, the credits a run was charged are shown beside it.",
-     "heading": "Cost [#cost]"
+     "heading": "Cost"
     },
     {
-     "anchor": "answering-on-the-page-answering-on-the-page",
+     "anchor": "answering-on-the-page",
      "excerpt": "A run that waits for a person reads Needs input, and its page puts the question at the top, in a card marked Waiting for a person, with the step it waits at and for how long: - A question has a box, Type the answer this step is waiting for, and Send answer. - A form shows the step's fields, and Send answer. - An approval (one yes-or-no field) has two buttons: the field's own label, such as…",
-     "heading": "Answering on the page [#answering-on-the-page]"
+     "heading": "Answering on the page"
     },
     {
-     "anchor": "replay-replay",
+     "anchor": "replay",
      "excerpt": "Replay resumes a failed or cancelled run from the step that stopped, keeping what the steps before it did, on the workflow as it is saved now, so you can fix the workflow and replay. A nested run is replayed through the run that called it: This is a nested run; replay the run that called it, which reruns this step. A run that never reached a step can't be replayed: start it again. A deleted…",
-     "heading": "Replay [#replay]"
+     "heading": "Replay"
     },
     {
-     "anchor": "logs-logs",
+     "anchor": "logs",
      "excerpt": "Runs › Logs has the full transcript of each workflow and agent run, chat turns included: what the model was sent, the tools it called with their arguments and results, its answer, and its tokens and cost. A run that called other workflows lists them under Nested runs, and a nested run's log sits under the run that started it — it is not a separate entry in the runs list. Its cost is part of that…",
-     "heading": "Logs [#logs]"
+     "heading": "Logs"
     },
     {
      "anchor": "scheduled-run-logs",
@@ -6159,9 +6159,9 @@
      "heading": "Scheduled run logs"
     },
     {
-     "anchor": "where-logs-are-stored-log-files-on-disk",
+     "anchor": "log-files-on-disk",
      "excerpt": "A run's record — its status, timing, state and step history — is a row in the database. The full execution log is an object in blob storage, under each tenant's logs/ prefix: On a self-hosted install that is SYNAPSEBLOBDIR/default/logs/ — ~/.synapse/var/blobs in an installed SynapseOrch, backend/var/blobs in a source checkout, /data/blobs in the single-container Docker image and /blobs in Docker…",
-     "heading": "Where logs are stored [#log-files-on-disk]"
+     "heading": "Where logs are stored"
     },
     {
      "anchor": "clearing-logs",
@@ -6497,54 +6497,59 @@
      "heading": "Undo"
     },
     {
-     "anchor": "building-a-workflow-building-a-workflow",
-     "excerpt": "Describe the job in plain words: what starts it, what it does, where the result goes, what it should ask you first. A build goes the same way every time: 1. You describe it. Name the site, the API or the app if you know it. 2. Synapse AI researches what it doesn't know (below), and asks you, in one form, what only you can answer. 3. It shows The plan, in plain words. 4. You approve it, or say…",
-     "heading": "Building a workflow [#building-a-workflow]"
+     "anchor": "building-a-workflow",
+     "excerpt": "Describe the job in plain words: what starts it, what it does, where the result goes, what it should ask you first. A build goes the same way every time: 1. You describe it. Name the site, the API or the app if you know it. 2. Synapse AI researches what it doesn't know (below), and asks you, in one form, what only you can answer. 3. It shows The plan, in plain words, once it has tried it on…",
+     "heading": "Building a workflow"
     },
     {
-     "anchor": "research-research",
-     "excerpt": "Before it plans, Synapse AI reads each site or API your message names (up to three), once a conversation: the page's title, what it says it is, and any API spec it links to. A page that is only JavaScript is fetched with the scraper or a Browser step instead of an HTTP tool. While it plans, it can stop to look things up, up to four questions a round: - How SynapseOrch does something is answered…",
-     "heading": "Research [#research]"
+     "anchor": "research",
+     "excerpt": "Before it plans, Synapse AI reads each site or API your message names (up to three), once a conversation: the page's title, what it says it is, and any API spec it links to. A page that is only JavaScript is fetched with the scraper or a Browser step instead of an HTTP tool. It reads as SynapseBot and obeys the site's robots.txt, as a Knowledge crawl does: a page robots.txt disallows is never…",
+     "heading": "Research"
     },
     {
-     "anchor": "the-plan-the-plan",
+     "anchor": "practice-run",
+     "excerpt": "Once a plan passes its check, and before you see it, Synapse AI runs it once on made-up answers (since 2.1.2). Each answer a step declares (a model step's answer fields, a Human step's form, a tool's declared answer) and the run's input are made up in their declared shape. Conditions, Switches, Loops, Merges, Extract JSON and Print steps run as a run runs them, a Tool step's set arguments are…",
+     "heading": "Tried before you see it"
+    },
+    {
+     "anchor": "the-plan",
      "excerpt": "The plan opens with You asked for, your request in its words, and then What it will do: one numbered row per step, coloured by who does the work (a model, logic, or a person). Under them it says when it runs, any cap on a run, the agents it makes, and what a run costs at most. When it applies, the card adds: - New agents' instructions, for each agent it will make: these are covered by your yes. -…",
-     "heading": "The plan [#the-plan]"
+     "heading": "The plan"
     },
     {
-     "anchor": "after-you-approve-after-you-approve",
+     "anchor": "after-you-approve",
      "excerpt": "Synapse AI makes the agents and tools the plan needs, saves the workflow, checks it, and says what it did. A schedule is made paused: check what each run starts with, then turn it on under Schedules, or ask Synapse AI to. A workflow that never passes its check is removed again, with its first three issues: Removed the workflow \"Weekly digest\" again: it never passed validation: … An agent the…",
-     "heading": "After you approve [#after-you-approve]"
+     "heading": "After you approve"
     },
     {
-     "anchor": "example-requests-example-requests",
+     "anchor": "example-requests",
      "excerpt": "Code from another tool. Paste an OpenAI Agents SDK export, from Agent Builder, in Python or TypeScript, and say what you want built from it. Each agent's instructions reach the agent or step the build makes exactly as written, however long, rather than retyped; the code is read, never run. Dashes and special spaces in what you paste are kept, and a key in it is still taken out before anything…",
-     "heading": "Example requests [#example-requests]"
+     "heading": "Example requests"
     },
     {
-     "anchor": "asking-for-something-now-asking-for-something-now",
-     "excerpt": "Synapse AI explains the product and builds; it does not look things up for you in the chat. Ask what's the weather in Chennai and it offers a workflow that fetches it, once now or each morning, and asks where to send it. Say yes and the build starts from there. Ask what can you do for me and it answers with what the product can do, with an example of each.",
-     "heading": "Asking for something now [#asking-for-something-now]"
+     "anchor": "asking-for-something-now",
+     "excerpt": "Synapse AI explains the product and builds; it does not look things up for you in the chat. Ask what's the weather in Chennai and it offers a workflow that fetches it, once now or each morning, and asks where to send it. Say yes and the build starts from there. Ask what can you do for me and it answers with what the product can do, with an example of each. Pages you name are read here (since…",
+     "heading": "Asking for something now"
     },
     {
-     "anchor": "http-tools-from-a-url-a-curl-a-spec-or-a-docs-link-http-tools",
+     "anchor": "http-tools",
      "excerpt": "Give Synapse AI what you have about an API, and the build makes HTTP tools from it: - A spec (an OpenAPI file's URL, or its path in the Vault): it reads the spec as the Tools screen's import does, and each operation the plan uses becomes a tool, with the spec's address, inputs and sign-in. A spec read once is the conversation's: a later change in the same conversation can use its other…",
-     "heading": "HTTP tools from a URL, a curl, a spec or a docs link [#http-tools]"
+     "heading": "HTTP tools from a URL, a curl, a spec or a docs link"
     },
     {
-     "anchor": "fixing-a-python-tool-python-tool-fixes",
+     "anchor": "python-tool-fixes",
      "excerpt": "Ask Synapse AI to fix a Python tool (\"it crashes on an empty list\") and the change shows the fix as a diff: removed lines in red, added lines in green. Before you see it, the fix is run on one to three sample inputs, with no internet, as the Tools screen's Test runs it: - It passes: the review shows the results, and Go ahead saves exactly the code that passed. - It fails: Synapse AI tries once…",
-     "heading": "Fixing a Python tool [#python-tool-fixes]"
+     "heading": "Fixing a Python tool"
     },
     {
-     "anchor": "keys-and-sign-ins-keys",
+     "anchor": "keys",
      "excerpt": "Keys go on Connect cards, never in the chat. Synapse AI never asks you to type a key, a token or a password into the conversation. When a build needs one, it says where it goes and puts up a Connect card: an app's own sign-in, a token field, a model provider's key, an HTTP tool's header, a remote MCP server, or a link to the screen where it is kept. You type the key into the card yourself and…",
-     "heading": "Keys and sign-ins [#keys]"
+     "heading": "Keys and sign-ins"
     },
     {
-     "anchor": "see-how-im-built-see-how-im-built",
+     "anchor": "see-how-im-built",
      "excerpt": "Synapse AI is an ordinary SynapseOrch workflow, with ordinary sub-agents. See how I'm built, in the panel's header, opens How I'm built: its workflow, large, on a read-only canvas, and under it where it starts, where it stops for you, its sub-agents and the step types it uses. Self-hosted, Duplicate to my workspace copies it into your workflows and opens the copy, to read or change.",
-     "heading": "See how I'm built [#see-how-im-built]"
+     "heading": "See how I'm built"
     },
     {
      "anchor": "who-can-do-what-cloud",
@@ -6557,14 +6562,14 @@
      "heading": "Self-hosted"
     },
     {
-     "anchor": "which-model-to-use-which-model",
+     "anchor": "which-model",
      "excerpt": "Synapse AI does its best work on a capable model. Use Claude Haiku 4.5 or a stronger model: SynapseOrch 2.0's release tests built and ran every test brief with Synapse AI on Claude Haiku 4.5. Reasoning-capable models do noticeably better; a smaller model may plan less well, ask more, or miss a step. Synapse AI needs a model that reads at least 128K tokens at once: its first planning call alone is…",
-     "heading": "Which model to use [#which-model]"
+     "heading": "Which model to use"
     },
     {
-     "anchor": "images-and-stopping-images-and-stopping",
+     "anchor": "images-and-stopping",
      "excerpt": "- Images: attach screenshots or diagrams to a message when the model can read images. - Stop: while Synapse AI works, the send button becomes Stop Synapse AI. A build keeps running on the server if you close the panel or the tab, and a reload brings back a conversation that is still open. Over MCP, the same reads and acts are tools of their own, and a delete there still takes its confirmtoken.",
-     "heading": "Images and stopping [#images-and-stopping]"
+     "heading": "Images and stopping"
     }
    ],
    "slug": "/orchestrations/ai-builder",
@@ -6606,9 +6611,9 @@
      "heading": "Workflow settings"
     },
     {
-     "anchor": "cost-per-run-cost-per-run",
+     "anchor": "cost-per-run",
      "excerpt": "The estimate says what a run will cost before it starts, from the cheapest path through the workflow to the dearest: Each run costs about 2.2–3.2 credits and $0.03 from your model wallet on Cloud, about $0.006 on your own keys self-hosted. What the workflow can't say in advance — how long a for-each loop runs, a route back, a nested workflow — reads as or more. Once the workflow has runs, the…",
-     "heading": "Cost per run [#cost-per-run]"
+     "heading": "Cost per run"
     },
     {
      "anchor": "running-from-the-canvas",
@@ -6621,9 +6626,9 @@
      "heading": "Recent runs"
     },
     {
-     "anchor": "synapse-ai-ai-builder",
+     "anchor": "ai-builder",
      "excerpt": "Click Build with AI in the toolbar to describe a workflow in plain text instead of building it by hand. The builder plans the workflow, creates the agents it needs and saves the workflow, which you can then edit on the canvas. See Synapse AI for the full walkthrough. ---",
-     "heading": "Synapse AI [#ai-builder]"
+     "heading": "Synapse AI"
     },
     {
      "anchor": "other-actions",
@@ -6665,9 +6670,9 @@
      "heading": "Messaging notification"
     },
     {
-     "anchor": "answering-responding-via-the-ui",
+     "anchor": "responding-via-the-ui",
      "excerpt": "A waiting run is answered where you read it. Each place shows the question, what it is about (From this run, or the state key it names), and the answer: the step's own fields when it declared any, else a box for your answer and Send answer. A step with one approval asks it with two buttons, the field's own label and Decline, and asks its other fields in the form. - On Home, Needs you lists every…",
-     "heading": "Answering [#responding-via-the-ui]"
+     "heading": "Answering"
     },
     {
      "anchor": "using-human-responses-in-subsequent-steps",
@@ -6729,9 +6734,9 @@
      "heading": "Triggers"
     },
     {
-     "anchor": "synapse-ai-ai-builder",
+     "anchor": "ai-builder",
      "excerpt": "Don't want to build the workflow by hand? Click Build with AI in the Workflows header, or Synapse AI in the menu, from any page. Describe the workflow in plain text and the builder plans it, creates the agents it needs and saves the workflow, which you can then refine on the canvas. See Synapse AI for the full walkthrough.",
-     "heading": "Synapse AI [#ai-builder]"
+     "heading": "Synapse AI"
     }
    ],
    "slug": "/orchestrations/overview",
@@ -6773,9 +6778,9 @@
      "heading": "LLM"
     },
     {
-     "anchor": "answer-fields-answer-fields",
+     "anchor": "answer-fields",
      "excerpt": "When a later step decides on a model's answer — an If / Else on whether a review is negative, a Switch on a ticket's priority — or reads parts of it, name them under Answer fields, on the LLM or Agent step. Each field has a name, a type and, optionally, a description the model reads: | Type in the panel | Stored as | The model answers | |---|---|---| | Yes / No | boolean | true or false | | One…",
-     "heading": "Answer fields [#answer-fields]"
+     "heading": "Answer fields"
     },
     {
      "anchor": "tool",
@@ -6783,9 +6788,9 @@
      "heading": "Tool"
     },
     {
-     "anchor": "browser-browser",
+     "anchor": "browser",
      "excerpt": "Repeats a recorded task in the run's own browser, by code: no model calls while the pages still match. See Built-in browser. | Field | Description | |---|---| | Recording | The recording it repeats. Open it goes to the recording's page | | Inputs | What it types for each of the recording's inputs, from the run: { } or text | | Sends | The recorded steps that may send on their own. A run is never…",
-     "heading": "Browser [#browser]"
+     "heading": "Browser"
     },
     {
      "anchor": "evaluator",
@@ -7050,9 +7055,9 @@
      "heading": "Graceful shutdown"
     },
     {
-     "anchor": "failures-and-retries-stateless-api-stateful-workers",
+     "anchor": "stateless-api-stateful-workers",
      "excerpt": "The API tier holds no execution state: run state lives in Postgres and Redis. Any API replica can serve any SSE stream, and restarting the main instance does not interrupt runs on workers — clients reconnect and replay with Last-Event-ID. On startup the API marks runs that were running as failed, but skips any run whose worker is still online and has beaten within 90 seconds, so a restart does…",
-     "heading": "Failures and retries [#stateless-api-stateful-workers]"
+     "heading": "Failures and retries"
     }
    ],
    "slug": "/scale/architecture",
@@ -7089,9 +7094,9 @@
      "heading": "Worker concurrency"
     },
     {
-     "anchor": "postgres-postgres-sync",
+     "anchor": "postgres-sync",
      "excerpt": "The main instance and the workers use one Postgres database, which is SynapseOrch's store. There is nothing to sync: a workflow, agent, tool or MCP server saved in the UI is in the database the next job reads, and each job reads its tenant's settings — model keys included — at the start.",
-     "heading": "Postgres [#postgres-sync]"
+     "heading": "Postgres"
     },
     {
      "anchor": "postgres-url",
@@ -7184,9 +7189,9 @@
      "heading": "Storage"
     },
     {
-     "anchor": "events-and-limits-retention-and-limits",
+     "anchor": "retention-and-limits",
      "excerpt": "| Variable | Default | Description | |---|---|---| | PUBSUBEVENTTTL | 3600 | Seconds to keep run events in Redis Streams. After this, events expire and cannot be replayed by reconnecting clients | | MAXGLOBALQUEUEDEPTH | 1000000 | Queue length at which V2 run submissions return 503 | | RATELIMITPERTENANTRPS | 1000 | V2 run submissions per second per tenant before 429 | OTLPENDPOINT and…",
-     "heading": "Events and limits [#retention-and-limits]"
+     "heading": "Events and limits"
     }
    ],
    "slug": "/scale/configuration",
@@ -7243,7 +7248,7 @@
      "heading": "Option 2 — Docker Compose"
     },
     {
-     "anchor": "prerequisites",
+     "anchor": "prerequisites-1",
      "excerpt": "- Docker and Docker Compose v2+ - The SynapseOrch repository cloned locally",
      "heading": "Prerequisites"
     },
@@ -7268,7 +7273,7 @@
      "heading": "Option 3 — Kubernetes"
     },
     {
-     "anchor": "prerequisites",
+     "anchor": "prerequisites-2",
      "excerpt": "- A Kubernetes cluster - kubectl configured and targeting the correct cluster - Redis and Postgres reachable from inside the cluster - A SynapseOrch main instance (the synapseorchai/synapse-ai image) using the same Redis and Postgres — for the UI, definitions and API keys - Blob storage the pods share: an S3 bucket (or MinIO or R2), with the S3 variables added to both Deployments. The manifests…",
      "heading": "Prerequisites"
     },
@@ -7337,9 +7342,9 @@
      "heading": ""
     },
     {
-     "anchor": "what-scale-mode-changes-standalone-vs-scale-mode",
+     "anchor": "standalone-vs-scale-mode",
      "excerpt": "| | Standalone | Scale mode | |---|---|---| | /api/v2 | Every route returns 503 — \"Scale mode is not enabled\" | A run returns 202 Accepted with a runid at once | | Where V2 runs execute | — | On workers, which take jobs from a Redis queue | | UI, Chat, schedules and /api/v1 | In the API process | Still in the API process — scale mode does not move them | | Store | SQLite by default, or Postgres…",
-     "heading": "What scale mode changes [#standalone-vs-scale-mode]"
+     "heading": "What scale mode changes"
     },
     {
      "anchor": "when-to-enable-scale-mode",
@@ -7357,14 +7362,14 @@
      "heading": "Quick start"
     },
     {
-     "anchor": "1-point-the-main-instance-at-postgres-and-redis-1-connect-redis",
+     "anchor": "1-connect-redis",
      "excerpt": "Set these in the main instance's environment and restart it: A postgresql:// or postgres:// URL is converted to the postgresql+asyncpg:// driver form for you, so either spelling works. The scale layer uses the same database; SCALEPOSTGRESURL is only needed to name a different URL for it, and must still reach the same database. A new Postgres database is set up on first start; it does not copy…",
-     "heading": "1. Point the main instance at Postgres and Redis [#1-connect-redis]"
+     "heading": "1. Point the main instance at Postgres and Redis"
     },
     {
-     "anchor": "2-start-a-worker-5-start-a-worker",
+     "anchor": "5-start-a-worker",
      "excerpt": "The worker needs the main instance's database in SYNAPSEDBURL; the image sets no default. It also needs the same blob storage: the main instance's blob directory mounted at /blobs, as here, or the same S3 bucket, with the same S3 variables passed to both instead of the mount. Verify the worker is healthy before sending jobs: The worker registers itself in Postgres as soon as it starts. It appears…",
-     "heading": "2. Start a worker [#5-start-a-worker]"
+     "heading": "2. Start a worker"
     },
     {
      "anchor": "3-send-a-run",
@@ -7440,29 +7445,29 @@
      "heading": ""
     },
     {
-     "anchor": "tools-tools",
+     "anchor": "tools",
      "excerpt": "| Tool | Does | |---|---| | browsernavigate | Open an address | | browsernavigateback | Go back | | browsersnapshot | Read the page: its text and the elements on it | | browserfind | Find elements on the page | | browserwaitfor | Wait for text to appear or go, or for a time | | browsertabs | List, open, close or switch tabs | | browserhover | Hover over an element | | browserclick | Click an…",
-     "heading": "Tools [#tools]"
+     "heading": "Tools"
     },
     {
-     "anchor": "what-stops-it-guards",
+     "anchor": "guards",
      "excerpt": "The browser holds every agent to the same rules, in code: Submit and Send only on your own words, payments and passwords always yours, and only public http or https addresses. A Browser agent set to Reads only sends nothing at all, and so does an agent that holds these tools without being a Browser agent. Each browser also has limits: 40 actions for a task by default (a Browser agent's Actions…",
-     "heading": "What stops it [#guards]"
+     "heading": "What stops it"
     },
     {
-     "anchor": "self-hosted-self-hosted",
+     "anchor": "self-hosted",
      "excerpt": "The Docker images include everything the browser needs. On an install from source, it needs: - Node, for npx: the browser's tools come from Playwright MCP, which Synapse starts itself. - Playwright's Chromium: playwright install chromium. Playwright keeps it under ~/.cache/ms-playwright; if yours is somewhere else, set playwrightbrowserspath in settings. The browser starts on an agent's first…",
-     "heading": "Self-hosted [#self-hosted]"
+     "heading": "Self-hosted"
     },
     {
-     "anchor": "example-requests-examples",
+     "anchor": "examples",
      "excerpt": "The second works signed in when a kept session for the site is picked for the agent, the chat or the step; the agent never signs in with a password. The third says submit the form, so the agent may press Submit. Without those words, it fills in the form and hands you the browser to press it.",
-     "heading": "Example requests [#examples]"
+     "heading": "Example requests"
     },
     {
-     "anchor": "browser-or-web-scraper-comparison-with-web-scraper",
-     "excerpt": "| | Browser | Web Scraper | |---|---|---| | JavaScript rendering | Yes | Yes (crawl4ai) | | You watch and can take over | Yes | No | | Forms and signed-in sites | Yes, with you pressing what is yours | No | | CAPTCHAs and bot checks | Handed to you | Stealth mode tries to avoid them | | Many pages at once | No, one page at a time | Yes | | Best for | Interactive sites, forms, sites you sign in to…",
-     "heading": "Browser or Web Scraper [#comparison-with-web-scraper]"
+     "anchor": "comparison-with-web-scraper",
+     "excerpt": "| | Browser | Web Scraper | |---|---|---| | JavaScript rendering | Yes | Yes (headless Chromium) | | You watch and can take over | Yes | No | | Forms and signed-in sites | Yes, with you pressing what is yours | No | | CAPTCHAs and bot checks | Handed to you | Never solved: the call fails and names whose check it was | | Many pages at once | No, one page at a time | Yes | | Best for | Interactive…",
+     "heading": "Browser or Web Scraper"
     }
    ],
    "slug": "/tools/browser",
@@ -7479,49 +7484,49 @@
      "heading": ""
     },
     {
-     "anchor": "watching-it-work-watching",
+     "anchor": "watching",
      "excerpt": "In a chat, the browser opens in a pane beside the conversation when the agent first uses it. A strip under the address says who is driving: the agent, you, or nobody. Under the page, What the agent did lists each action. Closing the pane only stops you watching; the agent carries on. On a run's page, a running browser shows under Live browser, at the page's own shape. Enlarge opens it large.…",
-     "heading": "Watching it work [#watching]"
+     "heading": "Watching it work"
     },
     {
-     "anchor": "taking-over-take-over",
+     "anchor": "take-over",
      "excerpt": "Press Take over to use the page yourself. If you click the page while the agent is driving, Synapse asks first: Keep watching or Take over. The agent finishes the action it is doing, then waits. While you drive, your clicks and typing reach the page, and the address bar takes an address. When you're done: 1. Optionally, type a note for the agent in the strip, such as I signed in, carry on. 2.…",
-     "heading": "Taking over [#take-over]"
+     "heading": "Taking over"
     },
     {
-     "anchor": "keeping-agents-signed-in-sessions",
+     "anchor": "sessions",
      "excerpt": "Synapse can keep a site's signed-in session for your agents: the site's cookies and storage, never your password. Agents never see or type a password. 1. Open Agents › Browser, on the Sessions tab. 2. Press Keep me signed in to a site, type the site's address, and press Open the browser. 3. Sign in, in the browser that opens. It is yours alone: no agent drives it and nothing is recorded. 4. Press…",
-     "heading": "Keeping agents signed in [#sessions]"
+     "heading": "Keeping agents signed in"
     },
     {
-     "anchor": "recording-a-task-recordings",
+     "anchor": "recordings",
      "excerpt": "Do a task once while Synapse records it, and agents and workflows can repeat it. 1. Open Agents › Browser, on the Recordings tab, and press Record a task. 2. Optionally, pick Sessions it starts with and a Start at page. 3. Press Open the browser, and do the task as you normally would. Each thing you do is a step: open an address, click, type, choose, press Enter, go back. 4. Press Stop and keep…",
-     "heading": "Recording a task [#recordings]"
+     "heading": "Recording a task"
     },
     {
-     "anchor": "repeating-a-recording-replay",
+     "anchor": "replay",
      "excerpt": "A recording is repeated by code, step by step, with no model calls while the pages still match. Each step finds its target the way you'd describe it: by its role and name first, then its label, then its text, and its position on the page last. - Presses that send something for you (submit, send, post, book…) run in a chat, because you pressed them when recording. In a workflow run, which nobody…",
-     "heading": "Repeating a recording [#replay]"
+     "heading": "Repeating a recording"
     },
     {
-     "anchor": "when-a-page-has-changed-missed-step",
+     "anchor": "missed-step",
      "excerpt": "A step that can't find its target, or doesn't reach the page it expects, stops the replay there. What happens next is set on the Browser step, under If a page changed: - Pause for you (the default): the run waits for you to do that step in its browser. - Let a Browser agent find the way: the agent you pick does that step for this run. Either way, the way found is kept as a fix for the recording…",
-     "heading": "When a page has changed [#missed-step]"
+     "heading": "When a page has changed"
     },
     {
-     "anchor": "a-browser-step-or-a-browser-agent-step-or-agent",
+     "anchor": "step-or-agent",
      "excerpt": "| | Browser step | Browser agent | |---|---|---| | What drives | A recording, replayed by code | The agent's model | | Where | A workflow step | A chat, an agent step, a channel | | Model calls | None, unless a page changed and you chose an agent to find the way | Every action | | Best for | A task done the same way every time | A task that needs reading and judgement | A Browser step repeats a…",
-     "heading": "A Browser step or a Browser agent [#step-or-agent]"
+     "heading": "A Browser step or a Browser agent"
     },
     {
-     "anchor": "what-it-may-press-guards",
+     "anchor": "guards",
      "excerpt": "These rules are code in the browser itself, not instructions to the model, so no page can talk an agent past them: - Submit, Send and the like only when you asked for it in your own words. A press that would send, post, book or submit a form is stopped, and the agent must quote your request back. Without a quote, it hands you the browser to press it yourself. - Payments are always yours to press…",
-     "heading": "What it may press [#guards]"
+     "heading": "What it may press"
     },
     {
-     "anchor": "self-hosted-and-cloud-self-hosted-and-cloud",
+     "anchor": "self-hosted-and-cloud",
      "excerpt": "The browser works the same way in both. The differences: | | Self-hosted | SynapseOrch Cloud | |---|---|---| | Where the browser runs | A process beside the backend, one Chromium for each chat or run | Its own isolated VM for each browser | | Sessions are encrypted with | A key in SYNAPSEWEBSITELOGINSKEY, or one Synapse makes under the install's var/keys/ | The workspace's KMS key, as secrets are…",
-     "heading": "Self-hosted and Cloud [#self-hosted-and-cloud]"
+     "heading": "Self-hosted and Cloud"
     }
    ],
    "slug": "/tools/built-in-browser",
@@ -7602,7 +7607,7 @@
    "kind": "guide",
    "sections": [
     {
-     "anchor": "tool-collectdata",
+     "anchor": "tool-collect_data",
      "excerpt": "Returns a form definition. It does not wait for the user and returns no answers itself: the Chat screen sees the definition, shows the form, and when the user submits it, their answers arrive as the next user message in the conversation.",
      "heading": "Tool: collectdata"
     },
@@ -7646,9 +7651,9 @@
    "kind": "guide",
    "sections": [
     {
-     "anchor": "tool-parsexlsx-tool-parseexcel",
+     "anchor": "tool-parse_excel",
      "excerpt": "Downloads an Excel file from a URL and returns its sheets as Markdown tables.",
-     "heading": "Tool: parsexlsx [#tool-parseexcel]"
+     "heading": "Tool: parsexlsx"
     },
     {
      "anchor": "arguments",
@@ -7696,7 +7701,7 @@
     },
     {
      "anchor": "available-tools",
-     "excerpt": "| Tool | Description | Requires | |---|---|---| | Sandbox | Execute Python in an isolated Docker container | Docker | | Vault | Read and write persistent files | — | | SQL | Query any SQLAlchemy-compatible database | DB config | | Browser | A browser inside Synapse that agents work in while you watch | Node, and Playwright's Chromium | | Web Scraper | Anti-bot evasion web scraping | — | | Code…",
+     "excerpt": "| Tool | Description | Requires | |---|---|---| | Sandbox | Execute Python in an isolated Docker container | Docker | | Vault | Read and write persistent files | — | | SQL | Query any SQLAlchemy-compatible database | DB config | | Browser | A browser inside Synapse that agents work in while you watch | Node, and Playwright's Chromium | | Web Scraper | Reads web pages in headless Chromium…",
      "heading": "Available tools"
     },
     {
@@ -7739,7 +7744,7 @@
    "kind": "guide",
    "sections": [
     {
-     "anchor": "tool-parsepdf",
+     "anchor": "tool-parse_pdf",
      "excerpt": "Downloads a PDF from a URL and extracts its content as plain text and Markdown tables.",
      "heading": "Tool: parsepdf"
     },
@@ -7793,9 +7798,9 @@
      "heading": "Building the sandbox image"
     },
     {
-     "anchor": "tool-executepython-tool-sandboxexecute",
+     "anchor": "tool-sandbox_execute",
      "excerpt": "Executes a Python script and returns stdout, stderr, and the exit code.",
-     "heading": "Tool: executepython [#tool-sandboxexecute]"
+     "heading": "Tool: executepython"
     },
     {
      "anchor": "agent-usage",
@@ -7901,9 +7906,9 @@
      "heading": ""
     },
     {
-     "anchor": "getdatetime-gettime",
+     "anchor": "get_time",
      "excerpt": "One tool. It returns a 10-digit Unix timestamp for the current moment, or for a date described relative to it. Called with no arguments it answers \"now\". Add arguments to move from there. | Argument | Type | Does | |---|---|---| | timezone | string | IANA name — UTC, America/NewYork, Asia/Kolkata. Defaults to UTC | | days | number | Add N days | | weeks | number | Add N weeks | | months | number…",
-     "heading": "getdatetime [#gettime]"
+     "heading": "getdatetime"
     },
     {
      "anchor": "how-the-arguments-combine",
@@ -7941,7 +7946,7 @@
     },
     {
      "anchor": "for-one-tool",
-     "excerpt": "Under For one tool, Add a rule for one tool… picks a tool by name and gives it its own Allow, Ask first or Block, whatever its row says. It is stored beside the categories as tool: , and it wins over the tool's category. A tool's answers come from different places, and are trusted differently: - Your own custom tools say what they do in the tool editor; see Custom tools. Imported from a file, a…",
+     "excerpt": "Under For one tool, Add a rule for one tool… picks a tool by name and gives it its own Allow, Ask first or Block, whatever its row says. It is stored beside the categories as tool: , and it wins over the tool's category. A fourth choice for one tool, Ask unless it only reads (since 2.1.1, stored as check), is decided each time a run calls the tool, from what the tool says it does then: it runs…",
      "heading": "For one tool"
     },
     {
@@ -7980,7 +7985,7 @@
     },
     {
      "anchor": "tools",
-     "excerpt": "| Tool | Arguments | Description | |---|---|---| | vaultcreate | content, optional filename, format | Create a new file. Fails if the file already exists. Without a filename, a timestamped name is generated, with the extension from format (json, text, csv, python, markdown; default json). | | vaultread | path | Read a file as text (up to 10 MB) | | vaultwrite | path, content | Write a file…",
+     "excerpt": "| Tool | Arguments | Description | |---|---|---| | vaultcreate | content, optional filename, format | Create a new file. Fails if the file already exists. Without a filename, a timestamped name is generated, with the extension from format (json, text, csv, python, markdown; default json). | | vaultread | path, optional missingok | Read a file as text (up to 10 MB). With missingok, a file that…",
      "heading": "Tools"
     },
     {
@@ -8014,7 +8019,7 @@
      "heading": "Sharing between agents"
     },
     {
-     "anchor": "vaultpatch-details",
+     "anchor": "vault_patch-details",
      "excerpt": "Pass find and replace for a text edit, or merge for a JSON merge. Text find-replace — replaces the first occurrence of find; fails if it isn't found: JSON merge — merge is a JSON string. Objects are deep-merged; if the file holds an array and merge is an array, the items are appended:",
      "heading": "vaultpatch details"
     },
@@ -8028,13 +8033,13 @@
    "title": "Vault Tools for Agents"
   },
   {
-   "description": "The web scraper tool uses crawl4ai to extract content from web pages with advanced anti-bot evasion and JavaScript rendering.",
+   "description": "The web scraper reads web pages in a real headless Chromium, JavaScript-rendered pages included, and returns their text, links, rows or a screenshot.",
    "edition": "both",
    "kind": "guide",
    "sections": [
     {
      "anchor": "",
-     "excerpt": "Built on crawl4ai, it's optimised for high-volume scraping of sites that block standard scrapers.",
+     "excerpt": "It reads pages the way a browser does, in headless Chromium, so pages built by JavaScript come back with their words.",
      "heading": ""
     },
     {
@@ -8043,24 +8048,29 @@
      "heading": "The seven tools"
     },
     {
-     "anchor": "tool-scrapeurl",
+     "anchor": "tool-scrape_url",
      "excerpt": "Scrapes a URL and returns the cleaned text content, including content from dynamically rendered JavaScript.",
      "heading": "Tool: scrapeurl"
     },
     {
      "anchor": "arguments",
-     "excerpt": "| Argument | Type | Description | |---|---|---| | url | string | The URL to scrape | | waitfor | string | Optional CSS selector to wait for before extracting | | scroll | boolean | Scroll to bottom to trigger infinite scroll loading |",
+     "excerpt": "| Argument | Type | Description | |---|---|---| | url | string | The URL to scrape | | waitfor | string | A CSS selector, or a js: expression, to wait for before reading | | jscode | string | A script run on the page before reading, for example to dismiss a popup or click a button | | headers | object | Extra HTTP headers, sent to the page's own site only | | removeoverlays | boolean | Remove…",
      "heading": "Arguments"
     },
     {
+     "anchor": "how-much-it-returns",
+     "excerpt": "scrapeurl returns up to the first 50,000 characters of a page, and says how much was left out. For a whole table or list on a long page, use scrapestructured with the table's selector; Synapse AI plans it that way for a long page you name (see Research).",
+     "heading": "How much it returns"
+    },
+    {
      "anchor": "use-cases",
-     "excerpt": "- Scraping news articles, blog posts, documentation - Extracting content from sites with bot protection (LinkedIn, financial news sites) - Crawling dynamic React/Vue/Angular apps - Monitoring competitor pricing or product listings",
+     "excerpt": "- Scraping news articles, blog posts, documentation - Crawling dynamic React/Vue/Angular apps - Monitoring competitor pricing or product listings",
      "heading": "Use cases"
     },
     {
-     "anchor": "anti-bot-evasion",
-     "excerpt": "The scraper uses crawl4ai's stealth features: - Headless browser with realistic browser fingerprints - Randomised request timing - Cookie and session handling - User-agent rotation This makes it significantly more effective against sites that block requests-based scrapers or require JavaScript.",
-     "heading": "Anti-bot evasion"
+     "anchor": "when-a-site-says-no",
+     "excerpt": "The scraper presents as an ordinary Chrome browser, but it never solves CAPTCHAs or takes bot checks. Since 2.1.1, a read that doesn't get the page you asked for fails with what happened, never with another page's text as the content: - A bot check, a CAPTCHA, or a refusal (HTTP 403, 429, 503) fails the call with Blocked by anti-bot protection and, where it can tell, whose protection it is…",
+     "heading": "When a site says no"
     },
     {
      "anchor": "example",
@@ -8147,9 +8157,9 @@
      "heading": "Knowledge bases in the Vault"
     },
     {
-     "anchor": "referencing-vault-files-with-path-referencing-vault-files-in-agents",
+     "anchor": "referencing-vault-files-in-agents",
      "excerpt": "A @[path] mention inlines a vault file's text wherever prompts are written: | Where | | |---|---| | Agent system prompts | The agent carries the file every session | | Workflow step prompts | One step gets the file | | Chat messages | You hand a file to the agent in passing | | Schedules | A scheduled run carries it | The file is read from the vault as it is now, every time — never from a cached…",
-     "heading": "Referencing vault files with @[path] [#referencing-vault-files-in-agents]"
+     "heading": "Referencing vault files with @[path]"
     },
     {
      "anchor": "in-system-prompts",

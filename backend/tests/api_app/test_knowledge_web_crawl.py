@@ -1283,3 +1283,213 @@ class TestResumeInThisProcess:
         state = await web.load_state(source["id"])
         assert state["status"] == "cancelled" and state.get("finished_at")
         assert await web.load_frontier(source["id"]) == {}
+
+
+def _raw(markup: str) -> tuple[int, dict, bytes]:
+    return 200, {"Content-Type": "text/html; charset=utf-8"}, markup.encode()
+
+
+class TestAPageWithNoRealText:
+    """A page whose whole extract is a skip link is the empty, needs-JavaScript case, never content (F1660). The
+    measure is that no real text is left, never a count of characters: short real text is kept."""
+
+    async def test_a_page_whose_only_text_is_a_skip_link_is_skipped_as_needing_javascript(self, on, site, jobs,
+                                                                                           indexer):
+        _Site.pages["/app"] = _raw('<html><head><title>Docs</title></head><body><a href="#content-area" '
+                                   'class="sr-only">Skip to main content</a><div id="__next"></div>'
+                                   '<script>window.boot()</script></body></html>')
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/app", kind="page")
+        [row] = (await docs(kb["id"])).values()
+        assert (row.status, row.status_reason, row.sha256) == ("skipped", "empty_document", None)
+        assert "JavaScript" in (row.error or "")
+
+    @pytest.mark.parametrize("body", [
+        # A skip link beside short real text (as a retailer's 90-character page): the text is real, so it is kept.
+        '<a href="#main">Skip to main content</a><main><p>Free delivery on orders over $45. Shop tools, appliances '
+        'and garden supplies.</p></main>',
+        # A real heading that starts like a skip link is an article, not a skip link.
+        '<main><h1>Skip to content: how skip links help</h1></main>',
+    ])
+    async def test_short_real_text_beside_or_like_a_skip_link_is_still_indexed(self, body, on, site, jobs, indexer):
+        _Site.pages["/short"] = _raw(f"<html><head><title>Short</title></head><body>{body}</body></html>")
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/short", kind="page")
+        await drain(jobs)
+        [row] = (await docs(kb["id"])).values()
+        assert row.status == "indexed" and row.sha256
+
+
+class TestASignInWall:
+    """A page that answers 401, or lands on a sign-in page, is never indexed as the page asked for (F1632)."""
+
+    async def test_a_page_that_lands_on_a_sign_in_page_is_not_indexed(self, on, site, jobs, indexer):
+        _Site.pages["/account"] = (302, {"Location": "/login?return_to=%2Faccount"}, b"")
+        _Site.pages["/login?return_to=%2Faccount"] = html("Sign in", "Enter your password.")
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/account", kind="page")
+        [row] = (await docs(kb["id"])).values()
+        assert (row.status, row.sha256) == ("failed", None)
+        assert (row.error or "").startswith("Needs a sign-in:"), row.error
+
+    async def test_a_401_says_it_needs_a_sign_in(self, on, site, jobs, indexer):
+        _Site.pages["/members"] = (401, {"WWW-Authenticate": 'Basic realm="members"'}, b"")
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/members", kind="page")
+        [row] = (await docs(kb["id"])).values()
+        assert row.status == "failed" and (row.error or "").startswith("Needs a sign-in:"), row.error
+
+    async def test_a_sign_in_page_asked_for_by_its_own_address_is_indexed(self, on, site, jobs, indexer):
+        _Site.pages["/login"] = html("Sign in", "Enter your password.")
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/login", kind="page")
+        await drain(jobs)
+        [row] = (await docs(kb["id"])).values()
+        assert row.status == "indexed" and row.sha256
+
+
+class TestABotCheck:
+    """A bot check that refuses SynapseBot names whose it is and the way on; a plain 403 keeps its words (F1632)."""
+
+    async def test_a_challenge_names_cloudflare_and_the_way_on(self, on, site, jobs, indexer):
+        _Site.pages["/guarded"] = (403, {"cf-mitigated": "challenge", "Server": "cloudflare",
+                                         "Content-Type": "text/html"}, b"<html>Just a moment...</html>")
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/guarded", kind="page")
+        [row] = (await docs(kb["id"])).values()
+        assert row.status == "failed" and row.sha256 is None
+        assert "Cloudflare" in (row.error or "") and "Firecrawl" in (row.error or ""), row.error
+
+    async def test_a_plain_403_keeps_its_plain_words(self, on, site, jobs, indexer):
+        _Site.pages["/closed"] = (403, {"Content-Type": "text/html"}, b"<html>Forbidden</html>")
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/closed", kind="page")
+        [row] = (await docs(kb["id"])).values()
+        assert row.status == "failed" and row.error == "The server answered 403.", row.error
+
+
+class TestAPageThatAsksToWait:
+    async def test_a_long_wait_is_named_in_the_pages_failure(self, on, site, jobs, indexer):
+        _Site.pages["/queue"] = (429, {"Retry-After": "120"}, b"")
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/queue", kind="page")
+        [row] = (await docs(kb["id"])).values()
+        assert row.status == "failed" and "120 seconds" in (row.error or ""), row.error
+
+#: A page whose words only JavaScript writes: the plain fetch reads a skip link and an empty root (F1660's case).
+_JS_ONLY = ('<html><head><title>App</title></head><body><a href="#main">Skip to main content</a><div id="root"></div>'
+            '<script>document.getElementById("root").textContent = "Rendered words"</script></body></html>')
+
+
+@pytest.fixture
+def renderer():
+    """A stand-in for the headless render (F1632 c): records each call, answers what the test sets."""
+    from core.knowledge import render
+
+    class Stand:
+        calls: list[tuple[str, str]] = []
+        answer = None  # a render.Rendered, or None as when Chromium is not installed
+
+        async def __call__(self, url: str, *, user_agent: str):
+            self.calls.append((url, user_agent))
+            return self.answer(url) if callable(self.answer) else self.answer
+
+    stand = Stand()
+    stand.calls = []
+    render.set_renderer(stand)
+    yield stand
+    render.set_renderer(None)
+
+
+class TestAPageThatNeedsJavaScript:
+    """A page whose plain fetch has no real text is rendered once in headless Chromium, still as SynapseBot, and its
+    rendered text indexed (F1632 c). Never a page that already has text, never a refusal or a bot check, never past a
+    sign-in, and never more than a crawl's cap; without Chromium, F1660's words stand."""
+
+    async def test_a_javascript_only_page_is_rendered_once_as_synapsebot_and_indexed(self, on, site, jobs, indexer,
+                                                                                    renderer):
+        from core.knowledge import render
+
+        _Site.pages["/app"] = _raw(_JS_ONLY)
+        renderer.answer = lambda url: render.Rendered(
+            html='<html><head><title>App</title></head><body><main><p>Rendered words about the termination clause.'
+                 '</p></main></body></html>', url=url)
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/app", kind="page")
+        await drain(jobs)
+        assert renderer.calls == [(f"{site}/app", F.USER_AGENT)]
+        [row] = (await docs(kb["id"])).values()
+        assert row.status == "indexed" and row.sha256
+        assert "Rendered words about the termination clause." in get_blob_store().get(f"vault/{row.path}")
+
+    async def test_a_page_that_has_text_is_never_rendered(self, on, site, jobs, indexer, renderer):
+        _Site.pages["/text"] = html("Text", "Plain words a fetch can read.")
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/text", kind="page")
+        await drain(jobs)
+        assert renderer.calls == []
+        [row] = (await docs(kb["id"])).values()
+        assert row.status == "indexed"
+
+    @pytest.mark.parametrize("answer", [
+        (403, {"Content-Type": "text/html"}, _JS_ONLY.encode()),
+        (403, {"cf-mitigated": "challenge", "Server": "cloudflare", "Content-Type": "text/html"}, _JS_ONLY.encode()),
+        (200, {"cf-mitigated": "challenge", "Server": "cloudflare", "Content-Type": "text/html"}, _JS_ONLY.encode()),
+    ])
+    async def test_a_refusal_or_a_bot_check_is_never_rendered(self, answer, on, site, jobs, indexer, renderer):
+        _Site.pages["/guarded-app"] = answer
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/guarded-app", kind="page")
+        assert renderer.calls == []
+        [row] = (await docs(kb["id"])).values()
+        assert row.status == "failed" and row.sha256 is None
+
+    async def test_without_chromium_the_page_says_it_needs_javascript(self, on, site, jobs, indexer, renderer):
+        _Site.pages["/app"] = _raw(_JS_ONLY)
+        renderer.answer = None
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/app", kind="page")
+        assert len(renderer.calls) == 1
+        [row] = (await docs(kb["id"])).values()
+        assert (row.status, row.status_reason, row.sha256) == ("skipped", "empty_document", None)
+        assert "JavaScript" in (row.error or "")
+
+    async def test_a_render_with_no_real_text_still_says_so(self, on, site, jobs, indexer, renderer):
+        from core.knowledge import render
+
+        _Site.pages["/app"] = _raw(_JS_ONLY)
+        renderer.answer = lambda url: render.Rendered(
+            html='<html><body><a href="#main">Skip to main content</a><div id="root"></div></body></html>', url=url)
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/app", kind="page")
+        [row] = (await docs(kb["id"])).values()
+        assert (row.status, row.status_reason, row.sha256) == ("skipped", "empty_document", None)
+
+    async def test_a_render_that_lands_on_a_sign_in_page_is_not_indexed(self, on, site, jobs, indexer, renderer):
+        from core.knowledge import render
+
+        _Site.pages["/app"] = _raw(_JS_ONLY)
+        renderer.answer = lambda url: render.Rendered(
+            html="<html><body><h1>Sign in</h1><p>Enter your password.</p></body></html>",
+            url=url.rsplit("/", 1)[0] + "/login?next=%2Fapp")
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/app", kind="page")
+        [row] = (await docs(kb["id"])).values()
+        assert (row.status, row.sha256) == ("failed", None)
+        assert (row.error or "").startswith("Needs a sign-in:"), row.error
+
+    async def test_a_crawl_renders_no_more_than_its_cap(self, on, site, jobs, indexer, renderer, monkeypatch):
+        from core.knowledge import render
+
+        monkeypatch.setattr(render, "MAX_RENDERS_PER_CRAWL", 2)
+        _Site.pages["/docs/"] = html("Docs", "Index of the apps.", *(f"/docs/app{i}" for i in range(4)))
+        for i in range(4):
+            _Site.pages[f"/docs/app{i}"] = _raw(_JS_ONLY)
+        renderer.answer = lambda url: render.Rendered(
+            html=f"<html><body><main><p>Rendered words of {url.rsplit('/', 1)[1]}.</p></main></body></html>", url=url)
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/")
+        await drain(jobs)
+        assert len(renderer.calls) == 2
+        indexed = [r for r in (await docs(kb["id"])).values() if r.status == "indexed"]
+        assert len(indexed) == 3  # the index page and two rendered apps; the other two keep F1660's words

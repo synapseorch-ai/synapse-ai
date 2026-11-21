@@ -97,9 +97,12 @@ HOST_WINDOWS: tuple[tuple[str, str, int, str], ...] = (
 def window_tokens(model_id: str) -> int | None:
     """`model_id`'s input window in tokens, or None when it is not known: its family's row (the longest prefix of its
     id or an id its provider's prefix leaves), and its host's own row where that host serves less (`HOST_WINDOWS`)."""
+    from core.providers.cli_aliases import resolved
+
     model_id = (model_id or "").strip().lower()
     if not model_id:
         return None
+    model_id = resolved(model_id) or model_id  # a CLI's alias is the model it runs (F1598 D)
     ids = [model_id, *(model_id[n + 1:] for n, c in enumerate(model_id) if c in "./")]
     found = [(len(prefix), tokens) for prefix, tokens in WINDOWS for i in ids if i.startswith(prefix.lower())]
     family = max(found)[1] if found else None

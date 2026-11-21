@@ -179,6 +179,22 @@ def _build_anthropic_image_content(text: str, images: list[str] | None) -> list[
 #: setting, read in `generate_response`.
 DEFAULT_MAX_OUTPUT_TOKENS = 8192
 
+#: The slowest a model is expected to write its answer, tokens a second (F1682): Sonnet 4.6 wrote 10,240 in 191 s.
+SLOWEST_TOKENS_PER_SECOND = 40
+#: Time for the call to start answering at all, on top of what it writes.
+_FIRST_TOKEN_SECONDS = 30
+
+
+def per_try_timeout(max_tokens: object) -> float:
+    """One try's cut, in seconds: the default, or longer for a call allowed to write more than the default's time
+    holds at the slowest rate a model writes, so a call is never cut before it could finish (F1682: the planner's call
+    wrote its whole 10,240-token allowance in 191 s, and a 180 s cut sent it again on every try)."""
+    try:
+        allowed = int(max_tokens or 0)
+    except (TypeError, ValueError):
+        allowed = 0
+    return max(LLM_REQUEST_TIMEOUT, allowed / SLOWEST_TOKENS_PER_SECOND + _FIRST_TOKEN_SECONDS)
+
 
 #: Providers spell "why the model stopped" four different ways. The loop cares
 #: about one distinction — was this response complete? — so they are normalised
@@ -1866,7 +1882,8 @@ async def call_anthropic(model, messages, system, api_key, tools=None, images=No
                 break
     import anthropic
 
-    ANTHROPIC_TIMEOUT = LLM_REQUEST_TIMEOUT  # seconds per attempt (Claude can take >60s for complex prompts)
+    # Seconds per attempt: long enough for what this call may write (F1682), never under the default.
+    ANTHROPIC_TIMEOUT = per_try_timeout(max_tokens or DEFAULT_MAX_OUTPUT_TOKENS)
     MAX_RETRIES = 5
 
     # --- Input validation to prevent 400 errors ---

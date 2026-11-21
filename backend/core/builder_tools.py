@@ -1202,6 +1202,13 @@ BUILDER_TOOL_SCHEMAS = [
                     "max_total_turns": {"type": "integer"},
                     "timeout_minutes": {"type": "integer"},
                     **RUN_CAP_PROPERTIES,
+                    "offer_to_mcp": {
+                        "type": "boolean",
+                        "description": (
+                            "The workflow's own Offer to MCP clients switch: true offers it to apps connected over "
+                            "MCP as a tool of its own, false stops offering it (they can still run it by name)."
+                        ),
+                    },
                     "strict_state_types": {
                         "type": "boolean",
                         "description": (
@@ -2667,7 +2674,19 @@ async def _steps_as_run_calls(orch: dict, server_module: Any) -> dict:
         fixed = await builder_guard.canonical_names([s["forced_tool"] for s in steps], server_module)
         for step, name in zip(steps, fixed):
             step["forced_tool"] = name
-    return orch
+    # A Tool step whose tool's app isn't connected right now decides its ask when it runs (F1679).
+    return await builder_guard.mark_checks(orch, server_module)
+
+
+async def _with_checks(agent: dict, server_module: Any) -> dict:
+    """An agent as a save keeps it (F1679): a tool whose app isn't connected right now is `check`, decided each call
+    from what it declares, and a `check` that can be read now is decided (`builder_guard.checked_policy`)."""
+    from core import builder_guard
+
+    policy = await builder_guard.checked_policy(agent.get("tool_policy"), agent.get("tools"), server_module)
+    if policy or "tool_policy" in agent:
+        agent["tool_policy"] = policy
+    return agent
 
 
 async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list[dict]) -> Any:
@@ -2776,7 +2795,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             agent["boards"] = dict(args["boards"])
         if args.get("knowledge"):
             agent["knowledge"] = agent_knowledge.ids(args["knowledge"])
-        await save_agent(agent)
+        await save_agent(await _with_checks(agent, server_module))
         _emit(events, "agent", "created", agent["id"], agent["name"], agent)
         return {"status": "created", "agent": agent}
 
@@ -2885,7 +2904,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         if (refusal := await _memory_room(sum(d.get("memory") is True for d in documents))) is not None:
             return refusal
         for document in documents:
-            await save_agent(document)
+            await save_agent(await _with_checks(document, server_module))
             _emit(events, "agent", "created", document["id"], document["name"], document)
         return {"status": "created", "agents": created, "errors": errors}
 
@@ -2951,7 +2970,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             return {"error": said}
         agent.update(fields)
         agent["id"] = args["agent_id"]  # the id is not patchable
-        await save_agent(agent)
+        await save_agent(await _with_checks(agent, server_module))
         _emit(events, "agent", "updated", agent["id"], agent.get("name"), agent)
         return {"status": "updated", "agent": agent}
 
@@ -3011,8 +3030,12 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                         "inputSchema": t.inputSchema if hasattr(t, "inputSchema") else {},
                     }
             missing = requested - result.keys()
-            if missing:
-                result["_not_found"] = sorted(missing)
+            # A tool of an app set up here that isn't connected right now: why, never "not found" (F1679).
+            away = {n: why for n in sorted(missing) if (why := builder_guard.unreachable(n, server_module))}
+            if away:
+                result["_not_reachable"] = away
+            if missing - away.keys():
+                result["_not_found"] = sorted(missing - away.keys())
             return result
         except Exception as e:
             return {"error": f"Could not fetch tool details: {e}"}
@@ -3471,14 +3494,14 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         # works for callers that haven't migrated yet.
         raw_fields = dict(args.get("fields") or {})
         for key in ("name", "description", "entry_step_id", "state_schema_json",
-                    "max_total_turns", "timeout_minutes", "strict_state_types", "result_key"):
+                    "max_total_turns", "timeout_minutes", "strict_state_types", "result_key", "offer_to_mcp"):
             if key in args and args[key] is not None:
                 raw_fields[key] = args[key]
         _normalize_state_schema_arg(raw_fields)
         if (refused := _refuse_engine_key_defaults(raw_fields)) is not None:
             return refused
         allowed = {"name", "description", "entry_step_id", "state_schema",
-                   "max_total_turns", "timeout_minutes", "strict_state_types", "result_key"}
+                   "max_total_turns", "timeout_minutes", "strict_state_types", "result_key", "offer_to_mcp"}
         fields = {k: v for k, v in raw_fields.items() if k in allowed}
         try:
             fields.update(_run_cap_args({**dict(args.get("fields") or {}), **args}))
@@ -4491,6 +4514,12 @@ def answer_reads(steps: list, keys: set[str]) -> dict[str, list[tuple[str, list[
         if not isinstance(s, dict):
             continue
         sid = str(s.get("id", "?"))
+        # The fields a plan's step says it uses of an answer its prompt reads whole (F1675): held as reads. Only the
+        # plan check sets them; a saved step never carries them.
+        for ref in s.get("uses_fields") or []:
+            key, _, rest = str(ref).partition(".")
+            if key in keys and rest:
+                reads.setdefault(key, []).append((sid, rest.split("."), False, "uses_fields"))
         firsts = [("code", s.get("transform_code")), *(("condition", s.get(f)) for f in _EXPRESSION_FIELDS)]
         for where, text in firsts:
             if not isinstance(text, str):
@@ -5448,9 +5477,22 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
 
     # A prompt that reads a key before any step writes it reads it empty there
     # (U74): said, never refused — a feedback loop's first pass is a real pattern.
+    # An LLM step reading a page, a crawl or a file a Tool step fetched (F1677): said with its fix, never refused.
+    # A Vault file read before the workflow's own first write of it fails its first run (F1692): said with its fix.
+    # Code that goes through a tool's whole object answer as a list walks its names, never its rows (F1704): said.
+    from core.native_builder.structure import walk_words, whole_answer_walks
+    from core.orchestration.state_reads import reads_a_long_fetch
+    from core.orchestration.vault_reads import first_read_warnings
+
+    declared = [{"name": name, "outputSchema": {"properties": {
+        f["name"]: {"type": "array" if f.get("type") == "list" else "string"} for f in a.get("fields") or []
+        if isinstance(f, dict) and f.get("name")}}} for name, a in (tool_answers or {}).items() if isinstance(a, dict)]
+    walks = [f"Step '{h['reader'].get('id')}' {walk_words(h)}." for h in whole_answer_walks(
+        [d for d in steps if isinstance(d, dict)], declared)]
     return {"ok": not issues, "issues": issues,
             "warnings": [*unset_reads(orch), *_decisions_on_words(steps, agents),
-                         *step_answers_never_followed(steps), *tool_warnings, *field_warnings]}
+                         *step_answers_never_followed(steps), *tool_warnings, *field_warnings,
+                         *reads_a_long_fetch(steps), *first_read_warnings(orch), *walks]}
 
 
 def _parse_json_field(value: Any, fallback: Any) -> Any:

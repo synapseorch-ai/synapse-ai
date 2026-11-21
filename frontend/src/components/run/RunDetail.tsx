@@ -38,7 +38,7 @@ import { RunResult } from './RunResult';
 import { useRunHost } from './host';
 import {
     DELETED_WORKFLOW,
-    bucketOf, CHARGE_RULE, chargeWords, creditsText, followedLine, money, pathOrder, REMOVED_NOTE, removedLine, runTotals, runWarnings,
+    bucketOf, CHARGE_RULE, chargeWords, creditsText, followedLine, money, pathOrder, REMOVED_NOTE, removedLine, runTotals, runWarnings, runWarningsTitle,
     when, type Followed, type NestedRun, type RunRecord,
 } from './model';
 import { NestedRuns } from './NestedRuns';
@@ -130,7 +130,7 @@ export function RunDetail({
     const asStepper = bucket === 'needs' || bucket === 'failed' || bucket === 'cancelled' || bucket === 'queued';
     const stateKeys = Object.keys(run.sharedState ?? {});
     const removed = removedLine(run, clock);
-    // Steps that ended with their plan open (F862): "Completed with warnings", the status itself unchanged.
+    // Steps that ended with their plan open (F862) or whose result lacks something (F1690): "Completed with warnings".
     const warnings = run.status === 'completed' ? runWarnings(run.history) : 0;
     const stepErrors = Object.fromEntries(run.history.filter((h) => h.error).map((h) => [h.step_id, String(h.error)]));
 
@@ -173,7 +173,7 @@ export function RunDetail({
                     <span className="inline-flex items-center gap-1.5">
                         <StatusBadge status={run.status} waitingForHuman={run.waitingForHuman} />
                         {warnings > 0 && (
-                            <span className="text-sm font-medium text-text" title={`${warnings} ${warnings === 1 ? 'step' : 'steps'} ended with planned tasks still open: see the steps below`}>
+                            <span className="text-sm font-medium text-text" title={runWarningsTitle(run.history)}>
                                 with warnings
                             </span>
                         )}

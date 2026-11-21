@@ -25,7 +25,7 @@ from core.providers import model_facts as F
 
 @pytest.fixture(autouse=True)
 def _no_measure():
-    F.set_measured(None)
+    F.set_measured({})
     yield
     F.set_measured(None)
 

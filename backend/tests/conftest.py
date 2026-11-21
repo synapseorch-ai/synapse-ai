@@ -245,6 +245,46 @@ def _api_probe_answers():
 
 
 @pytest.fixture(autouse=True)
+def _plan_pages_unread():
+    """A page a checked plan reads is not fetched (F1691): no test reaches the web through a plan it examines. A test
+    about the plan-time read sets its own reader, or `set_plan_page_reader(None)` for the real one."""
+    from core.native_builder import build_plan, named_sites
+
+    async def unread(url):
+        return named_sites.NamedPage(url=url, why_not="not read: tests read no web pages")
+
+    build_plan.set_plan_page_reader(unread)
+    yield
+    build_plan.set_plan_page_reader(None)
+
+
+@pytest.fixture(autouse=True)
+def _no_practice_code():
+    """A plan a test checks never starts Docker for its practice run (F1619): its Transforms are left out, nothing said,
+    and the rest of the practice runs. A test about the practice sets its own runner (`practice_run.set_runner`)."""
+    from core.native_builder import practice_run
+
+    practice_run.set_runner(practice_run.OFF)
+    yield
+    practice_run.set_runner(None)
+
+
+@pytest.fixture(autouse=True)
+def _no_headless_renders():
+    """A crawl in a test never starts Chromium to render a page (F1632 c): the render answers None, as where Chromium is
+    not installed, so a page with no words keeps F1660's. A test about the render sets its own renderer, or calls
+    `render.render_page` itself."""
+    from core.knowledge import render
+
+    async def none(url, *, user_agent):
+        return None
+
+    render.set_renderer(none)
+    yield
+    render.set_renderer(None)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_cli_status():
     """Forget what the model CLIs said (CLIM1): their status is cached for ten
     minutes per binary, and a test's faked `which` must not answer for the next."""

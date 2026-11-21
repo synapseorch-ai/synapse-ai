@@ -248,7 +248,10 @@ _DATED = re.compile(r"-\d{4}-?\d{2}-?\d{2}$")
 
 
 def _ids(model_id: str) -> list[str]:
+    from core.providers.cli_aliases import resolved
+
     model_id = (model_id or "").strip().lower()
+    model_id = resolved(model_id) or model_id  # a CLI's alias is the model it runs (F1598 D)
     if model_id.startswith("ollama.") and ":" not in model_id:
         model_id += ":latest"  # Ollama's name alone is its `:latest` tag (F1598)
     return [model_id, *(model_id[n + 1:] for n, c in enumerate(model_id) if c in "./")] if model_id else []
@@ -275,14 +278,29 @@ def deprecated(model_id: str) -> bool:
 
 # ── the measured pass ───────────────────────────────────────────────────────────────────────────────────────────────
 
-#: What the measured pass said, by id prefix: `(fit or None, rank or None)`, a higher rank stronger. Empty until it
-#: has run.
-_measured: dict[str, tuple[str | None, int | None]] = {}
+#: The measured pass (F1598 D), by id prefix: `(fit, rank)`, order only. Four models built two real asks on a scratch
+#: install (a support assistant over docs and an order API; a refund that waits for an approval before it is sent);
+#: a third ask, a change to an existing form, was not measured. The Claude models ran through the Claude CLI, Gemini 3
+#: Flash through its API. Rank = 100 x asks right + 10 x a judge's mean helpfulness (1-5): Sonnet 4.6 right on one,
+#: helpfulness 4 and 5; Haiku 4.5 right on one, 5 and 1; Haiku 5.5 right on one, 3 and 2; Gemini 3 Flash right on
+#: none, 5 and 2. No ask was right on every model, and none on the refund. It sets no fit: "Recommended" stays the
+#: facts' call, and the rank orders only the measured models of one family's tier (`models_menu.ordered`).
+MEASURED: dict[str, tuple[str | None, int | None]] = {
+    "claude-sonnet-4-6": (None, 145),
+    "claude-haiku-4-5": (None, 130),
+    "claude-haiku-5-5": (None, 125),
+    "gemini-3-flash-preview": (None, 35),
+}
+
+#: What the measured pass said, by id prefix: `(fit or None, rank or None)`, a higher rank stronger.
+_measured: dict[str, tuple[str | None, int | None]] = dict(MEASURED)
 
 
 def set_measured(rows: dict[str, tuple[str | None, int | None]] | None) -> None:
+    """The measured rows to read: `rows`, or `{}` for none; None puts the shipped table (`MEASURED`) back."""
     global _measured
-    _measured = {k: (v[0] if v[0] in FITS else None, v[1]) for k, v in (rows or {}).items()}
+    rows = MEASURED if rows is None else rows
+    _measured = {k: (v[0] if v[0] in FITS else None, v[1]) for k, v in rows.items()}
 
 
 def measured(model_id: str) -> tuple[str | None, int | None] | None:

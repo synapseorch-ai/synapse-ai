@@ -199,6 +199,12 @@ class _NotOffered(Exception):
         self.field, self.options = field, options or []
 
 
+#: Said when a card would ask, set or answer as Synapse AI itself (F1674): it answers here, in Chat, and every agent
+#: picker leaves it out, so "No agent is called 'agent_synapse_ai'" reached the person with its own id.
+ASSISTANT_NAMED = ("That's Synapse AI itself: it answers here, in this chat, so a card can't ask it or set it to "
+                   "answer anywhere else. Name one of the workspace's own agents instead.")
+
+
 class _FeatureOff(_NotOffered):
     """The action needs a feature that is off: what is said names where it is turned on, and its switch is a card of
     its own for one who may press it (`feature_switch`, F1203)."""
@@ -240,6 +246,32 @@ def listed(items: list[dict], wanted: str) -> dict | None:
         if len(match) == 1:
             return match[0]
     return None
+
+
+async def _is_the_assistant(wanted: str) -> bool:
+    """Whether `wanted` names Synapse AI itself: its default agent's id or name, or one of its own builder agents (on
+    cloud each workspace's copy has ids of its own, so they are read from the store, never matched on these ids)."""
+    from core.default_agent import DEFAULT_AGENT_ID
+    from core.store.resources import load_agents
+
+    needle = (wanted or "").strip().casefold()
+    if not needle:
+        return False
+    if needle in (DEFAULT_AGENT_ID, "synapse ai"):
+        return True
+    return any(needle in (str(a.get("id") or "").casefold(), str(a.get("name") or "").casefold())
+               for a in await load_agents() if a.get("type") == "builder" or a.get("system"))
+
+
+async def _pick_agent(agents: list[dict], wanted: str) -> dict:
+    """One of `agents` by name or id, as `_pick`; Synapse AI itself, which no agent picker offers, is said in plain
+    words, never by its id (F1674)."""
+    try:
+        return _pick(agents, wanted, "agent", "Topic `agents` lists them.")
+    except _NotOffered:
+        if await _is_the_assistant(wanted):
+            raise _NotOffered(ASSISTANT_NAMED) from None
+        raise
 
 
 def _pick(items: list[dict], wanted: str, what: str, list_hint: str) -> dict:
@@ -465,12 +497,23 @@ async def _knowledge(action: str, args: dict) -> dict:
         name = str(args.get("name") or "").strip()
         if not name:
             raise _NotOffered("Say what the knowledge base is called.")
+        # Made with the pages it is filled from (F1670): one card, and one press makes it and adds them.
+        urls = [str(u).strip() for u in (args.get("urls") or []) if str(u).strip()]
+        kind = args.get("kind") if args.get("kind") in ("page", "sitemap", "site") else "page"
         call = {"name": name, "description": str(args.get("text") or "").strip(),
-                **({"folder": str(args["folder"]).strip()} if str(args.get("folder") or "").strip() else {})}
+                **({"folder": str(args["folder"]).strip()} if str(args.get("folder") or "").strip() else {}),
+                **({"urls": urls, "kind": kind} if urls else {})}
         button = await _button("Make it", "create_knowledge_base", call)
         folder = call.get("folder") or knowledge._folder_for(name)
+        pages = ""
+        if urls:
+            pages = {"page": "\nFilled from " + ", ".join(urls[:10]) + (f" and {len(urls) - 10} more" if len(urls) > 10
+                                                                        else ""),
+                     "sitemap": f"\nFilled from the pages {urls[0]} lists",
+                     "site": f"\nFilled from {urls[0]}, crawled"}[kind] + ", fetched once it is made."
         return _card(f'Make a knowledge base "{name}"',
-                     detail=f"On the Vault folder {folder}. Files already there are indexed with your embedding model.",
+                     detail=f"On the Vault folder {folder}. Files already there are indexed with your embedding model."
+                            + pages,
                      buttons=[button])
     if action == "knowledge_add_file":
         kb = await _resolved(knowledge._base(str(args.get("knowledge_base") or "")))
@@ -649,7 +692,7 @@ async def _talk(args: dict) -> dict:
     from core.routes.agents import load_user_agents
 
     agents = [a for a in await load_user_agents() if not a.get("system") and a.get("type") != "builder"]
-    agent = _pick(agents, str(args.get("agent") or ""), "agent", "Topic `agents` lists them.")
+    agent = await _pick_agent(agents, str(args.get("agent") or ""))
     message = str(args.get("message") or "").strip()
     if not message:
         raise _NotOffered("Say what to ask it.")
@@ -804,8 +847,15 @@ async def _board(action: str, args: dict) -> dict:
             raise _NotOffered(f'There is a shared board called "{there.name}" already: nothing new is made. A '
                               "workflow is given it to post to on the board's access list.")
         text = str(args.get("text") or "").strip()
-        return _card(f'Make a shared board "{name}"', detail=text[:300],
-                     buttons=[await _button("Make it", "create_board", {"name": name, "description": text})])
+        # Made with its first cards (F1670): one card, and one press makes it and adds them.
+        cards = [{"title": str(c["title"]).strip(), **({"text": str(c["text"]).strip()} if str(c.get("text") or "").strip()
+                                                        else {})}
+                 for c in args.get("cards") or [] if isinstance(c, dict) and str(c.get("title") or "").strip()]
+        detail = text[:300] + ("\n" if text and cards else "") + (
+            "With its cards: " + "; ".join(c["title"] for c in cards[:12]) if cards else "")
+        return _card(f'Make a shared board "{name}"', detail=detail,
+                     buttons=[await _button("Make it", "create_board", {"name": name, "description": text,
+                                                                        **({"cards": cards} if cards else {})})])
     if action in ("board_rename", "board_describe", "board_access"):
         return await _board_settings(action, args)
     card = await store.get_card(str(args.get("card_id") or ""))
@@ -935,7 +985,7 @@ async def _widget_agent(wanted: str) -> dict:
     from core.store.resources import load_agents
 
     agents = [a for a in await load_agents() if not a.get("system") and a.get("type") != "builder"]
-    return _pick(agents, wanted, "agent", "Topic `agents` lists them.")
+    return await _pick_agent(agents, wanted)
 
 
 def _widget_changes(args: dict) -> dict:
@@ -1134,10 +1184,9 @@ async def _channel(action: str, args: dict) -> dict:
         if not wanted:
             raise _NotOffered("Say which agents answer on it.")
         mine = [a for a in await _all_agents() if not a.get("system") and a.get("type") != "builder"]
-        picked = [_pick(mine, w, "agent", "Topic `agents` lists them.") for w in wanted]
+        picked = [await _pick_agent(mine, w) for w in wanted]
         ids = list(dict.fromkeys(a["id"] for a in picked))
-        first = _pick(mine, str(args["agent"]), "agent", "Topic `agents` lists them.")["id"] \
-            if str(args.get("agent") or "").strip() else ids[0]
+        first = (await _pick_agent(mine, str(args["agent"])))["id"] if str(args.get("agent") or "").strip() else ids[0]
         if first not in ids:
             raise _NotOffered("The agent that answers first is one of the agents that answer.")
         before = {"agents": [agents.get(a, a) for a in channel.get("agent_ids") or []],

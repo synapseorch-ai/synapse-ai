@@ -429,8 +429,11 @@ async def _build_with_ai(page):
     raise AssertionError("no visible Synapse AI row or mark to open the builder with")
 
 
-async def _open_builder(browser, width=WIDE):
-    ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]})
+async def _open_builder(browser, width=WIDE, scheme: str | None = None):
+    ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]},
+                                    **({"color_scheme": scheme} if scheme else {}))
+    if scheme:
+        await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{scheme}')}}catch(e){{}}")
     await ctx.add_init_script(BUILDER_STUB)
     page = await ctx.new_page()
     await page.goto(APP, wait_until="domcontentloaded")
@@ -694,6 +697,72 @@ async def check_codetestpress(browser) -> str:
         return "a press of Test this fix is busy for the whole test, then says how it went in the test's own words"
     finally:
         await ctx.close()
+
+
+@check
+async def check_chaincard(browser) -> str:
+    """A card waiting on what another card makes comes up right under it when that card is pressed (F1670, A): pressed
+    "Make it" on a new knowledge base, the press's answer brings the card for its note, drawn under the card that made
+    it, its own Needs your go-ahead and button, never asked for again; a line for one that couldn't be prepared is said
+    on the pressed card. Model-free: the cards are the stub's, the act's answer a route's. 1440 and 390, light and dark;
+    with SMOKE_SHOTS, each is kept."""
+    shots = os.environ.get("SMOKE_SHOTS")
+    seen: list[str] = []
+    note = {"type": "action_needed", "id": "act_f1670a_note", "title": 'Add a note to "IRS Tax Forms"',
+            "detail": "Deadline: Due each year by January 31.", "danger": False,
+            "buttons": [{"label": "Add note", "tool": "add_knowledge_note", "arguments": {"base": "IRS Tax Forms"},
+                         "token": "t_f1670a_note", "expires_in_seconds": 600, "run_id": RUN_ID}]}
+
+    async def act(route):
+        await route.fulfill(status=200, json={"done": True, "result": {"say": 'Made the knowledge base "IRS Tax Forms".'},
+                                              "cards": [note], "said": []})
+
+    for width in (WIDE, (390, 844)):
+        for scheme in ("light", "dark"):
+            ctx, page = await _open_builder(browser, width, scheme)
+            await ctx.route(re.compile(r".*/api/assistant/act$"), act)
+            where = f"{width[0]} {scheme}"
+            try:
+                await page.evaluate("(id) => window.__stub.push({type: 'orchestration_start', run_id: id})", RUN_ID)
+                await page.evaluate("(e) => window.__stub.push(e)", {
+                    "type": "action_needed", "id": "act_f1670a_make", "title": 'Make a knowledge base "IRS Tax Forms"',
+                    "detail": "On the Vault folder knowledge/irs-tax-forms.", "danger": False,
+                    "buttons": [{"label": "Make it", "tool": "create_knowledge_base",
+                                 "arguments": {"name": "IRS Tax Forms"}, "token": "t_f1670a", "expires_in_seconds": 600}]})
+                panel = page.locator('[data-testid="assistant-panel"]')
+                made = panel.get_by_role("region", name="Make a knowledge base \"IRS Tax Forms\"")
+                await made.wait_for(timeout=8_000)
+                await made.get_by_role("button", name="Make it").click()
+                waiting = panel.get_by_role("region", name="Add a note to \"IRS Tax Forms\"")
+                await waiting.wait_for(timeout=6_000)
+                placed = await page.evaluate("""() => {
+                    const r = [...document.querySelectorAll('[data-testid="assistant-panel"] section[aria-label]')];
+                    const made = r.find((s) => s.getAttribute('aria-label').startsWith('Make a knowledge base'));
+                    const note = r.find((s) => s.getAttribute('aria-label').startsWith('Add a note'));
+                    if (!made || !note) return {found: false};
+                    const a = made.getBoundingClientRect(), b = note.getBoundingClientRect();
+                    const after = made.nextElementSibling;
+                    return {found: true, next: !!after && (after === note || after.contains(note)),
+                            gap: Math.round(b.top - a.bottom),
+                            inside: b.right <= innerWidth + 1 && b.left >= -1};
+                }""")
+                if not placed.get("found") or not placed["next"] or not (0 <= placed["gap"] <= 32) or not placed["inside"]:
+                    raise AssertionError(f"{where}: the note's card is not right under the card that made it: {placed}")
+                add = waiting.get_by_role("button", name="Add note")
+                if not await add.is_enabled():
+                    raise AssertionError(f"{where}: the note's card has no button to press")
+                await asyncio.sleep(0.8)  # the scroll into view is smooth
+                seen_at = await add.evaluate("""(b) => { const r = b.getBoundingClientRect();
+                    const x = r.left + r.width / 2, y = r.top + r.height / 2, e = document.elementFromPoint(x, y);
+                    return !!e && b.contains(e); }""")
+                if not seen_at:
+                    raise AssertionError(f"{where}: the note's Add note is not in view: the card came up out of sight")
+                if shots:
+                    await panel.screenshot(path=os.path.join(shots, f"chaincard-{width[0]}-{scheme}.png"))
+                seen.append(where)
+            finally:
+                await ctx.close()
+    return "a press of Make it brings the waiting card right under it, its own button ready: " + ", ".join(seen)
 
 
 @check
@@ -1631,6 +1700,113 @@ async def check_plancardrole(browser) -> str:
 
 
 @check
+async def check_toolpolicycheck(browser) -> str:
+    """An agent's rule for one tool can be "Ask unless it only reads" (F1679): the builder saves it for a tool whose
+    app wasn't connected when it was built, and the agent editor shows it chosen, says what it does, and offers it beside
+    Allow, Ask first and Block. Light and dark at 1600, and at phone width with no row past the sheet. With SMOKE_SHOTS,
+    the Tool Policy section is saved."""
+    shots = os.environ.get("SMOKE_SHOTS")
+    aid, name, tool = "agent_uismoke_f1679", "UI smoke Ask unless it reads", "scrape_url"
+    api(f"/api/agents/{aid}", "DELETE")
+    api("/api/agents", "POST", {**_agent(aid, name), "tools": [tool], "tool_policy": {f"tool:{tool}": "check"}})
+    bad: list[str] = []
+    try:
+        for scheme, (w, h) in (("light", WIDE), ("dark", WIDE), ("light", (390, 844))):
+            ctx = await browser.new_context(viewport={"width": w, "height": h}, color_scheme=scheme)
+            await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{scheme}')}}catch(e){{}}")
+            page = await ctx.new_page()
+            try:
+                await page.goto(f"{APP}/agents", wait_until="domcontentloaded")
+                await asyncio.sleep(SETTLE)
+                await page.get_by_text(name, exact=True).first.click()
+                await page.get_by_role("button", name=re.compile(r"^Tool Policy", re.I)).first.click()
+                chosen = page.get_by_role("button", name=f"Ask unless it only reads: {tool}")
+                await chosen.wait_for(timeout=10_000)
+                if await chosen.get_attribute("aria-pressed") != "true":
+                    bad.append(f"{scheme} {w}: 'Ask unless it only reads' is not the chosen rule for {tool}")
+                for other in ("Allow", "Ask first", "Block"):
+                    if not await page.get_by_role("button", name=f"{other}: {tool}").count():
+                        bad.append(f"{scheme} {w}: no {other!r} beside it")
+                meaning = page.get_by_test_id("one-tool-check-meaning")
+                if not await meaning.count() or "only reads" not in (await meaning.first.inner_text()):
+                    bad.append(f"{scheme} {w}: what it does is not said under the rule")
+                over = await page.evaluate("() => document.documentElement.scrollWidth - window.innerWidth")
+                if w < 600 and over > 1:
+                    bad.append(f"phone: the page runs {over}px past the sheet")
+                if shots:
+                    # The "For one tool" block itself, scrolled to: the editor scrolls inside its pane.
+                    block = page.get_by_text("For one tool", exact=True).first.locator("xpath=..")
+                    await block.scroll_into_view_if_needed()
+                    await asyncio.sleep(0.3)
+                    await block.screenshot(path=os.path.join(shots, f"toolpolicycheck-{scheme}-{w}.png"))
+            finally:
+                await ctx.close()
+    finally:
+        api(f"/api/agents/{aid}", "DELETE")
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "'Ask unless it only reads' is chosen, offered beside the others and said, light, dark and at phone width"
+
+
+@check
+async def check_resultnotes(browser) -> str:
+    """A completed run whose steps say what their result lacks reads "with warnings" (F1690): a cut answer, an empty
+    result and a CSV with no rows are kept on their step's record, and the run's header counts them, its hover naming
+    the steps and the first warning. A clean run beside it says just "Completed". Light and dark at 1600, and at phone
+    width with no row past the sheet; with SMOKE_SHOTS, the header of each is saved."""
+    shots = os.environ.get("SMOKE_SHOTS")
+    cut = "'Fetch page' got a cut answer: the first 50,039 of about 424,518 characters. What is built from it may be partial."
+    warned = {**_M2B_RUNS["run_smoke_m2b_done"], "run_id": "run_smoke_f1690_warned", "step_history": [
+        _m2b_entry("fetch", "Fetch page", "tool", 0, 0.6, output_key="page", result_notes=[cut]),
+        _m2b_entry("parse", "Parse countries", "tool", 0, 0.2, output_key="rows",
+                   result_notes=["'Parse countries' made nothing: its result is empty."]),
+        _m2b_entry("save", "Save CSV", "tool", 1, 0.1, output_key="saved",
+                   result_notes=["'Save CSV' wrote sovereign_states.csv with a header and no rows."])]}
+    clean = {**_M2B_RUNS["run_smoke_m2b_done"], "run_id": "run_smoke_f1690_clean"}
+    bad: list[str] = []
+    for scheme, (w, h) in (("light", WIDE), ("dark", WIDE), ("light", (390, 844))):
+        ctx = await browser.new_context(viewport={"width": w, "height": h}, color_scheme=scheme)
+        await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{scheme}')}}catch(e){{}}")
+        await ctx.route(f"**/api/orchestrations/{_M2B_REVIEW['id']}", _answer(_M2B_REVIEW))
+        for run in (warned, clean):
+            rid = run["run_id"]
+            await ctx.route(re.compile(rf".*/api/orchestrations/runs/{rid}(\?.*)?$"), _answer(run))
+            await ctx.route(f"**/api/orchestrations/runs/{rid}/children", _answer([]))
+            await ctx.route(f"**/api/orchestrations/runs/{rid}/events/stream*",
+                            _answer(_frame({"type": "stream_complete"}), content_type="text/event-stream"))
+        page = await ctx.new_page()
+        try:
+            for run, want in ((warned, True), (clean, False)):
+                await page.goto(f"{APP}/runs/{run['run_id']}", wait_until="domcontentloaded")
+                strip = page.get_by_label("About this run")
+                await strip.wait_for(timeout=15_000)
+                await asyncio.sleep(SETTLE)
+                said = page.get_by_text("with warnings", exact=True)
+                if want:
+                    if not await said.count():
+                        bad.append(f"{scheme} {w}: a run whose steps warned does not say 'with warnings'")
+                    else:
+                        title = await said.first.get_attribute("title") or ""
+                        for words in ("'Fetch page'", "'Parse countries'", "'Save CSV'", "cut answer"):
+                            if words not in title:
+                                bad.append(f"{scheme} {w}: its hover does not say {words}: {title!r}")
+                elif await said.count():
+                    bad.append(f"{scheme} {w}: a clean run says 'with warnings'")
+                over = await page.evaluate("() => document.documentElement.scrollWidth - window.innerWidth")
+                if w < 600 and over > 1:
+                    bad.append(f"phone: {run['run_id']} runs {over}px past the sheet")
+                if shots:
+                    kind = "warned" if want else "clean"
+                    await strip.screenshot(path=os.path.join(shots, f"resultnotes-{kind}-{scheme}-{w}.png"))
+                    await page.screenshot(path=os.path.join(shots, f"resultnotes-{kind}-{scheme}-{w}-page.png"))
+        finally:
+            await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "a run whose steps warned reads 'with warnings', naming them; a clean one says just Completed"
+
+
+@check
 async def check_runfollow(browser) -> str:
     """The run log follows the newest line, and leaves a reader who scrolled up alone.
 
@@ -2211,6 +2387,112 @@ def _agent(aid: str, name: str) -> dict:
     return {"id": aid, "name": name, "description": f"{name}, a ui-smoke fixture",
             "system_prompt": "You help.", "tools": [], "repos": [],
             "type": "conversational", "avatar": "default", "max_turns": 30}
+
+
+@check
+async def check_editorsave(browser) -> str:
+    """The editor's Save is what a click on it reaches, beside everything else the canvas floats at the top (F1695).
+
+    At 1280x720 the canvas's right-hand bar (what to check, Workflow settings, Board, Last run, Change with AI, Run)
+    took its whole width and the left-hand one, which holds the workflow's name and Save, was squeezed under it: a
+    click on Save landed on the other bar, and only Ctrl+S saved. Measured with everything both bars can show at
+    once, as on Cloud: Boards on (Board), a step nothing leads to (what to check), a run done (Last run), unsaved
+    changes and a long name; at 1280x720 and 390x844, light and dark. The point at Save's centre must be Save, and a
+    click there must send the save.
+    """
+    _boards_on()
+    oid = f"orch_uismoke_save_{int(time.time())}"
+    fixture = human_gate_orchestration(oid)
+    fixture["name"] = "Weekly client report to Google Docs for every account"
+    api("/api/orchestrations", "POST", fixture)
+    shots = os.environ.get("SMOKE_SHOTS")
+    problems: list[str] = []
+    seen: list[str] = []
+    ran = False
+    try:
+        for size in ((1280, 720), (390, 844)):
+            for scheme in ("light", "dark"):
+                ctx = await browser.new_context(viewport={"width": size[0], "height": size[1]}, color_scheme=scheme)
+                await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{scheme}')}}catch(e){{}}")
+                page = await ctx.new_page()
+                sent: list[str] = []
+                page.on("request", lambda req: sent.append(req.method) if (
+                    req.method in ("POST", "PUT") and "/api/orchestrations" in req.url and "/run" not in req.url)
+                    else None)
+                where = f"{size[0]}x{size[1]} {scheme}"
+                try:
+                    await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+                    await asyncio.sleep(SETTLE + 2.0)
+                    if not ran:
+                        # One run, parked on its person: the editor then offers Last run.
+                        await page.get_by_role("button", name="Run now", exact=True).click()
+                        for _ in range(25):
+                            await asyncio.sleep(1.0)
+                            if await page.evaluate("() => [...document.querySelectorAll('button')]"
+                                                   ".some(b => /Waiting for your input/.test(b.innerText || ''))"):
+                                break
+                        ran = True
+                        # Then a step nothing leads to, so the bar has something to check too.
+                        fixture["steps"].append({"id": f"{oid}_loose", "name": "Loose end", "type": "print",
+                                                 "print_content": "nothing leads here", "next_step_id": None,
+                                                 "output_key": "loose"})
+                        api("/api/orchestrations", "POST", fixture)
+                        await page.reload(wait_until="domcontentloaded")
+                        await asyncio.sleep(SETTLE + 2.0)
+                    name = page.get_by_role("textbox", name="Workflow name")
+                    await name.click()
+                    await name.press("End")
+                    await name.type(" now")
+                    await page.mouse.click(size[0] // 2, size[1] - 120)
+                    await asyncio.sleep(0.8)
+                    found = await page.evaluate(
+                        """() => {
+                          const save = [...document.querySelectorAll('[data-canvas-chrome="bar"] button')]
+                              .find(b => (b.getAttribute('aria-label') || b.innerText || '').trim().startsWith('Save'));
+                          if (!save) return {found: false};
+                          const r = save.getBoundingClientRect();
+                          const x = r.x + r.width / 2, y = r.y + r.height / 2;
+                          const el = document.elementFromPoint(x, y);
+                          const named = (re) => [...document.querySelectorAll('[data-canvas-chrome="bar"] button')]
+                              .some(b => re.test(b.getAttribute('aria-label') || b.innerText || ''));
+                          const lastRun = named(/Last run/), board = named(/^Board/), toCheck = named(/to check/);
+                          const what = !el ? 'nothing' : save.contains(el) ? 'Save'
+                              : ((el.closest('button') || el).getAttribute('aria-label')
+                                 || (el.closest('button') || el).innerText || el.tagName).trim().slice(0, 40);
+                          const bars = [...document.querySelectorAll('[data-canvas-chrome="bar"]')].slice(0, 2)
+                              .map(b => { const q = b.getBoundingClientRect(); return `${Math.round(q.left)}-${Math.round(q.right)}`; });
+                          return {found: true, x, y, what, lastRun, board, toCheck, bars: bars.join(' and '),
+                                  inside: x >= 0 && x <= innerWidth};
+                        }"""
+                    )
+                    if shots:
+                        await page.screenshot(path=os.path.join(shots, f"editorsave-{size[0]}x{size[1]}-{scheme}.png"))
+                    if not found.get("found"):
+                        problems.append(f"{where}: no Save in the canvas's bars")
+                        continue
+                    if size[0] >= 1024 and not (found["lastRun"] and found["board"] and found["toCheck"]):
+                        problems.append(f"{where}: the bar was not at its widest (Last run {found['lastRun']}, Board "
+                                        f"{found['board']}, to check {found['toCheck']})")
+                    if found["what"] != "Save" or not found["inside"]:
+                        problems.append(f"{where}: the point at Save's centre is {found['what']!r} (bars {found['bars']})")
+                        continue
+                    before = len(sent)
+                    await page.mouse.click(found["x"], found["y"])
+                    for _ in range(10):
+                        await asyncio.sleep(0.3)
+                        if len(sent) > before:
+                            break
+                    if len(sent) == before:
+                        problems.append(f"{where}: a click at Save's centre sent no save")
+                    else:
+                        seen.append(f"{where} (bars {found['bars']})")
+                finally:
+                    await ctx.close()
+    finally:
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "a click on Save saves, with Last run and unsaved changes showing: " + ", ".join(seen)
 
 
 @check
@@ -15945,7 +16227,8 @@ async def check_f1598picker(browser) -> str:
                         await page.screenshot(path=os.path.join(shots, f"f1598picker-{name}-{scheme}-{width}.png"))
 
                 try:
-                    # Settings → Models' Builder model: the saved one not for building, saying why; then the rest.
+                    # Settings → Models' Builder model: the saved one not for building, headed as the person's own
+                    # saved model (F1699), saying why; then the rest.
                     await page.goto(f"{APP}/settings/models", wait_until="domcontentloaded")
                     builder = page.locator('button[aria-label="Builder model"]').first
                     await builder.wait_for(timeout=30_000)
@@ -15955,7 +16238,7 @@ async def check_f1598picker(browser) -> str:
                             "gemini-3.1-flash-lite-preview"]
                     if [n for n in names if n in want] != want:
                         bad.append(f"{tag}: the Builder model lists {names}")
-                    if [h.lower() for h in heads] != ["not for building", "recommended for building", "other models"]:
+                    if [h.lower() for h in heads] != ["your saved model", "recommended for building", "other models"]:
                         bad.append(f"{tag}: the Builder model's headings read {heads}")
                     by = dict(zip(names, texts))
                     if "Recommended" not in by.get("claude-sonnet-4-6", "") or "Recommended" in by.get("gpt-4.1", ""):

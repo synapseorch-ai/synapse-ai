@@ -11,13 +11,21 @@ uninstall` finds either.
 
 Linux needs a running systemd user instance; WSL usually has none, and then the
 question is not asked (`supported()`).
+
+It is on unless the person says no (F1693), except where it cannot work or would surprise: a CI run, a container, or
+no service manager (`unavailable_reason()`). A systemd user unit starts at boot only while its user lingers, so on
+Linux turning it on asks logind for that, without a password and never with sudo, and records in the home's
+`autostart.json` that it did; turning it off ends only a linger it began. Elsewhere it starts when the person logs in.
 """
 from __future__ import annotations
 
+import getpass
+import json
 import os
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 IS_WIN = sys.platform == "win32"
@@ -25,6 +33,79 @@ UNIT = "synapse-ai.service"
 LABEL = "com.synapse-ai.server"
 RUN_VALUE = "SynapseAI"
 _RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+#: logind's own record of who lingers: a file per user (`loginctl enable-linger` writes it).
+_LINGER_DIR = Path("/var/lib/systemd/linger")
+#: Beside the install, what turning it on changed that turning it off must undo.
+_STATE = "autostart.json"
+
+
+@dataclass(frozen=True)
+class Starts:
+    """When Synapse will start: at boot (a lingering systemd user), or when the person logs in; `hint` says how to
+    have it start at boot where it could not be arranged here."""
+    at_boot: bool
+    hint: str = ""
+
+
+def _linux() -> bool:
+    return not IS_WIN and sys.platform != "darwin"
+
+
+def question() -> str:
+    """The installer's question, in the words of when it would start here."""
+    return "Start Synapse when your computer starts?" if _linux() else "Start Synapse when you log in?"
+
+
+def _in_container() -> bool:
+    return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
+
+
+def unavailable_reason() -> str | None:
+    """Why Synapse is not set to start on its own here, or None where it can be: a CI run and a container would be
+    surprised by a service, and without a service manager there is nothing to register it with."""
+    if (os.environ.get("CI") or "").strip().lower() not in ("", "0", "false"):
+        return "this is a CI run (CI is set)"
+    if _in_container():
+        return "this runs in a container"
+    if not supported():
+        return "there is no systemd user session here"
+    return None
+
+
+def said(starts: Starts) -> list[str]:
+    """The lines the install and `synapse autostart on` end with: when it starts, and how to turn that off."""
+    when = ("Synapse starts again when this computer restarts." if starts.at_boot
+            else "Synapse starts again when you log in after a restart.")
+    return [f"{when} To turn that off: synapse autostart off", *([starts.hint] if starts.hint else [])]
+
+
+def _read_state(home: Path | None) -> dict:
+    try:
+        return json.loads((Path(home) / _STATE).read_text(encoding="utf-8")) if home else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _lingers(user: str) -> bool:
+    return (_LINGER_DIR / user).exists()
+
+
+def _start_at_boot(home: Path) -> Starts:
+    """A systemd user unit starts at boot only while its user lingers: ask logind, without a password and never with
+    sudo, and record that this did it so `disable` ends only a linger it began. A user who already lingers is left
+    alone."""
+    user = getpass.getuser()
+    if _lingers(user):
+        return Starts(at_boot=True)
+    try:
+        subprocess.run(["loginctl", "enable-linger", "--no-ask-password"], capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if _lingers(user):
+        home.mkdir(parents=True, exist_ok=True)
+        (home / _STATE).write_text(json.dumps({"linger_turned_on": True}), encoding="utf-8")
+        return Starts(at_boot=True)
+    return Starts(at_boot=False, hint=f"To start it at boot without logging in: sudo loginctl enable-linger {user}")
 
 
 def _unit_path() -> Path:
@@ -77,7 +158,13 @@ def command(python: str | Path) -> list[str]:
     return [str(python), "-P", "-m", "synapse", "start", "--detach", "--no-browser"]
 
 
-def enable(python: str | Path, home: Path, path_dirs: list[Path]) -> None:
+def enable(python: str | Path, home: Path, path_dirs: list[Path]) -> Starts:
+    """Register Synapse with this machine's service manager, and say when it will start (F1693)."""
+    _register(python, home, path_dirs)
+    return _start_at_boot(Path(home)) if _linux() else Starts(at_boot=False)
+
+
+def _register(python: str | Path, home: Path, path_dirs: list[Path]) -> None:
     cmd = command(python)
     env_path = os.pathsep.join([str(d) for d in path_dirs] + [os.environ.get("PATH", "")])
     if IS_WIN:
@@ -148,7 +235,9 @@ WantedBy=default.target
     subprocess.run(["systemctl", "--user", "enable", UNIT], capture_output=True, timeout=30)
 
 
-def disable() -> None:
+def disable(home: Path | None = None) -> None:
+    """Turn it off; on Linux, also end a linger that turning it on began (recorded in `home`), never one the person
+    had before."""
     if IS_WIN:
         try:
             import winreg
@@ -169,6 +258,13 @@ def disable() -> None:
         subprocess.run(["systemctl", "--user", "disable", UNIT], capture_output=True, timeout=30)
         unit.unlink()
         subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True, timeout=30)
+    if _read_state(home).get("linger_turned_on"):
+        try:
+            subprocess.run(["loginctl", "disable-linger", "--no-ask-password"], capture_output=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    if home:
+        (Path(home) / _STATE).unlink(missing_ok=True)
 
 
 def _xml(text: str) -> str:

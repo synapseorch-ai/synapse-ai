@@ -3,6 +3,9 @@
 crawl4ai failed a call whose page was a bot check or an HTTP 403/429/503, and the Playwright scraper must too: the
 side-by-side (pro drafts/scrape/sxs) caught it returning WSJ's captcha and Hacker News' 503 as the sites' words, and
 a reader given a block page as the site's words is misled. The egress proxy's own refusal says it is one.
+
+A page that is not there (HTTP 404 or 410) is a failure too: a run never reads a site's "not found" page as its words
+(F1632). Only the status says so: a page that loads and merely says "404" is its content.
 """
 from __future__ import annotations
 
@@ -38,9 +41,20 @@ def test_the_egress_proxys_refusal_says_it_is_one():
     assert web_scraper._refusal(refused, "<html></html>").startswith("URL blocked")
 
 
-@pytest.mark.parametrize("status", [200, 404])
-def test_a_page_is_its_content(status):
-    assert web_scraper._refusal(_response(status), "<html><body><p>An article about captchas</p></body></html>") is None
+def test_a_page_is_its_content():
+    assert web_scraper._refusal(_response(200), "<html><body><p>An article about captchas</p></body></html>") is None
+
+
+@pytest.mark.parametrize("status", [404, 410])
+def test_a_page_that_is_not_there_is_a_failure(status):
+    page = "<html><head><title>Not Found</title></head><body><p>We could not find that page.</p></body></html>"
+    assert web_scraper._refusal(_response(status), page) == f"The page is not there (HTTP {status})"
+
+
+@pytest.mark.parametrize("words", ["404 Not Found", "Error 404: the page you asked for is not there",
+                                   "How to design a good 404 page"])
+def test_a_page_that_loads_and_says_404_is_its_content(words):
+    assert web_scraper._refusal(_response(200), f"<html><body><h1>{words}</h1></body></html>") is None
 
 
 # ── For real ─────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -58,6 +72,8 @@ async def site(monkeypatch):
     egress_guard._resolve_cache.clear()
     monkeypatch.setattr(web_scraper, "_crawler", None)
     pages = {"/busy": (503, b"<html><body><p>Service unavailable, try later</p></body></html>"),
+             "/gone": (404, b"<html><body><h1>Not Found</h1><p>Try the home page.</p></body></html>"),
+             "/talks": (200, b"<html><body><h1>404 Not Found</h1><p>A post about error pages.</p></body></html>"),
              "/check": (200, b'<html><body><script src="/cdn-cgi/challenge-platform/h/b/orchestrate/x"></script>'
                              b"<p>Just a moment</p></body></html>")}
 
@@ -80,7 +96,14 @@ async def site(monkeypatch):
 
 
 @pytest.mark.skipif(not _chromium(), reason="no Playwright Chromium on this machine")
-@pytest.mark.parametrize("path,why", [("/busy", "HTTP 503"), ("/check", "Cloudflare")])
+@pytest.mark.parametrize("path,why", [("/busy", "HTTP 503"), ("/check", "Cloudflare"),
+                                      ("/gone", "The page is not there (HTTP 404)")])
 async def test_a_refused_page_fails_the_call(site, path, why):
     out = json.loads((await web_scraper._handle_scrape_url({"url": site + path}))[0].text)
     assert out["success"] is False and why in out["error"], out
+
+
+@pytest.mark.skipif(not _chromium(), reason="no Playwright Chromium on this machine")
+async def test_a_page_that_loads_and_says_404_is_read(site):
+    out = json.loads((await web_scraper._handle_scrape_url({"url": site + "/talks"}))[0].text)
+    assert out["success"] is True and "A post about error pages" in out["markdown"], out

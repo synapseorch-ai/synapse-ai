@@ -176,8 +176,12 @@ only the keys given.
 
 ### `autostart`
 
-`synapse autostart on|off|status` — start Synapse when you log in (a systemd user
-service, a LaunchAgent, or a Run key; the same question the installer asks).
+`synapse autostart on|off|status` — start Synapse again after a restart (a systemd user
+service, a LaunchAgent, or a Run key; the same question the installer asks, which is Yes
+by default except in a CI run, a container, or with no service manager). On Linux it starts
+when the computer starts if logind lets your user linger (asked without a password, never
+with sudo); otherwise, and on macOS and Windows, when you log in. `off` ends a linger that
+`on` began, never one you had before.
 
 ### `migrate`
 

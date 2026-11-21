@@ -327,7 +327,8 @@ def _request_words(state: dict) -> str:
 
 
 #: What the planner sees of a read site (D340 B): the facts, not the fetch's bookkeeping.
-_SITE_FIELDS = ("url", "final_url", "title", "what", "kind", "api_spec", "api", "why_not")
+_SITE_FIELDS = ("url", "final_url", "title", "what", "kind", "api_spec", "api", "text_chars", "too_long_for_one_read",
+                "table", "why_not")
 
 
 def turn_texts(state: dict) -> list[str]:
@@ -587,6 +588,9 @@ class Examined:
     #: What its structure should be instead, where code can tell (D340 D3, `structure.issues`): sent back once, then
     #: said on the card; never a block.
     structure: list[str] = field(default_factory=list)
+    #: What the practice run on made-up answers found the plan's steps read and don't get (F1619): sent back up to
+    #: `SENDBACKS` times by `submit_plan`, and on the card in `notes` always; never a block.
+    practice: list[str] = field(default_factory=list)
 
 
 #: Steps that only make data for later ones (F1426): taken out with the emptied step only they fed. A tool's, a
@@ -807,6 +811,242 @@ def _instructions_whole(plan: O.Plan, state: dict, notes: list[str]) -> tuple[O.
     return out, errors
 
 
+#: A widget on the person's own site, as a request asks for one (F1668): a site, website or chat widget; a widget, a
+#: chat or an embed on their site. Never a widget elsewhere ("a dashboard widget", "a widget on the Boards screen").
+_SITE_WIDGET = re.compile(
+    r"\b(?:web\s?site|site|web)\s+(?:chat\s+)?widget"
+    r"|\bchat\s?widget"
+    r"|\bwidget\b[^.?!]{0,30}\b(?:on|for|in|to)\s+(?:my|our|their|the)\s+(?:web\s?)?site"
+    r"|\bembed\w*\b[^.?!]{0,60}\b(?:on|in|into)\s+(?:my|our|their|the)\s+(?:web\s?)?site"
+    r"|\bchat\w*\s+(?:on|for|in)\s+(?:my|our|their)\s+(?:web\s?)?site", re.I)
+#: A plan sent back once for a website widget it leaves unsaid (F1668): then code says it on the card.
+WIDGET_SENT_BACK = "_widget_sent_back"
+
+
+def asks_for_a_website_widget(words: str) -> bool:
+    """Whether the request asks for a widget on the person's own site (F1668)."""
+    return bool(_SITE_WIDGET.search(words or ""))
+
+
+def _widget_said(plan: O.Plan) -> bool:
+    return any(a.how == "not_done" and "widget" in a.part.lower() for a in plan.asked)
+
+
+def _widget_left_out(plan: O.Plan, state: dict) -> list[str]:
+    """A new workflow asked as a website widget whose plan doesn't say the widget is not made (F1668): a build makes
+    the agent; the widget is made on its own card once that agent exists. Sent back once a run, then said on the card
+    (`widget_said`)."""
+    if (plan.kind != "create" or state.get(WIDGET_SENT_BACK) or _widget_said(plan)
+            or not asks_for_a_website_widget(_request_words(state))):
+        return []
+    state[WIDGET_SENT_BACK] = True
+    return ["asked: they asked for a website widget, which a build doesn't make: a widget is made on its own card "
+            "once the agent that answers exists. Put it in `asked` as not_done, with why_not saying it is made next, "
+            "on its card or under Widgets, so nothing says one is made"]
+
+
+def widget_said(plan: O.Plan, state: dict) -> None:
+    """The website widget they asked for, said under "Not in this plan" with where it is made, when the plan still
+    leaves it unsaid after it was sent back (F1668): the card never says a widget is made."""
+    if plan.kind != "create" or _widget_said(plan) or not asks_for_a_website_widget(_request_words(state)):
+        return
+    agent = plan.agents[0].name if plan.agents else "the agent that answers"
+    plan.asked.append(O.PlanPart(part="A website widget", how="not_done", why_not=(
+        f"a build doesn't make one: once it's built, ask for a website widget for {agent}, or make one under "
+        "Widgets")))
+
+
+#: A plan sent back once for an llm step reading a page, a crawl or a file (F1677): a second plan in the run is built,
+#: and its validator says the warning instead, so this is never a loop.
+LONG_FETCH_SENT_BACK = "_long_fetch_sent_back"
+
+
+def _llm_reads_a_long_fetch(plan: O.Plan, state: dict) -> list[str]:
+    """An llm step that reads what a Tool step fetches with a page, crawl or file reader, or a Loop over one collects
+    (F1677): such a value can be a file only an agent step can read. Sent back once a run, with the fix."""
+    from core.orchestration.state_reads import LONG_READERS, tool_part
+    from core.templating import STATE_REF, one_form
+
+    if state.get(LONG_FETCH_SENT_BACK):
+        return []
+    steps = [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)]
+    fetches = {s.id: s for s in steps if s.type == "tool" and s.tool and tool_part(s.tool) in LONG_READERS}
+    for s in steps:
+        if s.type == "loop" and any(b in fetches for b in (s.body or [])):
+            fetches.setdefault(s.id, s)
+    errors: list[str] = []
+    for s in steps:
+        if s.type != "llm":
+            continue
+        reads = {m.group(1).split(".")[0] for m in STATE_REF.finditer(one_form(s.prompt or ""))}
+        reads |= {k for k in ((s.config or {}).get("input_keys") or []) if isinstance(k, str)}
+        for key in sorted(reads & fetches.keys()):
+            errors.append(f"step '{s.id}' is an llm step and reads '{key}', which '{fetches[key].id}' fetches: a page, "
+                          "a crawl or a file can run past the spill line and is then a file, which an llm step can't "
+                          f"read. Make '{s.id}' an agent step, which can read the file, or have it read only the part "
+                          "it needs")
+    if errors:
+        state[LONG_FETCH_SENT_BACK] = True
+    return errors
+
+
+#: A plan sent back once for a `scrape_url` of a named page too long for one read (F1691): a second such plan in the
+#: run is built, with a line on its card that says the page is cut, so this is never a loop.
+CUT_READ_SENT_BACK = "_cut_read_sent_back"
+
+
+def _page_key(url: str) -> str:
+    return url.split("#", 1)[0].rstrip("/")
+
+
+#: The pages a plan's `scrape_url` steps target that the conversation has not read, read at plan time (F1691): at most
+#: this many a plan, each on the plan's web budget.
+PLAN_PAGE_READS = 3
+#: What reads one of them: `named_sites.read` unless set (`set_plan_page_reader`). The test suite sets an offline one,
+#: so no test reaches the web through a plan it checks, as `builder_research.set_api_probe` does for API probes.
+_plan_page_reader = None
+
+
+def set_plan_page_reader(reader) -> None:
+    """Read a plan's pages with `reader` (an async `url -> NamedPage`), or with `named_sites.read` again when None."""
+    global _plan_page_reader
+    _plan_page_reader = reader
+
+
+async def _read_plan_page(url: str):
+    from core.native_builder import named_sites
+
+    return await (_plan_page_reader or named_sites.read)(url)
+
+
+async def _read_plan_pages(plan: O.Plan, state: dict) -> None:
+    """Read, once a conversation, each page a `scrape_url` step of the plan targets that nothing has read yet (F1691):
+    a message can name a page in words, and the planner then writes its address, so the read before planning never
+    saw it. The same guarded read as a named page's (`named_sites.read`: the egress guard, 8 seconds, 2 MB, the plan's
+    web budget), kept beside them; a read that fails is kept as failed and judged as nothing."""
+    from core.native_builder import named_sites
+    from core.orchestration.state_reads import tool_part
+
+    kept = state.get(named_sites.PAGES_KEY)
+    pages = dict(kept) if isinstance(kept, dict) else {}
+    seen = {_page_key(str(u)) for key, page in pages.items() if isinstance(page, dict)
+            for u in (key, page.get("url"), page.get("final_url")) if u}
+    wanted: list[str] = []
+    for step in [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)]:
+        if step.type != "tool" or not step.tool or tool_part(step.tool) != "scrape_url":
+            continue
+        args = (step.config or {}).get("tool_arguments")
+        url = str(args.get("url") or "").strip() if isinstance(args, dict) else ""
+        if url.startswith(("http://", "https://")) and _page_key(url) not in seen and url not in wanted:
+            wanted.append(url)
+    for url in wanted[:PLAN_PAGE_READS]:
+        try:
+            pages[url] = (await _read_plan_page(url)).as_dict()
+        except Exception as exc:  # noqa: BLE001 — a page unread is a plan judged without it, never a check that fails
+            _log.warning("a page the plan reads was not read: %s", exc)
+    if wanted:
+        state[named_sites.PAGES_KEY] = pages
+
+
+async def _cut_page_reads(plan: O.Plan, state: dict) -> tuple[list[str], list[str]]:
+    """(errors, card lines) for each Tool step that reads, with `scrape_url`, a page the builder's read found too long
+    for one read (F1691): that read keeps only the page's start, so a table or list past it is lost. The first plan in
+    a run that does it is sent back with the page's length and its table; a second is built, and its card says the
+    page is cut. A page the message named was read before planning; one only the plan names is read here, once."""
+    from core.native_builder import named_sites
+    from core.orchestration.state_reads import tool_part
+    from tools.web_scraper import MAX_MARKDOWN_LEN
+
+    await _read_plan_pages(plan, state)
+    pages = state.get(named_sites.PAGES_KEY)
+    long_pages: dict[str, dict] = {}
+    for key, page in (pages.items() if isinstance(pages, dict) else ()):
+        if isinstance(page, dict) and page.get("too_long_for_one_read"):
+            for url in (key, page.get("url"), page.get("final_url")):
+                if url:
+                    long_pages[_page_key(str(url))] = page
+    if not long_pages:
+        return [], []
+    hits: list[tuple[O.Step, str, dict]] = []
+    for step in [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)]:
+        if step.type != "tool" or not step.tool or tool_part(step.tool) != "scrape_url":
+            continue
+        args = (step.config or {}).get("tool_arguments")
+        given = str(args.get("url") or "") if isinstance(args, dict) else ""
+        said = " ".join(x for x in (step.does, step.prompt, step.name) if x)
+        url = given or next((u for u in long_pages if u in said), "")
+        if (page := long_pages.get(_page_key(url))) is not None:
+            hits.append((step, url, page))
+    if not hits:
+        return [], []
+    if state.get(CUT_READ_SENT_BACK):
+        return [], [f"{s.name}: {url} is cut at {MAX_MARKDOWN_LEN:,} of about {int(p.get('text_chars') or 0):,} "
+                    "characters; scrape_url reads only the start of the page." for s, url, p in hits]
+    state[CUT_READ_SENT_BACK] = True
+    errors = []
+    for s, url, p in hits:
+        table = p.get("table") if isinstance(p.get("table"), dict) else None
+        whole = (f"Its table `{table.get('selector')}` has {table.get('rows')} rows: read them whole with "
+                 "scrape_structured, a schema on that selector, " if table else "Read it whole with scrape_structured, ")
+        errors.append(f"step '{s.id}' reads {url} with scrape_url, which keeps the first {MAX_MARKDOWN_LEN:,} "
+                      f"characters of a page; this page is about {int(p.get('text_chars') or 0):,}, so the rest is "
+                      f"cut. {whole}or say in the plan that the page is too large for one read")
+    return errors, []
+
+
+#: A plan sent back once for code that goes through a tool's whole object answer (F1704): a second such plan in the run
+#: is built, with a line on its card, so this is never a loop.
+WALK_SENT_BACK = "_answer_walk_sent_back"
+
+
+def _whole_answer_walks(plan: O.Plan, state: dict, ws: Workspace | None) -> tuple[list[str], list[str]]:
+    """(errors, card lines) for each Transform that goes through a Tool step's whole answer as a list where that answer
+    is a known object (F1704): it walks the object's names and none of its rows. Sent back once a run with the field to
+    go through; a second such plan is built and its card says it."""
+    from core.native_builder.structure import walk_words, whole_answer_walks
+
+    steps = [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)]
+    engine = [{"id": s.id, "name": s.name, "type": s.type, "forced_tool": s.tool, "output_key": s.id,
+               "transform_code": (s.config or {}).get("transform_code")} for s in steps]
+    hits = whole_answer_walks(engine, list(getattr(ws, "tools", None) or []))
+    if not hits:
+        return [], []
+    if state.get(WALK_SENT_BACK):
+        return [], [f"'{h['reader']['name']}' {walk_words(h)}." for h in hits]
+    state[WALK_SENT_BACK] = True
+    return [f"step '{h['reader']['id']}' {walk_words(h)}" for h in hits], []
+
+
+def first_reads_kept_empty(plan: O.Plan) -> tuple[O.Plan, list[str]]:
+    """Each Tool step that reads a Vault file a later step writes, before any step writes it on some way there (F1692),
+    set to read a missing file as empty, with the card's line for it: a workflow's first run has not written the file
+    yet, and its read would fail. Judged on the plan as it compiles; a plan that doesn't compile yet is left as it is,
+    its own errors said elsewhere."""
+    from core.native_builder.compile import compile_plan
+    from core.orchestration.vault_reads import first_read_note, first_reads
+
+    try:
+        compiled = compile_plan(plan, existing_agents={}, mint=placeholder_mint(), orch_id="orch_first_reads")
+    except Exception as exc:  # noqa: BLE001 — nothing marked: the save's own check says the rest
+        _log.debug("first reads not judged: %s", exc)
+        return plan, []
+    docs = [(None, compiled.orchestration), *((i, inner.orchestration) for i, inner in enumerate(compiled.inner))]
+    marks = [(w_i, sid, path) for w_i, doc in docs for sid, path in first_reads(doc)]
+    if not marks:
+        return plan, []
+    out = plan.model_copy(deep=True)
+    notes: list[str] = []
+    for w_i, sid, path in marks:
+        steps = out.steps if w_i is None else out.inner_workflows[w_i].steps
+        for i, s in enumerate(steps):
+            if s.id == sid:
+                config = dict(s.config or {})
+                config["tool_arguments"] = {**dict(config.get("tool_arguments") or {}), "missing_ok": True}
+                steps[i] = s.model_copy(update={"config": config})
+                notes.append(first_read_note(s.name, path))
+    return out, notes
+
+
 async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, state: dict | None = None,
                   without: list[str] | None = None, alone: list[str] | None = None) -> Examined:
     """The planner's Plan held to every rule, as data: `errors` the planner can fix, `missing` the tools nothing here
@@ -878,13 +1118,25 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
                for a in plan.asked if a.how == "not_done" and not (a.why_not or "").strip()]
     # A chart they asked for has its route (F1288): something in the plan writes the Vault.
     errors += charts.issues(plan, ws, _request_words(state))
+    # A website widget they asked for, which a build doesn't make, is said as not done (F1668).
+    errors += _widget_left_out(plan, state)
     errors += await _knowledge_parts(plan, ws)
+    errors += _knowledge_unread(plan, ws)
     # The person's own server first (F1225): a connected one's name is what its agents' `servers` are held to.
     errors += await own_api.server_parts(plan, server_module)
     # And the server the person gave is in it (F1290, cap-03 A2: given in an answer, planned without it).
     errors += await _given_server_left_out(plan, state)
     errors += addresses_as_given(plan, ws, state)
     errors += await _agent_switches(plan, ws, server_module)
+    errors += _llm_reads_a_long_fetch(plan, state)
+    # A named page too long for one read, read with scrape_url (F1691): sent back once, then said on the card.
+    cut_errors, cut_notes = await _cut_page_reads(plan, state)
+    errors += cut_errors
+    # Code that goes through a tool's whole object answer (F1704): sent back once, then said on the card.
+    walk_errors, walk_notes = _whole_answer_walks(plan, state, ws)
+    errors += walk_errors
+    # A Vault file read before the plan's own first write of it reads as empty on its first run (F1692), on the card.
+    plan, first_read_notes = first_reads_kept_empty(plan)
     # Its eval (F1255, D340 F): only where this host offers Evals' tools (cloud withholds them until its own Evals
     # host is in: D3ASM), else left out and said, never a save that fails; then held to the Evals forms' own rules.
     eval_notes = _without_unreachable_eval(plan)
@@ -943,10 +1195,78 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         filled.run_cost = (await estimate.of(filled, ws)).words()
     except Exception as exc:  # noqa: BLE001 — a cost not worked out is said nowhere, never a plan refused
         _log.warning("run cost not estimated: %s", exc)
+    practice, practice_notes = ([], []) if issues else await _practised(filled, ws, state)
     return Examined(filled, [_hinted(i) for i in issues], missing=list(filled.missing), issues=issues,
                     blocks={**blocked(filled, state), **{f: _feature_block(f) for f in needed}},
-                    notes=[*took_out, *room_notes, *eval_notes, *answer_notes, *structure.as_notes(shaped)],
-                    features=needed, structure=shaped)
+                    notes=[*took_out, *room_notes, *eval_notes, *answer_notes, *first_read_notes, *cut_notes, *walk_notes,
+                           *structure.as_notes(shaped), *practice_notes],
+                    features=needed, structure=shaped, practice=practice)
+
+
+#: How many times a run's plan went back for what its practice run found (F1619), of `SENDBACKS`.
+PRACTICE_SENT_BACK = "_practice_sent_back"
+#: The practices already run, by the run that asked and what they ran (the workflows and the tools' declared answers),
+#: so the planner's own check, `submit_plan` and the route's check of one plan in one run run its code once. Keyed by
+#: the run, never shared across runs (a practice can name a column of its workspace's own Vault file), and kept here
+#: rather than in the run's state, which the planner's own check never writes. No run, nothing kept.
+_PRACTICED: dict[tuple[str, str], tuple[list[str], list[str]]] = {}
+_PRACTICED_KEPT = 64
+
+
+async def _practised(plan: O.Plan, ws: Workspace, state: dict) -> tuple[list[str], list[str]]:
+    """(what goes back to the planner, the card's lines) from the plan's practice run on made-up answers (F1619,
+    `practice_run`). A finding about a value an MCP server's declaration made is only said on the card, as F1620 says
+    such a miss; a Transform this install can't run with no network is said as not practised. Never raises."""
+    import hashlib
+
+    from core.native_builder import practice_run
+    from core.native_builder.compile import compile_plan
+
+    try:
+        compiled = compile_plan(plan, existing_agents=dict(ws.agents), mint=placeholder_mint(),
+                                orch_id=_orch_id(plan, state))
+        docs, todo = [], [compiled]
+        while todo:
+            c = todo.pop(0)
+            docs.append(c.orchestration)
+            todo.extend(c.inner)
+        answers = answers_of(ws.tools)
+        readers = _changed_steps(plan, state, compiled)
+        _, here = _run()
+        key = (here.run_id, hashlib.sha256(json.dumps([docs, answers, sorted(readers) if readers is not None else None],
+                                                      sort_keys=True, default=str).encode()).hexdigest()) \
+            if here is not None and here.run_id else None
+        if key is not None and key in _PRACTICED:
+            back, card = _PRACTICED[key]
+            return list(back), list(card)
+        found = await practice_run.practise(docs, answers=answers, readers=readers, vault_text=_vault_shape_text)
+    except Exception as exc:  # noqa: BLE001 — a practice that breaks never stops a plan from being shown
+        _log.warning("practice run not run: %s", exc, exc_info=True)
+        return [], []
+    back = [f"step {f.step_id}: {f.says} (a practice run, on made-up answers in each step's declared shape). Read "
+            "what the value has, or change the step that makes it" for f in found.findings if not f.mcp]
+    card = [f"{f.step_name}: {f.says}" + (", by the tool's own declaration of its answer, which may be wrong: the run "
+                                          "reads whatever the tool answers" if f.mcp else "")
+            for f in found.findings] + found.not_run
+    if key is not None:
+        _PRACTICED[key] = (back, card)
+        while len(_PRACTICED) > _PRACTICED_KEPT:
+            _PRACTICED.pop(next(iter(_PRACTICED)))
+    return list(back), list(card)
+
+
+async def _vault_shape_text(path: str) -> str | None:
+    """A Vault file the workspace has, read for the practice run's shape of it (F1619 D3): read here, read-only, as
+    `read_vault` reads it; only its columns or keys and their types are kept, never sent anywhere."""
+    import asyncio
+
+    from core.vault_tools import _get_text
+
+    try:
+        text, error = await asyncio.to_thread(_get_text, path)
+    except Exception:  # noqa: BLE001 — a file not read is a step not practised
+        return None
+    return None if error or text is None else text
 
 
 async def _knowledge_parts(plan: O.Plan, ws: Workspace) -> list[str]:
@@ -995,6 +1315,39 @@ async def _knowledge_parts(plan: O.Plan, ws: Workspace) -> list[str]:
                 errors.append(f"knowledge '{part.name}': {path}: {why}")
         errors += _pages_issues(part)
     return errors
+
+
+def _knowledge_unread(plan: O.Plan, ws: Workspace) -> list[str]:
+    """Each knowledge base the plan makes or uses that nothing in it reads or fills (F1646), sent back as an inner
+    workflow nothing runs is: built from a drawing, a plan made the FAQ base and an Answerer "to answer from the FAQ",
+    and gave neither the other. A base is read by a new agent's `knowledge`, by an agent the plan reuses that already
+    answers from it, or by a retrieve step; an ingest step that fills it uses it too."""
+    if ws.kbs is None or not plan.knowledge:
+        return []
+    name_of = {str(i): str(getattr(kb, "name", "") or "") for i, kb in ws.kbs.items()}
+    named: set[str] = set()
+
+    def add(ref: Any) -> None:
+        named.add(name_of.get(str(ref), str(ref)).casefold())
+
+    for agent in plan.agents:
+        for ref in agent.knowledge:
+            add(ref)
+    steps = [*plan.steps, *(s for w in plan.inner_workflows for s in w.steps)]
+    for agent_id in {*plan.reuse_agents, *(s.agent for s in steps if s.agent)}:
+        for ref in (ws.agents.get(agent_id) or {}).get("knowledge") or []:
+            add(ref)
+    for step in steps:
+        config = step.config if isinstance(step.config, dict) else {}
+        retrieve = config.get("retrieve") if isinstance(config.get("retrieve"), dict) else {}
+        ingest = config.get("ingest") if isinstance(config.get("ingest"), dict) else {}
+        for ref in retrieve.get("kb_ids") or []:
+            add(ref)
+        if ingest.get("kb_id"):
+            add(ingest["kb_id"])
+    return [f"knowledge '{part.name}' is never read: no agent's `knowledge` names it and no retrieve or ingest step "
+            "does. Name it in the `knowledge` of the agent that answers from it, add a retrieve step that searches "
+            "it, or drop it" for part in plan.knowledge if part.name.casefold() not in named]
 
 
 def _pages_issues(part: O.KnowledgePart) -> list[str]:
@@ -1313,6 +1666,72 @@ def _objects_read_as_text(s: O.Step, plan: O.Plan) -> list[str]:
 _ANSWER_FIELDS_SAID = "_answer_fields_said"
 
 
+#: A field a prompt writes as code (F1705): a dotted path to an answer's field outside a template (`find.humidity`,
+#: `state.find.humidity`), or a backticked name (`` `humidity` ``). A plain word is never read as one.
+_DOTTED_FIELD = re.compile(r"(?<![\w.{])(?:state\.)?([A-Za-z_]\w*)\.([A-Za-z_]\w*)\b(?!\s*\}\})")
+_BACKTICKED = re.compile(r"`([A-Za-z_]\w*)`")
+#: Backticked words that are literals, never an answer's field.
+_NOT_FIELDS = frozenset({"true", "false", "null", "none", "json", "csv", "yes", "no"})
+
+
+def _whole_reads(x: O.Step) -> set[str]:
+    """The keys an llm or agent step reads whole (F1705): `{{ state.key }}` in its prompt, or its input keys."""
+    from core.templating import STATE_REF, one_form
+
+    if x.type not in ("llm", "agent"):
+        return set()
+    whole = {m.group(1) for m in STATE_REF.finditer(one_form(x.prompt or "")) if "." not in m.group(1)}
+    return whole | {k for k in ((x.config or {}).get("input_keys") or []) if isinstance(k, str)}
+
+
+def _prompt_fields(x: O.Step) -> list[str]:
+    """Each field of an answer an llm or agent step reads whole that its prompt writes as code (F1705), as
+    `key.field`: a dotted path names its key; a backticked name is a field of each answer it reads whole."""
+    from core.templating import STATE_REF, one_form
+
+    whole = _whole_reads(x)
+    if not whole:
+        return []
+    prose = STATE_REF.sub(" ", one_form(x.prompt or ""))
+    out = [f"{key}.{field}" for key, field in _DOTTED_FIELD.findall(prose) if key in whole]
+    # A backticked name is a field only as a field is written: lower case, never a literal, a step's or a tool's name.
+    names = [n for n in _BACKTICKED.findall(prose) if n == n.lower() and n not in _NOT_FIELDS and n not in whole
+             and n != (x.tool or "") and n != x.id]
+    out += [f"{key}.{name}" for name in names for key in sorted(whole)]
+    return list(dict.fromkeys(out))
+
+
+#: A plan sent back once for a step that reads a tool's whole answer and names none of its fields (F1705).
+USES_FIELDS_SENT_BACK = "_uses_fields_sent_back"
+
+
+def _whole_answers_unnamed(plan: O.Plan, ws: Workspace, state: dict, readers: set[str]) -> tuple[list[str],
+                                                                                                    list[str]]:
+    """An llm or agent step that reads the whole object answer of a tool step whose tool declares its shape, and names
+    none of its fields (F1705): nothing can tell from its words which field it means, so it is sent back once a run to
+    name them in `uses_fields`; a plan that still names none is built, and its card says that use isn't checked. A
+    page read's own answer, a list answer and a tool that declares no shape are not asked. (errors, notes)"""
+    from core.native_builder.structure import ANSWERS, answer_fields
+
+    steps = [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)]
+    declared: dict[str, tuple[O.Step, tuple[str, ...]]] = {}
+    for s in steps:
+        if s.type == "tool" and s.tool and s.tool not in ANSWERS and (fields := answer_fields(s.tool, ws.tools)):
+            declared[str((s.config or {}).get("output_key") or s.id)] = (s, fields)
+    unnamed = [(x, key, *declared[key]) for x in steps if x.id in readers
+               for key in sorted(_whole_reads(x) & declared.keys())
+               if not any(str(u).partition(".")[0] == key for u in [*x.uses_fields, *_prompt_fields(x)])]
+    if not unnamed:
+        return [], []
+    if not state.get(USES_FIELDS_SENT_BACK):
+        state[USES_FIELDS_SENT_BACK] = True
+        return [f"step {x.id}: reads the whole answer of step {w.id} (`{w.tool}`, an object with "
+                f"{', '.join(f'`{f}`' for f in fields)}): name in `uses_fields` the fields of it this step uses, as "
+                f"`{key}.<field>`, so each is checked against what the tool answers" for x, key, w, fields in unnamed], []
+    return [], [f"Step \"{x.name}\"'s use of \"{w.name}\"'s answer isn't checked: it reads the whole answer and names "
+                "none of its fields" for x, key, w, fields in unnamed]
+
+
 def _answers_read_past(plan: O.Plan, ws: Workspace, readers: set[str]) -> tuple[list[str], list[str]]:
     """A step reading what a Tool step's answer has not (F1394: the Porto plan fetched Open-Meteo with `scrape_url`
     and its Transform read `daily` out of `{success, url, markdown}`, a KeyError on the first run), held by the saved
@@ -1336,6 +1755,9 @@ def _answers_read_past(plan: O.Plan, ws: Workspace, readers: set[str]) -> tuple[
             step = _engine_step(x, agent_ids={}, workflow_ids={}, end_id=None, issues=[])
             if "output_key" not in step and step["type"] in _RESULT_TYPES:
                 step["output_key"] = step["id"]
+            # The fields it says it uses, and any its prompt writes as code (F1705): held as reads of the answer.
+            if uses := list(dict.fromkeys([*x.uses_fields, *_prompt_fields(x)])):
+                step["uses_fields"] = uses
             saved.append(step)
         firsts: dict[tuple[str, str, str], list] = {}
         # Held to the Tool step a run brings to each read, from the plan's first step, as the validator holds them
@@ -1346,7 +1768,8 @@ def _answers_read_past(plan: O.Plan, ws: Workspace, readers: set[str]) -> tuple[
             if m.first:
                 firsts.setdefault((m.reader, m.where, m.key), []).append(m)
                 continue
-            line = (f"step {m.reader}: its {m.where} reads `{'.'.join(m.parts)}` from `state.{m.key}`, the answer of "
+            reads = "uses" if m.where == "uses_fields" else f"its {m.where} reads"
+            line = (f"step {m.reader}: {reads} `{'.'.join(m.parts)}` from `state.{m.key}`, the answer of "
                     f"step {m.writer}, which calls `{m.tool}`: {m.problem}")
             if m.owner == "mcp":
                 line = (f"{line}. `{m.tool}`'s own declaration of its answer does not list it, so it is said here and "
@@ -1359,12 +1782,17 @@ def _answers_read_past(plan: O.Plan, ws: Workspace, readers: set[str]) -> tuple[
             lacks = list(dict.fromkeys(x.parts[0] for x in found))
             page = (" (a page's text is in `markdown`, and so is an API's JSON fetched as a page: parse it there)"
                     if "markdown" in m.has else "")
-            line = (f"step {reader}: its {where} reads {', '.join(f'`{f}`' for f in lacks)} from `state.{key}`, an "
+            reads = "uses" if where == "uses_fields" else f"its {where} reads"
+            line = (f"step {reader}: {reads} {', '.join(f'`{f}`' for f in lacks)} from `state.{key}`, an "
                     f"answer with no such field: step {m.writer} calls `{m.tool}`, which answers an object with "
                     f"{', '.join(f'`{f}`' for f in m.has)}")
             if m.owner == "mcp":
                 notes.append(f"{line}, by its own declaration, which may be wrong: the run reads whatever the tool "
                              "answers")
+            elif where == "uses_fields":
+                # A field it assumed the tool answers (F1675): what it has, another tool, or said as not done.
+                errors.append(f"{line}. Use a field it has, find a tool that answers it, or say in `asked` that this "
+                              "part is not done, with why_not")
             else:
                 errors.append(f"{line}. Read a field it has{page}, or call a JSON API with a GET tool, which answers "
                               "its JSON (a tool nothing here provides is looked up, and made after the yes)")
@@ -1488,6 +1916,12 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict, notes: list[str] | No
     if not state.get(_ANSWER_FIELDS_SAID) and lacks:
         state[_ANSWER_FIELDS_SAID] = True
         errors += lacks
+    # A whole answer read with none of its fields named (F1705): sent back once, then said on the card.
+    unnamed, unchecked = _whole_answers_unnamed(plan, ws, state, {x.id for x in [*written, *(
+        x for w in plan.inner_workflows for x in w.steps)]})
+    errors += unnamed
+    if notes is not None:
+        notes += unchecked
     if not state.get(_OBJECT_TEXT_SAID) and (as_text := [line for s in [*written, *(
             x for w in plan.inner_workflows for x in w.steps)] for line in _objects_put_as_text(s, plan, ws)]):
         state[_OBJECT_TEXT_SAID] = True
@@ -2416,6 +2850,14 @@ async def submit_plan(args: dict, server_module: Any, events: list[dict]) -> dic
                      if (key := O.wrapped_in(args)) is not None else [])
             return {"error": "Fix these, then submit the plan again:\n" + "\n".join(f"- {e}" for e in
                                                                                    [*where, *found.errors])}
+    # What the practice run found (F1619): sent back up to SENDBACKS times, then the plan goes on and its card says
+    # each one. Never a block: a practice on made-up answers can be wrong where the real one is right.
+    if found.practice:
+        practised = int((here.shared_state.get(PRACTICE_SENT_BACK) or 0) if here is not None else 0)
+        if practised < SENDBACKS:
+            if here is not None:
+                here.shared_state[PRACTICE_SENT_BACK] = practised + 1
+            return {"error": "Fix these, then submit the plan again:\n" + "\n".join(f"- {e}" for e in found.practice)}
     _, run = _run()
     if run is not None:
         run.shared_state.pop(_SENDBACK_KEY, None)
@@ -2460,9 +2902,10 @@ async def check_draft(args: dict, server_module: Any, events: list[dict]) -> dic
     if found.plan is None:
         return {"ok": False, "errors": found.errors}
     copied = imitation.findings(found.plan, ws) if found.plan.kind == "create" else []
-    return {"ok": not (found.errors or found.blocks or copied), "errors": found.errors,
+    return {"ok": not (found.errors or found.blocks or copied or found.practice), "errors": found.errors,
             "missing": found.missing, "misnamed": found.misnamed, "blocks": found.blocks,
             "features_off": found.features, "structure": found.structure,
+            **({"practice": found.practice} if found.practice else {}),
             "imitations": [f["say"] for f in copied], "estimate": found.plan.run_cost}
 
 
@@ -2834,6 +3277,7 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     cap_assumed += unsaid_said
     # Every part of the ask (F1515, eb's QA B13): what this plan does not do is said with why, never dropped; one they
     # asked to run once after it is built is a Run card after the save, pressed by them, since a run spends credits.
+    widget_said(plan, state)
     not_done = [f"{' '.join(a.part.split())}: {' '.join((a.why_not or '').split())}" for a in plan.asked
                 if a.how == "not_done" and (a.why_not or "").strip()]
     said += [f"Not in this plan: {n}." for n in not_done]
@@ -2879,12 +3323,16 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     # What this plan changed from the one the person last saw (F1245), on the card and the panel alike.
     plan.since_last = since_last(plan, plan_before_of(state, prior))
     # F1600: how a run starts, from the plan; what it assumed, the planner's and code's own; a part done on one arm.
-    from core.native_builder.render import start_words
+    from core.native_builder.render import start_off, start_words
 
     plan.starts = start_words(plan)
-    plan.assumed = list(dict.fromkeys([*plan.assumed, *cap_assumed,
-                                       *(own_terms_assumed(step, thing) for step, thing in own_terms_unsaid(plan))]))
+    # A crawl's cap is code's alone (F1669): an assumption giving another for it says code's.
+    plan.assumed = caps_as_code_says(list(dict.fromkeys([
+        *plan.assumed, *cap_assumed,
+        *(own_terms_assumed(step, thing) for step, thing in own_terms_unsaid(plan))])), plan.knowledge)
     plan.off += [off_a_path_words(p, arm) for p, arm in parts_off_a_path(plan)]
+    # The start they asked for that it cannot make, said with why (F1645).
+    plan.off += [o for o in start_off(plan) if o not in plan.off]
     review = render(plan, agent_names=names)
     if answer.get("outcome") == "replan" and answer.get("refused"):
         # A save refused after the yes (F1295): why it is asked again, in the save's own words.
@@ -3258,6 +3706,27 @@ def own_terms_unsaid(plan: O.Plan) -> list[tuple[O.Step, str]]:
 def own_terms_finding(step: O.Step, thing: str) -> str:
     return (f"**{step.name}** checks against their own {thing}, but nothing in the plan gives them: ask for the "
             f"document in a form step, use a knowledge base of it, or write in `assumed` that it uses general {thing}.")
+
+
+#: A page count in words: "50 pages", "up to 1,000 pages" (F1669).
+_PAGE_COUNT = re.compile(r"\b(\d[\d,]*)(\s+pages?)\b", re.I)
+
+
+def caps_as_code_says(assumed: list[str], bases: list[O.KnowledgePart]) -> list[str]:
+    """What the plan assumed, with any page count it gives for a base's crawl saying the cap that crawl is held to
+    (F1669): the step's line says code's figure (`pages_cap`, Knowledge's crawl limit), and a card gives one. A line
+    names the base by its name or its start address; a base of given pages has no cap, and any other line is kept."""
+    capped = [b for b in bases if b.pages_cap and b.urls and b.kind != "page"]
+    out: list[str] = []
+    for line in assumed:
+        low = line.lower()
+        base = next((b for b in capped if b.name.lower() in low or b.urls[0].lower().rstrip("/") in low), None)
+        if base is not None:
+            cap = base.pages_cap
+            line = _PAGE_COUNT.sub(lambda m: m.group(0) if int(m.group(1).replace(",", "")) == cap
+                                   else f"{cap:,}{m.group(2)}", line)
+        out.append(line)
+    return out
 
 
 def own_terms_assumed(step: O.Step, thing: str) -> str:

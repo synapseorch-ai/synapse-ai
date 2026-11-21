@@ -167,16 +167,17 @@ def _preview(value: Any, *, whole: bool = False) -> str:
     return str(value) if whole else str(value)[:500]
 
 
-async def _reading_for(model: str | None, run: "OrchestrationRun"):
+async def _reading_for(model: str | None, run: "OrchestrationRun", *, reads_files: bool = True):
     """While a model step builds its prompt: a saved output inline up to its model's read share (D339 P4), its window
-    as the host names it (F1591). Entered as `with await _reading_for(...)`."""
+    as the host names it (F1591); a step with no tools (`reads_files` False) gets what fits and is told the rest isn't
+    shown (F1677). Entered as `with await _reading_for(...)`."""
     from core.config import load_settings
     from core.context_budget import step_budget
     from core.step_refs import reading
 
     settings = load_settings()
     chosen = model or run.shared_state.get("_model_override") or settings.get("model") or ""
-    return reading((await step_budget(str(chosen), settings)).read_cap)
+    return reading((await step_budget(str(chosen), settings)).read_cap, reads_files=reads_files)
 
 
 async def on_model_or_fallback(call, model: str, fallback: str | None, used: list) -> str:
@@ -350,6 +351,30 @@ def _answer_repair(step: StepConfig, run: OrchestrationRun, fields: list[dict], 
     )
 
 
+#: An answer far shorter than what its tools returned (F1677): under this many characters…
+SHORT_ANSWER = 2_000
+#: …against at least this many from its tools, and a tenth of it or less.
+GATHERED_MIN = 20_000
+
+
+def _handed_on_short(step: Any, engine: Any, answer: Any, gathered: int, fields: Any) -> str | None:
+    """The warning for an Agent step that hands a later step far less than its tools found (F1677): a site reader whose
+    tools fetched 160K answered with a status line, and the next step read only that. Never for a step that declares its
+    answer's fields (short by design), an answer saved as a file, or one nothing later reads. It never stops the run."""
+    from core.orchestration.state_reads import read_by_another
+    from core.step_refs import is_ref
+
+    if not step.output_key or fields or is_ref(answer) or gathered < GATHERED_MIN:
+        return None
+    said = answer if isinstance(answer, str) else json.dumps(answer, default=str)
+    if len(said) >= SHORT_ANSWER or len(said) * 10 > gathered:
+        return None
+    if not read_by_another(step.output_key, engine.orch.steps, but=step.id):
+        return None
+    return (f"Step '{step.name}' answered in {len(said)} characters, but its tools returned {gathered:,}: the next step "
+            "reads only the answer. Ask its agent to answer with what it found, or fetch it with a Tool step.")
+
+
 class AgentStepExecutor:
     """Run a sub-agent's ReAct loop. Reuses the existing engine.
 
@@ -477,6 +502,7 @@ class AgentStepExecutor:
                       f"(attempt {resume_attempt}, turn {saved_progress.get('turn')})")
 
         final_response = None
+        gathered = 0  # what its tools returned this turn, whole (F1677)
         no_answer: dict | None = None
         _log_status = "completed"
         execution_events: list[dict] = []
@@ -660,6 +686,7 @@ class AgentStepExecutor:
                     continue
                 yield {**event, "orch_step_id": step.id, "step_name": step.name}
                 if event.get("type") == "final":
+                    gathered = int(event.get("gathered_chars") or 0)
                     # A finish tool's result is the output as the object it is (E2); otherwise the reply's text.
                     finish = event.get("finish")
                     final_response = finish["result"] if isinstance(finish, dict) else event.get("response", "")
@@ -720,6 +747,8 @@ class AgentStepExecutor:
         # not on step progress).
         run.step_progress.pop(step.id, None)
 
+        if warned := _handed_on_short(step, engine, final_response, gathered, fields):
+            yield {"type": "step_warning", "orch_step_id": step.id, "message": warned}
         if step.output_key:
             run.shared_state[step.output_key] = final_response
 
@@ -1139,8 +1168,11 @@ class ToolStepExecutor:
             return key is not None and key == _router.resolve(forced)
 
         _policy = _tool_policy.resolve_policy(active_agent, settings)
+        if step.tool_check and f"{_tool_policy.TOOL_KEY}{tool_name}" not in _policy:
+            # Built while its app wasn't connected (F1679): whether it asks is decided now, from what it declares.
+            _policy = {**_policy, f"{_tool_policy.TOOL_KEY}{tool_name}": _tool_policy.CHECK}
         if _visitor is not None:
-            _policy = {c: ("deny" if d == "confirm" else d) for c, d in _policy.items()}
+            _policy = _tool_policy.as_visitor(_policy)
         _decision, _category = _tool_policy.decide(tool_obj, _policy)
 
         # A person's answer to a pause this step made: the call they allowed is
@@ -1367,6 +1399,15 @@ class ToolStepExecutor:
                                     lacks[1] if lacks else None)
                 if lacks:
                     yield {"type": "step_warning", "orch_step_id": step.id, "message": lacks[0]}
+                # An answer the reader cut short, read whole before it is kept as a file, and a CSV written with no
+                # rows (F1690): said, and kept on the step's record, so the run never reads as a clean success.
+                from core.orchestration import result_honesty
+
+                for _note in (result_honesty.cut_said(step.name, result),
+                              result_honesty.csv_said(step.name, tool_args)):
+                    if _note:
+                        yield {"type": "step_warning", "orch_step_id": step.id, "step_name": step.name,
+                               "message": _note, "result_note": True}
                 for _saved in resource_events:
                     yield {**_saved, "orch_step_id": step.id, "step_name": step.name}
                 _log.debug(f"TOOL STEP: 📤 Tool Result ({called_tool}): {preview}")
@@ -1653,7 +1694,7 @@ class EvaluatorStepExecutor:
             return
 
         variables = getattr(engine, "global_variables", None) or {}
-        with await _reading_for(step.model, run):
+        with await _reading_for(step.model, run, reads_files=False):
             instructions = _fill_task_template(step.evaluator_prompt or "", run.shared_state, variables,
                                                unwritten_in_words=True)
             descriptions = {label: _fill_task_template(text, run.shared_state, variables, unwritten_in_words=True)
@@ -2478,6 +2519,30 @@ def _loop_source_name(expr: str) -> str:
     return _unbraced(expr or "").strip().removeprefix("state.") or "its list"
 
 
+def loop_record(state: dict, output_key: str, iteration: int, agent: str) -> None:
+    """Keep what a Loop body step wrote this iteration, beside the iteration and who wrote it, for the Loop to promote
+    when it ends (`promote_loop_results`). The engine's Loop and the builder's practice run (F1619) both keep it so."""
+    state.setdefault(f"_loop_{output_key}", []).append(
+        {"iteration": iteration, "agent": agent, "result": state[output_key]})
+
+
+def promote_loop_results(state: dict, body: list, output_key: str | None) -> None:
+    """Once a Loop ends, each body step's key holds the list of what it wrote each iteration
+    (`[{iteration, agent, result}, …]`), and the Loop's own key, when it has one, those lists by step name. Only body
+    steps that wrote something: a step that failed every iteration has whatever its key held before still in state,
+    and that value is not this loop's output. The engine's Loop and the builder's practice run (F1619) both end so."""
+    promoted: dict[str, str] = {}  # step name -> output key it produced
+    for sub_step in body:
+        if not sub_step or not sub_step.output_key:
+            continue
+        acc_key = f"_loop_{sub_step.output_key}"
+        if acc_key in state:
+            state[sub_step.output_key] = state.pop(acc_key)
+            promoted[sub_step.name] = sub_step.output_key
+    if output_key:
+        state[output_key] = {name: state[key] for name, key in promoted.items()}
+
+
 def _not_a_list(step: StepConfig, value: Any) -> str:
     """Why a Loop cannot go through `value`, and the fix (F1613): an object names its one list field, if it has one."""
     from core.expressions import _unbraced
@@ -2908,15 +2973,8 @@ class LoopStepExecutor:
                     if sub_step.output_key not in run.shared_state:
                         continue
 
-                    acc_key = f"_loop_{sub_step.output_key}"
                     agent_name = engine.agent_names.get(sub_step.agent_id, sub_step.name) if sub_step.agent_id else sub_step.name
-                    if acc_key not in run.shared_state:
-                        run.shared_state[acc_key] = []
-                    run.shared_state[acc_key].append({
-                        "iteration": iteration,
-                        "agent": agent_name,
-                        "result": run.shared_state[sub_step.output_key],
-                    })
+                    loop_record(run.shared_state, sub_step.output_key, iteration, agent_name)
 
                 iterations_run = iteration
 
@@ -2948,25 +3006,7 @@ class LoopStepExecutor:
 
             run.shared_state.pop(progress_key, None)
 
-            # After all iterations, promote accumulated results to output keys
-            promoted: dict[str, str] = {}  # step name -> output key it produced
-            for sid in body_ids:
-                sub_step = engine.step_map.get(sid)
-                if not sub_step or not sub_step.output_key:
-                    continue
-                acc_key = f"_loop_{sub_step.output_key}"
-                if acc_key in run.shared_state:
-                    run.shared_state[sub_step.output_key] = run.shared_state.pop(acc_key)
-                    promoted[sub_step.name] = sub_step.output_key
-
-            # Store loop's own output if configured — only body steps that
-            # actually produced something across the run. A step that failed
-            # every iteration has whatever its key held beforehand still sitting
-            # in state, and that value is not this loop's output.
-            if step.output_key:
-                run.shared_state[step.output_key] = {
-                    name: run.shared_state[key] for name, key in promoted.items()
-                }
+            promote_loop_results(run.shared_state, [engine.step_map.get(sid) for sid in body_ids], step.output_key)
             _note_a_zero_run(step, run, engine, body_ids, iterations_run, zero_why or {
                 "condition_false": "its condition was false from the start",
                 "condition_error": "its condition could not be evaluated",
@@ -3543,7 +3583,7 @@ class LLMStepExecutor:
             transition = TransitionContext(origin_type="entry", execution_number=1)
         from . import output_fields as _answer
 
-        with await _reading_for(step.model, run):
+        with await _reading_for(step.model, run, reads_files=False):
             prompt, system_prompt_extra, system_prompt_prefix, mentions = await build_step_prompt(
                 step, run, engine, transition
             )

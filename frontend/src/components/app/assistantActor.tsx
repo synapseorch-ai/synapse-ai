@@ -9,7 +9,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import type { ActResult, Actor } from '@/components/assistant';
 import { ApprovalCard, RunHostProvider, type RunRecord } from '@/components/run';
 import { ErrorNote, Spinner } from '@/components/ui';
-import type { ActionButton } from '@/lib/builderEvents';
+import type { ActionButton, ActionSpec } from '@/lib/builderEvents';
 import { OSS_RUN_HOST, ossRunRecord } from '@/lib/runHost';
 import { widgetSnippet } from '@/lib/widgetSnippet';
 
@@ -29,6 +29,9 @@ async function press(button: ActionButton): Promise<ActResult> {
             run_id?: string | null; public_key?: string | null; response?: string; status?: string; note?: string;
             say?: string;
         };
+        /** The cards that waited on what this press made (F1670, A), and any that couldn't be prepared, said. */
+        cards?: ActionSpec[];
+        said?: string[];
     } = {};
     try { body = await res.json(); } catch { /* not JSON */ }
     if (res.ok) {
@@ -36,7 +39,10 @@ async function press(button: ActionButton): Promise<ActResult> {
         if (button.tool === 'chat_with_agent') return agentAnswer(result);
         // The act's own words for what it did, when it has them (F1380: a tested fix says how the test went).
         const message = typeof result.say === 'string' && result.say.trim() ? result.say.trim() : undefined;
-        return { ok: true, runId: result.run_id ?? null, publicKey: result.public_key ?? null, message };
+        return {
+            ok: true, runId: result.run_id ?? null, publicKey: result.public_key ?? null, message,
+            next: Array.isArray(body.cards) ? body.cards : [], said: Array.isArray(body.said) ? body.said : [],
+        };
     }
     const message = typeof body.detail === 'string' && body.detail ? body.detail : `That did not work (${res.status}).`;
     // Done before, expired, or not this person's: the card cannot be pressed again.

@@ -189,7 +189,7 @@ synapse start                        # open it (-d: in the background)
 synapse status                       # is it running? (--json for scripts)
 synapse logs -f                      # follow the backend's log (frontend, install)
 synapse upgrade                      # the newest version; data and settings stay
-synapse autostart on                 # start when you log in
+synapse autostart on                 # start again after a restart (on by default)
 ```
 
 **Build, run and answer**

@@ -43,7 +43,7 @@ FETCHERS = ("knowledge", "scrape", "browser")
 #: host was refused, so nothing was fetched (``robots_skip`` says which).
 OUTCOMES = frozenset({
     "content", "blocked", "robots", "robots_unreadable", "not_found", "http_error", "empty", "unsupported",
-    "too_large", "egress", "excluded", "error", "not_run_robots",
+    "too_large", "egress", "excluded", "error", "not_run_robots", "sign_in",
 })
 
 #: Seconds between the start of one page load and the next, across every fetcher and host (at most one a second).
@@ -59,6 +59,8 @@ _SCRAPE_REASONS = (
     ("Blocked by anti-bot protection", "blocked"),
     ("URL blocked", "egress"),
     ("Page returned no extractable content", "empty"),
+    ("Needs a sign-in", "sign_in"),
+    ("The page is not there", "not_found"),
 )
 
 SAMPLE = Path(__file__).with_name("sites.sample.json")
@@ -273,6 +275,11 @@ async def _knowledge(fetcher, site: dict) -> Row:
         row.outcome, row.reason = "error", f"{type(exc).__name__}: {exc}"[:300]
         return row
     row.status, row.final_url = got.status, str(got.url)
+    from core.web_refusals import sign_in_wall
+
+    if (wall := sign_in_wall(row.url, str(got.url), got.status)) is not None:  # the product's own rule (F1632)
+        row.outcome, row.reason = "sign_in", wall
+        return row
     bad = knowledge_outcome_for_status(got.status)
     if bad:
         row.outcome, row.reason = bad, f"The server answered {got.status}."
@@ -288,7 +295,9 @@ async def _knowledge(fetcher, site: dict) -> Row:
         if links.noindex:
             row.outcome, row.reason = "excluded", "noindex"
             return row
-        if not extract.markdown.strip():
+        from core.knowledge.parse.html import has_real_text
+
+        if not has_real_text(extract.markdown):  # the product's own rule (F1660): a lone skip link is no content
             row.outcome, row.reason = "empty", "The page has no readable text"
             return row
         row.outcome, row.text = "content", extract.markdown

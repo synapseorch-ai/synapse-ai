@@ -115,7 +115,7 @@ _ACTS = (
     Op("dead_job_discard", "act", "dead_job", verb="Discard"),
     Op("support_request", "act", "support", fields=("text", "category", "severity", "run_id"), required=("text",),
        verb="Send"),
-    Op("knowledge_create", "act", "knowledge_base", fields=("text", "folder"), verb="Make"),
+    Op("knowledge_create", "act", "knowledge_base", fields=("text", "folder", "urls", "kind"), verb="Make"),
     Op("knowledge_add_file", "act", "knowledge_base", fields=("path",), required=("path",), verb="Add a file to"),
     Op("knowledge_add_pages", "act", "knowledge_base", fields=("urls", "kind"), required=("urls",),
        verb="Add pages to"),
@@ -129,7 +129,7 @@ _ACTS = (
     Op("board_add_card", "act", "board", fields=("title", "text"), required=("title",), verb="Add a card to"),
     Op("board_update_card", "act", "card", fields=("status", "result"), verb="Update"),
     Op("board_comment", "act", "card", fields=("text",), required=("text",), verb="Comment on"),
-    Op("board_create", "act", "board", fields=("text",), verb="Make"),
+    Op("board_create", "act", "board", fields=("text", "cards"), verb="Make"),
     Op("board_delete", "act", "board", verb="Delete"),
     # A shared board's name, what it is for, and who may use it; a card's words (F1268): the Boards screen's service.
     Op("board_rename", "act", "board", fields=("name",), required=("name",), verb="Rename"),
@@ -180,7 +180,8 @@ MISSED = ("run_immediately", "skip")
 _WRITES = (
     Op("rename_workflow", "write", "workflow", "set_orchestration_meta", ("name",), ("name",), verb="Rename"),
     Op("update_workflow", "write", "workflow", "set_orchestration_meta",
-       ("description", "max_total_turns", "timeout_minutes", "max_run_credits", "max_run_usd"), any_of=True,
+       ("description", "max_total_turns", "timeout_minutes", "max_run_credits", "max_run_usd", "offer_to_mcp"),
+       any_of=True,
        verb="Change the settings of"),
     Op("delete_workflow", "delete", "workflow", "delete_orchestration", verb="Delete"),
     Op("set_schedule", "write", "schedule", "update_schedule",
@@ -408,6 +409,11 @@ def _field_issue(op: Op, key: str, value: Any) -> str | None:
         return None if _is_list_of_text(value) else f"`{key}` is a list of names"
     if key in _WIDGET_CHOICES and op.target == "widget":
         return None if value in _WIDGET_CHOICES[key] else f"`{key}` is one of {', '.join(_WIDGET_CHOICES[key])}"
+    if key == "cards" and op.name == "board_create":
+        # A new board's first cards (F1670): each a title, and words if it has them.
+        ok = isinstance(value, list) and all(isinstance(c, dict) and isinstance(c.get("title"), str) and
+                                             c["title"].strip() for c in value)
+        return None if ok else "`cards` is a list of {title, text} for the board's first cards"
     if key == "daily_cap":
         return None if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else \
             "`daily_cap` is a whole number of messages a day"
@@ -439,6 +445,8 @@ def _field_issue(op: Op, key: str, value: Any) -> str | None:
     if key in ("max_run_credits", "max_run_usd"):
         return None if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0 else \
             f"`{key}` is a number above 0"
+    if key == "offer_to_mcp":
+        return None if isinstance(value, bool) else "`offer_to_mcp` is true or false"
     if key == "needs" and op.name == "talk_to_agent":
         return None if _is_list_of_text(value) else \
             "`needs` is a list of the tools and knowledge bases its answer needs, by name"

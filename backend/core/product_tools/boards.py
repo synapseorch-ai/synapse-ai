@@ -191,12 +191,25 @@ async def _create(caller: Any, args: dict) -> dict:
     from core.store import boards as store
 
     await _on()
-    max_shared, _ = await _host.caps()
+    max_shared, max_open = await _host.caps()
+    by = await _person(caller)
     try:
-        return await service.create_shared(str(args.get("name") or ""), description=str(args.get("description") or ""),
-                                           by=await _person(caller), max_shared=max_shared)
+        board = await service.create_shared(str(args.get("name") or ""), description=str(args.get("description") or ""),
+                                            by=by, max_shared=max_shared)
     except store.BoardError as exc:
         raise _refusing(exc) from None
+    # Made with its first cards (F1670), each as `add_board_card` adds one; a card the board can't take is said.
+    first = [c for c in args.get("cards") or [] if isinstance(c, dict) and str(c.get("title") or "").strip()]
+    added, left = 0, []
+    for c in first:
+        try:
+            await service.add_card(board["id"], title=str(c["title"]).strip(), body=str(c.get("text") or ""),
+                                   by=by, max_open=max_open)
+            added += 1
+        except store.BoardError as exc:
+            left.append(f'"{str(c["title"]).strip()}": {exc}')
+    return {**board, **({"cards_added": added} if first else {}),
+            **({"say": "Not added: " + "; ".join(left)} if left else {})}
 
 
 async def _give_access(caller: Any, args: dict) -> dict:
@@ -304,9 +317,15 @@ def entries() -> list[ProductTool]:
                                   "required": ["card_id", "text"]},
                     handler=_comment, additive=True, audit_action="board.card.commented",
                     target=lambda a, r: ("board_card", str(a.get("card_id"))), **act),
-        ProductTool(name="create_board", description="Make a shared board.",
+        ProductTool(name="create_board", description="Make a shared board, with its first cards when given.",
                     input_schema={"type": "object", "properties": {
-                        "name": {"type": "string"}, "description": {"type": "string"}}, "required": ["name"]},
+                        "name": {"type": "string"}, "description": {"type": "string"},
+                        "cards": {"type": "array", "description": "Its first cards, each added as add_board_card adds "
+                                                                  "one.",
+                                  "items": {"type": "object", "properties": {"title": {"type": "string"},
+                                                                             "text": {"type": "string"}},
+                                            "required": ["title"]}}},
+                        "required": ["name"]},
                     handler=_create, additive=True, audit_action="board.created",
                     target=lambda a, r: ("board", str((r or {}).get("id") or "")), **act),
         ProductTool(name="give_board_access",

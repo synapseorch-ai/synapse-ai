@@ -150,7 +150,8 @@ async def test_the_builder_s_own_agents_and_a_site_that_is_not_one_are_refused_i
     _choices({})
 
     said, cards = await _prepare({"action": "widget_create", "name": "Support", "agent": "Saver"})
-    assert cards == [] and "No agent is called 'Saver'" in said["error"]
+    # One of Synapse AI's own agents is Synapse AI itself, said in words without its id (F1674).
+    assert cards == [] and "That's Synapse AI itself" in said["error"] and "agent_native_builder" not in said["error"]
 
     said, cards = await _prepare({"action": "widget_create", "name": "Support", "agent": "Front desk",
                                   "sites": ["not a site"]})

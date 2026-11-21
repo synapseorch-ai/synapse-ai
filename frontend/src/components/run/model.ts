@@ -76,6 +76,8 @@ export type StepExecution = {
     open_tasks?: number;
     /** `turn_limit` when its last turn is what ended it (F862). */
     ended?: string | null;
+    /** What its result is said to lack: empty, built from a cut answer, a CSV with no rows (F1690). */
+    result_notes?: string[];
 };
 
 /** What a step that ended with its plan open says on its row (F862), or null. */
@@ -85,9 +87,24 @@ export function leftOpenLine(h: StepExecution): string | null {
     return `Ended with ${n} open ${n === 1 ? 'task' : 'tasks'}${h.ended === 'turn_limit' ? ', at its turn limit' : ''}`;
 }
 
-/** The steps a run's history ended with their plan open: the header's "with warnings" (F862, Naveen). */
+/** A step's warnings, in words: its plan left open (F862), then what its result lacks (F1690). */
+function warnedLines(h: StepExecution): string[] {
+    const open = leftOpenLine(h);
+    return [...(open ? [open] : []), ...(h.result_notes ?? []).filter(Boolean)];
+}
+
+/** The steps of a run's history that warned: the header's "with warnings" (F862, F1690). */
 export function runWarnings(history: StepExecution[]): number {
-    return history.filter((h) => leftOpenLine(h) !== null).length;
+    return history.filter((h) => warnedLines(h).length > 0).length;
+}
+
+/** The header's "with warnings" said in full (F1690): the steps that warned, by name, and the first warning. */
+export function runWarningsTitle(history: StepExecution[]): string {
+    const warned = history.filter((h) => warnedLines(h).length > 0);
+    if (!warned.length) return '';
+    const names = [...new Set(warned.map((h) => h.step_name || h.step_id))];
+    return `${names.length === 1 ? 'Step' : 'Steps'} ${names.map((n) => `'${n}'`).join(', ')} warned. `
+        + `${warnedLines(warned[0])[0]}`;
 }
 
 /**

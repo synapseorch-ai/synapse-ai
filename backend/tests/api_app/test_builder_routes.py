@@ -263,13 +263,14 @@ class TestSeeHowImBuilt:
         # answers kept, and the one-form ask of the person.
         # 86 with the research ask's own route (F1296): step_plan_finish counts only the planner's finishes.
         # 87 with the save's route (F1295): a save refused after the yes goes back to the planner once.
-        assert legend["step_count"] == 87
+        # 88 with the step that reads the pages a one-off ask names and answers in the chat (F1687).
+        assert legend["step_count"] == 88
         assert legend["entry_step"] == {"id": "step_turn", "name": "Read the Turn", "type": "tool"}
         assert {r["label"] for r in legend["routes"]} == {"answer", "change", "build", "research"}
         assert all(r["description"] and r["to"] for r in legend["routes"])
         assert {a["role"] for a in legend["agents"]} == {
             "planner", "prompt_writer", "maker", "reporter", "researcher", "plan_researcher",
-            "classifier", "classifier_at_plan", "talker",
+            "classifier", "classifier_at_plan", "talker", "page_reader",
         }
         # The answer path adds a step and a sub-agent but no gate: a question
         # has nothing to approve. The change route's which-one question is the fourth (SAI2-P2); the wait for a made
@@ -303,7 +304,7 @@ class TestSeeHowImBuilt:
         assert result["status"] == "created"
         # P3b: the build's own researcher (an E2 finish on report_findings); SAI2-P4: the front door's classifier and
         # talk's agent; F1241's follow-up: the classifier at a waiting plan.
-        assert len(result["agent_ids"]) == 10
+        assert len(result["agent_ids"]) == 11  # with the page reader (F1687)
 
         from core.store.resources import get_orchestration
         copy = await get_orchestration(result["orchestration_id"])

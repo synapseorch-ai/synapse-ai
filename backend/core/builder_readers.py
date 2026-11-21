@@ -19,6 +19,9 @@ import datetime as dt
 from typing import Any, Awaitable, Callable
 
 from core.builder_registry import register_builder_tool
+from core.log import get_logger
+
+_log = get_logger(__name__)
 
 Reader = Callable[[dict], Awaitable[dict]]
 
@@ -101,7 +104,8 @@ SHAPES: dict[str, dict[str, list[str]]] = {
     "plan": {"keys": ["items", "note"],
              "item": ["plan", "monthly_credits", "runs_at_once", "credits_left", "model_wallet_left_usd"]},
     "models": {"keys": ["default_model", "builder_model", "builder_model_for_quick_steps", "providers_with_a_key",
-                        "note", "models_you_can_pick?", "cli_not_signed_in?"]},
+                        "note", "models_you_can_pick?", "clis_signed_in?", "cli_not_signed_in?",
+                        "model_windows_and_prices?"]},
     "agents": {"keys": ["items"], "item": ["name", "type", "model", "tools"]},
     "workflows": {"keys": ["items", "count"], "item": ["name", "steps", "scheduled"]},
     "tool": {"keys": ["name", "kind", "description", "inputs", "note", "code?", "code_cut?", "reads_variables?",
@@ -564,15 +568,47 @@ async def _models(args: dict) -> dict:
         from core.providers import cli_status
 
         not_signed: dict[str, str] = {}
+        signed: list[str] = []
         for provider in list(found):
             st = cli_status.known(provider) if provider in cli_status.PROVIDERS else None
             if st is not None and st.signed_in is False:
                 not_signed[st.label] = st.sign_in_hint or "Sign in to it first."
                 found = {k: v for k, v in found.items() if k != provider}
+            elif st is not None and st.signed_in:
+                signed.append(st.label)
         if found:
             out["models_you_can_pick"] = found
+        # What to do with the lists is said with them (F1683): asked which models it can use, Synapse AI said a
+        # signed-in Claude Code's models were there "if you have a Claude CLI session signed in", and named none of
+        # the CLIs that were not.
+        said = [out["note"]]
+        if found:
+            said.append("Every model in models_you_can_pick can be used here now.")
+        if signed:
+            out["clis_signed_in"] = signed
+            said.append("Each CLI in clis_signed_in is signed in here: say its models can be used, never as if a "
+                        "sign-in might be missing.")
         if not_signed:
             out["cli_not_signed_in"] = not_signed
+            said.append("Asked which models can be used, name every CLI in cli_not_signed_in as installed here but "
+                        "not signed in, each with its sign-in line, and offer none of its models until it is.")
+        # Each model's window and price, as the model picker knows them (F1684): with ids alone, Synapse AI gave every
+        # Claude model one window, from memory, where Fable 5 and Opus 5 hold five times Sonnet 4.5's.
+        if found:
+            from core.native_builder import models_menu
+
+            try:
+                known = await models_menu.facts_of([m for models in found.values() for m in models])
+            except Exception:  # noqa: BLE001 — no facts read: the topic says none, as before
+                _log.warning("models' windows and prices not read", exc_info=True)
+                known = []
+            facts = {e.id: told for e in known if (told := models_menu.window_and_price(e))}
+            if facts:
+                out["model_windows_and_prices"] = facts
+                said.append("model_windows_and_prices gives each model's window and price as the model picker "
+                            "knows them: say a window or a price only from it, model by model and never for a family "
+                            "as a whole, and say it is not known where it gives none.")
+        out["note"] = " ".join(said)
     return out
 
 

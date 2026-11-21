@@ -179,6 +179,52 @@ def json_schema(fields: Any) -> dict[str, Any]:
     return _object_schema(fields)
 
 
+#: How many items a made-up list holds: two, so code that pairs, compares or keys on items sees more than one.
+SAMPLE_ITEMS = 2
+
+
+def sample(fields: Any) -> dict[str, Any]:
+    """A made-up answer in the declared shape (F1619): every field there, each a value of its type, a list with
+    `SAMPLE_ITEMS` items, a group with its own fields to its depth. The builder's practice run reads it in place of a
+    model's or a tool's answer, and `read` takes it as it is. A field that may be empty is given: the practice tests
+    the shape, and the read checks judge the empties. The two items of a list differ."""
+    return _sampled(normalised(fields), 1)
+
+
+def _sampled(declared: list[dict[str, Any]], nth: int) -> dict[str, Any]:
+    return {f["name"].strip(): _sample_value(f, nth) for f in declared}
+
+
+def _sample_value(field: dict[str, Any], nth: int) -> Any:
+    kind = field_type(field.get("type")) or "string"
+    name = field["name"].strip()
+    if kind == "boolean":
+        return True
+    if kind == "number":
+        return 2 + nth
+    if kind == "email":
+        return f"person{nth}@example.com"
+    if kind == "date":
+        return f"2026-01-{10 + nth:02d}"
+    if kind == "phone":
+        return f"+1 555 010{nth}"
+    if kind == "choice" and field_options(field):
+        return field_options(field)[0]
+    if kind == "object":
+        return _sampled(normalised(field.get("fields")), nth)
+    if kind == "list":
+        of = field.get("of")
+        if isinstance(of, dict):
+            return [_sampled(normalised(of.get("fields")), i) for i in range(1, SAMPLE_ITEMS + 1)]
+        kind_of = str(of or "text").strip().lower()
+        if kind_of == "number":
+            return [2 + i for i in range(1, SAMPLE_ITEMS + 1)]
+        if kind_of == "boolean":
+            return [True] * SAMPLE_ITEMS
+        return [f"example {name} {i}" for i in range(1, SAMPLE_ITEMS + 1)]
+    return f"example {name} {nth}"
+
+
 def type_words(field: dict[str, Any]) -> str:
     kind = field_type(field.get("type")) or "string"
     if kind == "boolean":

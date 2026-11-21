@@ -6,7 +6,7 @@ reads each site the message names, once, and hands the planner what code found, 
 * `named(text)`: the URLs and bare domains a message names, at most three. A bare domain counts by `core.sites`'
   rule and a common ending; an email's domain is the person's address, not a site (F1253's net); a version (`v2.0`) or
   a file (`main.py`) is neither; a domain already inside a counted URL is not counted twice.
-* `read(url)`: one plain GET through `safe_fetch` (the egress guard at every redirect hop, NAT64-aware since F1238), 8
+* `read(url)`: robots.txt first, as SynapseBot obeys it (F1691), then one plain GET through `safe_fetch` (the egress guard at every redirect hop, NAT64-aware since F1238), 8
   seconds, 2 MB, no browser and no model (Naveen: a plain fetch, cheap on every turn). What comes back is a
   `NamedPage` of short typed facts: the title, a line of what it is (the page's own words, quoted), one page or a
   site, an API spec it links to, or why it could not be read. A page that is only JavaScript (no title, no heading,
@@ -28,6 +28,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import weakref
 from dataclasses import asdict, dataclass, field
 from typing import Any
 from urllib.parse import urljoin, urlsplit
@@ -47,6 +48,9 @@ NO_SPEC = ("no API spec at its usual addresses ({paths}): ask the person for its
 
 #: Each typed fact's length: what the planner reads of a page, and no more.
 TITLE_CHARS, WHAT_CHARS = 120, 200
+#: A long page's largest table, as the planner sees it (F1691): its header cells are the page's own words, each cut
+#: to this length, and only the first few.
+COLUMN_CHARS, COLUMNS_SHOWN = 40, 8
 
 #: Endings that name a file, not a site, when a bare word has one (`main.py`, `notes.md`); a site with one is still
 #: named with `www.` or `https://`.
@@ -76,6 +80,12 @@ class NamedPage:
     api_spec: str | None = None
     #: The spec's own title, where one was found at its usual address: the API's name.
     api_title: str = ""
+    #: The page's readable text, in characters (F1691): its words, without scripts, styles or tags.
+    text_chars: int = 0
+    #: More than the scraper's `scrape_url` keeps of a page: one read of it is cut.
+    too_long_for_one_read: bool = False
+    #: A long page's largest table: {"selector", "rows", "columns"}, its header cells quoted as the page's words.
+    table: dict[str, Any] | None = None
     why_not: str = ""
     redirects: list[str] = field(default_factory=list)
 
@@ -138,6 +148,10 @@ _HEADING = re.compile(r"<h1[^>]*>(.*?)</h1>", re.I | re.S)
 _TAG = re.compile(r"<[^>]+>")
 _SCRIPT = re.compile(r"<(script|style|noscript)[^>]*>.*?</\1>", re.I | re.S)
 _LINK = re.compile(r"<a\b[^>]*href=[\"']([^\"'#]+)[\"'][^>]*>(.*?)</a>", re.I | re.S)
+_TABLE = re.compile(r"<table\b([^>]*)>(.*?)</table>", re.I | re.S)
+_ROW = re.compile(r"<tr\b[^>]*>(.*?)(?=<tr\b|</tbody|</thead|</tfoot|$)", re.I | re.S)
+_HEAD_CELL = re.compile(r"<th\b[^>]*>(.*?)</th>", re.I | re.S)
+_ATTR = {name: re.compile(rf"\b{name}=[\"']([^\"']*)[\"']", re.I) for name in ("id", "class")}
 _SPEC_HREF = re.compile(r"(openapi|swagger)[^/]*\.(json|ya?ml)$|/(openapi|swagger)(\.json|\.ya?ml)?$", re.I)
 _SPEC_WORDS = re.compile(r"\b(openapi|swagger|api reference|api spec)\b", re.I)
 
@@ -148,6 +162,33 @@ def spec_address(url: Any) -> bool:
         return False
     path = urlsplit(url).path or ""
     return bool(_SPEC_HREF.search(path)) or path.rstrip("/") in SPEC_PATHS
+
+
+def _largest_table(body: str) -> dict[str, Any] | None:
+    """The page's table with the most rows, as a `scrape_structured` schema needs it: a selector for it, its row count,
+    and its first row's header cells, capped (F1691). A table nested in another is counted inside it."""
+    best: tuple[int, str, str] | None = None
+    for m in _TABLE.finditer(body):
+        rows = len(_ROW.findall(m.group(2)))
+        if best is None or rows > best[0]:
+            best = (rows, m.group(1), m.group(2))
+    if best is None or best[0] < 2:
+        return None
+    rows, attrs, inner = best
+    # A class before an id: a site's own class names its tables the same way on every page and revision, where an id
+    # can be generated per render (Wikipedia's `mwdA`).
+    found = _ATTR["class"].search(attrs)
+    classes = [c for c in (found.group(1).split() if found else ()) if re.fullmatch(r"[A-Za-z_][\w-]*", c)]
+    if classes:
+        # Every class it has, so a selector for one table never also takes a page's other tables of a shared class.
+        selector = "table." + ".".join(classes)
+    elif (found := _ATTR["id"].search(attrs)) and found.group(1).strip():
+        selector = f"table#{found.group(1).split()[0]}"
+    else:
+        selector = "table"
+    first = _ROW.search(inner)
+    cells = [_trim(_TAG.sub(" ", c), COLUMN_CHARS) for c in _HEAD_CELL.findall(first.group(1) if first else "")]
+    return {"selector": selector, "rows": rows, "columns": [c for c in cells if c][:COLUMNS_SHOWN]}
 
 
 def _facts(page: NamedPage, body: str) -> NamedPage:
@@ -176,7 +217,51 @@ def _facts(page: NamedPage, body: str) -> NamedPage:
             page.api_spec = href
     page.same_site_links = len(links)
     page.kind = "site" if len(links) >= SITE_LINKS else "page"
+    # Its length against what one `scrape_url` keeps (F1691): the scraper's own cut, never a copy of it.
+    from tools.web_scraper import MAX_MARKDOWN_LEN
+
+    page.text_chars = len(" ".join(html.unescape(_TAG.sub(" ", _SCRIPT.sub(" ", body))).split()))
+    page.too_long_for_one_read = page.text_chars > MAX_MARKDOWN_LEN
+    if page.too_long_for_one_read:
+        page.table = _largest_table(_SCRIPT.sub(" ", body))
     return page
+
+
+#: Each host's robots.txt as this event loop read it (F1691): read once, then every page and spec address on the host is
+#: judged by it. Bounded; a new loop (a new process, a test) starts empty.
+_ROBOTS_SEEN: "weakref.WeakKeyDictionary[Any, dict[str, Any]]" = weakref.WeakKeyDictionary()
+_ROBOTS_KEPT = 256
+
+
+async def _robots_refusal(url: str) -> str:
+    """Why SynapseBot may not read `url` by its site's robots.txt, in Knowledge's own words, or "" (F1691): the read
+    says it is SynapseBot, and SynapseBot obeys robots.txt. Knowledge's own reading of it (`fetch.Fetcher.robots`:
+    RFC 9309, its pace per host), once per host; one that cannot be read fetches nothing, as a crawl's does."""
+    import asyncio
+
+    from core import safe_fetch
+    from core.knowledge import fetch as F
+
+    seen = _ROBOTS_SEEN.setdefault(asyncio.get_running_loop(), {})
+    host = F.host_key(url)
+    robots = seen.get(host)
+    if robots is None:
+        try:
+            async with F.Fetcher() as fetcher:
+                robots = await fetcher.robots(url)
+        except safe_fetch.FetchBlocked as exc:
+            return f"not read: {exc}"
+        except F.EgressUnavailable as exc:
+            return f"not read: {exc}"
+        if len(seen) >= _ROBOTS_KEPT:
+            seen.clear()
+        seen[host] = robots
+    if robots.unreachable_:
+        why = getattr(robots, "why", "")
+        return str(F.RobotsUnreachable(url, why) if why else F.RobotsUnreachable(url))
+    if not robots.allows(url):
+        return str(F.RobotsDisallowed(url))
+    return ""
 
 
 async def read(url: str) -> NamedPage:
@@ -185,15 +270,22 @@ async def read(url: str) -> NamedPage:
 
     from core import safe_fetch
     from core.builder_research import web_call
+    from core.knowledge.fetch import USER_AGENT
 
     page = NamedPage(url=url)
     if (over := await web_call()) is not None:
         page.why_not = over
         return page
+    if refused := await _robots_refusal(url):
+        page.why_not = refused
+        return page
     try:
         async with httpx.AsyncClient(timeout=READ_SECONDS) as client:
+            # As SynapseBot, the user agent Knowledge's crawl sends (F1691): a site that refuses an unnamed client
+            # (Wikipedia answers an HTTP library's default 403) reads a client that says who it is.
             got = await safe_fetch.fetch(url, client=client, max_bytes=READ_BYTES, timeout_s=READ_SECONDS,
-                                         headers={"Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5"})
+                                         headers={"User-Agent": USER_AGENT,
+                                                  "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5"})
     except safe_fetch.FetchBlocked as exc:
         page.why_not = f"not read: {exc}"
         return page
@@ -242,6 +334,7 @@ async def _look_for_spec(page: NamedPage) -> NamedPage:
 
     from core import safe_fetch
     from core.builder_research import web_call
+    from core.knowledge.fetch import USER_AGENT
     from core.mcp_client import host_url_refusal
 
     got_url = urlsplit(page.final_url or page.url)
@@ -253,11 +346,14 @@ async def _look_for_spec(page: NamedPage) -> NamedPage:
     for path in SPEC_PATHS:
         if await web_call() is not None:
             return page
+        if await _robots_refusal(origin + path):
+            continue  # an address robots.txt keeps from SynapseBot is never asked (F1691)
         try:
             async with httpx.AsyncClient(timeout=READ_SECONDS) as client:
                 got = await safe_fetch.fetch(origin + path, client=client, max_bytes=READ_BYTES,
                                              timeout_s=READ_SECONDS,
-                                             headers={"Accept": "application/json, application/yaml;q=0.9"})
+                                             headers={"User-Agent": USER_AGENT,
+                                                      "Accept": "application/json, application/yaml;q=0.9"})
         except (safe_fetch.FetchBlocked, safe_fetch.FetchTooLarge, safe_fetch.FetchRefused):
             return page
         if 200 <= got.status < 300 and (doc := _a_spec(got.body)) is not None:

@@ -130,7 +130,7 @@ async def test_go_ahead_after_the_findings_builds_from_them(client, builder, fak
     assert "step_research" not in order and "step_plan_research" not in order, order
     assert order.index("step_may_change") < order.index("step_plan") < order.index("step_human_review")
     plans = [c for c in fake_llm.calls
-             if "Planner for Synapse AI" in str(c.get("sys_prompt")) + str(c.get("prompt_msg"))]
+             if "You work out what the ask needs" in str(c.get("sys_prompt")) + str(c.get("prompt_msg"))]
     # The findings as the first turn recorded them (its sources only what that run read): the goal and the provider.
     first_plan = str(plans[0].get("prompt_msg")) if plans else ""
     assert "send a payment link" in first_plan and "Stripe" in first_plan, "the first plan already has them"

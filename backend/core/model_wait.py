@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -51,6 +52,16 @@ from typing import Any
 HEARTBEAT_SECONDS = 15.0
 
 _notices: ContextVar[asyncio.Queue[str] | None] = ContextVar("model_wait_notices", default=None)
+
+
+#: A notice's backoff ("… in 5s."): over by the next heartbeat, so a heartbeat carries the notice without it.
+_BACKOFF = re.compile(r"\s+in \d+(?:\.\d+)?s\.?$")
+
+
+def _lasting(notice: str) -> str:
+    """A notice as each later heartbeat carries it (F1682): what happened, without the wait it named."""
+    said = _BACKOFF.sub("", notice.strip()).rstrip(".")
+    return said[:1].lower() + said[1:]
 
 
 def report(message: str) -> None:
@@ -207,6 +218,9 @@ class ModelWait:
         wake: asyncio.Future | None = None
         side_wake: asyncio.Future | None = None
         side = self._side
+        # The newest notice, carried by every heartbeat after it (F1682): the panel draws the notice and the heartbeat
+        # into one live line, so a retry said once was gone 15 seconds later, and a long wait read as a counter.
+        last_notice: str | None = None
         try:
             while True:
                 waiting: set[asyncio.Future] = {task}
@@ -222,7 +236,8 @@ class ModelWait:
                 done, _ = await asyncio.wait(waiting, timeout=timeout,
                                              return_when=asyncio.FIRST_COMPLETED)
                 while not queue.empty():
-                    yield self._event("status", queue.get_nowait())
+                    last_notice = queue.get_nowait()
+                    yield self._event("status", last_notice)
                 if sink is not None:
                     streamed = sink.drain()
                     if streamed:
@@ -241,7 +256,8 @@ class ModelWait:
                 quiet_since = loop.time()
                 elapsed = int(self._clock() - started)
                 prefix = f"{self._label} — " if self._label else ""
-                yield self._event("thinking", f"{prefix}waiting on the model, {elapsed}s")
+                said = f"; {_lasting(last_notice)}" if last_notice else ""
+                yield self._event("thinking", f"{prefix}waiting on the model, {elapsed}s{said}")
         finally:
             if sink is not None:
                 sink.closed = True

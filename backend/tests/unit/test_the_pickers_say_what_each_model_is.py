@@ -140,10 +140,16 @@ class TestSynapseAIsPickers:
         assert "nfb" not in values and "tiny" not in values
 
     def test_a_saved_model_not_for_building_stays_as_the_one_row_saying_why(self, node):
+        # Its heading is neutral (F1699): a picker's only mark is "Recommended", never a verdict on a model; its hint
+        # says, as a fact, that it is not offered here and what to pick.
         got = synapse_ai(node, "nfb")
-        assert got[0]["value"] == "nfb" and got[0]["group"] == "Not for building", got[0]
-        assert "Synapse AI" in got[0]["hint"] and "Recommended" in got[0]["hint"], got[0]
+        assert [got[0]["value"], got[0]["group"]] == ["nfb", "Your saved model"], got[0]
+        assert got[0]["hint"] == "Not offered for building with Synapse AI: pick a Recommended model", got[0]
         assert [o["value"] for o in got].count("nfb") == 1
+
+    def test_no_picker_heading_says_a_model_is_not_for_building(self):
+        models = (Path(__file__).resolve().parents[3] / "frontend" / "src" / "lib" / "models.ts").read_text()
+        assert "Not for building" not in models and "NOT_FOR_BUILDING" not in models
 
     def test_a_saved_model_too_small_is_kept_as_before(self, node):
         got = synapse_ai(node, "tiny")

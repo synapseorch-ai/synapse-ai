@@ -4558,6 +4558,138 @@
   "mode": "cloud",
   "provider": "anthropic"
  },
+ "claude-fable-5-2": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "claude-fable-5-2",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      null
+     ],
+     "call": "call_anthropic",
+     "kwargs": {
+      "images": null,
+      "max_tokens": 20480,
+      "prompt_blocks": null,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       20480
+      ],
+      "tools": null,
+      "volatile_tail": null
+     }
+    },
+    {
+     "log_usage": "anthropic"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "claude-fable-5-2",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "k-anthropic"
+     ],
+     "call": "call_anthropic",
+     "kwargs": {
+      "images": null,
+      "max_tokens": 20480,
+      "prompt_blocks": null,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       20480
+      ],
+      "tools": null,
+      "volatile_tail": null
+     }
+    },
+    {
+     "log_usage": "anthropic"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "claude-fable-5-2",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "k-anthropic"
+     ],
+     "call": "call_anthropic",
+     "kwargs": {
+      "images": null,
+      "max_tokens": 20480,
+      "prompt_blocks": [
+       "block"
+      ],
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       20480
+      ],
+      "tools": "<tools>",
+      "volatile_tail": "tail"
+     }
+    },
+    {
+     "log_usage": "anthropic"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "anthropic"
+ },
  "claude-opus-4-8": {
   "chat_bare": {
    "calls": [
@@ -4576,7 +4708,7 @@
      "call": "call_anthropic",
      "kwargs": {
       "images": null,
-      "max_tokens": 10240,
+      "max_tokens": 20480,
       "prompt_blocks": null,
       "prompt_cache": true,
       "reasoning": [
@@ -4584,7 +4716,7 @@
        6144,
        "MEDIUM",
        "medium",
-       10240
+       20480
       ],
       "tools": null,
       "volatile_tail": null
@@ -4613,7 +4745,7 @@
      "call": "call_anthropic",
      "kwargs": {
       "images": null,
-      "max_tokens": 10240,
+      "max_tokens": 20480,
       "prompt_blocks": null,
       "prompt_cache": true,
       "reasoning": [
@@ -4621,7 +4753,7 @@
        6144,
        "MEDIUM",
        "medium",
-       10240
+       20480
       ],
       "tools": null,
       "volatile_tail": null
@@ -4650,7 +4782,7 @@
      "call": "call_anthropic",
      "kwargs": {
       "images": null,
-      "max_tokens": 10240,
+      "max_tokens": 20480,
       "prompt_blocks": [
        "block"
       ],
@@ -4660,7 +4792,139 @@
        6144,
        "MEDIUM",
        "medium",
-       10240
+       20480
+      ],
+      "tools": "<tools>",
+      "volatile_tail": "tail"
+     }
+    },
+    {
+     "log_usage": "anthropic"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "anthropic"
+ },
+ "claude-opus-5-5": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "claude-opus-5-5",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      null
+     ],
+     "call": "call_anthropic",
+     "kwargs": {
+      "images": null,
+      "max_tokens": 20480,
+      "prompt_blocks": null,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       20480
+      ],
+      "tools": null,
+      "volatile_tail": null
+     }
+    },
+    {
+     "log_usage": "anthropic"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "claude-opus-5-5",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "k-anthropic"
+     ],
+     "call": "call_anthropic",
+     "kwargs": {
+      "images": null,
+      "max_tokens": 20480,
+      "prompt_blocks": null,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       20480
+      ],
+      "tools": null,
+      "volatile_tail": null
+     }
+    },
+    {
+     "log_usage": "anthropic"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "claude-opus-5-5",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "k-anthropic"
+     ],
+     "call": "call_anthropic",
+     "kwargs": {
+      "images": null,
+      "max_tokens": 20480,
+      "prompt_blocks": [
+       "block"
+      ],
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       20480
       ],
       "tools": "<tools>",
       "volatile_tail": "tail"
@@ -4925,6 +5189,138 @@
        "MEDIUM",
        "medium",
        10240
+      ],
+      "tools": "<tools>",
+      "volatile_tail": "tail"
+     }
+    },
+    {
+     "log_usage": "anthropic"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "anthropic"
+ },
+ "claude-sonnet-4-6": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "claude-sonnet-4-6",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      null
+     ],
+     "call": "call_anthropic",
+     "kwargs": {
+      "images": null,
+      "max_tokens": 20480,
+      "prompt_blocks": null,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       20480
+      ],
+      "tools": null,
+      "volatile_tail": null
+     }
+    },
+    {
+     "log_usage": "anthropic"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "claude-sonnet-4-6",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "k-anthropic"
+     ],
+     "call": "call_anthropic",
+     "kwargs": {
+      "images": null,
+      "max_tokens": 20480,
+      "prompt_blocks": null,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       20480
+      ],
+      "tools": null,
+      "volatile_tail": null
+     }
+    },
+    {
+     "log_usage": "anthropic"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "claude-sonnet-4-6",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "k-anthropic"
+     ],
+     "call": "call_anthropic",
+     "kwargs": {
+      "images": null,
+      "max_tokens": 20480,
+      "prompt_blocks": [
+       "block"
+      ],
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       20480
       ],
       "tools": "<tools>",
       "volatile_tail": "tail"

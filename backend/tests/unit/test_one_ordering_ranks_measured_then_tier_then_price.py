@@ -1,11 +1,12 @@
-"""One ordering ranks models: a measured rank first, then today's order, with each family's own tiers and generations
-kept within the places that family holds (F1598, commit A).
+"""One ordering ranks models: today's order, with each family's own tiers and generations kept within the places
+that family holds, and a measured rank only among one tier's measured models (F1598, commit A; F1598 D).
 
 An automatic pick ranked by reasoning, native tools and then price. Within a family, price put a dearer, older model
 ahead of a newer, stronger one: Opus 4.6 over Opus 5.5, since 4.6 cost more. Now, within the places a family's
 models hold in that order, they run by their provider's tier, then the newer generation, then price.
 - Fable and Mythos run before Opus, Opus before Sonnet, and Sonnet before Haiku.
-- Across families nothing moves until a measure says so: a measured rank runs first.
+- Across families nothing moves, and a measured rank orders only the measured models of one tier among
+  themselves: a measure never lifts a model past a stronger tier, nor sets its fit.
 - The pick, the stronger-model offer, the "strongest" wish and `/api/models`' `ranked` list all read this one order,
   so they never disagree.
 
@@ -26,7 +27,8 @@ from core.providers import model_facts as F
 
 @pytest.fixture(autouse=True)
 def _no_measure():
-    F.set_measured(None)
+    """Each case from no measured rows, then the shipped table back for whatever runs next."""
+    F.set_measured({})
     yield
     F.set_measured(None)
 
@@ -70,10 +72,73 @@ class TestAcrossFamilies:
         menu = [entry("qwen3-8b", 0.2), entry("qwen3-235b-a22b", 1.2), entry("qwen3-32b", 0.6)]
         assert ids(MM.ordered(menu, has_tools=True)) == ids(sorted(menu, key=lambda e: MM._strongest_first(e, True)))
 
-    def test_a_measured_rank_runs_first(self):
+    def test_across_families_a_measured_rank_moves_nothing(self):
+        """A measure orders the measured models of one tier among themselves, never a model past another tier or
+        family: a few asks are too thin to outrank the tiers ("ordered by how they did", never "go first")."""
         F.set_measured({"gemini-2.5-flash": (None, 7), "gpt-4.1": (None, 9)})
         menu = [entry("claude-sonnet-4-6", 15), entry("gemini-2.5-flash", 2.5), entry("gpt-4.1", 8)]
-        assert ids(MM.ordered(menu, has_tools=True)) == ["gpt-4.1", "gemini-2.5-flash", "claude-sonnet-4-6"]
+        assert ids(MM.ordered(menu, has_tools=True)) == ["claude-sonnet-4-6", "gemini-2.5-flash", "gpt-4.1"]
+
+    def test_an_unmeasured_stronger_tier_stays_above_a_measured_haiku(self):
+        F.set_measured({"claude-haiku-4-5": (None, 9)})
+        menu = [entry("claude-haiku-4-5", 5), entry("claude-opus-4-6", 25), entry("claude-sonnet-5-5", 15),
+                entry("claude-haiku-5-5", 5)]
+        assert ids(MM.ordered(menu, has_tools=True)) == ["claude-opus-4-6", "claude-sonnet-5-5", "claude-haiku-5-5",
+                                                         "claude-haiku-4-5"]
+
+    def test_two_measured_models_of_one_tier_follow_their_rank(self):
+        F.set_measured({"claude-haiku-4-5": (None, 9), "claude-haiku-5-5": (None, 3)})
+        menu = [entry("claude-haiku-4-5", 5), entry("claude-opus-4-6", 25), entry("claude-haiku-5-5", 5)]
+        assert ids(MM.ordered(menu, has_tools=True)) == ["claude-opus-4-6", "claude-haiku-4-5", "claude-haiku-5-5"]
+
+    def test_a_measure_never_sets_a_models_fit(self):
+        """Its rank only: "Recommended" stays the facts' call, for a model that passed every ask too."""
+        for model in ("claude-haiku-4-5", "claude-sonnet-4-6", "gemini-2.5-flash"):
+            F.set_measured(None)
+            facts = MM._entry(model, {}).fit
+            F.set_measured({model: (None, 9)})
+            assert MM._entry(model, {}).fit == facts, model
+
+
+class TestAHostsRank:
+    """A host's own rank (cloud's staff strength rank, through `with_host_facts`) is a deliberate decision: its model
+    runs first, ahead of every tier, as the host's console says. The engine's measured rank stays within a tier, and
+    where a model has both, the host's wins."""
+
+    @pytest.fixture
+    def host(self):
+        said: dict[str, dict] = {}
+
+        async def facts(ids):
+            return {i: said[i] for i in ids if i in said}
+
+        MM.set_model_facts(facts)
+        yield said
+        MM.set_model_facts(None)
+
+    async def test_a_host_ranked_model_runs_first_ahead_of_its_tier(self, host):
+        host["claude-haiku-4-5"] = {"rank": 99}
+        menu = await MM.with_host_facts([entry("claude-opus-4-6", 25), entry("claude-haiku-4-5", 5),
+                                         entry("claude-sonnet-5-5", 15)])
+        assert ids(MM.ordered(menu, has_tools=True)) == ["claude-haiku-4-5", "claude-opus-4-6", "claude-sonnet-5-5"]
+
+    async def test_two_host_ranked_models_follow_their_ranks(self, host):
+        host.update({"claude-haiku-4-5": {"rank": 3}, "gpt-4.1": {"rank": 8}})
+        menu = await MM.with_host_facts([entry("claude-opus-4-6", 25), entry("claude-haiku-4-5", 5),
+                                         entry("gpt-4.1", 8)])
+        assert ids(MM.ordered(menu, has_tools=True))[:2] == ["gpt-4.1", "claude-haiku-4-5"]
+
+    async def test_where_a_model_has_both_the_hosts_rank_wins(self, host):
+        F.set_measured({"claude-haiku-4-5": (None, 1), "claude-haiku-5-5": (None, 9)})
+        host["claude-haiku-4-5"] = {"rank": 5}
+        menu = await MM.with_host_facts([entry("claude-opus-4-6", 25), entry("claude-haiku-4-5", 5),
+                                         entry("claude-haiku-5-5", 5)])
+        assert ids(MM.ordered(menu, has_tools=True)) == ["claude-haiku-4-5", "claude-opus-4-6", "claude-haiku-5-5"]
+
+    async def test_with_no_host_rank_the_order_is_as_before(self, host):
+        host["claude-haiku-4-5"] = {"price_out": 5.0}
+        menu = [entry("claude-haiku-4-5", 5), entry("claude-opus-4-6", 25), entry("claude-sonnet-5-5", 15)]
+        assert ids(MM.ordered(await MM.with_host_facts(menu), has_tools=True)) == ids(MM.ordered(menu, has_tools=True))
 
 
 class TestEveryReaderReadsIt:

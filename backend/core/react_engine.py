@@ -1378,6 +1378,14 @@ async def run_agent_step(
     # host's for its own ids (F1591: cloud's `synapse.mistral-large` is a 32K model the table reads as 128K).
     from core.context_budget import step_budget as _step_budget
     _budget = await _step_budget(current_model, current_settings)
+    # What this turn's tools returned, whole, before any of it was saved to the vault (F1677): a workflow step warns
+    # when its answer hands on far less.
+    _gathered = [0]
+
+    def _vaulted(name, output, *, threshold):
+        _gathered[0] += len(output if isinstance(output, str) else str(output))
+        return maybe_vault(name, output, threshold=threshold)
+
     # Reasoning effort follows the same precedence as the model: the agent's own
     # setting, then the workspace default. It is deliberately not a per-step
     # override — a step picks a *model*, and how hard that model thinks is a
@@ -2345,7 +2353,7 @@ async def run_agent_step(
     if _visitor is not None and _visitor.approvals != "park":
         # Nobody on a public surface can answer an approval card (F280). A phone
         # call parks instead and asks a person in the bell (VOX1a, V16).
-        _policy = {c: ("deny" if d == "confirm" else d) for c, d in _policy.items()}
+        _policy = _tool_policy.as_visitor(_policy)
 
     # What a sub-agent may be given: what this agent may use here, a step's
     # narrowing included (F266) — `_spawn_subtask_available_tools` is every
@@ -3814,7 +3822,7 @@ async def run_agent_step(
                 if tool_executor is not None:
                     _exec_result = await tool_executor(tool_name, tool_args)
                     if _exec_result is not None:
-                        raw_output = maybe_vault(tool_name, _exec_result, threshold=_budget.spill_at)
+                        raw_output = _vaulted(tool_name, _exec_result, threshold=_budget.spill_at)
                         current_context_text += f"\n[Turn {turn + 1} — Observation] Tool '{tool_name}' returned:\n{raw_output}\n"
                         tools_used_summary.append(f"{tool_name}: {raw_output}")
                         preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
@@ -3880,7 +3888,7 @@ async def run_agent_step(
                         from core.knowledge.citations import neutralize as _kn_neutralize
                         sub_final = _kn_neutralize(
                             await _delegate_to_workflow(target_agent, task_message, server_module))
-                        raw_output = maybe_vault(tool_name, sub_final, threshold=_budget.spill_at)
+                        raw_output = _vaulted(tool_name, sub_final, threshold=_budget.spill_at)
                         current_context_text += f"\n[Turn {turn + 1} — Observation] Agent '{agent_name}' response:\n{raw_output}\n"
                         tools_used_summary.append(f"delegate_to_agent({agent_name}): {raw_output}")
                         preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
@@ -3978,7 +3986,7 @@ async def run_agent_step(
                         sub_final = f"Error: Sub-agent '{agent_name}' failed: {e}"
                         _log.warning(f"❌ Delegate sub-agent failed: {e}")
 
-                    raw_output = maybe_vault(tool_name, sub_final, threshold=_budget.spill_at)
+                    raw_output = _vaulted(tool_name, sub_final, threshold=_budget.spill_at)
                     current_context_text += f"\n[Turn {turn + 1} — Observation] Agent '{agent_name}' response:\n{raw_output}\n"
                     tools_used_summary.append(f"delegate_to_agent({agent_name}): {raw_output}")
                     preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
@@ -4081,7 +4089,7 @@ async def run_agent_step(
                                     if _result.stderr:
                                         _log.debug(f"Python tool stderr: {len(_result.stderr)} chars")
 
-                                raw_output = maybe_vault(tool_name, raw_output, threshold=_budget.spill_at)
+                                raw_output = _vaulted(tool_name, raw_output, threshold=_budget.spill_at)
                                 current_context_text += f"\n[Turn {turn + 1} — Observation] Tool '{tool_name}' returned:\n{raw_output}\n"
                                 tools_used_summary.append(f"{tool_name}: {raw_output}")
                                 _log.debug(f"🐍 Python Tool Result ({tool_name}): {len(raw_output)} chars")
@@ -4112,7 +4120,7 @@ async def run_agent_step(
                             json_resp, raw_output = _http_tool.decode(resp, target_tool)
 
                             # Vault large outputs
-                            raw_output = maybe_vault(tool_name, raw_output, threshold=_budget.spill_at)
+                            raw_output = _vaulted(tool_name, raw_output, threshold=_budget.spill_at)
 
                             current_context_text += f"\n[Turn {turn + 1} — Observation] Tool '{tool_name}' returned:\n{raw_output}\n"
                             tools_used_summary.append(f"{tool_name}: {raw_output}")
@@ -4255,7 +4263,7 @@ async def run_agent_step(
                     _log.debug(f"MCP: ✓ call_tool OK [{round(time.time()-_mcp_t0,2)}s] tool='{tool_name}'")
 
                     # Vault large outputs before any further processing
-                    raw_output = maybe_vault(tool_name, raw_output, threshold=_budget.spill_at)
+                    raw_output = _vaulted(tool_name, raw_output, threshold=_budget.spill_at)
 
                     try:
                         parsed = json.loads(raw_output)
@@ -4534,7 +4542,7 @@ async def run_agent_step(
         if hasattr(_browser_session, "idle"):
             await _browser_session.idle(_browser_used)
     final_event = {"type": "final", "response": final_response, "intent": last_intent, "data": last_data,
-                   "tool_name": tool_name}
+                   "tool_name": tool_name, "gathered_chars": _gathered[0]}
     if not (not is_orchestrator and persist_turn and not _workflow_step and save_turn):
         # Saved by its caller (the fleet's chat job, `save_here=False`, SUB1b): what to keep with the answer —
         # its helpers' records, and the results it read, which `run_react_loop` then counts as arrived.

@@ -30,7 +30,9 @@ EXCERPT = 400
 EDITIONS = {"cloud": "cloud", "self-host": "self_hosted"}
 
 _FRONT = re.compile(r"\A---\n(.*?)\n---\n", re.S)
-_HEADING = re.compile(r"^(#{2,3})\s+(.+?)\s*#*\s*$")
+_HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
+#: A heading's own id, as Fumadocs' remark-heading reads it: `## Which model? [#which-model]` (F1664).
+_TAG = re.compile(r"\s*\[#(.+?)]\s*$")
 _FENCE = re.compile(r"^\s*(```|~~~)")
 
 
@@ -52,10 +54,38 @@ def _front(text: str) -> tuple[dict[str, str], bool, str]:
 
 
 def anchor(heading: str) -> str:
-    """The id the docs give a heading (github-slugger, as Fumadocs does): lower case, punctuation gone, spaces as
-    hyphens."""
-    words = re.sub(r"[^\w\- ]", "", _plain(heading).lower(), flags=re.UNICODE)
+    """The id github-slugger makes of a heading's words, as Fumadocs does: lower case, punctuation gone, each space a
+    hyphen. A repeated heading's number is the page's (`_Slugger`); a tagged heading's id is its tag (`_sections`)."""
+    words = re.sub(r"[^\w\- ]", "", _flat(heading).lower(), flags=re.UNICODE)
     return words.replace(" ", "-")
+
+
+def _flat(text: str) -> str:
+    """A heading's words as the docs read them for its id (mdast's text): links as their text, no emphasis or code
+    marks and no tags, but a code span's own characters kept and spaces left as written (`The {{ }} syntax`)."""
+    text = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    # A code span's own * and _ are its words, not emphasis: held aside while the emphasis marks go.
+    star, under = "\x00", "\x01"
+    text = re.sub(r"`([^`]*)`", lambda m: m.group(1).replace("*", star).replace("_", under), text)
+    text = re.sub(r"(\*{1,3}|_{1,3})(\S.*?\S|\S)\1", r"\2", text)
+    return text.replace(star, "*").replace(under, "_").replace("\\", "").strip()
+
+
+class _Slugger:
+    """github-slugger's numbering, one per page as Fumadocs resets it: the second "Request" is `request-1`."""
+
+    def __init__(self) -> None:
+        self.seen: dict[str, int] = {}
+
+    def slug(self, heading: str) -> str:
+        base = result = anchor(heading)
+        while result in self.seen:
+            self.seen[base] += 1
+            result = f"{base}-{self.seen[base]}"
+        self.seen[result] = 0
+        return result
 
 
 def _plain(text: str) -> str:
@@ -77,9 +107,12 @@ def _excerpt(lines: list[str]) -> str:
 
 
 def _sections(body: str) -> list[dict[str, str]]:
-    """The page's prose by heading: the words before the first heading as the page's own (no heading, no anchor)."""
+    """The page's prose by second- and third-level heading, each with the id the docs give it (F1664): a heading's
+    `[#id]` tag, else github-slugger's numbered over every heading on the page. The words before the first heading are
+    the page's own (no heading, no anchor); a heading at another level stays in its section's words."""
     out: list[dict[str, str]] = []
-    heading, lines, fenced = "", [], False
+    heading, at, lines, fenced = "", "", [], False
+    slugger = _Slugger()
     for raw in body.splitlines():
         if _FENCE.match(raw):
             fenced = not fenced
@@ -88,14 +121,19 @@ def _sections(body: str) -> list[dict[str, str]]:
             continue
         m = _HEADING.match(raw)
         if m:
-            if heading or _plain(" ".join(lines)):
-                out.append({"heading": heading, "anchor": anchor(heading) if heading else "",
-                            "excerpt": _excerpt(lines)})
-            heading, lines = _plain(m.group(2)), []
-            continue
+            words, tag = m.group(2), _TAG.search(m.group(2))
+            if tag:
+                words, this = words[: tag.start()], tag.group(1)
+            else:
+                this = slugger.slug(words)
+            if len(m.group(1)) in (2, 3):
+                if heading or _plain(" ".join(lines)):
+                    out.append({"heading": heading, "anchor": at, "excerpt": _excerpt(lines)})
+                heading, at, lines = _plain(words), this, []
+                continue
         lines.append(raw)
     if heading or _plain(" ".join(lines)):
-        out.append({"heading": heading, "anchor": anchor(heading) if heading else "", "excerpt": _excerpt(lines)})
+        out.append({"heading": heading, "anchor": at, "excerpt": _excerpt(lines)})
     return [s for s in out if s["heading"] or s["excerpt"]]
 
 
