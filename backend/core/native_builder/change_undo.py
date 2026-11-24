@@ -158,8 +158,10 @@ def _inverse(applied: dict) -> tuple[dict | None, str | None]:
         time = {k: before[k] for k in C._SCHEDULE_TIME if before.get(k) is not None}
         # And what it does with a time it missed (F1267): a copy that skipped what the old one ran was not the same.
         missed = {"missed_run_policy": before["missed_run_policy"]} if before.get("missed_run_policy") else {}
+        # And its Heartbeat (F1728): a copy that ran on every tick was not the one that waited for work.
+        when = {k: before[k] for k in C._SCHEDULE_WHEN if before.get(k) is not None}
         return {"op": "create_schedule", "target": {"kind": "schedule", "name": before.get("name")},
-                "fields": {"runs": runs, "prompt": before.get("prompt") or "", **time, **missed},
+                "fields": {"runs": runs, "prompt": before.get("prompt") or "", **time, **missed, **when},
                 "says": "undo: it comes back as a new copy, paused"}, None
     if name == "delete_agent":
         if before.get("type") not in _AGENT_TYPES:

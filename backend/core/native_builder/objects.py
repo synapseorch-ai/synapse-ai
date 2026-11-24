@@ -170,6 +170,10 @@ class Schedule(_Written):
     timezone: str | None = Field(None, description="Only a timezone the person named, as a name like "
                                                    "America/New_York: the cron is read on it. Left out, the schedule "
                                                    "runs on the person's own clock")
+    run_when: str = Field("always", description="always: it runs at its time. has_work: a heartbeat, for work that "
+                                                "arrives as tasks on its board: at its time it runs only while the "
+                                                "board has an open task, and a new task starts it within a minute")
+    max_runs_per_day: int = Field(0, description="has_work: the most runs it starts in a day; 0 is no limit")
     says: str = Field(description="The schedule in words, e.g. every day at 7:00")
     input: str | None = Field(None, description="What each scheduled run starts with: the task, with what it is "
                                                 "about (F155)")
@@ -835,6 +839,9 @@ def schedule_issues(schedule: Schedule) -> list[str]:
                 errors.append(f"schedule.{key}: {said}")
     if (said := C._field_issue(op, "missed_run_policy", schedule.missed_run_policy)) is not None:
         errors.append(f"schedule.missed_run_policy: {said}")
+    for key in ("run_when", "max_runs_per_day"):
+        if (said := C._field_issue(op, key, getattr(schedule, key))) is not None:
+            errors.append(f"schedule.{key}: {said}")
     return errors
 
 

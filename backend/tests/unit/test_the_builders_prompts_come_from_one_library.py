@@ -221,7 +221,9 @@ from core.native_builder import prompt_lint, seed
 #: one read, b40af047… (on F1675's 486f8e21).
 #: F1704: plan_steps.md's transform bullet says a page read answers an object, to go through its list field
 #: (scrape_structured: data; extract_links: links), never the answer itself, f2fb27f2… (on b40af047).
-BUNDLE_SHA256 = "f2fb27f2e0b5d184204f4a8c7df5a40724360bdd051afa79280d8b03543fc6df"
+#: F1728: the planner's rules 5 and 18 name a schedule's run_when has_work (a heartbeat), its wake and its daily
+#: limit, 91652a57… (on f2fb27f2).
+BUNDLE_SHA256 = "91652a57d37da82b3969365202e47958026be497999226257fce6a7c385a93d6"
 
 
 def _sha(definitions) -> str:

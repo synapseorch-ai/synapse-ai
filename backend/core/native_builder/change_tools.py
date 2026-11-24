@@ -114,9 +114,12 @@ SUBMIT = {"type": "function", "function": {
         "update_workflow {description, max_total_turns, timeout_minutes, max_run_credits, max_run_usd, offer_to_mcp: "
         "true | false (its own Offer to MCP clients switch: offered, MCP clients see it as a tool of its own)}; "
         "set_schedule {cron_expression (on the schedule's own clock, the time as they said it, never converted to "
-        "UTC) | interval_value + interval_unit, prompt, description, missed_run_policy: run_immediately | skip}; "
+        "UTC) | interval_value + interval_unit, prompt, description, missed_run_policy: run_immediately | skip, "
+        "run_when: always | has_work (a heartbeat: it runs at its time only while its board has an open task), "
+        "wake_on_new_task: true | false, max_runs_per_day: 0 (no limit) or more}; "
         "create_schedule {runs: {kind: workflow | agent, id}, prompt, cron_expression (on its own clock, never "
-        "converted to UTC) | interval_value + interval_unit, missed_run_policy}; retarget_schedule {runs: {kind: "
+        "converted to UTC) | interval_value + interval_unit, missed_run_policy, run_when, wake_on_new_task, "
+        "max_runs_per_day}; retarget_schedule {runs: {kind: "
         "workflow | agent, id}}; "
         "set_agent_model {model}; set_agent_tools / set_agent_skills {add: [...], remove: [...]}; "
         "set_agent_instructions {system_prompt}; set_agent_settings {description, memory, knowledge: [base names], "
@@ -1270,7 +1273,9 @@ async def read(kind: str, target_id: str) -> dict | None:
         found = await schedules.get(target_id)
         # One saved before the policy was asked reads as the screen shows it, skip (F1267): the no-op check, the
         # before-image an undo puts back and the effect check all need its value.
-        return None if found is None else {"missed_run_policy": "skip", **found}
+        # Its Heartbeat likewise (F1728): one saved before it existed runs at its time, woken, with no limit.
+        return None if found is None else {"missed_run_policy": "skip", "run_when": "always", "wake_on_new_task": True,
+                                           "max_runs_per_day": 0, **found}
     if kind == "skill":
         from core import skills
 

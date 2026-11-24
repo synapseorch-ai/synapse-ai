@@ -286,6 +286,8 @@ _EVERY = {"language": "english", "visitor_access": True, "budget_monthly_usd": 2
           "spend_limit_usd": 1.5, "clear_spend_limit": False, "sites": ["portal.example.com"],
           "sessions": ["sess_portal"], "recordings": ["rec_login"], "action_budget": 60, "repos": ["repo_shop"],
           "db_configs": ["db_orders"], "content": "THE MEMORY'S TEXT", "missed_run_policy": "run_immediately",
+          # A schedule's Heartbeat (F1728).
+          "run_when": "has_work", "wake_on_new_task": False, "max_runs_per_day": 40,
           # A new HTTP tool's (F1322): `description` and `body` above serve it too.
           "method": "PATCH", "url": "https://hooks.example.org/v1/orders/{{ order_id }}",
           "headers": {"X-Trace": "TRACE ON"}, "input_schema": {"type": "object", "properties": {"order_id": {

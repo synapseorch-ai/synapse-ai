@@ -613,7 +613,9 @@ def compile_plan(plan: Plan, *, existing_agents: dict[str, dict] | None = None,
                     # What it does with a time it missed, as its plan says (D340 F; the screen's two values, F1267).
                     "missed_run_policy": plan.schedule.missed_run_policy,
                     # Read on the person's clock (F948): the one they named, else their own; none is UTC.
-                    "timezone": plan.schedule.timezone or None}
+                    "timezone": plan.schedule.timezone or None,
+                    # A heartbeat waits for a task on its board (F1728); a new one wakes it.
+                    "run_when": plan.schedule.run_when, "max_runs_per_day": plan.schedule.max_runs_per_day}
         from core.models_schedule import ScheduleCreate, ScheduleInvalid, validate_timing
 
         try:

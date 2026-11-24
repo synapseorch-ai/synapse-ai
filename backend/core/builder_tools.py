@@ -1863,6 +1863,17 @@ BUILDER_TOOL_SCHEMAS = [
                         "one the person named, else their own. Leave it out for UTC")},
                     "missed_run_policy": {"type": "string", "enum": ["run_immediately", "skip"], "description": (
                         "A time it missed (the machine was off): run it once as soon as it can, or skip it")},
+                    "run_when": {"type": "string", "enum": ["always", "has_work"], "description": (
+                        "'always' (the default) runs at its time. 'has_work' is a heartbeat: at its time it runs only "
+                        "while a board its run works on (its own board, or a shared board it may work) has an open "
+                        "task, and costs nothing when there is none. For 'whenever a new request comes in, handle "
+                        "it'. Needs Boards on")},
+                    "wake_on_new_task": {"type": "boolean", "description": (
+                        "A heartbeat only: a task added to its board starts it within a minute instead of at its "
+                        "next time (on unless turned off)")},
+                    "max_runs_per_day": {"type": "integer", "description": (
+                        "The most runs it starts in a day on its own clock, 0 for no limit. Set one on a heartbeat "
+                        "so a burst of tasks cannot become a burst of spend")},
                 },
                 "required": ["name", "target_type", "target_id", "prompt", "schedule_type"],
             },
@@ -1944,6 +1955,17 @@ BUILDER_TOOL_SCHEMAS = [
                         "one the person named, else their own. Leave it out for UTC")},
                     "missed_run_policy": {"type": "string", "enum": ["run_immediately", "skip"], "description": (
                         "A time it missed (the machine was off): run it once as soon as it can, or skip it")},
+                    "run_when": {"type": "string", "enum": ["always", "has_work"], "description": (
+                        "'always' (the default) runs at its time. 'has_work' is a heartbeat: at its time it runs only "
+                        "while a board its run works on (its own board, or a shared board it may work) has an open "
+                        "task, and costs nothing when there is none. For 'whenever a new request comes in, handle "
+                        "it'. Needs Boards on")},
+                    "wake_on_new_task": {"type": "boolean", "description": (
+                        "A heartbeat only: a task added to its board starts it within a minute instead of at its "
+                        "next time (on unless turned off)")},
+                    "max_runs_per_day": {"type": "integer", "description": (
+                        "The most runs it starts in a day on its own clock, 0 for no limit. Set one on a heartbeat "
+                        "so a burst of tasks cannot become a burst of spend")},
                 },
                 "required": ["schedule_id"],
             },
@@ -4176,7 +4198,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         except ValidationError as exc:
             return {"error": f"Invalid schedule: {exc.errors()[0]['msg']}"}
         if not patch:
-            return {"error": "Nothing to change: give the time, prompt, name or target that changes."}
+            return {"error": "Nothing to change: give the time, prompt, name, target or when it runs that changes."}
         patched = {**schedule, **patch}
         if {"target_type", "target_id"} & patch.keys():
             if patched.get("target_type") == "agent":
@@ -4185,7 +4207,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                     return {"error": f"Agent '{patched.get('target_id')}' not found"}
             elif await _visible_orchestration(str(patched.get("target_id") or "")) is None:
                 return {"error": f"Orchestration '{patched.get('target_id')}' not found"}
-        if {"schedule_type", "interval_value", "interval_unit", "cron_expression", "timezone"} & patch.keys():
+        if {"schedule_type", "interval_value", "interval_unit", "cron_expression", "timezone", "run_when",
+                "max_runs_per_day"} & patch.keys():
             try:
                 validate_timing(patched)
                 patched["next_run_at"] = _iso(compute_next_run(patched, _utc_now()))
