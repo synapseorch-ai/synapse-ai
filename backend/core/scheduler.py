@@ -132,8 +132,9 @@ def _existing(wall: datetime, zone: "ZoneInfo") -> datetime:
     return wall.replace(tzinfo=zone)
 
 
-def _day_of(schedule: dict, now: datetime) -> str:
-    """The day `now` falls on, on the schedule's own clock: what its daily limit counts against (F1727)."""
+def day_of(schedule: dict, now: datetime) -> str:
+    """The day `now` falls on, on the schedule's own clock, as YYYY-MM-DD: what its daily limit counts against
+    (F1727). Public, so a host that fires schedules its own way counts the same day."""
     tz = (schedule.get("timezone") or "").strip()
     if tz and tz.upper() != "UTC":
         try:
@@ -424,7 +425,7 @@ class ScheduleManager:
         if beats and not await heartbeat.has_work(s):
             return
         limit = int(s.get("max_runs_per_day") or 0)
-        if limit and not await schedule_store.take_run_slot(schedule_id, _day_of(s, now), limit):
+        if limit and not await schedule_store.take_run_slot(schedule_id, day_of(s, now), limit):
             logger.info("[Scheduler] Schedule '%s' (id=%s) started its %d runs today; next check %s",
                         s.get("name"), schedule_id, limit, s["next_run_at"])
             return

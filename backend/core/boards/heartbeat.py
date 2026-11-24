@@ -75,16 +75,20 @@ async def has_work(schedule: dict[str, Any]) -> bool:
     return await store.has_open_task(await work_board_ids(schedule))
 
 
-async def wake_for(board: store.Board, card: store.Card) -> list[str]:
-    """Bring forward each woken heartbeat that works `board`, after `card` (a task) was added to it. The ids
-    brought forward. A run's own task list and Synapse AI's board are no schedule's work."""
+async def to_wake(board: store.Board, card: store.Card, schedules: list[dict[str, Any]] | None = None, *,
+                  now: datetime | None = None) -> list[dict[str, Any]]:
+    """The heartbeats `card` (a task just added to `board`) should wake: on, waiting for work, woken by a new task,
+    working `board`, and not already due. It only reads: no schedule is moved and no job is armed, so a host that
+    fires schedules its own way wakes each one as it does (`wake_for` is this engine's way). `schedules` are the
+    tenant's, or read from the store when not given. A run's own task list and Synapse AI's board are no schedule's
+    work."""
     from core.store import schedules as schedule_store
 
     if card.kind != "task" or board.scope in ("run", "assistant") or not boards_enabled():
         return []
-    now = datetime.now(timezone.utc)
-    woken: list[str] = []
-    for schedule in await schedule_store.load():
+    now = now or datetime.now(timezone.utc)
+    out: list[dict[str, Any]] = []
+    for schedule in (await schedule_store.load() if schedules is None else schedules):
         if not (schedule.get("enabled") and waits_for_work(schedule)
                 and schedule.get("wake_on_new_task", True) is not False):
             continue
@@ -93,6 +97,18 @@ async def wake_for(board: store.Board, card: store.Card) -> list[str]:
         due = schedule.get("next_run_at")
         if due and datetime.fromisoformat(due.replace("Z", "+00:00")) <= now:
             continue  # already due: the next tick runs it
+        out.append(schedule)
+    return out
+
+
+async def wake_for(board: store.Board, card: store.Card) -> list[str]:
+    """Bring forward each heartbeat `to_wake` names to now, telling the schedule store's save observer. The ids
+    brought forward."""
+    from core.store import schedules as schedule_store
+
+    now = datetime.now(timezone.utc)
+    woken: list[str] = []
+    for schedule in await to_wake(board, card, now=now):
         await schedule_store.bring_forward(schedule, now)
         woken.append(schedule["id"])
     if woken:

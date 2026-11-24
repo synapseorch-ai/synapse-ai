@@ -295,6 +295,69 @@ class TestANewTaskWakesIt:
         assert datetime.fromisoformat(item["next_run_at"].replace("Z", "+00:00")) <= datetime.now(timezone.utc)
 
 
+class TestWhatANewTaskWakesIsOnlyRead:
+    """`to_wake` names the heartbeats a new task should wake and moves none, so a host that fires schedules its own
+    way (and must not go through the save observer) wakes each as it does."""
+
+    async def _support(self, sids):
+        board = await board_store.create_shared_board("Support", by=PERSON)
+        await board_store.set_access(board.id, [("schedule", sid, "work") for sid in sids], by=PERSON)
+        return board
+
+    async def test_it_names_only_a_woken_heartbeat_not_yet_due_and_moves_nothing(self, boards_on):
+        from core.boards import heartbeat
+
+        await _agent()
+        later = datetime.now(timezone.utc) + timedelta(hours=1)
+        await _schedule("sched_tw1")
+        await _schedule("sched_tw2", run_when="always")
+        await _schedule("sched_tw3", wake_on_new_task=False)
+        await _schedule("sched_tw4", enabled=False)
+        await _schedule("sched_tw5")
+        for sid in ("sched_tw1", "sched_tw2", "sched_tw3", "sched_tw4"):
+            await schedule_store.set_next_run(sid, later)
+        await schedule_store.set_next_run("sched_tw5", datetime.now(timezone.utc) - timedelta(minutes=1))
+        board = await self._support(["sched_tw1", "sched_tw2", "sched_tw3", "sched_tw4", "sched_tw5"])
+        card, _ = await board_store.add_card(board.id, title="Refund question", by=PERSON)
+
+        named = await heartbeat.to_wake(board, card)
+
+        assert [s["id"] for s in named] == ["sched_tw1"]
+        assert _when(await schedule_store.get("sched_tw1")) > datetime.now(timezone.utc), "it moved nothing"
+
+    async def test_it_reads_the_schedules_it_is_given(self, boards_on):
+        from core.boards import heartbeat
+
+        await _agent()
+        given = await _schedule("sched_tw6")
+        board = await self._support(["sched_tw6"])
+        card, _ = await board_store.add_card(board.id, title="Refund question", by=PERSON)
+
+        assert await heartbeat.to_wake(board, card, [{**given, "next_run_at": None}]) == [
+            {**given, "next_run_at": None}]
+        assert await heartbeat.to_wake(board, card, []) == []
+
+    async def test_a_note_wakes_nothing(self, boards_on):
+        from core.boards import heartbeat
+
+        await _agent()
+        await _schedule("sched_tw7")
+        board, note = await _task("schedule", "sched_tw7", title="FYI", kind="note")
+
+        assert await heartbeat.to_wake(board, note) == []
+
+
+class TestTheDayIsTheSchedulesOwn:
+    def test_day_of_reads_the_schedules_clock(self):
+        from core.scheduler import day_of
+
+        at = datetime(2026, 11, 3, 4, 30, tzinfo=timezone.utc)
+        assert day_of({"timezone": "America/New_York"}, at) == "2026-11-02"
+        assert day_of({}, at) == "2026-11-03"
+        assert day_of({"timezone": "UTC"}, at) == "2026-11-03"
+        assert day_of({"timezone": "Not/A_Zone"}, at) == "2026-11-03", "a zone it cannot read counts on UTC"
+
+
 class TestADailyLimit:
     async def test_it_starts_at_most_its_limit_in_a_day_then_again_the_next(self, manager, boards_on, monkeypatch):
         import core.scheduler as scheduler
