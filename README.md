@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://synapseorch.com">
-    <img src="https://raw.githubusercontent.com/synapseorch-ai/synapse-ai/master/.github/assets/readme/banner.png" alt="SynapseOrch — AI automation you can read, approve and rely on" width="100%" />
+    <img src="https://raw.githubusercontent.com/synapseorch-ai/synapse-ai/master/.github/assets/readme/banner.png" alt="SynapseOrch: an AI solution for businesses, built to be read, approved and relied on" width="100%" />
   </a>
 </p>
 
@@ -10,14 +10,18 @@
   <a href="https://discord.gg/9UN45qyGh8"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
-**[SynapseOrch](https://synapseorch.com/) builds and runs AI workflows that take a fixed path.** Describe a job in plain words and it shows you a
-plan: the steps, the model for each, what a run should cost, and where a person signs off. Nothing is built until you
-approve it, and every run then follows that path. Models do the work inside the steps; they don't decide which step
-comes next.
+**[SynapseOrch](https://synapseorch.com/) is an AI solution for businesses.** It brings AI agents and automated
+workflows into any part of a business: sales follow-ups, marketing content, client reports, support replies and
+day-to-day operations. Describe the job in plain words and it shows you a plan: the steps, the model for each, what a
+run should cost, and where a person signs off. Nothing is built until you approve it, and every run then follows that
+path.
 
-**It's for** developers and automation builders, working for their own team or for clients, who need an AI workflow
-to behave the same on its fiftieth run as on its first. Self-hosted, any model, AGPL-3.0: no account, no licence
-check, no telemetry.
+**This repository is the open-source engine.** Self-host it with any model, AGPL-3.0: no account, no licence check, no
+telemetry. It's for developers and automation builders who need an AI workflow to behave the same on its fiftieth run
+as on its first.
+
+**Rather have it built for you?** We'll build it for you on [SynapseOrch Cloud](https://synapseorch.com/), free for the
+first month: [book a 20-minute call](https://synapseorch.com/contact/#book).
 
 ## Install
 
