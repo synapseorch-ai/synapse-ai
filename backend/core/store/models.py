@@ -541,6 +541,11 @@ class ScheduleDB(Base):
     definition = Column(JSONType, nullable=False)   # the user-authored fields
     next_run_at = Column(DateTime(timezone=True))
     last_run_at = Column(DateTime(timezone=True))
+    #: Its daily limit's count (F1727): the day it counts on, on the schedule's own clock, and the occurrences it
+    #: started that day. Columns, not `definition`, because a fire bumps them in one UPDATE while an edit through
+    #: the API rewrites `definition`; NULL on a row that never counted.
+    runs_on = Column(String(10))
+    runs_today = Column(Integer)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 

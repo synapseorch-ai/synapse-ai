@@ -2,10 +2,16 @@
 Pydantic models for the Schedules feature.
 """
 from typing import Literal
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 #: The interval, in its unit — cloud's bounds (`api/control/routes/schedules.py`).
 INTERVAL_MIN, INTERVAL_MAX = 1, 10_000
+
+#: When a schedule runs at its time (F1727): `always`, or `has_work` — a heartbeat, which runs only while a board
+#: its run works on holds an open task (`core/boards/heartbeat.py`).
+RUN_WHEN = ("always", "has_work")
+#: The most occurrences a schedule may start in a day; 0 is no limit beyond its timing. One a minute at most.
+MAX_RUNS_PER_DAY = 1440
 
 
 class ScheduleInvalid(ValueError):
@@ -43,6 +49,7 @@ def validate_timing(schedule: dict) -> None:
     """
     if (tz := schedule.get("timezone")) and not _is_timezone(tz):
         raise ScheduleInvalid(f"'{tz}' is not a place's timezone: {TIMEZONE_HINT}.")
+    validate_heartbeat(schedule)
     if schedule.get("schedule_type") == "interval":
         value, unit = schedule.get("interval_value"), schedule.get("interval_unit")
         if value is None or not unit:
@@ -57,6 +64,24 @@ def validate_timing(schedule: dict) -> None:
         compute_next_run(schedule, _utc_now())
     except Exception as exc:  # croniter raises a family of its own errors
         raise ScheduleInvalid(f"That is not a valid cron expression: {exc}") from exc
+
+
+def validate_heartbeat(schedule: dict) -> None:
+    """When it runs and how often a day (F1727). Waiting for work reads boards, so it needs Boards on: with them off
+    the schedule would be saved, listed as on, and never run."""
+    run_when = schedule.get("run_when") or "always"
+    if run_when not in RUN_WHEN:
+        raise ScheduleInvalid("'run_when' is 'always' (run at its time) or 'has_work' (run at its time only while "
+                              "a board it works on has an open task).")
+    cap = schedule.get("max_runs_per_day")
+    if cap is not None and (isinstance(cap, bool) or not isinstance(cap, int) or not 0 <= cap <= MAX_RUNS_PER_DAY):
+        raise ScheduleInvalid(f"'max_runs_per_day' must be a whole number from 0 to {MAX_RUNS_PER_DAY:,} "
+                              "(0 is no limit).")
+    if run_when == "has_work":
+        from core.boards.config import boards_enabled
+        if not boards_enabled():
+            raise ScheduleInvalid("Waiting for work reads its boards, and Boards are off. Turn on Boards in "
+                                  "Settings first, or run it at its time.")
 
 
 class Schedule(BaseModel):
@@ -77,6 +102,12 @@ class Schedule(BaseModel):
     #: The clock its cron is read on, as a name like America/New_York; none is UTC (F948, Naveen 10-23).
     timezone: str | None = None
     missed_run_policy: Literal["run_immediately", "skip"] = "skip"
+    #: `has_work`: a heartbeat, run only while a board it works on holds an open task (F1727).
+    run_when: Literal["always", "has_work"] = "always"
+    #: A heartbeat's next check comes forward to now when a task is added to a board it works on.
+    wake_on_new_task: bool = True
+    #: The most occurrences it starts in a day, on its own clock; 0 is no limit.
+    max_runs_per_day: int = Field(default=0, ge=0, le=MAX_RUNS_PER_DAY)
     # Server-computed state -- never trust client-provided values
     last_run_at: str | None = None
     next_run_at: str | None = None
@@ -98,6 +129,12 @@ class ScheduleCreate(BaseModel):
     #: The clock its cron is read on, as a name like America/New_York; none is UTC (F948, Naveen 10-23).
     timezone: str | None = None
     missed_run_policy: Literal["run_immediately", "skip"] = "skip"
+    #: `has_work`: a heartbeat, run only while a board it works on holds an open task (F1727).
+    run_when: Literal["always", "has_work"] = "always"
+    #: A heartbeat's next check comes forward to now when a task is added to a board it works on.
+    wake_on_new_task: bool = True
+    #: The most occurrences it starts in a day, on its own clock; 0 is no limit.
+    max_runs_per_day: int = Field(default=0, ge=0, le=MAX_RUNS_PER_DAY)
 
 
 class ScheduleUpdate(BaseModel):
@@ -113,3 +150,6 @@ class ScheduleUpdate(BaseModel):
     cron_expression: str | None = None
     timezone: str | None = None
     missed_run_policy: Literal["run_immediately", "skip"] | None = None
+    run_when: Literal["always", "has_work"] | None = None
+    wake_on_new_task: bool | None = None
+    max_runs_per_day: int | None = Field(default=None, ge=0, le=MAX_RUNS_PER_DAY)

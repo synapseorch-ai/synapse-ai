@@ -132,6 +132,17 @@ def _existing(wall: datetime, zone: "ZoneInfo") -> datetime:
     return wall.replace(tzinfo=zone)
 
 
+def _day_of(schedule: dict, now: datetime) -> str:
+    """The day `now` falls on, on the schedule's own clock: what its daily limit counts against (F1727)."""
+    tz = (schedule.get("timezone") or "").strip()
+    if tz and tz.upper() != "UTC":
+        try:
+            return now.astimezone(ZoneInfo(tz)).date().isoformat()
+        except Exception:  # noqa: BLE001 — a zone the save refused never reaches here; UTC if one did
+            pass
+    return now.astimezone(timezone.utc).date().isoformat()
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -202,11 +213,16 @@ class ScheduleManager:
         self._manual_runs: set[asyncio.Task] = set()
         #: When the boards were last swept (monotonic); the first tick sweeps.
         self._boards_swept = float("-inf")
+        #: Heartbeats running now (F1727): one never runs twice at once, so a check due mid-run waits for it.
+        self._beating: set[str] = set()
 
     async def start(self, server_module) -> None:
         """Called from server lifespan. Evaluates overdue schedules and starts the loop."""
         self._server_module = server_module
         self._running = True
+        # A task added to a board wakes the heartbeats that work it (F1727).
+        from core.boards import heartbeat
+        heartbeat.install()
         # Handle any schedules that were overdue while the server was offline
         try:
             await self._on_startup()
@@ -218,6 +234,8 @@ class ScheduleManager:
     async def stop(self) -> None:
         """Called from server lifespan shutdown."""
         self._running = False
+        from core.boards import heartbeat
+        heartbeat.uninstall()
         if self._loop_task and not self._loop_task.done():
             self._loop_task.cancel()
             try:
@@ -391,17 +409,37 @@ class ScheduleManager:
             await self._turn_off(s, gone)
             return
 
+        from core.boards import heartbeat
+        beats = heartbeat.waits_for_work(s)
+        if beats and schedule_id in self._beating:
+            # Still due, untouched: the first tick after this run ends fires it (F1727).
+            return
+
         now = _utc_now()
         next_dt = compute_next_run(s, now)
         await schedule_store.set_next_run(schedule_id, next_dt)
         s["next_run_at"] = _iso(next_dt)
+
+        # A heartbeat with nothing to do passes: no run, no log, no model call (F1727).
+        if beats and not await heartbeat.has_work(s):
+            return
+        limit = int(s.get("max_runs_per_day") or 0)
+        if limit and not await schedule_store.take_run_slot(schedule_id, _day_of(s, now), limit):
+            logger.info("[Scheduler] Schedule '%s' (id=%s) started its %d runs today; next check %s",
+                        s.get("name"), schedule_id, limit, s["next_run_at"])
+            return
 
         logger.info(
             "[Scheduler] Running schedule '%s' (id=%s), next=%s",
             s.get("name"), schedule_id, s["next_run_at"],
         )
 
-        await self._run(s, await self._open_log(s))
+        if beats:
+            self._beating.add(schedule_id)
+        try:
+            await self._run(s, await self._open_log(s))
+        finally:
+            self._beating.discard(schedule_id)
 
         # Record when this occurrence started. One row update — the whole-file
         # rewrite this used to be clobbered any edit made through the API while

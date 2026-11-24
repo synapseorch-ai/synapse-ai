@@ -73,6 +73,9 @@ _ADDITIONS: tuple[tuple[str, str, str, str | None], ...] = (
     ("board_cards", "stage", "VARCHAR(32)", None),
     ("board_cards", "data", "JSON", None),
     ("board_cards", "owner_id", "VARCHAR(255)", None),
+    # A schedule's daily limit (F1727): the day it counts on and the occurrences started that day. NULL is none yet.
+    ("schedules", "runs_on", "VARCHAR(10)", None),
+    ("schedules", "runs_today", "INTEGER", None),
 )
 
 
