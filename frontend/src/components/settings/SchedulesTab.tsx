@@ -50,6 +50,11 @@ interface Schedule {
     /** The clock its cron is read on (F948): the person's own when it is made here; none is UTC. */
     timezone?: string | null;
     missed_run_policy?: 'run_immediately' | 'skip';
+    /** Its Heartbeat (F1729): `has_work` runs at its time only while its board has an open task. */
+    run_when?: 'always' | 'has_work';
+    wake_on_new_task?: boolean;
+    /** The most runs it starts in a day; 0 is no limit. */
+    max_runs_per_day?: number;
     last_run_at?: string | null;
     next_run_at?: string | null;
 }
@@ -90,6 +95,9 @@ function emptyForm(): Form {
         // No picker (Naveen, 10-23): a schedule made here runs on its person's own clock.
         timezone: browserTimezone(),
         missed_run_policy: 'skip',
+        run_when: 'always',
+        wake_on_new_task: true,
+        max_runs_per_day: 0,
     };
 }
 
@@ -183,6 +191,10 @@ export const SchedulesTab = () => {
             // Kept as it is: a schedule saved before F948 stays on UTC until it is made again.
             timezone: s.timezone ?? null,
             missed_run_policy: s.missed_run_policy ?? 'skip',
+            // Sent whole on every save (a PUT replaces): a heartbeat edited here stays one.
+            run_when: s.run_when ?? 'always',
+            wake_on_new_task: s.wake_on_new_task ?? true,
+            max_runs_per_day: s.max_runs_per_day ?? 0,
         });
         // Try to derive cronHour from expression
         if (s.cron_expression) {
@@ -228,6 +240,10 @@ export const SchedulesTab = () => {
         }
         if (form.schedule_type === 'cron' && !form.cron_expression?.trim()) {
             showToast('Cron expression is required', false); return;
+        }
+        const limit = form.max_runs_per_day ?? 0;
+        if (!Number.isInteger(limit) || limit < 0 || limit > 1440) {
+            showToast('Most runs a day is a whole number from 0 to 1,440 (0 is no limit)', false); return;
         }
 
         setSaving(true);
@@ -620,6 +636,52 @@ export const SchedulesTab = () => {
                             </fieldset>
                         </div>
                     )}
+
+                    {/* Its Heartbeat (F1729): run at its time only when its board has work, woken by a new task,
+                        with a daily limit. Waiting for work reads boards, so it needs Boards on. */}
+                    <fieldset data-heartbeat className="m-0 grid gap-3 border-0 p-0">
+                        <legend className="mb-2 text-sm font-medium text-text">Heartbeat</legend>
+                        <div className="flex items-start gap-3">
+                            <Switch
+                                checked={form.run_when === 'has_work'}
+                                onChange={(on) => setForm(f => ({ ...f, run_when: on ? 'has_work' : 'always' }))}
+                                label="Run only when there's work"
+                                disabled={!boardsOn && form.run_when !== 'has_work'}
+                            />
+                            <span>
+                                <span className="block text-[13px] text-text">Run only when there&apos;s work</span>
+                                <span className="block text-xs text-text-faint">
+                                    {boardsOn
+                                        ? 'At each time it checks its board and starts a run only while a task is open, so a quiet day costs nothing.'
+                                        : 'Turn on Boards in Settings to use this: it waits for tasks on its board.'}
+                                </span>
+                            </span>
+                        </div>
+                        {form.run_when === 'has_work' && (
+                            <div className="flex items-start gap-3">
+                                <Switch
+                                    checked={form.wake_on_new_task !== false}
+                                    onChange={(on) => setForm(f => ({ ...f, wake_on_new_task: on }))}
+                                    label="Start when a task is added"
+                                />
+                                <span>
+                                    <span className="block text-[13px] text-text">Start when a task is added</span>
+                                    <span className="block text-xs text-text-faint">A new task starts it within a minute instead of at its next time.</span>
+                                </span>
+                            </div>
+                        )}
+                        <Field label="Most runs a day" hint="0 is no limit">
+                            <Input
+                                id="sched-max-runs"
+                                type="number"
+                                min={0}
+                                max={1440}
+                                value={form.max_runs_per_day ?? 0}
+                                onChange={e => setForm(f => ({ ...f, max_runs_per_day: e.target.value === '' ? 0 : Number(e.target.value) }))}
+                                className="w-28"
+                            />
+                        </Field>
+                    </fieldset>
 
                     <div className="flex items-center gap-3">
                         <span className={label} id="sched-enabled">Enabled</span>

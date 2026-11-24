@@ -15579,6 +15579,49 @@ async def check_workflowboard(browser) -> str:
     return "Board opens the workflow's board in the card, and a person's card lands there"
 
 
+#: A heartbeat (F1729): an interval schedule that runs only while its board has work, woken by a new task, 40 a day.
+_HB_SCHEDULE = {"id": "sch_hb", "name": "Smoke heartbeat", "enabled": False, "created_at": _NOW,
+                "target_type": "agent", "target_id": "agent_x", "prompt": "Work the open tasks", "schedule_type": "interval",
+                "interval_value": 15, "interval_unit": "minutes", "run_when": "has_work", "wake_on_new_task": True,
+                "max_runs_per_day": 40, "next_run_at": _NOW, "last_run_at": None}
+
+
+@check
+async def check_heartbeat(browser) -> str:
+    """A heartbeat schedule (F1729) says "when there's work" on its own line under its time, whole (the chip's width
+    cut it off when it was part of the time), and its drawer's Heartbeat holds what it was saved with: waiting for
+    work, woken by a new task, at most 40 runs a day."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route("**/api/schedules", _answer([_HB_SCHEDULE]))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/schedules", wait_until="domcontentloaded")
+        row = page.locator('[data-schedule-row="sch_hb"]')
+        await row.wait_for(timeout=30_000)
+        await asyncio.sleep(1.0)
+        chip = (await row.locator("[data-schedule-words]:visible").inner_text()).strip()
+        if chip != "Every 15 minutes":
+            raise AssertionError(f"the time's chip says {chip!r}")
+        waits = row.locator("[data-schedule-waits]:visible")
+        said = (await waits.inner_text()).strip()
+        if said != "when there's work":
+            raise AssertionError(f"under the time: {said!r}")
+        if not await waits.evaluate("e => e.scrollWidth <= e.clientWidth + 1"):
+            raise AssertionError("'when there's work' is cut off")
+        await page.get_by_role("button", name="Open Smoke heartbeat").click()
+        dialog = page.get_by_role("dialog")
+        await dialog.get_by_role("heading", name="Edit schedule").wait_for(timeout=10_000)
+        heartbeat = dialog.locator("fieldset[data-heartbeat]")
+        for name in ("Run only when there's work", "Start when a task is added"):
+            if await heartbeat.get_by_role("switch", name=name).get_attribute("aria-checked") != "true":
+                raise AssertionError(f"the drawer's {name!r} is off")
+        if await dialog.locator("#sched-max-runs").input_value() != "40":
+            raise AssertionError("the drawer lost its daily limit")
+    finally:
+        await ctx.close()
+    return "Every 15 minutes, with when there's work whole beneath it; the drawer waits for work, wakes, 40 a day"
+
+
 @check
 async def check_scheduleboard(browser) -> str:
     """A scheduled agent's board in its schedule's drawer (C7), folded until opened (Naveen, 2026-10-16: optional),
