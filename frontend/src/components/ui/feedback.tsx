@@ -81,7 +81,8 @@ export function EmptyState({
           {children}
         </p>
       )}
-      {action && <div className="mt-4 flex justify-center gap-2">{action}</div>}
+      {/* Wraps (F1740): two whole buttons wider than the box ran past it on both sides on a phone. */}
+      {action && <div className="mt-4 flex flex-wrap justify-center gap-2">{action}</div>}
     </div>
   );
 }

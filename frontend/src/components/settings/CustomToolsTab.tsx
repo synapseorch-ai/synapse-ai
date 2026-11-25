@@ -278,7 +278,8 @@ export const CustomToolsTab = ({
                         A tool is one action an agent can take in another system, like “look up an order” or
                         “create an invoice”. Make one, or import an API description to make many at once.
                     </p>
-                    <div className="mt-4 flex justify-center gap-2">{actions}</div>
+                    {/* Wraps (F1740): its two buttons ran past this box on both sides on a phone. */}
+                    <div className="mt-4 flex flex-wrap justify-center gap-2">{actions}</div>
                 </div>
             ) : (
                 /* ── Builder View ────────────────────────────────────────── */
