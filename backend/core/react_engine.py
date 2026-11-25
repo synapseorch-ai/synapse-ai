@@ -343,7 +343,8 @@ def _scan_text(llm_output: str) -> str:
     return strip_reasoning(llm_output or "").replace("```json", "").replace("```", "").strip()
 
 
-def _scan_tool_calls(llm_output: str, *, stop_on_non_tool_json: bool, ends: list[int] | None = None) -> list[dict]:
+def _scan_tool_calls(llm_output: str, *, stop_on_non_tool_json: bool, ends: list[int] | None = None,
+                     offered=None) -> list[dict]:
     """Single source of truth for tool-call extraction.
 
     Strategy (in order):
@@ -371,6 +372,7 @@ def _scan_tool_calls(llm_output: str, *, stop_on_non_tool_json: bool, ends: list
     [REASONING] prose can never produce a false positive.
 
     `ends`, when given, is filled with where each call's JSON ends in `_scan_text(llm_output)`, one per call returned.
+    `offered`, the turn's tools when the caller has them, lets OpenAI's pseudo-format name a bare offered tool (F1745).
     """
     cleaned = _scan_text(llm_output)
     ends = [] if ends is None else ends
@@ -382,7 +384,7 @@ def _scan_tool_calls(llm_output: str, *, stop_on_non_tool_json: bool, ends: list
             obj = json.loads(m.group(1).strip())
         except json.JSONDecodeError:
             continue
-        calls = calls_in(obj)
+        calls = calls_in(obj, offered)
         if calls:
             xml_calls.extend(calls)
             ends.extend([m.end()] * len(calls))
@@ -410,7 +412,7 @@ def _scan_tool_calls(llm_output: str, *, stop_on_non_tool_json: bool, ends: list
             used_end = pos + end_offset
         except json.JSONDecodeError:
             continue
-        calls = calls_in(obj)
+        calls = calls_in(obj, offered)
         if calls:
             if pos > 0 and not tool_calls:
                 preamble = cleaned[:min(pos, 120)].replace("\n", " ")
@@ -441,9 +443,10 @@ def _scan_tool_calls(llm_output: str, *, stop_on_non_tool_json: bool, ends: list
     return tool_calls
 
 
-# `"tool_uses"` and `"recipient_name"`: OpenAI's pseudo-format (F537, `tool_call_shapes`).
-_TOOL_SHAPE_RE = _re.compile(r'<tool_call>|"tool"\s*:|\'tool\'\s*:|"tool_uses"\s*:|"recipient_name"\s*:',
-                             _re.IGNORECASE)
+# `"tool_uses"` and a namespaced `"recipient_name"`: OpenAI's pseudo-format (F537, `tool_call_shapes`). A bare
+# `"recipient_name"` is an answer's field as often as not (F1745), never a sign of a call.
+_TOOL_SHAPE_RE = _re.compile(r'<tool_call>|"tool"\s*:|\'tool\'\s*:|"tool_uses"\s*:|'
+                             r'"recipient_name"\s*:\s*"(?:functions\.|multi_tool_use\.)', _re.IGNORECASE)
 
 
 def looks_like_a_tool_call(text: str) -> bool:
@@ -560,7 +563,7 @@ def _reply_kept(action_text: str, offered, is_browser,
     after it, and one straight before the engine's line (whose own sentence says more), is left to the rest.
     """
     ends: list[int] = []
-    found = _scan_tool_calls(action_text, stop_on_non_tool_json=False, ends=ends)
+    found = _scan_tool_calls(action_text, stop_on_non_tool_json=False, ends=ends, offered=offered)
     calls = [(c, end) for call, end in zip(found, ends) for c in _unwrap_parallel([call], offered)]
     if not calls:
         return None, [], [], None
@@ -1281,6 +1284,7 @@ async def run_agent_step(
     global_variables: dict | None = None, # the tenant's variables, when the caller already holds them
     should_stop=None,                     # async () -> bool; checked between turns, a True ends the step as cancelled
     persist_turn: bool = True,            # False = not a conversation with a person (a delegated hand-off)
+    answer_fields: list[str] | None = None,  # a workflow step's answer fields (F1553), so its answer is never a call
     untrusted_message: bool = False,      # True = `message` carries text nobody typed (an expanded @[file])
     knowledge_turn=None,                  # the root turn's [K#] labels (core.knowledge.citations.KnowledgeTurn); a delegate gets its lead's
     stream_answer: bool = False,          # yield answer_delta / answer_reset while the answer is written (U72)
@@ -3134,6 +3138,15 @@ async def run_agent_step(
                                  "this workspace, before that call's result was back, so nothing after it was kept")
                 _cut_line += (f" and these calls were not made: {_names}." if _names else ".") \
                     + ("\n" if _forged else " Read what it returned, then go on.\n")
+            # An answer that names this step's own fields is its answer (F1745): a "call" to a tool the turn does not
+            # offer, written as an object holding one of them (`{"tool": "hammer", "price": 3}` for fields `tool` and
+            # `price`), is never dispatched, and never asked for again as a call that did not parse.
+            _names_its_answer = bool(answer_fields and tool_calls and all(
+                _offered_name(c.get("tool", ""), tool_schema_map) not in tool_schema_map
+                and ("tool" in answer_fields or any(k in answer_fields for k in (c.get("arguments") or {})))
+                for c in tool_calls))
+            if _names_its_answer:
+                tool_calls = []
             if _answering_from is not None and _answering_from.get("no_tools") and tool_calls:
                 # Offered nothing and told so, it called again: its answer is a sentence in words (SAI2-P4).
                 for _e in _unstream("tool_call"):
@@ -3180,7 +3193,7 @@ async def run_agent_step(
                 # JSON alone, and JSON then words is not one — left alone, a phone call's
                 # workflow agent said `{"city":"Chennai"}` and a forecast it never fetched
                 # (F730).
-                _bare = _opens_with_arguments(action_text, tool_schema_map)
+                _bare = "" if _names_its_answer else _opens_with_arguments(action_text, tool_schema_map)
                 if _workflow_step and _bare == "alone" and not _finish:
                     # A step that finishes with a tool answers only through it (E2): JSON alone is not its answer.
                     _bare = ""
@@ -3194,7 +3207,8 @@ async def run_agent_step(
                 # agent's response. Once: a model that cannot produce valid
                 # JSON twice is not going to on the third attempt, and the
                 # text still reaches the user as the answer below.
-                if ((_bare or looks_like_a_tool_call(action_text)) and _parse_retries < MAX_PARSE_RETRIES
+                if ((_bare or (looks_like_a_tool_call(action_text) and not _names_its_answer))
+                        and _parse_retries < MAX_PARSE_RETRIES
                         and turn + 1 < max_turns):
                     _parse_retries += 1
                     _log.warning(f"⚠️ Response looks like a tool call but did not parse "

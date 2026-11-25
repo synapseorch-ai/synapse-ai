@@ -540,6 +540,8 @@ class AgentStepExecutor:
                 global_variables=getattr(engine, "global_variables", None),
                 # The step's own words, without what its placeholders brought in (V2-CONTRACT "Final buttons").
                 own_words=[re.sub(r"\{\{.*?\}\}", "\n", step.prompt_template or "", flags=re.S)],
+                # Its answer's fields (F1553): an answer naming them is the answer, never read as a call (F1745).
+                answer_fields=list(_answer.names(fields)) or None,
                 # Kept sessions picked for this step and for the run (F1140); the agent's own join them in the engine.
                 browser_picks={"step": list(step.browser_sessions or []),
                                "run": list(run.shared_state.get("_browser_sessions") or []),
