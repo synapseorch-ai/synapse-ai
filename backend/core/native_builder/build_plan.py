@@ -3672,12 +3672,36 @@ FORM_TOOL_SAID = (f"`{FORM_TOOL}` is an agent's way to ask for fields in a chat,
                   "someone fills it in")
 #: A request for a form: "on a form", "fills in a form", "a form where…" — never "in the form of".
 _FORM_ASKED = re.compile(r"\bforms?\b(?!\s+of\b)", re.I)
+#: A form that lives somewhere else, by the words around it (F1737): told to start from a form there, a planner that
+#: complies puts a person's form in front of a workflow items arrive at, and every run waits for someone to fill it
+#: in. Right before the word, with nothing between, where it is: a contact, website or Google form, "the website's
+#: form", "our X form", "their form", tax or PDF forms. Only adjacent: "give our new hires a form" still asks for one.
+_FORM_ELSEWHERE_BEFORE = re.compile(
+    r"(?:\b(?:contact|website|web|site|google|microsoft|ms|their|tax|pdf)(?:['\u2019]s)?|\bour\s+\w+)[\s-]+$", re.I)
+#: After it, what arrives from it (enquiries, submissions, responses, entries, data), the form as the one that acts
+#: ("the form sends…"), a document someone gives ("forms I upload"), and a form letter.
+_FORM_ELSEWHERE_AFTER = re.compile(
+    r"^(?:[\s-]+(?:enquir(?:y|ies)|inquir(?:y|ies)|submissions?|responses?|entries|data|letters?)\b"
+    r"|\s+(?:sends?|posts?|emails?)\b|\s+(?:that\s+)?(?:i|we)\s+(?:upload|attach|send)\b)", re.I)
+
+
+def form_asked(words: str) -> bool:
+    """Whether the request asks for a form this workflow shows: the word, as F1616 reads it, at least once where the
+    words around it don't say the form is somewhere else (F1737). A missed nudge costs little; a wrong one can put a
+    person's form in front of a workflow that never needed one."""
+    return any(not (_FORM_ELSEWHERE_BEFORE.search(words[:m.start()])
+                    or _FORM_ELSEWHERE_AFTER.match(words[m.end():]))
+               for m in _FORM_ASKED.finditer(words))
 
 
 def form_not_first(plan: O.Plan, state: dict) -> O.Step | None:
     """The step a new workflow starts with when the person asked for a form and that step is no form (F1616): a
-    `human` step first is the form the card says it starts from (`render.start_words`). None otherwise."""
-    if plan.kind != "create" or plan.schedule is not None or not _FORM_ASKED.search(_request_words(state)):
+    `human` step first is the form the card says it starts from (`render.start_words`). None otherwise, and none
+    where the plan has said it cannot start the way they asked, and why (F1645): its card says that instead."""
+    if plan.kind != "create" or plan.schedule is not None or not form_asked(_request_words(state)):
+        return None
+    started = getattr(plan, "asked_start", None)
+    if started is not None and started.made == "cannot" and (started.why_not or "").strip():
         return None
     first = next((s for s in plan.steps if s.type != "end"), None)
     return first if first is not None and first.type != "human" else None
