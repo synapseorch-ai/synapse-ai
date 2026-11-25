@@ -37,6 +37,38 @@ async def card(key: str) -> store.Card | None:
     return await store._card_by_key(found.id, key)
 
 
+#: How a body cut to fit its card ends (F1750): the whole plan stays in the card's data and in the conversation.
+CUT_LINE = "… The whole plan is in this conversation with Synapse AI."
+_FENCE = "```"
+
+
+def _outside_fences(text: str) -> str:
+    """`text` without what its closed ``` fences hold, where a `**` is code, not bold."""
+    parts = text.split(_FENCE)
+    return "".join(parts[0::2])
+
+
+def fitted_body(body: str, limit: int = store.BODY_MAX) -> str:
+    """A card body that fits (F1750): one over `limit` is cut at its last section, paragraph or line break (a space
+    when it has none), never inside an unclosed `**`, a fence it cuts into closed, and `CUT_LINE` after it, all within
+    `limit`. A board refuses a longer body, and the build's whole card went unwritten, its plan in `data` with it."""
+    text = (body or "").strip()
+    if len(text) <= limit:
+        return body
+    head = text[:limit - len(CUT_LINE) - len("\n" + _FENCE) - 2]
+    for sep in ("\n## ", "\n\n", "\n", " "):
+        at = head.rfind(sep)
+        if at > len(head) // 2:
+            head = head[:at]
+            break
+    head = head.rstrip()
+    if _outside_fences(head).count("**") % 2:
+        head = head[:head.rfind("**")].rstrip()  # never an opened bold left open
+    if head.count(_FENCE) % 2:
+        head += "\n" + _FENCE  # a fence the cut landed in, closed
+    return f"{head}\n\n{CUT_LINE}"
+
+
 async def put(key: str, *, title: str, stage: str, owner_id: str | None, body: str = "",
               data: dict[str, Any] | None = None, run_id: str = "") -> store.Card:
     """Make the card of build or change `key`, or bring it to `stage` with this title, body and data.
@@ -46,6 +78,7 @@ async def put(key: str, *, title: str, stage: str, owner_id: str | None, body: s
     """
     if stage not in store.STAGES:
         raise store.BadValue(f"A card's stage is one of {', '.join(store.STAGES)}.")
+    body = fitted_body(body)
     actor = store.Actor(**{**ACTOR.to_json(), "run": run_id}) if run_id else ACTOR
     home = await board()
     current = await store._card_by_key(home.id, key)

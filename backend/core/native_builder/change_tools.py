@@ -2637,6 +2637,10 @@ def _routed(intent: str, **facts: str) -> None:
         run.shared_state.update(intent=intent, **facts)
 
 
+#: What the review says when its change's card could not be kept on the person's board (F1750).
+CHANGE_NOT_KEPT = "This change's record on your board couldn't be saved; the change itself is unaffected."
+
+
 async def _card(checked: dict, *, stage: str, data: dict | None = None, title: str = "") -> None:
     """Keep this change on Synapse AI's board, as its person's card (F776): a failure to write it never stops the
     change itself."""
@@ -2652,6 +2656,8 @@ async def _card(checked: dict, *, stage: str, data: dict | None = None, title: s
                             body=checked.get("review") or "", data=data or {"change": checked}, run_id=run_id)
     except Exception as exc:  # noqa: BLE001 — the board is the record, not the change
         _log.warning("change card for run %s not written: %s", run_id, exc)
+        # Said to the person too (F1750), never stopping the change.
+        checked["say"] = " ".join(p for p in (checked.get("say") or "", CHANGE_NOT_KEPT) if p)
 
 
 for _schema, _handler in ((SUBMIT, submit_change), (ASK, ask_person), (CANNOT, cannot), (SAY, say)):

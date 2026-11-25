@@ -3946,6 +3946,10 @@ async def _connect_first(base: dict, plan: O.Plan, waiting: list[O.McpServerPart
     return out
 
 
+#: What the review says when its build's card could not be kept on the person's board (F1750).
+NOT_KEPT = "This build's record on your board couldn't be saved; the build itself is unaffected."
+
+
 async def _card(checked: dict) -> None:
     """Keep this build on Synapse AI's board, as its person's card (F776), waiting for them; a failure to write it
     never stops the build itself."""
@@ -3962,6 +3966,8 @@ async def _card(checked: dict) -> None:
                             data={"plan": {k: v for k, v in checked.items() if k != "review"}}, run_id=run_id)
     except Exception as exc:  # noqa: BLE001 — the board is the record, not the build
         _log.warning("build card for run %s not written: %s", run_id, exc)
+        # Said to the person too (F1750), never stopping the build: a record lost without a word is lost twice.
+        checked["say"] = " ".join(p for p in (checked.get("say") or "", NOT_KEPT) if p)
 
 
 # ── a review answer that is not a yes ─────────────────────────────────────────────────────────────────────────────
