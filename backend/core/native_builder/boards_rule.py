@@ -10,6 +10,8 @@ from one step to the next is the step's output, and a known list is a Loop or a 
   and a step's results handed to the next through a board, are sent back with what to do instead.
 * `with_board_lines`: each new agent with board tools gets a section code writes from those tools, after the
   instructions the writer wrote; it is on the card the person approves, and it is what is saved.
+* `with_tools` (F1738): the run gives a board agent the board tools from its workflow's access, whatever its list
+  says; where the planner left them out, code names them, so the card and the saved instructions say what it has.
 * `settle` and `give_line` (F1736): a plan that names several boards keeps them. Each one already here is the
   person's to give (`yours`): the build makes at most one board itself and gives the rest nothing, and the card says
   which boards to open on the Boards screen and what to add there.
@@ -161,3 +163,47 @@ def give_line(plan: O.PlanDraft) -> list[str]:
     return [f"It works the shared board{'' if one else 's'} {listed(yours)}, which {'is' if one else 'are'} already "
             f"here. Give it access{'' if one else ' to each'} on the Boards screen: open the board and, under "
             f"\"{ACCESS_LIST}\", add \"{plan.title}\" with \"{access}\". Until then, its agents can't post there."]
+
+
+# ── the board tools a board agent has (F1738) ───────────────────────────────────────────────────────────────────────
+#: A board in this sense, or a task card: never a board meeting, the board of directors or its members, and never a
+#: card of another kind (a customer's card, a thank-you, business or gift card), whose agent has no board work.
+_WORKS_BOARD = re.compile(
+    r"\bboards?\b(?!\s+(?:meetings?|of\s+directors|members?|room)\b)|\btask\s+cards?\b", re.I)
+
+
+def _names_a_board(words: str, name: str) -> bool:
+    """The board's name as it is written (so a board called Sales is not "the sales follow-up"), or in a board's
+    shape: '"Sales"', 'Sales board', 'board "Sales"'."""
+    n = re.escape(name)
+    quote = "[\"'\u201c\u201d\u2018\u2019]"
+    return bool(re.search(rf"(?<!\w){n}(?!\w)", words) or re.search(
+        rf"{quote}{n}{quote}|(?<!\w){n}\s+board\b|\bboard\s+{quote}?{n}(?!\w)", words, re.I))
+
+
+def with_tools(plan: O.PlanDraft, boards_on: bool) -> bool:
+    """Name the board tools in each new agent that works the plan's board and has none in its list, as the run will
+    give them: `board_add` where a board is the person's to give (they choose its access, and the card asks for "Add
+    cards"), and all five where the build gives or makes it. An agent works it where its step's words say board or
+    card in a board's sense or name one of the plan's boards, or where it has the plan's only agent step; one doing
+    something else is left as it is. An agent the planner gave a board tool keeps its list as written, and nothing is
+    named while Boards are off or the plan names no board. Whether any agent was given them."""
+    from core.boards import TOOL_NAMES
+
+    if not boards_on or not plan.boards:
+        return False
+    names = ("board_add",) if any(b.yours for b in plan.boards) else TOOL_NAMES
+    steps = [s for s in plan.steps if s.type == "agent" and s.agent]
+    given = False
+    for agent in plan.agents:
+        if set(agent.tools) & set(TOOL_NAMES):
+            continue
+        own = [s for s in steps if s.agent == agent.name]
+        if not own:
+            continue
+        words = [" ".join([s.name, s.does, s.prompt or ""]) for s in own]
+        if len(steps) == 1 or any(_WORKS_BOARD.search(w) or any(_names_a_board(w, b.name) for b in plan.boards)
+                                  for w in words):
+            agent.tools = [*agent.tools, *names]
+            given = True
+    return given

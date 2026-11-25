@@ -1111,8 +1111,10 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         # A step no step leads to in the workflow as it is now is not this change's to fix (SAI2's review, 23).
         before, _ = O.check_structure(base, ws.inventory())
         errors = [e for e in errors if not ("no step leads to it" in e and e in before)]
-    # The boards it names, as they are here, before the rules count them (F1736).
+    # The boards it names, as they are here, before the rules count them (F1736), and the board tools of the agents
+    # that work them, before the card says what each agent has (F1738).
     boards_rule.settle(plan, ws.shared_boards)
+    boards_rule.with_tools(plan, ws.boards_on)
     answer_notes: list[str] = []
     errors += copy_errors + await _rules(plan, ws, state, answer_notes) + asked
     # A part of the ask the plan leaves out is said with why, never dropped (F1515, eb's QA B13).
@@ -3193,6 +3195,16 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     if not plan.boards and len(mentioned) == 1:
         plan.boards = [O.BoardPart(name=mentioned[0])]
         boards_rule.settle(plan, ws.shared_boards)
+    if boards_rule.with_tools(plan, ws.boards_on):
+        # A board found only here gives its agents their board tools now: the card's words are said again from them.
+        from core.native_builder import parts_words
+
+        try:
+            plan.step_words, plan.part_words, plan.off = parts_words.describe(
+                plan, titles=await parts_words.tool_titles(server_module), agents=ws.agents,
+                kb_names=await parts_words.kb_names())
+        except Exception as exc:  # noqa: BLE001 — words it cannot read leave the card as it was (as `O.fill` does)
+            _log.warning("the plan's parts were not said again: %s", exc)
     board_notes = [f'Its cards go on the shared board "{b.name}" (on the Boards screen)'
                    + (", which this workflow is given to work" if b.existing else ", made with it, for it to work")
                    + ". Its new agents post there; an agent already here posts there when its instructions name it."

@@ -157,7 +157,8 @@ def _tools_words(a: AgentParts, titles: dict[str, str]) -> str:
         return "with every tool here"
     if not own:
         return ""
-    return "with tools: " + "; ".join(titles.get(t) or title_of(t) for t in own)
+    # Each title once: the four board tools that read and update share one (F1738).
+    return "with tools: " + "; ".join(dict.fromkeys(titles.get(t) or title_of(t) for t in own))
 
 
 def switches(a: AgentParts) -> list[str]:
