@@ -5,8 +5,9 @@ An MCP server sends a tool's list as one content part per item, and an empty lis
 path read `result.content[0].text` unguarded: a tool that returned [] gave the agent "list index out of range", and
 in cap-03 both rounds' agents read that as "the queue is empty"; a list of three gave it the first item only, and a
 part with no text (an image) broke the call. The Tool step path guarded the empty case (steps.py) but read only the
-first part too. Both now read a result one way (`tool_result.mcp_text`): no content is "", one part its text, several
-the list the tool returned (each part JSON) or their texts one per line, and a part with no text is left out.
+first part too. Both now read a result one way (`tool_result.mcp_text`): no content is its structured content or "",
+one part its text, several the list the tool returned (each part JSON) or their texts one per line, and a part with
+no text is named.
 """
 from __future__ import annotations
 
@@ -87,9 +88,9 @@ class TestTheAgent:
         saw = await _agent_saw(monkeypatch, fake_llm, [_text(t) for t in ITEMS])
         assert all(order in saw for order in ("A1", "B2", "C3")), saw
 
-    async def test_a_part_with_no_text_is_left_out_and_the_rest_read(self, monkeypatch, fake_llm, client):
+    async def test_a_part_with_no_text_is_named_and_the_rest_read(self, monkeypatch, fake_llm, client):
         saw = await _agent_saw(monkeypatch, fake_llm, [IMAGE, _text("2 orders are waiting")])
-        assert "2 orders are waiting" in saw and "has no attribute" not in saw, saw
+        assert "2 orders are waiting" in saw and "image/png" in saw and "has no attribute" not in saw, saw
 
 
 class TestAToolStep:
@@ -102,8 +103,9 @@ class TestAToolStep:
     async def test_parts_that_are_not_json_are_one_per_line(self, monkeypatch, client):
         assert await _step_read(monkeypatch, [_text("first"), _text("second")]) == "first\nsecond"
 
-    async def test_a_part_with_no_text_is_left_out(self, monkeypatch, client):
-        assert await _step_read(monkeypatch, [IMAGE, _text("2 orders are waiting")]) == "2 orders are waiting"
+    async def test_a_part_with_no_text_is_named(self, monkeypatch, client):
+        assert await _step_read(monkeypatch, [IMAGE, _text("2 orders are waiting")]) == (
+            "[image (image/png) not shown]\n2 orders are waiting")
 
     @pytest.mark.parametrize("one", ['{"order": "A1"}', "plain words"])
     async def test_one_part_is_its_text_as_before(self, monkeypatch, client, one):
