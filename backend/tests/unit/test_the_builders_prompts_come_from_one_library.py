@@ -223,7 +223,9 @@ from core.native_builder import prompt_lint, seed
 #: (scrape_structured: data; extract_links: links), never the answer itself, f2fb27f2… (on b40af047).
 #: F1728: the planner's rules 5 and 18 name a schedule's run_when has_work (a heartbeat), its wake and its daily
 #: limit, 91652a57… (on f2fb27f2).
-BUNDLE_SHA256 = "91652a57d37da82b3969365202e47958026be497999226257fce6a7c385a93d6"
+#: F1743: plan_steps.md's tool bullet says a step that sends what a human step approved sets every input in
+#: `config.tool_arguments` from what that step showed, never left to a model, 085f2013… (on F1728's 91652a57).
+BUNDLE_SHA256 = "085f2013affa6eea147bcb23e23f68d9efc4a84d81c9f4cb80c919720b5f0dcd"
 
 
 def _sha(definitions) -> str:

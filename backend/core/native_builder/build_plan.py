@@ -31,7 +31,7 @@ from core.builder_registry import register_builder_tool
 from core.log import get_logger
 from core import feature_census
 from core.native_builder import boards_rule, charts, imitation, objects as O, one_writer, own_api, periods
-from core.native_builder import schedule_clock
+from core.native_builder import approved_sends, schedule_clock
 from core.native_builder.change_tools import _caller, _run
 from core.product_tools.approved import PLACEHOLDER
 
@@ -1117,6 +1117,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     boards_rule.with_tools(plan, ws.boards_on)
     answer_notes: list[str] = []
     errors += copy_errors + await _rules(plan, ws, state, answer_notes) + asked
+    # A send after an approval sets its inputs from what the approval showed (F1743): sent back once, then said.
+    errors += await approved_sends.issues(plan, ws, state, server_module, answer_notes)
     # A part of the ask the plan leaves out is said with why, never dropped (F1515, eb's QA B13).
     errors += [f"asked: '{a.part}' is not_done with no why_not: say why this plan does not do it, or plan it"
                for a in plan.asked if a.how == "not_done" and not (a.why_not or "").strip()]
