@@ -179,7 +179,43 @@ This repository is public, and everything committed to it stays in its history.
 - **No production data**: no real ids, logs, transcripts, email addresses, or anything a user wrote. Tests use made-up data: an invented company, `example.com`, an id that is obviously fake.
 - **A commit message says what changed and why**, and how it was tested.
 
+## Contributor License Agreement
+
+Before we can merge your first pull request, we ask you to sign our [Contributor License Agreement](CLA.md) (CLA).
+It takes one comment, once.
+
+**What it says, in plain words.** The [CLA](CLA.md) is the binding text; this is a summary of it.
+
+- **You keep your copyright.** The code stays yours.
+- **You give us a licence to use it.** That includes the right to use it, change it and release it under other
+  licences. This engine is open source under the AGPL-3.0. We also run **SynapseOrch Cloud**, a hosted product that
+  is not open source, on the same engine. The CLA lets us use your contribution there as well as here.
+- **We promise it stays open.** Whatever you contribute to a release stays available under an open-source licence for
+  as long as we ship that release.
+- **A patent licence too,** for any patents of yours that your contribution needs. This is standard; it protects
+  everyone who uses the engine.
+- **You confirm it's yours to give.** You wrote it, or you say clearly where it came from. If your employer owns what
+  you write, they're OK with it.
+- **No warranty.** You don't owe anyone support for it.
+
+**How to sign.** When you open your first pull request, the CLA bot comments with a link to the CLA. Reply on the pull
+request with:
+
+```
+I have read the CLA Document and I hereby sign the CLA
+```
+
+The bot records your GitHub username and the time, and your later pull requests pass the check without asking again.
+
+**If you can't sign** (your employer won't allow it, for example), say so on the pull request or open an issue before
+you start, and we'll talk it through. We can't merge a contribution without it.
+
+**Small fixes count too.** A typo fix is a contribution, so the bot asks for it as well. Signing once covers all your
+future pull requests.
+
 ## PR Checklist
+
+- [ ] The CLA is signed (the bot's check on the pull request is green)
 
 - [ ] No secrets or API keys committed (`backend/var/` is a running install's data and is never committed)
 - [ ] Comments, tests and commit messages name no person, customer or team, and carry no production data
