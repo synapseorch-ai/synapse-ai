@@ -1178,8 +1178,16 @@ class ToolStepExecutor:
         # A person's answer to a pause this step made: the call they allowed is
         # the one that runs — the model is not asked again, it might ask for
         # something else — and a refusal fails the step with their reason.
+        from . import grounded
+
         _answered = (run.step_progress.get(step.id) or {}).get("pending_call")
+        # A guard pause's record (F1743): what it named and what a person declined.
+        _guard = (run.step_progress.get(step.id) or {}).get(grounded.GUARD_KEY)
         _replay: dict | None = None
+        # A person declined a call the guard stopped and wrote the right address in their reason: one attempt with
+        # their words, and its call is shown to them again before anything goes out.
+        _correction: dict | None = None
+        _declined: set[str] = set()
         if _answered:
             run.step_progress.pop(step.id, None)
             # Spent before the call runs, and saved: a crash mid-call must not
@@ -1190,11 +1198,18 @@ class ToolStepExecutor:
                 _log.warning(f"tool-approval checkpoint failed: {ckpt_err}")
             if not _answered.get("approved"):
                 reason = _answered.get("reason") or ""
-                message = (f"Tool step '{step.name}' did not run '{tool_name}': a person refused it"
-                           + (f": {reason}" if reason else ""))
-                yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
-                raise RuntimeError(message)
-            _replay = {"tool": tool_name, "arguments": _answered.get("arguments") or {}}
+                if isinstance(_guard, dict):
+                    # A no is never a source again: every address in the declined call, and those declined before.
+                    _declined = grounded.declined_keys(_answered.get("arguments") or {}, _guard.get("declined") or [])
+                    if grounded.correction(reason, _declined):
+                        _correction = {"arguments": _answered.get("arguments") or {}, "reason": reason}
+                if _correction is None:
+                    message = (f"Tool step '{step.name}' did not run '{tool_name}': a person refused it"
+                               + (f": {reason}" if reason else ""))
+                    yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
+                    raise RuntimeError(message)
+            else:
+                _replay = {"tool": tool_name, "arguments": _answered.get("arguments") or {}}
         elif _decision == "deny":
             # Refused before the model is asked for arguments.
             message = (f"Tool step '{step.name}' did not run '{tool_name}': the tool policy blocks it "
@@ -1235,6 +1250,10 @@ class ToolStepExecutor:
         }
 
         max_turns = max(1, step.max_turns or 3)
+        if _correction is not None:
+            # One attempt with the person's words: its call is shown to them, never retried on its own.
+            max_turns = 1
+            tool_prompt += "\n\n" + grounded.correction_prompt(_correction["arguments"], _correction["reason"])
         last_error = None
         final_response = None
         unavailable: ToolUnavailable | None = None  # its tool isn't available now: said in its own words (F1349)
@@ -1252,6 +1271,9 @@ class ToolStepExecutor:
         else:
             _h = tool_hints(tool_obj)
             _repeatable = not _h.declared or _h.read_only or _h.idempotent
+        # A link a tool that only reads is given is where it reads, not where anything goes (F1743).
+        _reads_only = grounded.reads_only(tool_obj, _own)
+        _held: set[str] | None = None  # what the run holds, read once and only when a call names an address
 
         for turn in range(max_turns):
             attempts = turn + 1
@@ -1335,7 +1357,32 @@ class ToolStepExecutor:
             called_tool = tool_obj.name
             last_tool_args = tool_args
 
-            if _decision == "confirm" and not _replaying:
+            # What a model wrote (F1743): never set arguments (rendered from state, held when the plan is built), never
+            # an approved call (the call the person saw).
+            _ask_words: str | None = None
+            _guarding: dict | None = None
+            if not _replaying and _set_args is None:
+                _misfit = grounded.misfits(called_tool, tool_obj.inputSchema, tool_args)
+                if _misfit:
+                    # Before the call: the model is told, within its attempts, and nothing reaches the tool.
+                    last_error = "; ".join(_misfit) + ". Nothing was sent."
+                    continue
+                _values = grounded.values_in(tool_args, tool_obj.inputSchema, reads_only=_reads_only)
+                if _values and _held is None:
+                    _held = grounded.held(run.shared_state, prompt,
+                                          extra=[_correction["reason"]] if _correction is not None else [])
+                _missing = grounded.unseen(_values, _held or set(), _declined)
+                if _missing or _correction is not None:
+                    # Stopped and asked: an address the run does not hold is never sent or tried again, and a
+                    # corrected call is always seen before it goes out. Said with the policy's own ask when it asks.
+                    _ask_words = grounded.card(called_tool, _missing, corrected=_correction is not None,
+                                               policy_words=(approval_prompt(called_tool, _category)
+                                                             if _decision == "confirm" else ""))
+                    _guarding = {"named": [v.said for v in _missing], "declined": sorted(_declined)}
+            if _ask_words is None and _decision == "confirm" and not _replaying:
+                _ask_words = approval_prompt(called_tool, _category)
+
+            if _ask_words is not None:
                 # Held for a person, exactly as an Agent step's gated call is: the
                 # run pauses here with the call, and the resume re-enters this
                 # step with the answer (`OrchestrationEngine._resume_tool_approval`).
@@ -1345,6 +1392,10 @@ class ToolStepExecutor:
                     "approval_id": approval_id, "tool_name": called_tool,
                     "tool_args": tool_args, "category": _category,
                 }
+                if _guarding is not None:
+                    progress[grounded.GUARD_KEY] = _guarding
+                else:
+                    progress.pop(grounded.GUARD_KEY, None)
                 run.step_progress[step.id] = progress
                 try:
                     await SharedState(run).checkpoint(columns=("step_progress",))
@@ -1352,7 +1403,7 @@ class ToolStepExecutor:
                     _log.warning(f"tool-approval checkpoint failed: {ckpt_err}")
                 yield {
                     "type": "human_input_required", "kind": "tool_approval",
-                    "prompt": approval_prompt(called_tool, _category),
+                    "prompt": _ask_words,
                     "tool_name": called_tool, "tool_args": tool_args, "category": _category,
                     "approval_id": approval_id,
                     "fields": [

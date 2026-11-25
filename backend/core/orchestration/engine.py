@@ -1223,6 +1223,7 @@ class OrchestrationEngine:
         run.shared_state.pop(HUMAN_CHANNEL_KEY, None)
         # Nor on a question (F288): one already answered is not left for a later
         # read to show. A pause after this records its own.
+        _shown = (run.human_prompt, run.human_fields)  # a Human step's card, kept below as its values (F1743)
         run.human_prompt = None
         run.human_fields = []
         self.global_variables = await self._load_global_variables()
@@ -1275,6 +1276,11 @@ class OrchestrationEngine:
             output_key = (asker.output_key if asker else None) or "human_response"
             human_response = self._as_answered(human_response, asker)
             run.shared_state[output_key] = human_response
+            # What its card showed is the run's to send (F1743): its addresses only, by the step, for a Tool step's
+            # model to be held to. Never a tool approval's card, which names what the guard stopped.
+            from .grounded import record_shown
+
+            record_shown(run.shared_state, asker_id, *_shown)
             # Always keep "human_response" as well so evaluators that check it still work.
             if output_key != "human_response":
                 run.shared_state["human_response"] = human_response
