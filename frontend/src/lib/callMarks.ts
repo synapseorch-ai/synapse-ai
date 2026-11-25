@@ -27,3 +27,12 @@ export function callNote(call: MarkedCall): string | null {
 export function tallyOf(calls: MarkedCall[]): { notRun: number; failed: number } {
   return { notRun: calls.filter(c => c.refused).length, failed: calls.filter(c => c.failed && !c.refused).length };
 }
+
+/**
+ * What the chip shows under a call as its result: what a call that ran returned. Nothing for a failed call: its
+ * result is the observation its agent was told ("…tell the person it failed"), an instruction to the agent, and the
+ * note beside it already says why (F1751).
+ */
+export function shownResult(call: MarkedCall): string {
+  return call.failed && !call.refused ? '' : (call.result ?? '');
+}

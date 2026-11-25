@@ -5,8 +5,11 @@ its reason, on its `tool_result` event and on the call its turn saves. The chip 
 sat in "Tools used" like one that worked, under an answer that may say it was sent. Now the chip's label counts the
 failed calls and each one says "failed — <why>", live (from its event) and reopened (from its saved call).
 
-Near misses read as before: a call that ran reads with no word beside it, a refused call says "not run", and an event
-with neither mark adds neither.
+A failed call's detail shows its arguments and that note, never the observation the agent was given ("…tell the person
+it failed, and never say it was sent or done"): that is an instruction to the agent, not words for the person.
+
+Near misses read as before: a call that ran reads with no word beside it and shows its result, a refused call says "not
+run", and an event with neither mark adds neither.
 """
 from __future__ import annotations
 
@@ -62,6 +65,9 @@ class TestAFailedCall:
     def test_the_chip_says_failed_beside_it(self, marks):
         assert marks(f"M.callNote({json.dumps(FAILED)})") == "failed — HTTP 405: Example Domain"
 
+    def test_its_detail_never_shows_what_the_agent_was_told(self, marks):
+        assert marks(f"M.shownResult({json.dumps(FAILED)})") == ""
+
     def test_the_chips_label_counts_it(self, marks):
         assert marks(f"M.tallyOf({json.dumps([FAILED, RAN, REFUSED])})") == {"notRun": 1, "failed": 1}
 
@@ -69,6 +75,9 @@ class TestAFailedCall:
 class TestNearMisses:
     def test_a_call_that_ran_has_no_word(self, marks):
         assert marks(f"M.callNote({json.dumps(RAN)})") is None
+
+    def test_a_call_that_ran_shows_its_result(self, marks):
+        assert marks(f"M.shownResult({json.dumps(RAN)})") == '{"count": 12}'
 
     def test_a_refused_call_says_not_run(self, marks):
         assert marks(f"M.callNote({json.dumps(REFUSED)})") == "not run — the person refused it"

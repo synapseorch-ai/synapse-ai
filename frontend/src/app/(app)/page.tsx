@@ -44,7 +44,7 @@ import {
 import { readWithStallTimeout } from '@/lib/sse';
 import { formatRelativeTime } from '@/lib/relativeTime';
 import { refusedAnswerMessage } from '@/lib/answers';
-import { callNote, resultOf, tallyOf } from '@/lib/callMarks';
+import { callNote, resultOf, shownResult, tallyOf } from '@/lib/callMarks';
 import { useModelSetup } from '@/components/onboarding/ModelSetupProvider';
 import { KnowledgeCitation, Message, OrchMsgType, SystemStatus } from '@/types';
 import { KnowledgeSources, linkLabels } from '@/components/knowledge/KnowledgeSources';
@@ -388,9 +388,9 @@ function ToolsUsed({ calls }: { calls: SavedCall[] }) {
                     shot={call.browser.shot_ref ? OSS_BROWSER_HOST.shotUrl(call.browser.session_id, call.browser.shot_ref) : null}
                   />
                 ) : args && <div className="truncate font-code text-2xs text-text-faint" title={args}>{args}</div>}
-                {call.result && (
+                {shownResult(call) && (
                   <div className="line-clamp-2 whitespace-pre-wrap break-words text-2xs text-text-faint">
-                    {call.result.slice(0, 300)}
+                    {shownResult(call).slice(0, 300)}
                   </div>
                 )}
               </li>
