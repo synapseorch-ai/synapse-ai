@@ -622,8 +622,10 @@ def compile_plan(plan: Plan, *, existing_agents: dict[str, dict] | None = None,
             validate_timing(ScheduleCreate.model_validate(schedule).model_dump())
         except (ScheduleInvalid, ValueError) as e:
             issues.append(f"The schedule cannot run: {e}")
+    # A board the person gives access to (F1736) is theirs to give: the build neither makes it nor gives it.
     boards = [{"name": b.name, "description": b.purpose, "existing": b.existing,
-               "access": [{"kind": "workflow", "id": orch_id, "access": "work"}]} for b in plan.boards]
+               "access": [{"kind": "workflow", "id": orch_id, "access": "work"}]}
+              for b in plan.boards if not b.yours]
     knowledge = [{"name": p.name, "description": p.purpose, "existing": p.existing, "id": kb_ids[p.name],
                   "files": [f for f in dict.fromkeys(f.strip().lstrip("/") for f in p.files if f.strip())
                             if f not in p.files_missing],

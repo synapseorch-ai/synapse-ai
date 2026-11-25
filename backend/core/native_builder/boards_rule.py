@@ -10,8 +10,13 @@ from one step to the next is the step's output, and a known list is a Loop or a 
   and a step's results handed to the next through a board, are sent back with what to do instead.
 * `with_board_lines`: each new agent with board tools gets a section code writes from those tools, after the
   instructions the writer wrote; it is on the card the person approves, and it is what is saved.
+* `settle` and `give_line` (F1736): a plan that names several boards keeps them. Each one already here is the
+  person's to give (`yours`): the build makes at most one board itself and gives the rest nothing, and the card says
+  which boards to open on the Boards screen and what to add there.
 """
 from __future__ import annotations
+
+import re
 
 from core.native_builder import objects as O
 
@@ -97,6 +102,62 @@ def board_lines(agent_tools: set[str], board: str) -> str:
 def with_board_lines(plan: O.PlanDraft, prompts: dict[str, str]) -> dict[str, str]:
     """Each new agent's instructions, with its board section after them when it has board tools."""
     tools = _board_tools(plan)
-    board = f'the board "{plan.boards[0].name}"' if plan.boards else "this workflow's own board"
+    names = [b.name for b in plan.boards]
+    board = (f'the shared boards {listed(names)}; each card goes on one of them, naming the board it belongs on'
+             if len(names) > 1 else f'the board "{names[0]}"' if names else "this workflow's own board")
     return {name: (f"{text.rstrip()}\n\n{board_lines(tools[name], board)}" if tools.get(name) else text)
             for name, text in prompts.items()}
+
+
+# ── several boards named (F1736) ────────────────────────────────────────────────────────────────────────────────────
+#: The Boards screen's words for a board's access list and its first access (frontend/src/components/boards:
+#: AccessList.tsx's heading, board.ts's ACCESS_LABEL), so the card names what the person sees there.
+ACCESS_LIST = "Who can use this board"
+ACCESS_WORDS = {"add": "Add cards", "work": "Read, claim and update"}
+
+
+def listed(names: list[str]) -> str:
+    """'"A"', '"A" and "B"', '"A", "B" and "C"'."""
+    quoted = [f'"{n}"' for n in names]
+    return quoted[0] if len(quoted) == 1 else f"{', '.join(quoted[:-1])} and {quoted[-1]}"
+
+
+def _named_as_boards(text: str, shared: list[str]) -> list[str]:
+    """The shared boards the words name as boards: '"Sales" board', 'Sales board', 'board "Sales"'. A name used as a
+    word alone ("the sales follow-up", "a support reply") names no board."""
+    quote = "[\"'\u201c\u201d\u2018\u2019]"
+    found = []
+    for name in shared:
+        n = re.escape(name)
+        if m := re.search(rf"(?<!\w){quote}?{n}{quote}?\s+board\b|\bboard\s+{quote}{n}{quote}", text, re.I):
+            found.append((m.start(), name))
+    return [name for _, name in sorted(found)]  # in the order the words name them
+
+
+def settle(plan: O.PlanDraft, shared: list[str]) -> None:
+    """Each board the plan names, as it is here: `existing` with this workspace's name for it, and, where it names
+    more than one, each one already here `yours`. A plan with no board that names several shared boards as boards in
+    its words names those. Code alone decides both, every time: whatever the planner wrote for them is replaced."""
+    here = {b.lower(): b for b in shared}
+    if not plan.boards and here:
+        text = " ".join([plan.title, plan.summary, *(f"{s.name} {s.does} {s.prompt or ''}" for s in plan.steps)])
+        if len(named := _named_as_boards(text, list(here.values()))) > 1:
+            plan.boards = [O.BoardPart(name=n) for n in named]
+    for b in plan.boards:
+        b.existing = b.name.lower() in here
+        b.name = here.get(b.name.lower(), b.name)
+        b.yours = b.existing and len(plan.boards) > 1
+
+
+def give_line(plan: O.PlanDraft) -> list[str]:
+    """What the card says about the boards the person gives access to: which, where, and with what access."""
+    yours = [b.name for b in plan.boards if b.yours]
+    if not yours:
+        return []
+    tools = set().union(*_board_tools(plan).values()) if plan.agents else set()
+    access = ACCESS_WORDS["work"] if tools & {"board_list", "board_read", "board_claim", "board_update"} else (
+        ACCESS_WORDS["add"])
+    one = len(yours) == 1
+    return [f"It works the shared board{'' if one else 's'} {listed(yours)}, which {'is' if one else 'are'} already "
+            f"here. Give it access{'' if one else ' to each'} on the Boards screen: open the board and, under "
+            f"\"{ACCESS_LIST}\", add \"{plan.title}\" with \"{access}\". Until then, its agents can't post there."]

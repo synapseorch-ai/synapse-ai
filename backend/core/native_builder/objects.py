@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic.json_schema import SkipJsonSchema
 
 from core.models_orchestration import StepType
 from core.native_builder import change_ops as _change_ops
@@ -208,6 +209,10 @@ class BoardPart(_Written):
     purpose: str = ""
     #: A shared board already here (code sets it, F1214): given to the workflow, never made again.
     existing: bool = False
+    #: One of several boards a plan names that is already here (code sets it, F1736): the person gives the workflow
+    #: access to it on the Boards screen, as the card says; the build gives it nothing. Code alone sets it: it is not
+    #: in the planner's schema, and a plan holds it only when it is set, so every other plan reads as before.
+    yours: SkipJsonSchema[bool] = Field(False, exclude_if=lambda v: not v)
 
 
 class KnowledgePart(_Written):

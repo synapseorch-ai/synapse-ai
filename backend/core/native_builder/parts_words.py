@@ -285,7 +285,9 @@ def _step_words(s: Step, ctx: _Ctx) -> str:
 # ── the plan's own parts ─────────────────────────────────────────────────────────────────────────────────────────
 
 def _boards(plan: Plan, _ctx: _Ctx) -> list[str]:
-    return [f'the board "{b.name}" ({"already here" if b.existing else "made with it"}): it holds '
+    return [f'the board "{b.name}" ('
+            f'{"already here: you give it access" if b.yours else "already here" if b.existing else "made with it"}'
+            f'): it holds '
             f"{_kinds_words()}, nothing else" for b in plan.boards]
 
 

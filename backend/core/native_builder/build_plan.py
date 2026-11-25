@@ -1111,6 +1111,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         # A step no step leads to in the workflow as it is now is not this change's to fix (SAI2's review, 23).
         before, _ = O.check_structure(base, ws.inventory())
         errors = [e for e in errors if not ("no step leads to it" in e and e in before)]
+    # The boards it names, as they are here, before the rules count them (F1736).
+    boards_rule.settle(plan, ws.shared_boards)
     answer_notes: list[str] = []
     errors += copy_errors + await _rules(plan, ws, state, answer_notes) + asked
     # A part of the ask the plan leaves out is said with why, never dropped (F1515, eb's QA B13).
@@ -1931,9 +1933,9 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict, notes: list[str] | No
     # missing tool (F866b's invented "Board" provider; SAI2's review, 7).
     # When a board is the right thing at all (F1254): not for a hand-off, and never one nothing reads.
     errors += boards_rule.issues(plan)
-    if len(plan.boards) > 1:
-        # A workflow's agents post to its own board (no product tool gives a workflow a shared board yet; SAI2's
-        # review, 20): the one board a plan names is that board, under the person's name for it (F1214).
+    if len([b for b in plan.boards if not b.yours]) > 1:
+        # The build gives or makes one board itself (F1214): two new boards are one too many. Several boards already
+        # here are the person's to give, and the card says where (F1736), never a plan refused for them.
         errors.append("boards: a build has one board, the workflow's own; name only the one the person asked for")
     if state.get("intent") == "update" and plan.kind == "create" and _base(state) is not None:
         errors.append("kind: the person asked to change the workflow open here: write kind update, with edits by its "
@@ -3182,19 +3184,19 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
                                                            events)):
         return {**base, "outcome": "said", "say": held}  # one chat writes a workflow at a time (TABS2, F1063)
     # The board the person asked for is a shared board this workflow is given to work (F1214): the one the plan names,
-    # or the one already here its steps name. One already here is not made again; its new agents post there.
+    # or the one already here its steps name. One already here is not made again; its new agents post there. Of
+    # several boards named, the ones already here are the person's to give, and the card says where (F1736).
+    boards_rule.settle(plan, ws.shared_boards)
     shared = {b.lower(): b for b in ws.shared_boards}
     text = " ".join([plan.title, plan.summary, *(f"{s.name} {s.does} {s.prompt or ''}" for s in plan.steps)]).lower()
     mentioned = [name for low, name in shared.items() if low in text]
     if not plan.boards and len(mentioned) == 1:
         plan.boards = [O.BoardPart(name=mentioned[0])]
-    for b in plan.boards:
-        b.existing = b.name.lower() in shared
-        b.name = shared.get(b.name.lower(), b.name)
+        boards_rule.settle(plan, ws.shared_boards)
     board_notes = [f'Its cards go on the shared board "{b.name}" (on the Boards screen)'
                    + (", which this workflow is given to work" if b.existing else ", made with it, for it to work")
                    + ". Its new agents post there; an agent already here posts there when its instructions name it."
-                   for b in plan.boards]
+                   for b in plan.boards if not b.yours] + boards_rule.give_line(plan)
     findings = _obj(state.get(FINDINGS_KEY))
     looked = isinstance(findings, dict) and bool(findings.get("options"))
     # What code could name instead is the planner's, never research's (F950, F1043).
