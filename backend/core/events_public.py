@@ -147,6 +147,9 @@ PRIVATE_STATE_PREFIXES = (
     "_answer_walk_sent_back",
     # How often a plan went back for what its practice run found (`build_plan.PRACTICE_SENT_BACK`, F1619).
     "_practice_sent_back",
+    # The values a Human step's card showed, which a model-filled send is held to (`grounded.SHOWN_KEY`, F1743), and
+    # that a send after an approval went back once to set its inputs from them (`approved_sends.SAID`, F1743).
+    "_shown_to_person", "_approved_send_said",
 )
 
 
