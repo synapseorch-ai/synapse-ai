@@ -3887,6 +3887,20 @@ async def run_agent_step(
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": "Not run: an address not given",
                            "refused": True, "reason": _open_refusal, "category": _category}
                     continue
+                elif _decision == "confirm" and not _chat_approval.approvals_answerable() and persist_turn:
+                    # Nobody here can answer a card (a messaging channel's turn, F1748): parked, the call was dropped
+                    # and the person got no reply at all. Not run, and the agent is told in words its reply can pass
+                    # on to a customer as well as to an owner on their own channel. A delegate's hand-off keeps its
+                    # own path: its pause reaches its lead, who is told and carries on (F286).
+                    current_context_text += (
+                        f"\nSystem: Tool '{tool_name}' needs approval from someone on the team "
+                        f"({_tool_policy.explain(_category)}), and nobody can give it in this conversation, so it was "
+                        "not run. Tell them it needs a team member's approval, or do what you can without it.\n")
+                    _open_refusal = "it needs a team member's approval, which nobody can give here"
+                    yield {"type": "tool_result", "tool_name": tool_name,
+                           "preview": "Not run: needs a team member's approval",
+                           "refused": True, "reason": _open_refusal, "category": _category}
+                    continue
                 elif _decision == "confirm" or _unseen is not None:
                     # Hand the decision to a person and end this step. The run
                     # is resumed at this same step with the answer; the call
