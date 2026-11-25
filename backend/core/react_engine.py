@@ -2046,9 +2046,13 @@ async def run_agent_step(
     # record, so the saved turn and anything reading it can tell a refused call
     # from one that ran — the answer may still say "done".
     _open_refusal: str | None = None
+    # Why the open call failed, when it ran and its tool said it failed (F1751): kept on its record as a refusal is,
+    # so nothing reading the saved turn takes a failed call for one that worked.
+    _open_failure: str | None = None
 
     def _close_call() -> dict | None:
-        nonlocal _open_call, _open_refusal, _repeat_key, _repeat_count, _repeat_stop, current_context_text
+        nonlocal _open_call, _open_refusal, _open_failure, _repeat_key, _repeat_count, _repeat_stop
+        nonlocal current_context_text
         if _open_call is None:
             return None
         _name, _args, _mark = _open_call
@@ -2057,6 +2061,9 @@ async def run_agent_step(
         if _open_refusal:
             _record.update(refused=True, reason=_open_refusal)
             _open_refusal = None
+        elif _open_failure:
+            _record.update(failed=True, reason=_open_failure)
+        _open_failure = None
         _turn_calls.append(_record)
         # Case-folded (F1495, C1): a call that differs only in case reads nothing new. Prod's planner read
         # `{topic: tool, name: github}` and `{…, name: GitHub}`, whose results echo the name, as two reads.
@@ -4200,11 +4207,26 @@ async def run_agent_step(
                                 ))
 
                                 if _result.exit_code != 0:
-                                    raw_output = json.dumps({
-                                        "error": f"Python tool exited with code {_result.exit_code}",
-                                        "stderr": _result.stderr,
-                                        "stdout": _result.stdout,
-                                    })
+                                    # Said failed, with what it printed (F1751). It ran: what it did before it
+                                    # failed is done, so a tool not safe to repeat may have had its effect.
+                                    from core import tool_result as _tool_result
+                                    from core.tool_tags import may_repeat as _may_repeat
+
+                                    _why = f"exited with code {_result.exit_code}"
+                                    if (_said := _tool_result.words_of(_result.stderr or _result.stdout)):
+                                        _why += f": {_said}"
+                                    _line = _tool_result.failed_line(tool_name, _why,
+                                                                     maybe_ran=not _may_repeat(target_tool))
+                                    _open_failure = _why
+                                    current_context_text += (
+                                        f"\n[Turn {turn + 1} — Observation] {_line}\n"
+                                        + json.dumps({"stderr": _result.stderr, "stdout": _result.stdout}) + "\n")
+                                    tools_used_summary.append(f"{tool_name}: FAILED: {_why}")
+                                    yield {"type": "tool_result", "tool_name": tool_name, "preview": _line[:500],
+                                           "failed": True, "reason": _why}
+                                    last_intent = "custom_tool"
+                                    last_data = {"error": _why}
+                                    continue
                                 else:
                                     # Try to parse stdout as JSON, otherwise wrap as string output
                                     try:
@@ -4244,11 +4266,29 @@ async def run_agent_step(
                                 timeout=HTTP_TOOL_TIMEOUT,
                             )
 
+                            if resp.status_code >= 400:
+                                # Said failed, its status and the response's words (F1751): a 405's page read as
+                                # an answer, and the agent said the email was delivered. A 5xx may have had its
+                                # effect first, unless the tool is safe to repeat (a read). Never a grounding
+                                # source: a 4xx body can repeat the very address it refused (F1744).
+                                from core import tool_result as _tool_result
+                                from core.tool_tags import may_repeat as _may_repeat
+
+                                _why = _tool_result.failure_of(resp.status_code, resp.text)
+                                _line = _tool_result.failed_line(
+                                    tool_name, _why,
+                                    maybe_ran=resp.status_code >= 500 and not _may_repeat(target_tool))
+                                _open_failure = _why
+                                current_context_text += f"\n[Turn {turn + 1} — Observation] {_line}\n"
+                                tools_used_summary.append(f"{tool_name}: FAILED: {_why}")
+                                yield {"type": "tool_result", "tool_name": tool_name, "preview": _line[:500],
+                                       "failed": True, "reason": _why}
+                                last_intent = "custom_tool"
+                                last_data = {"error": _why}
+                                continue
+
                             json_resp, raw_output = _http_tool.decode(resp, target_tool)
-                            if resp.status_code < 400:
-                                # An answer, not an error: a 4xx body comes back as text too, and can repeat the
-                                # very address it refused (F1744).
-                                _ground_keys.update(_grounded.known([raw_output]))
+                            _ground_keys.update(_grounded.known([raw_output]))  # an answer (F1744)
 
                             # Vault large outputs
                             raw_output = _vaulted(tool_name, raw_output, threshold=_budget.spill_at)
@@ -4385,6 +4425,21 @@ async def run_agent_step(
                             raw_output = mcp_text(result)  # [] is an empty answer, a list whole (F1344)
                             if not getattr(result, "isError", False):
                                 _ground_keys.update(_grounded.known([raw_output]))  # an answer (F1744)
+                            # A call its server says failed (F1751), as the Tool step reads it (F90, F1208): MCP's
+                            # `isError`, or one of the product's own servers' failure shape (never a third-party
+                            # server's "error" key, which may be data). A browser's error is read as what it said
+                            # (F1407 below): the agent goes on from the page.
+                            _mcp_failed: str | None = None
+                            if not _is_browser_tool(tool_name):
+                                from core import tool_result as _tool_result
+
+                                if getattr(result, "isError", False):
+                                    _mcp_failed = _tool_result.words_of(raw_output, 300) or "(no detail)"
+                                else:
+                                    from core.tools_registry import ALL_NATIVE_TOOLS as _NATIVE
+
+                                    if agent_name in _NATIVE:
+                                        _mcp_failed = _tool_result.built_in_failure(raw_output)
                     finally:
                         if _owner_token is not None:
                             _browser_client.owner.reset(_owner_token)
@@ -4434,7 +4489,12 @@ async def run_agent_step(
                     # A browser call that came back as an error (a refusal, Playwright's `### Error`, the person still
                     # driving) is read as what it said, and the page before it stays the page (F1407: take4 read
                     # "This browser session has used its 30 actions." as the page for three turns).
-                    if _is_browser_tool(tool_name) and not getattr(result, "isError", False):
+                    if _mcp_failed:
+                        _line = _tool_result.failed_line(tool_name, _mcp_failed)
+                        _open_failure = _mcp_failed
+                        current_context_text += f"\n[Turn {turn + 1} — Observation] {_line}\n"
+                        _log.debug(f"📤 Tool Result ({tool_name}): failed")
+                    elif _is_browser_tool(tool_name) and not getattr(result, "isError", False):
                         # Browser snapshots go stale on every navigation/click.
                         # A page snapshot is only useful this turn. It goes in the
                         # volatile tail of the user message (see
@@ -4458,8 +4518,12 @@ async def run_agent_step(
                         _log.debug(f"📤 Tool Result ({tool_name}): {len(raw_output)} chars")
 
                     # MCP tool results are no longer embedded in ChromaDB
-                    preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
-                    yield {"type": "tool_result", "tool_name": tool_name, "preview": preview}
+                    if _mcp_failed:
+                        yield {"type": "tool_result", "tool_name": tool_name, "preview": _line[:500],
+                               "failed": True, "reason": _mcp_failed}
+                    else:
+                        preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
+                        yield {"type": "tool_result", "tool_name": tool_name, "preview": preview}
                     # The pane's events: a browser opened, and what each action did.
                     if _browser_owner and hasattr(session, "take_events"):
                         for _browser_event in session.take_events(_browser_owner):

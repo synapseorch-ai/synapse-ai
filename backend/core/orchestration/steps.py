@@ -1706,8 +1706,12 @@ class ToolStepExecutor:
                 timeout=HTTP_TOOL_TIMEOUT,
             )
         if resp.status_code >= 400:
+            # The response's words, as an agent's call says them (F1751): an HTML error page as its title and text,
+            # never its markup.
+            from core.tool_result import words_of
+
             raise ToolCallFailed(
-                f"HTTP {resp.status_code} from '{tool.get('name', 'tool')}': {(resp.text or '')[:500]}",
+                f"HTTP {resp.status_code} from '{tool.get('name', 'tool')}': {words_of(resp.text, 500)}",
                 retryable=resp.status_code < 500)
 
         _, text = http_tool.decode(resp, tool)
