@@ -1040,6 +1040,19 @@ def schedules_show(args, api: ApiClient, out: Output):
     _show_schedule(out, s, _schedule_names(api))
 
 
+#: What `--missed` takes, as the API's `missed_run_policy` names it (F1730). `run_once` is the word the flag offered
+#: before, which the API never took: kept, as the run_immediately it meant, so a script written to it still runs.
+_MISSED = {"skip": "skip", "run_immediately": "run_immediately", "run_once": "run_immediately"}
+_MISSED_SHOWN = "{skip,run_immediately}"
+
+
+def _missed(value: str) -> str:
+    try:
+        return _MISSED[value]
+    except KeyError:
+        raise argparse.ArgumentTypeError(f"invalid choice: {value!r} (choose from 'skip', 'run_immediately')") from None
+
+
 def _timing(args) -> dict:
     if args.cron:
         return {"schedule_type": "cron", "cron_expression": args.cron}
@@ -1358,7 +1371,8 @@ def register(sub) -> None:
     when.add_argument("--cron", help='a cron expression, such as "0 9 * * 1"')
     p.add_argument("--prompt", help="what each run is asked")
     p.add_argument("--name")
-    p.add_argument("--missed", choices=["skip", "run_once"], help="what to do about runs missed while stopped")
+    p.add_argument("--missed", type=_missed, metavar=_MISSED_SHOWN,
+                   help="what to do about runs missed while stopped: skip them, or run once as soon as it can")
     p.add_argument("--paused", action="store_true", help="create it paused")
     p = add(scheds, "update", schedules_update, "Change a schedule's timing, prompt or name")
     p.add_argument("schedule_id")
@@ -1368,7 +1382,7 @@ def register(sub) -> None:
     p.add_argument("--prompt")
     p.add_argument("--name")
     p.add_argument("--description")
-    p.add_argument("--missed", choices=["skip", "run_once"])
+    p.add_argument("--missed", type=_missed, metavar=_MISSED_SHOWN)
     add(scheds, "pause", _set_enabled(False), "Pause a schedule").add_argument("schedule_id")
     add(scheds, "resume", _set_enabled(True), "Turn a paused schedule back on").add_argument("schedule_id")
     add(scheds, "trigger", schedules_trigger, "Run a schedule now, as a test").add_argument("schedule_id")
