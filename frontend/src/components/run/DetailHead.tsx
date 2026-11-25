@@ -83,8 +83,10 @@ export function DetailHead({
     actions?: ReactNode;
     leading?: ReactNode;
 }) {
+    // min-w-0 (F1741): as a grid item its min-width was auto, so a truncated title or path counted at its whole length
+    // and widened the pane's one grid track off a phone's screen.
     return (
-        <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
             <div className={cn('min-w-0 flex-1', leading && 'flex items-start gap-3')}>
                 {leading}
                 <div className="min-w-0">
@@ -92,7 +94,7 @@ export function DetailHead({
                     {sub && <p className="m-0 mt-0.5 text-[13px] text-text-muted">{sub}</p>}
                 </div>
             </div>
-            {actions && <div className="flex shrink-0 flex-wrap items-center gap-1.5">{actions}</div>}
+            {actions && <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5">{actions}</div>}
         </div>
     );
 }
@@ -101,7 +103,7 @@ export function DetailHead({
  * The list beside the detail, on the wide frame: the list a fixed column, the
  * detail the rest; stacked under `lg`, the list first.
  */
-export const LIST_DETAIL = 'grid items-start gap-8 lg:grid-cols-[minmax(0,19rem)_minmax(0,1fr)]';
+export const LIST_DETAIL = 'grid grid-cols-[minmax(0,1fr)] items-start gap-8 lg:grid-cols-[minmax(0,19rem)_minmax(0,1fr)]';
 
 /** On a phone a row's detail is below the list: bring it into view. */
 export function showDetail(el: HTMLElement | null) {
