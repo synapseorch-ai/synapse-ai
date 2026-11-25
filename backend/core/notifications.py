@@ -253,10 +253,10 @@ class NotificationHub:
             for q in event["questions"]:
                 if q.get("question_id") in open_ids:
                     continue
-                from core.chat_approval import approval_prompt
+                from core.chat_approval import question_words
                 self.publish(
                     "human_input", f"{name}: {q.get('member_name') or 'a member'} needs approval",
-                    body=approval_prompt(q.get("tool_name"), q.get("category")),
+                    body=question_words(q),
                     run_id=run_id,
                     data={"step_id": event.get("orch_step_id"), "question_id": q.get("question_id"),
                           "member_id": q.get("member_id"), "member_name": q.get("member_name"),

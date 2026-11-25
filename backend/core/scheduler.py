@@ -626,7 +626,7 @@ class ScheduleManager:
         from core.session import _clip_args
         from core.store import sessions as _sessions
 
-        from core.chat_approval import to_ring
+        from core.chat_approval import question_words, to_ring
 
         name = s.get("name") or s["id"]
         expires_at = (_utc_now() + APPROVAL_TTL).isoformat()
@@ -639,7 +639,9 @@ class ScheduleManager:
             who = q.get("member_name")
             hub.publish(
                 "tool_approval", f"{name}: {who} needs approval" if who else f"{name} needs approval",
-                body=(f"{'It' if not who else who} wants to run {q.get('tool_name')} — "
+                # A call the address guard stopped says what it would use (F1744), as the card does.
+                body=question_words(q).replace("**", "") if q.get("unseen") is not None else
+                     (f"{'It' if not who else who} wants to run {q.get('tool_name')} — "
                       f"{tool_policy.explain(q.get('category'))}.") if who else
                      f"The agent wants to run {q.get('tool_name')} — {tool_policy.explain(q.get('category'))}.",
                 data={"schedule_id": s["id"], "schedule_run_id": run_id, "approval_id": q.get("approval_id"),

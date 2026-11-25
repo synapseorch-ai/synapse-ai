@@ -64,19 +64,34 @@ def _phone(value: str, about: str) -> Value | None:
     return None
 
 
-def values_in(arguments: Any, schema: Any = None, *, reads_only: bool = False) -> list[Value]:
-    """Each address in a model's `arguments`, once: emails anywhere in a value, links by host unless the tool only
-    reads (`reads_only`), and a whole value that is a phone number where it starts with "+" or its property says
-    phone. A property's name and description come from `schema`."""
+#: A property that says where a call goes, by its name (F1744): an agent's link is held only there. A link written
+#: inside a message's words sends nothing anywhere.
+_DESTINATION = re.compile(r"(^|_)(url|uri|endpoint|webhook|link|callback)s?($|_)", re.I)
+
+
+def values_in(arguments: Any, schema: Any = None, *, reads_only: bool = False, links: str = "all") -> list[Value]:
+    """Each address in a model's `arguments`, once: emails anywhere in a value, and a whole value that is a phone
+    number where it starts with "+" or its property says phone. Links by host: anywhere (`links="all"`), none
+    (`"none"`, or a tool that only reads), or only where the property says where the call goes (`"destinations"`: a
+    name like url, endpoint or webhook, or `format: uri`). A property's name and description come from `schema`."""
     found: list[Value] = []
+    if reads_only:
+        links = "none"
 
     def props_of(node: Any) -> dict:
         return node.get("properties") if isinstance(node, dict) and isinstance(node.get("properties"), dict) else {}
 
-    def walk(value: Any, node: Any, about: str) -> None:
+    def holds_links(node: Any, name: str) -> bool:
+        if links == "all":
+            return True
+        if links == "none":
+            return False
+        return bool(_DESTINATION.search(name)) or (isinstance(node, dict) and node.get("format") == "uri")
+
+    def walk(value: Any, node: Any, about: str, name: str) -> None:
         if isinstance(value, str):
             for a in A._in_words(value, ""):
-                if a.kind == "url" and reads_only:
+                if a.kind == "url" and not holds_links(node, name):
                     continue
                 found.append(Value(a.value, a.kind, a.key))
             if (p := _phone(value, about)) is not None:
@@ -85,13 +100,13 @@ def values_in(arguments: Any, schema: Any = None, *, reads_only: bool = False) -
             props = props_of(node)
             for k, v in value.items():
                 sub = props.get(k) if isinstance(props.get(k), dict) else {}
-                walk(v, sub, f"{k} {sub.get('description') or ''}")
+                walk(v, sub, f"{k} {sub.get('description') or ''}", str(k))
         elif isinstance(value, list):
             items = node.get("items") if isinstance(node, dict) and isinstance(node.get("items"), dict) else {}
             for v in value:
-                walk(v, items, about)
+                walk(v, items, about, name)
 
-    walk(arguments, schema if isinstance(schema, dict) else {}, "")
+    walk(arguments, schema if isinstance(schema, dict) else {}, "", "")
     seen: set[str] = set()
     return [v for v in found if not (v.key in seen or seen.add(v.key))]
 
@@ -261,3 +276,56 @@ def correction_prompt(arguments: Any, reason: str) -> str:
     return ("A person declined this call: " + json.dumps(arguments, ensure_ascii=False, default=str)
             + f"\nThey said: {reason}\nWrite the call again with what they said. Use only what they wrote or what "
               "this run already holds; never make up an address.")
+
+
+# ── An agent's own calls (F1744) ──────────────────────────────────────────────────────────────────────────────────
+# An agent writes each tool call itself, in a chat, an API or scheduled turn, a team, a channel or a workflow's Agent
+# step, and the same made-up address can go out through a call of its own. Held as a Tool step's are, with its own
+# sources: what the person said (an assistant turn only once a person answered it), the agent's own instructions and
+# memory, the run's state in a workflow, and what its tools answered without an error this turn. Never its own words
+# a person never answered, a tool's description, an error, or what a person declined.
+
+
+def seen_in_history(messages: Iterable[Any]) -> set[str]:
+    """The keys of every address a conversation's person wrote, and of what the agent wrote that a person then
+    answered: an assistant turn with no person's turn after it is the agent's own word, read by nobody, and in a
+    scheduled or workflow turn it would ground its own invention."""
+    turns = [m for m in messages or [] if isinstance(m, dict)]
+    texts = []
+    for at, m in enumerate(turns):
+        role = m.get("role")
+        if role == "user" or (role == "assistant" and any(n.get("role") == "user" for n in turns[at + 1:])):
+            texts.append(m.get("content") if isinstance(m.get("content"), str)
+                         else json.dumps(m.get("content"), default=str))
+    return known(texts)
+
+
+def agent_card(tool: str, missing: list[str], *, corrected: bool = False) -> str:
+    """The approval card's words for an agent's call the guard stopped: what it would use that its turn does not
+    hold, or, after a person's correction, that this is the corrected call to check."""
+    if corrected:
+        head = (f"The agent wants to run **{tool}** again, written from what you said. Check it: nothing goes out "
+                "until you approve it.")
+        if missing:
+            head += f" It still uses {_listed(missing)}, which isn't anywhere in this conversation or what you wrote."
+    else:
+        head = (f"The agent wants to run **{tool}** with {_listed(missing)}, which isn't anywhere in this "
+                "conversation, this run or what its tools found. Send it as it is?")
+    return f"{head} {CORRECT_LINE}"
+
+
+def agent_declined_line(tool: str, named: list[str], reason: str) -> str:
+    """What an agent is told when a person declines a call the guard stopped: their words, and that a call with the
+    address they gave is shown to them before it goes out."""
+    said = f"{_listed(named)}" if named else "that call"
+    return (f"\nSystem: the person declined sending '{tool}' to {said}"
+            + (f": {reason}" if reason else "")
+            + ". If they gave the right address, call it again with it: it is shown to them before it goes out. "
+              "Never make up an address; ask them for it if they gave none.\n")
+
+
+def agent_refusal_line(tool: str, missing: list[str]) -> str:
+    """A turn where nobody can answer a card (a website visitor's, a channel's): the call is not run, and the agent is
+    told why, in words that hold only what it wrote itself."""
+    return (f"\nSystem: '{tool}' was not run: {_listed(missing)} isn't anywhere in this conversation or what your "
+            "tools found. Never make up an address: ask the person for it.\n")

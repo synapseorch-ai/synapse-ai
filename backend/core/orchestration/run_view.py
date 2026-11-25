@@ -53,10 +53,10 @@ async def read_run(run_id: str) -> dict | None:
 
 
 def _questions(run) -> list[dict]:
-    from core.chat_approval import approval_prompt
+    from core.chat_approval import question_words
     from core.orchestration.answers import questions_asked
 
-    return [{**q, "prompt": approval_prompt(q.get("tool_name"), q.get("category"))} for q in questions_asked(run)]
+    return [{**q, "prompt": question_words(q)} for q in questions_asked(run)]
 
 
 async def _result_key(run) -> str:
