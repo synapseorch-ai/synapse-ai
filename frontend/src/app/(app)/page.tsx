@@ -44,6 +44,7 @@ import {
 import { readWithStallTimeout } from '@/lib/sse';
 import { formatRelativeTime } from '@/lib/relativeTime';
 import { refusedAnswerMessage } from '@/lib/answers';
+import { callNote, resultOf, tallyOf } from '@/lib/callMarks';
 import { useModelSetup } from '@/components/onboarding/ModelSetupProvider';
 import { KnowledgeCitation, Message, OrchMsgType, SystemStatus } from '@/types';
 import { KnowledgeSources, linkLabels } from '@/components/knowledge/KnowledgeSources';
@@ -351,7 +352,7 @@ function AssistantBubble({ msg, agentName }: { msg: Message; agentName: string }
  * the calls its turn saved (F242, U60); a live one from the events it streamed.
  */
 function ToolsUsed({ calls }: { calls: SavedCall[] }) {
-  const refused = calls.filter(c => c.refused).length;
+  const { notRun: refused } = tallyOf(calls);
   return (
     <RunChip
       icon={<Wrench className="h-3.5 w-3.5" />}
@@ -364,7 +365,7 @@ function ToolsUsed({ calls }: { calls: SavedCall[] }) {
               <li key={i} className="min-w-0">
                 <div className="flex items-baseline gap-2">
                   <span className="font-code text-text" translate="no">{call.tool}</span>
-                  {call.refused && <span className="text-warning">not run{call.reason ? ` — ${call.reason}` : ''}</span>}
+                  {callNote(call) && <span className="text-warning">{callNote(call)}</span>}
                 </div>
                 {call.browser ? (
                   <BrowserActionLine
@@ -2398,11 +2399,7 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
           const at = calls.findLastIndex(c => c.tool === rawToolName && !c.result && !c.refused);
           if (at !== -1) {
             const next = [...calls];
-            next[at] = {
-              ...next[at],
-              result: String(data.preview ?? ''),
-              ...(data.refused ? { refused: true, reason: String(data.reason ?? '') } : {}),
-            };
+            next[at] = { ...next[at], ...resultOf(data) };
             liveCallsRef.current = next;
           }
         }
