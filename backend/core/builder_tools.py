@@ -21,6 +21,7 @@ from core.expressions import vocabulary_sentence
 from core.store import collections
 from core.store.resources import load_mcp_servers
 from core import agent_knowledge
+from core.native_builder.objects import WAKE_WORDS as _WAKE_WORDS  # one wording on every host (F1749)
 from core.store.ids import new_id as _mint_id
 
 
@@ -1869,8 +1870,7 @@ BUILDER_TOOL_SCHEMAS = [
                         "task, and costs nothing when there is none. For 'whenever a new request comes in, handle "
                         "it'. Needs Boards on")},
                     "wake_on_new_task": {"type": "boolean", "description": (
-                        "A heartbeat only: a task added to its board starts it within a minute instead of at its "
-                        "next time (on unless turned off)")},
+                        f"A heartbeat only: {_WAKE_WORDS} (on unless turned off)")},
                     "max_runs_per_day": {"type": "integer", "description": (
                         "The most runs it starts in a day on its own clock, 0 for no limit. Set one on a heartbeat "
                         "so a burst of tasks cannot become a burst of spend")},
@@ -1961,8 +1961,7 @@ BUILDER_TOOL_SCHEMAS = [
                         "task, and costs nothing when there is none. For 'whenever a new request comes in, handle "
                         "it'. Needs Boards on")},
                     "wake_on_new_task": {"type": "boolean", "description": (
-                        "A heartbeat only: a task added to its board starts it within a minute instead of at its "
-                        "next time (on unless turned off)")},
+                        f"A heartbeat only: {_WAKE_WORDS} (on unless turned off)")},
                     "max_runs_per_day": {"type": "integer", "description": (
                         "The most runs it starts in a day on its own clock, 0 for no limit. Set one on a heartbeat "
                         "so a burst of tasks cannot become a burst of spend")},

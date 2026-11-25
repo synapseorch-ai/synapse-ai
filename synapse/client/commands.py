@@ -1400,7 +1400,8 @@ def register(sub) -> None:
     p.add_argument("--description")
     p.add_argument("--missed", type=_missed, metavar=_MISSED_SHOWN)
     p.add_argument("--run-when", choices=["always", "has_work"])
-    p.add_argument("--wake", choices=["on", "off"], help="has_work: whether a task added starts it within a minute")
+    p.add_argument("--wake", choices=["on", "off"],
+                   help="has_work: whether a new task starts it early, without waiting for its next check")
     p.add_argument("--max-runs-per-day", type=int, metavar="N")
     add(scheds, "pause", _set_enabled(False), "Pause a schedule").add_argument("schedule_id")
     add(scheds, "resume", _set_enabled(True), "Turn a paused schedule back on").add_argument("schedule_id")

@@ -225,7 +225,10 @@ from core.native_builder import prompt_lint, seed
 #: limit, 91652a57… (on f2fb27f2).
 #: F1743: plan_steps.md's tool bullet says a step that sends what a human step approved sets every input in
 #: `config.tool_arguments` from what that step showed, never left to a model, 085f2013… (on F1728's 91652a57).
-BUNDLE_SHA256 = "085f2013affa6eea147bcb23e23f68d9efc4a84d81c9f4cb80c919720b5f0dcd"
+#: F1749: the planner's Building 5 says a heartbeat's new task starts it early, without waiting for its next check
+#: (`objects.WAKE_WORDS`), never "within a minute", which Cloud's five-minute floor makes untrue, 8ff87166… (on
+#: F1743's 085f2013).
+BUNDLE_SHA256 = "8ff871664fcdbc54d411be700e3f44c9272744badfd333e993726fcc92bad74c"
 
 
 def _sha(definitions) -> str:

@@ -157,6 +157,12 @@ class ModelPick(BaseModel):
     stronger_price: str | None = None
 
 
+#: How a heartbeat's wake is said wherever the planner or a person reads it (F1749), true on every host: a
+#: self-hosted scheduler looks every 30 seconds, and Cloud waits at least five minutes after a schedule's last run
+#: (its own Schedules form says so). The planner's prompt says the same words (a test holds them together).
+WAKE_WORDS = "a new task starts it early, without waiting for its next check"
+
+
 class Schedule(_Written):
     #: How it is timed, by the same names and values as the Schedules screen and the change ops (F1267; D340 F).
     schedule_type: Literal["cron", "interval"] = Field("cron", description="cron: at set times; interval: every so "
@@ -173,7 +179,7 @@ class Schedule(_Written):
                                                    "runs on the person's own clock")
     run_when: str = Field("always", description="always: it runs at its time. has_work: a heartbeat, for work that "
                                                 "arrives as tasks on its board: at its time it runs only while the "
-                                                "board has an open task, and a new task starts it within a minute")
+                                                f"board has an open task, and {WAKE_WORDS}")
     max_runs_per_day: int = Field(0, description="has_work: the most runs it starts in a day; 0 is no limit")
     says: str = Field(description="The schedule in words, e.g. every day at 7:00")
     input: str | None = Field(None, description="What each scheduled run starts with: the task, with what it is "

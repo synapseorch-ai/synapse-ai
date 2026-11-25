@@ -1,7 +1,8 @@
 """A schedule's Heartbeat is something Synapse AI builds and changes, as the Schedules screen sets it (F1728).
 
 A heartbeat runs at its time only while its board has an open task (`run_when: has_work`), a new task starts it
-within a minute (`wake_on_new_task`), and `max_runs_per_day` limits it (F1727). Each is a field of the one op table:
+early, without waiting for its next check (`wake_on_new_task`, F1749), and `max_runs_per_day` limits it
+(F1727). Each is a field of the one op table:
 
 - `set_schedule` and `create_schedule` take the three, and refuse anything else by name;
 - waiting for work needs Boards on, said before the person's yes rather than as the save's refusal after it;
@@ -177,7 +178,8 @@ class TestAPlansSchedule:
     def test_the_card_says_what_a_quiet_day_costs_and_the_limit(self):
         text = render(self._plan(run_when="has_work", max_runs_per_day=40))
         assert ("**Only when there's work:** at each time it checks its board and runs only while a task is open, "
-                "so a quiet day costs nothing; a new task starts it within a minute. At most 40 runs a day.") in text
+                "so a quiet day costs nothing; a new task starts it early, without waiting for its next check. "
+                "At most 40 runs a day.") in text
 
     def test_a_schedule_that_always_runs_says_nothing_of_it(self):
         assert "Only when there's work" not in render(self._plan())
