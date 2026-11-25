@@ -3158,6 +3158,8 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     stronger = list(dict.fromkeys([*(prior.get("stronger") or []),
                                    *((answer.get("stronger") or []) if answer.get("outcome") == "stronger" else [])]))
     base["stronger"] = stronger
+    # The person's pick for a new base that started empty (F1742): held in code, whatever the planner wrote again.
+    draft = knowledge_picked(draft, asked, ws)
     found = await examine(draft, server_module, ws=ws, state=state, without=without, alone=alone)
     plan = found.plan
     if plan is None:
@@ -3209,6 +3211,10 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
                    + (", which this workflow is given to work" if b.existing else ", made with it, for it to work")
                    + ". Its new agents post there; an agent already here posts there when its instructions name it."
                    for b in plan.boards if not b.yours] + boards_rule.give_line(plan)
+    # A new base that still starts empty (F1742: kept, or past the questions' cap) is said, with where to fill it.
+    board_notes += [empty_said(n) for n in empty_new_knowledge({
+        **plan.model_dump(), "knowledge": [{**k.model_dump(), "files": [f for f in k.files if f not in k.files_missing]}
+                                           for k in plan.knowledge if not k.existing]}, ws)]
     findings = _obj(state.get(FINDINGS_KEY))
     looked = isinstance(findings, dict) and bool(findings.get("options"))
     # What code could name instead is the planner's, never research's (F950, F1043).
@@ -3563,6 +3569,103 @@ def unnamed_knowledge(draft: dict, ws: Workspace, said: list[Any]) -> list[str]:
     return sorted(n for n in used & names if n.lower() not in words)
 
 
+# ── F1742: a new knowledge base that starts empty, and the bases already here ────────────────────────────────────────
+#: The planner sees only bases' names, so asked to answer "from our office plans" it made a new, empty "Office plans"
+#: base beside the "Help centre" that held them, and each run said it had no details. Code asks, never guesses.
+_EMPTY_LABEL = re.compile(r'^The plan makes a new knowledge base "(.+)", which starts empty, so its agents ')
+
+
+def _empty_label(name: str) -> str:
+    return (f'The plan makes a new knowledge base "{name}", which starts empty, so its agents can\'t answer from it '
+            "until documents are added. Answer from one you already have instead?")
+
+
+def _keep_option(name: str) -> str:
+    return f'Keep "{name}" new and add documents to it'
+
+
+def empty_said(name: str) -> str:
+    """The card's line for a new base that starts empty, in the Knowledge screen's words (`render.missing_file_line`)."""
+    return (f"\u201c{name}\u201d is new and empty: its agents can't answer from it until you add documents to it on the "
+            "Knowledge screen.")
+
+
+def _bases_here(ws: Workspace) -> list[str]:
+    """Every active base here by its name, sorted: each is offered, however many (a pick never hides one)."""
+    return sorted({str(kb.name) for kb in (ws.kbs or {}).values()
+                   if getattr(kb, "name", "") and getattr(kb, "status", "active") == "active"}, key=str.lower)
+
+
+def _all_steps_of(draft: dict) -> list[dict]:
+    steps = [s for s in draft.get("steps") or [] if isinstance(s, dict)]
+    for inner in draft.get("inner_workflows") or []:
+        if isinstance(inner, dict):
+            steps += [s for s in inner.get("steps") or [] if isinstance(s, dict)]
+    return steps
+
+
+def _step_config(step: dict, key: str) -> dict:
+    config = step.get("config") if isinstance(step.get("config"), dict) else {}
+    return config.get(key) if isinstance(config.get(key), dict) else {}
+
+
+def empty_new_knowledge(draft: dict, ws: Workspace) -> list[str]:
+    """Each knowledge base the plan makes that starts empty while other bases are here (F1742): new (no base here of
+    its name), given no files and no pages, and filled by no ingest step of the plan (one a step fills is meant to
+    start empty). None while Knowledge is off (F1203) or with no other base here: as before."""
+    if not ws.kbs:
+        return []
+    here = {str(getattr(kb, "name", "") or "").lower() for kb in ws.kbs.values()}
+    filled = {str(_step_config(s, "ingest").get("kb_id") or "").strip().lower() for s in _all_steps_of(draft)}
+    out = []
+    for part in draft.get("knowledge") or []:
+        name = " ".join(str(part.get("name") or "").split()) if isinstance(part, dict) else ""
+        if (not name or name.lower() in here or part.get("files") or part.get("urls") or name.lower() in filled
+                or not [b for b in _bases_here(ws) if b.lower() != name.lower()]):
+            continue
+        out.append(name)
+    return out
+
+
+def knowledge_picked(draft: dict, asked: list[Any], ws: Workspace) -> dict:
+    """The plan with each new, empty base the person swapped for one here (F1742's question) in that base's place: its
+    part, its agents' knowledge, and its retrieve and ingest steps, inner workflows' too. The part then names a base
+    here, so the build uses it and makes none. Keep, or an answer naming no base here, leaves the plan as it is."""
+    here = {b.lower(): b for b in _bases_here(ws)}
+    picks: dict[str, str] = {}
+    for a in asked:
+        found = _EMPTY_LABEL.match(str(a.get("question") or "")) if isinstance(a, dict) else None
+        base = here.get(str(a.get("answer") or "").strip().lower()) if found else None
+        if base:
+            picks[found.group(1).lower()] = base
+    if not picks:
+        return draft
+    out = json.loads(json.dumps(draft, default=str))
+
+    def swap(name: Any) -> Any:
+        return picks.get(str(name).strip().lower(), name) if isinstance(name, str) else name
+
+    parts, seen = [], set()
+    for part in out.get("knowledge") or []:
+        if isinstance(part, dict):
+            part["name"] = swap(part.get("name"))
+            if str(part["name"]).lower() in seen:
+                continue  # the plan already used that base: named once
+            seen.add(str(part["name"]).lower())
+        parts.append(part)
+    out["knowledge"] = parts
+    for agent in out.get("agents") or []:
+        if isinstance(agent, dict) and agent.get("knowledge"):
+            agent["knowledge"] = list(dict.fromkeys(swap(k) for k in agent["knowledge"]))
+    for step in _all_steps_of(out):
+        retrieve, ingest = _step_config(step, "retrieve"), _step_config(step, "ingest")
+        if retrieve.get("kb_ids"):
+            retrieve["kb_ids"] = list(dict.fromkeys(swap(k) for k in retrieve["kb_ids"]))
+        if ingest.get("kb_id"):
+            ingest["kb_id"] = swap(ingest["kb_id"])
+    return out
+
+
 # ── F1600: every part of the ask on every path; their own terms never assumed silently ──────────────────────────────
 _END = "\x00end"
 #: A check against something of the person's own, by what it is called (F1600: a tester's "our terms").
@@ -3794,7 +3897,10 @@ async def _asked_first(base: dict, draft: dict, carried: list[str], ws: Workspac
                                                   if isinstance(a, dict)]
     kbs = [n for n in unnamed_knowledge(draft, ws, said)
            if asked_before(state, "which", f"knowledge base {n}", _knowledge_label(n)) is None]
-    if not (unsaid or questions or kbs):
+    # A new base that starts empty while others are here (F1742): every base here, or keep it, on the same form.
+    empties = [n for n in empty_new_knowledge(draft, ws)
+               if asked_before(state, "which", f"empty knowledge base {n}", _empty_label(n)) is None]
+    if not (unsaid or questions or kbs or empties):
         return None, []
     if questions_asked(state, run) >= QUESTIONS:
         return None, [a.said() for a in unsaid] + [
@@ -3807,10 +3913,14 @@ async def _asked_first(base: dict, draft: dict, carried: list[str], ws: Workspac
     for n in kbs[:max(0, FORM_MAX - len(form))]:
         form.append({"name": f"q{len(form) + 1}", "type": "string", "label": _knowledge_label(n), "value": n})
         note_question(state, "which", f"knowledge base {n}", _knowledge_label(n), field=form[-1]["name"])
+    for n in empties[:max(0, FORM_MAX - len(form))]:
+        options = [*(b for b in _bases_here(ws) if b.lower() != n.lower()), _keep_option(n)]
+        form.append({"name": f"q{len(form) + 1}", "type": "choice", "label": _empty_label(n), "options": options})
+        note_question(state, "which", f"empty knowledge base {n}", _empty_label(n), field=form[-1]["name"])
     for q in questions[:max(0, FORM_MAX - len(form))]:
         form.append({"name": f"q{len(form) + 1}", "type": "string", "label": q.strip()})
         note_question(state, "what", "", q.strip(), field=form[-1]["name"])
-    lead = UNSAID_LEAD if unsaid or kbs else FORM_LEAD
+    lead = UNSAID_LEAD if unsaid or kbs or empties else FORM_LEAD
     return {**base, "outcome": "ask", "question": form_text(lead, form), "form": form}, []
 
 
