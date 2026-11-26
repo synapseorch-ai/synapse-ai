@@ -96,6 +96,13 @@ def _after_approvals(steps: list[O.Step]) -> list[tuple[O.Step, O.Step]]:
     return pairs
 
 
+def _workflows(plan: O.Plan) -> list[list[O.Step]]:
+    """The plan's workflow and its inner ones, each read as the save reads it (F1756): a step whose `next` the plan
+    left out goes to the step after it in the list (`objects.settled`), as a model often writes a plan, so a send
+    after an approval in such a plan is found as in one that names every next."""
+    return [O.settled(list(steps)) for steps in (plan.steps, *(w.steps for w in plan.inner_workflows))]
+
+
 async def _what_it_takes(name: str, plan: O.Plan, ws: Any, server_module: Any) -> tuple[Any, bool]:
     """A tool's input schema and whether it only reads: a tool the build makes by its call's method, one here by its
     tags or the read-only hint it declares (`grounded.reads_only`, Part 1's rule for links)."""
@@ -125,7 +132,7 @@ async def _what_it_takes(name: str, plan: O.Plan, ws: Any, server_module: Any) -
 async def found_in(plan: O.Plan, ws: Any, server_module: Any) -> list[Found]:
     """Every send after an approval that a model would fill, in the plan's workflow and its inner ones."""
     out = []
-    for steps in (plan.steps, *(w.steps for w in plan.inner_workflows)):
+    for steps in _workflows(plan):
         for h, s in _after_approvals(list(steps)):
             schema, reads = await _what_it_takes(s.tool or "", plan, ws, server_module)
             if reads or (address := address_input(schema)) is None:
@@ -192,7 +199,7 @@ async def empty_starts(plan: O.Plan, ws: Any, server_module: Any) -> list[EmptyS
 
     out: list[EmptyStart] = []
     said: set[tuple[str, str]] = set()
-    for steps in (plan.steps, *(w.steps for w in plan.inner_workflows)):
+    for steps in _workflows(plan):
         for h, s in _set_after_approvals(list(steps)):
             _, reads = await _what_it_takes(s.tool or "", plan, ws, server_module)
             if reads:
@@ -262,7 +269,7 @@ async def unshown_in(plan: O.Plan, ws: Any, server_module: Any) -> list[Unshown]
     import json
 
     out: list[Unshown] = []
-    for steps in (plan.steps, *(w.steps for w in plan.inner_workflows)):
+    for steps in _workflows(plan):
         for h, s in _set_after_approvals(list(steps)):
             schema, reads = await _what_it_takes(s.tool or "", plan, ws, server_module)
             if reads or not isinstance(schema, dict):
