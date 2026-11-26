@@ -21089,6 +21089,71 @@ async def check_approvalcard(browser) -> str:
         raise AssertionError("; ".join(problems))
     return "a step's Urgent? stays in its form with Send answer; a sign-off keeps Approve / Decline, light/dark, wide/phone"
 
+
+@check
+async def check_textlines(browser) -> str:
+    """A Text field whose starting value has line breaks is a box of lines, and sends them (F1759).
+
+    A draft's body typed "text" was drawn as a one-line input, which drops the line breaks of the value it is given:
+    approved as shown, untouched, the paragraphs went out as one line. On the run page, a real run's Body starts with
+    its paragraphs in a box of lines and is sent with them, untouched and edited; its one-line Subject is still a
+    one-line input."""
+    body = "Hello Harbor & Pine,\n\nYour order ships on Monday.\nThanks for your patience."
+    edited = "Hello Harbor & Pine,\n\nIt ships on Tuesday now."
+    oid = f"orch_uismoke_textlines_{int(time.time())}"
+    api("/api/orchestrations", "POST", {
+        "id": oid, "name": f"UI smoke lines {oid[-4:]}", "entry_step_id": "ask", "steps": [
+            {"id": "ask", "name": "Ask", "type": "human", "human_prompt": "Send this draft?", "output_key": "ask",
+             "human_fields": [{"name": "approved", "type": "boolean", "label": "Send this email?"},
+                              {"name": "subject", "type": "text", "label": "Subject", "default": "Ships Monday"},
+                              {"name": "body", "type": "text", "label": "Body", "default": body}],
+             "next_step_id": None, "position_x": 0, "position_y": 0}]})
+    runs = [_start_real_run(oid), _start_real_run(oid)]
+    await asyncio.sleep(1.5)
+    problems: list[str] = []
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    sent: list[dict] = []
+    page.on("request", lambda r: sent.append(json.loads(r.post_data or "{}"))
+            if r.method == "POST" and "/human-input" in r.url else None)
+    try:
+        for run_id, typed in zip(runs, (None, edited)):
+            await page.goto(f"{APP}/runs/{quote(run_id)}", wait_until="domcontentloaded")
+            card = page.get_by_role("region", name="Waiting for a person")
+            await card.wait_for(timeout=30_000)
+            await asyncio.sleep(SETTLE)
+            box = card.get_by_role("textbox", name="Body", exact=True)
+            subject = card.get_by_role("textbox", name="Subject", exact=True)
+            tags = (await box.evaluate("e => e.tagName"), await subject.evaluate("e => e.tagName"))
+            if tags != ("TEXTAREA", "INPUT"):
+                problems.append(f"Body is a {tags[0]} and Subject a {tags[1]}, not a box of lines and one line")
+            shown = await box.input_value()
+            if shown != body:
+                problems.append(f"Body shows {shown!r}, not {body!r}")
+            if typed is not None:
+                await box.fill(typed)
+            before = len(sent)
+            await card.get_by_role("button", name="Send this email", exact=True).click()
+            for _ in range(20):
+                if len(sent) > before:
+                    break
+                await asyncio.sleep(0.25)
+            got = (sent[before].get("response") or {}) if len(sent) > before else {}
+            want = typed if typed is not None else body
+            if got.get("body") != want or got.get("subject") != "Ships Monday":
+                problems.append(f"{'edited' if typed else 'untouched'}, it sent {got!r}, not the body {want!r}")
+    finally:
+        await ctx.close()
+        for run_id in runs:
+            try:
+                api(f"/api/orchestrations/runs/{run_id}/cancel", "POST", {})
+            except Exception:  # noqa: BLE001 — a fixture's run, cleaned up best effort
+                pass
+        drop_fixtures([oid])
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "a Text field's paragraphs are a box of lines and sent with them, untouched and edited; one line stays one"
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
