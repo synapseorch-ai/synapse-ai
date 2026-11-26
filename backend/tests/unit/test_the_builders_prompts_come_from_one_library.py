@@ -235,7 +235,9 @@ from core.native_builder import prompt_lint, seed
 #: sends from an earlier step in its prompt or as a field's `default`, 15e5b5c8… (on F1753's 08bca3f3).
 #: F1753 (2): plan_steps.md's human bullet says the fields that carry a draft sit beside the step's approval, never in
 #: its place, so Decline stays, edb987e9… (on F1754's 15e5b5c8).
-BUNDLE_SHA256 = "edb987e949c2b0caca95e09136614abedd008f698eec32291292881baf3e777e"
+#: F1754 (2): plan_steps.md's human bullet says a step the person asked to be shown nothing asks as they asked, and the
+#: card says it is approved without showing what goes out, 2ecce51d… (on F1753's edb987e9).
+BUNDLE_SHA256 = "2ecce51d2862a826fe79f4a0bf7fc286ad71d5c81c6bfd1c144e017b20214f1c"
 
 
 def _sha(definitions) -> str:

@@ -222,9 +222,13 @@ async def empty_starts(plan: O.Plan, ws: Any, server_module: Any) -> list[EmptyS
 # ── What a send after an approval sends, shown by it (F1754) ────────────────────────────────────────────────────────
 #
 # A send whose inputs are set passes F1743, whatever its approval shows: "Here is the email drafted. Please review and
-# approve or decline", with no value of the draft in it, and the draft goes out unseen. So every value such a send sets
-# from an earlier step, who it goes to and what it says, is one the approval shows: in its words, as a field's
-# starting value (F1753), or through the value that holds it. An id is not a thing a person approves.
+# approve or decline", with no value of the draft in it, and the draft goes out unseen. So a value such a send sets
+# from an earlier step, who it goes to and what it says, that the approval does not show (in its words, as a field's
+# starting value, F1753, or through the value that holds it) is asked about once: what would happen, and how to show
+# it. The person may have asked not to see it; then the plan keeps the step as they asked, and the card says so. The
+# words never say the plan must: a planner read "so the person would approve what they never saw" as an order, moved
+# the draft onto an approval the person had asked to keep bare, and told them it was a rule. An id is not a thing a
+# person approves.
 
 #: Said once a run, as `SAID` is.
 UNSHOWN_SAID = "_unshown_send_said"
@@ -245,9 +249,10 @@ class Unshown:
         them = "it" if len(self.refs) == 1 else "them"
         name = self.inputs[0]
         example = "%s: {{state.%s}}" % (name.replace("_", " ").capitalize(), self.refs[0])
-        return (f'step {self.send.id}: it sends {refs} after "{self.approval.name}" is approved, but that step never '
-                f"shows {them}, so the person would approve what they never saw. Show each in its words, e.g. "
-                f'"{example}", or start a field with it as its `default`.')
+        return (f'step {self.send.id}: it sends {refs} after "{self.approval.name}" is approved, and that step never '
+                f"shows {them}: the person approves without seeing what goes out. If they want to see it, show each "
+                f'in its words, e.g. "{example}", or start a field with it as its `default`. If they asked not to see '
+                "it, keep the step as they asked: the card says so.")
 
     def card(self) -> str:
         said = ["who it goes to" if i == self.address else f"the {i.replace('_', ' ')}" for i in self.inputs]
