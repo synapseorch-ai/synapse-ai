@@ -21154,6 +21154,76 @@ async def check_textlines(browser) -> str:
         raise AssertionError("; ".join(problems))
     return "a Text field's paragraphs are a box of lines and sent with them, untouched and edited; one line stays one"
 
+
+#: A box's height against its rows: lines of its own line height, with its padding and border.
+BOX_ROWS = """e => { const s = getComputedStyle(e); const lh = parseFloat(s.lineHeight);
+  const pad = parseFloat(s.paddingTop) + parseFloat(s.paddingBottom) + parseFloat(s.borderTopWidth)
+    + parseFloat(s.borderBottomWidth);
+  return {rows: e.rows, shown: (e.offsetHeight - pad) / lh, fits: e.scrollHeight <= e.clientHeight + 1,
+          height: e.offsetHeight}; }"""
+
+
+@check
+async def check_textrows(browser) -> str:
+    """A box of lines is as tall as the value it starts with, up to 14 rows, then it scrolls (F1759).
+
+    A 3-row box showed two and a half lines of the draft a person was asked to approve. On the run page at a phone's
+    width and a wide one, a draft whose body has a paragraph that wraps shows all of it; a 30-line log stops at 14 rows
+    and scrolls; an empty Long text keeps its 3 rows; and typing twenty more lines into the body does not change its
+    height, so the card does not jump while a person edits."""
+    body = ("Hello Harbor & Pine,\n\nYour order of twelve cedar planters left our yard this morning and ships Monday "
+            "with the regional carrier; the tracking number follows by email once the carrier scans it at the depot, "
+            "usually by the end of the day.\n\nThanks for your patience,\nThe order desk")
+    log = "\n".join(f"Line {n}: checked" for n in range(1, 31))
+    oid = f"orch_uismoke_textrows_{int(time.time())}"
+    api("/api/orchestrations", "POST", {
+        "id": oid, "name": f"UI smoke rows {oid[-4:]}", "entry_step_id": "ask", "steps": [
+            {"id": "ask", "name": "Ask", "type": "human", "human_prompt": "Send this draft?", "output_key": "ask",
+             "human_fields": [{"name": "approved", "type": "boolean", "label": "Send this email?"},
+                              {"name": "body", "type": "text", "label": "Body", "default": body},
+                              {"name": "log", "type": "text", "label": "Log", "default": log},
+                              {"name": "notes", "type": "textarea", "label": "Notes"}],
+             "next_step_id": None, "position_x": 0, "position_y": 0}]})
+    run_id = _start_real_run(oid)
+    await asyncio.sleep(1.5)
+    problems: list[str] = []
+    try:
+        for width, height in ((390, 844), WIDE):
+            ctx = await browser.new_context(viewport={"width": width, "height": height})
+            page = await ctx.new_page()
+            try:
+                await page.goto(f"{APP}/runs/{quote(run_id)}", wait_until="domcontentloaded")
+                card = page.get_by_role("region", name="Waiting for a person")
+                await card.wait_for(timeout=30_000)
+                await asyncio.sleep(SETTLE)
+                boxes = {name: card.get_by_role("textbox", name=name, exact=True) for name in ("Body", "Log", "Notes")}
+                got = {name: await box.evaluate(BOX_ROWS) for name, box in boxes.items()}
+                if not got["Body"]["fits"]:
+                    problems.append(f"at {width}, the Body shows {got['Body']['shown']:.1f} lines of its draft and "
+                                    "scrolls for the rest")
+                if got["Log"]["fits"] or got["Log"]["shown"] > 14.5 or got["Log"]["shown"] < 13.5:
+                    problems.append(f"at {width}, the 30-line Log shows {got['Log']['shown']:.1f} lines, not 14 "
+                                    "and a scroll")
+                if got["Notes"]["rows"] != 3 or got["Notes"]["shown"] > 3.5:
+                    problems.append(f"at {width}, the empty Notes is {got['Notes']['shown']:.1f} lines, not 3")
+                await boxes["Body"].fill(body + "".join(f"\nMore {n}" for n in range(20)))
+                await asyncio.sleep(0.5)
+                after = await boxes["Body"].evaluate(BOX_ROWS)
+                if abs(after["height"] - got["Body"]["height"]) > 1:
+                    problems.append(f"at {width}, typing moved the Body from {got['Body']['height']}px to "
+                                    f"{after['height']}px")
+            finally:
+                await ctx.close()
+    finally:
+        try:
+            api(f"/api/orchestrations/runs/{run_id}/cancel", "POST", {})
+        except Exception:  # noqa: BLE001 — a fixture's run, cleaned up best effort
+            pass
+        drop_fixtures([oid])
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "a box of lines shows its start up to 14 rows, an empty one keeps 3, and typing does not move it"
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

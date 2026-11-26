@@ -13,6 +13,11 @@ answer is stored as it came, and a field left out takes its starting value as th
 
 Near misses: a Text field with a one-line starting value, or none, is still a one-line input; a Long text is a box of
 lines whatever it starts with; an email, a number or a date is never one.
+
+A box of lines is as tall as the value it starts with, up to 14 rows, then it scrolls: a 3-row box showed two and a half
+lines of the draft a person was asked to approve. It starts at a row per line of its starting value (`humanFieldRows`)
+and grows once, as drawn, to fit the lines that wrap; never by what is typed, so the card does not jump while a person
+edits. An empty box keeps its 3 rows.
 """
 from __future__ import annotations
 
@@ -82,6 +87,42 @@ class TestTheFormDrawsALineBreakAsALine:
         sent = ts(FIELDS, f"M.humanAnswer({json.dumps(DRAFT)}, {{...M.initialHumanValues({json.dumps(DRAFT)}), "
                           f"body: {json.dumps(edited)}}})")
         assert sent["body"] == edited
+
+
+class TestABoxOfLinesShowsItsStart:
+    @pytest.mark.parametrize("field, rows", [
+        pytest.param({"name": "body", "type": "text", "default": BODY}, 4, id="a four-line draft"),
+        pytest.param({"name": "body", "type": "text", "default": "\n".join(f"Line {n}" for n in range(1, 10))}, 9,
+                     id="nine lines"),
+        pytest.param({"name": "body", "type": "text", "default": "Dear team,\r\nThanks.\r\nRobin"}, 3,
+                     id="CRLF lines count once"),
+        pytest.param({"name": "body", "type": "text", "default": "Dear team,\nThanks."}, 3, id="two lines keep 3 rows"),
+        pytest.param({"name": "body", "type": "text", "default": "\n".join(["x"] * 40)}, 14,
+                     id="forty lines stop at 14"),
+    ])
+    def test_it_starts_a_row_per_line_of_its_start(self, ts, field, rows):
+        assert ts(FIELDS, f"M.humanFieldRows({json.dumps(field)})") == rows
+
+    @pytest.mark.parametrize("field", [
+        pytest.param({"name": "notes", "type": "textarea"}, id="an empty long text"),
+        pytest.param({"name": "notes", "type": "long_text", "default": ""}, id="a long text starting empty"),
+        pytest.param({"name": "notes", "type": "long_text", "default": "One line"}, id="a long text with one line"),
+    ])
+    def test_an_empty_or_short_box_keeps_its_3_rows(self, ts, field):
+        assert ts(FIELDS, f"M.humanFieldRows({json.dumps(field)})") == 3
+
+    def test_the_cap_is_14_rows(self, ts):
+        assert ts(FIELDS, "M.HUMAN_FIELD_MAX_ROWS") == 14
+
+    def test_the_form_sizes_the_box_by_its_start_not_what_is_typed(self):
+        source = FORM.read_text(encoding="utf-8")
+        assert "rows={3}" not in source, "a box of lines is 3 rows whatever it starts with"
+        assert "humanFieldRows(field)" in source, "the box starts at a row per line of its starting value"
+        assert "HUMAN_FIELD_MAX_ROWS" in source, "the box grows to fit its wrapped lines, up to the cap"
+        fit = re.search(r"useLayoutEffect\((?s:.*?)\},\s*\[([^\]]*)\]\)", source)
+        assert fit, "the box fits its start once, as drawn"
+        deps = [d.strip() for d in fit.group(1).split(",")]
+        assert "value" not in deps, "the box refits as a person types: the card jumps"
 
 
 class TestTheEngineKeepsTheLines:
