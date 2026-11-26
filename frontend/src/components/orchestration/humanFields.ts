@@ -87,6 +87,22 @@ export function humanFieldDrawsLines(field: HumanField): boolean {
     return type === 'string' && typeof field.default === 'string' && /[\r\n]/.test(field.default);
 }
 
+/** The tallest a box of lines grows to show its starting value; past it the box scrolls (F1759). */
+export const HUMAN_FIELD_MAX_ROWS = 14;
+/** An empty or short box of lines is this tall, as every box of lines was before F1759. */
+const MIN_ROWS = 3;
+
+/**
+ * The rows a box of lines starts at: one per line of its starting value, at least 3, at most 14 (F1759). A 3-row box
+ * showed two and a half lines of a draft a person was asked to approve. The form grows it once more, as drawn, to fit
+ * the lines that wrap; never by what is typed, so the card does not jump while a person edits.
+ */
+export function humanFieldRows(field: HumanField): number {
+    const start = typeof field.default === 'string' ? field.default : '';
+    const lines = start ? start.split(/\r\n|\r|\n/).length : 0;
+    return Math.min(HUMAN_FIELD_MAX_ROWS, Math.max(MIN_ROWS, lines));
+}
+
 /** A dropdown's options, as the step wrote them, blanks left out. */
 export function humanFieldOptions(field: HumanField): string[] {
     return (Array.isArray(field.options) ? field.options : []).map((o) => String(o).trim()).filter(Boolean);
