@@ -41,7 +41,9 @@ async def _turn(finish):
 async def test_the_model_is_told_the_tool_does_not_exist_and_what_it_has(fake_llm):
     fake_llm.script([tool_call("update_tasks", tasks=[]), "Done."])
     events = await _turn([])
-    assert {"type": "tool_result", "tool_name": "update_tasks", "preview": "Error: tool not found"} in events
+    # Not run, and why (F1752): marked, so no screen reads it by its words.
+    assert {"type": "tool_result", "tool_name": "update_tasks", "preview": "Error: tool not found",
+            "refused": True, "reason": "tool not found"} in events
     told = fake_llm.calls[1]["prompt_msg"]
     assert "Tool 'update_tasks' does not exist" in told
     assert "Available tools: lookup, submit_plan" in told

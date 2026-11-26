@@ -13,6 +13,7 @@
 import React from 'react';
 import { ChevronRight, MessageSquare, Square, Users } from 'lucide-react';
 
+import { callNote, isFailed, shownResult } from '@/lib/callMarks';
 import { cn } from '@/lib/cn';
 import { Button, Markdown } from '@/components/ui';
 import { HelperLanes } from '@/components/assistant/HelperLane';
@@ -80,14 +81,18 @@ function Calls({ member, all }: { member: MemberLaneData; all: boolean }) {
                         {call.args && Object.keys(call.args).length > 0 && (
                             <span className="text-text-faint"> {JSON.stringify(call.args)}</span>
                         )}
-                        <span className={cn('ml-1', call.refused ? 'text-danger' : call.result ? 'text-success' : 'text-text-faint')}>
-                            {call.refused ? '· not run' : call.result ? '✓' : '…'}
+                        {/* A call that failed never reads as done (F1752): its mark, not a tick. */}
+                        <span className={cn('ml-1', callNote(call) ? 'text-danger' : call.result ? 'text-success' : 'text-text-faint')}>
+                            {call.refused ? '· not run' : isFailed(call) ? '· failed' : call.result ? '✓' : '…'}
                         </span>
                     </p>
-                    {all && (call.result || call.refused) && (
-                        <p className={cn('mt-0.5 line-clamp-3 whitespace-pre-wrap break-words font-sans',
-                            call.refused ? 'text-danger' : 'text-text-muted')}>
-                            {call.refused ? `Not run: ${call.reason || 'refused'}` : call.result}
+                    {all && callNote(call) && (
+                        <p className="mt-0.5 line-clamp-3 whitespace-pre-wrap break-words font-sans text-danger">{callNote(call)}</p>
+                    )}
+                    {/* A failed call's result is what its agent was told, never shown; an older one's words are its reason. */}
+                    {all && !call.refused && shownResult(call) && (
+                        <p className="mt-0.5 line-clamp-3 whitespace-pre-wrap break-words font-sans text-text-muted">
+                            {shownResult(call)}
                         </p>
                     )}
                 </li>

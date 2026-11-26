@@ -48,6 +48,7 @@ import { BrowserActionLine } from "@/components/browser/BrowserActionLine";
 import { actionOf, type BrowserAction, type BrowserSessionEvent } from "@/components/browser/model";
 import { RetrievalTrace } from "@/components/RetrievalTrace";
 import { Spinner, TaskBox } from "@/components/ui";
+import { resultLine } from "@/lib/callMarks";
 import { DEGRADED, getQueryTrace, type SearchTrace } from "@/lib/knowledge";
 
 import type { Task } from "./model";
@@ -56,7 +57,11 @@ import { emptyTeam, foldTeam, isTeamEvent, type TeamState } from "@/components/t
 // The OSS BottomPanel's log-entry union, kept shape-for-shape so the renderer
 // below can stay a faithful port.
 export type ToolCallEntry = { kind: "tool_call"; tool_name: string; args: Record<string, unknown>; step_name?: string };
-export type ToolResultEntry = { kind: "tool_result"; tool_name: string; preview: string };
+export type ToolResultEntry = {
+  kind: "tool_result"; tool_name: string; preview: string;
+  /** Not run, or ran and failed, with why (F1752): as its event marks it. */
+  refused?: boolean; failed?: boolean; reason?: string;
+};
 export type StepResultEntry = { kind: "step_result"; step_name: string; step_type: string; content: string };
 export type ProseEntry = { kind: "reasoning" | "thought"; step_name?: string; content: string };
 // A structural log line: the tone picks an icon and a colour in the renderer —
@@ -393,7 +398,9 @@ export function applyRunEvent(state: RunLogState, data: any): RunLogState {
       };
     case "tool_result":
       if (data.tool_name === "update_tasks") return state;
-      return add({ kind: "tool_result", tool_name: data.tool_name, preview: data.preview || "" });
+      return add({ kind: "tool_result", tool_name: data.tool_name, preview: data.preview || "",
+                   ...(data.refused ? { refused: true, reason: String(data.reason ?? "") }
+                     : data.failed ? { failed: true, reason: String(data.reason ?? "") } : {}) });
     case "tasks_updated":
       // A delegate's plan is its own, never the run's (F536): the engine forwards
       // it tagged `delegate_from`, and the run keeps its lead's.
@@ -588,10 +595,13 @@ export function LogLine({ entry, onOpen }: { entry: LogEntry; onOpen: (e: StepRe
     if (entry.kind === "retrieval") return <RetrievalRow entry={entry} />;
     if (entry.kind === "browser_group") return <BrowserGroupRow entry={entry} />;
     if (entry.kind === "tool_result") {
+      // Not run, or failed, with why; a failed call's result is what its agent was told, never shown (F1752).
+      const line = resultLine({ tool: entry.tool_name, result: entry.preview, refused: entry.refused,
+                                failed: entry.failed, reason: entry.reason });
       return (
-        <div className="flex items-start gap-1.5 pl-4 text-[10px] text-text-faint">
+        <div className={`flex items-start gap-1.5 pl-4 text-[10px] ${line.marked ? "text-danger" : "text-text-faint"}`}>
           <CornerDownRight size={10} className="mt-[2px] shrink-0" aria-hidden />
-          <span className="min-w-0 flex-1">{entry.preview.slice(0, 200)}{entry.preview.length > 200 ? "…" : ""}</span>
+          <span className="min-w-0 flex-1">{line.text.slice(0, 200)}{line.text.length > 200 ? "…" : ""}</span>
         </div>
       );
     }

@@ -1166,6 +1166,9 @@ class Team:
                         member.calls[-1]["result"] = _clip(event.get("preview") or "", CALL_RESULT_CHARS)
                         if event.get("refused"):
                             member.calls[-1].update(refused=True, reason=event.get("reason") or "")
+                        elif event.get("failed"):
+                            # Ran, and its tool said it failed (F1752), as a turn's own calls keep it.
+                            member.calls[-1].update(failed=True, reason=event.get("reason") or "")
                     if kind in SHOWN:
                         self._emit(member.tag(event))
                 if asked is None:

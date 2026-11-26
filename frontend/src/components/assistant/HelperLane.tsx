@@ -14,6 +14,7 @@
 import React from 'react';
 import { Bot, Square, Bookmark, ChevronRight } from 'lucide-react';
 
+import { callNote, shownResult } from '@/lib/callMarks';
 import { cn } from '@/lib/cn';
 import { Button } from '@/components/ui';
 
@@ -79,11 +80,16 @@ export function HelperLane({
                                                 <span className="text-text-faint"> {JSON.stringify(call.args)}</span>
                                             )}
                                         </p>
-                                        <p className={cn('mt-0.5 whitespace-pre-wrap break-words',
-                                            call.refused ? 'text-danger' : 'text-text-muted')}>
-                                            {call.refused ? `Not run: ${call.reason || 'refused'}`
-                                                : (call.result || (working ? '…' : '(no output)'))}
-                                        </p>
+                                        {/* Not run, or failed, with why (F1752). A failed call's result is what its
+                                            agent was told and is never shown; an older one's words are its reason. */}
+                                        {callNote(call) && (
+                                            <p className="mt-0.5 whitespace-pre-wrap break-words text-danger">{callNote(call)}</p>
+                                        )}
+                                        {!call.refused && (!callNote(call) || shownResult(call)) && (
+                                            <p className="mt-0.5 whitespace-pre-wrap break-words text-text-muted">
+                                                {shownResult(call) || (working ? '…' : '(no output)')}
+                                            </p>
+                                        )}
                                     </li>
                                 ))}
                             </ol>

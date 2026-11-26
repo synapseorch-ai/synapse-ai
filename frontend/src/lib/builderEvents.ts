@@ -12,6 +12,7 @@
  * twice must not append the message twice.
  */
 
+import { resultLine } from '@/lib/callMarks';
 import { reasonHeadline } from '@/lib/runErrors';
 
 export type BuilderMessageKind =
@@ -527,9 +528,14 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
             });
 
         case 'tool_result':
+            // A call marked failed reads "failed — why", never the line its agent was told (F1752). Only that mark:
+            // the trail's other words (a refusal, the builder's own answers) read as they always have.
             return append(state, {
                 role: 'assistant', content: '', kind: 'tool_result', key,
-                toolName: event.tool_name ?? '', toolPreview: trailPreview(String(event.preview ?? '')),
+                toolName: event.tool_name ?? '',
+                toolPreview: resultLine({ tool: event.tool_name ?? '', result: trailPreview(String(event.preview ?? '')),
+                                          failed: event.failed === true,
+                                          reason: event.failed === true ? String(event.reason ?? '') : '' }).text,
             });
 
         case 'resource_saved': {

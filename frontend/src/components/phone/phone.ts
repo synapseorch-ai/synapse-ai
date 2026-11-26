@@ -7,6 +7,7 @@
  * engine's records (VOX1a's `voice_calls` record, a `messaging_channels`
  * document), so one mapper serves both.
  */
+import { isFailed } from '@/lib/callMarks';
 
 export const PLATFORM = 'twilio_voice';
 
@@ -84,6 +85,8 @@ export type ToolLine = {
     args: Record<string, unknown> | null;
     result: string | null;
     refused: boolean;
+    /** Ran, and its tool said it failed (F1752): its saved mark; an older record's by how its result reads. */
+    failed: boolean;
     reason: string | null;
 };
 
@@ -213,16 +216,19 @@ export function callFromRecord(raw: unknown): CallRecord {
 function toolLines(calls: unknown, names: unknown): ToolLine[] {
     const detailed = list(calls).map(c => {
         const call = obj(c) ?? {};
+        const name = str(call.tool) || str(call.name);
+        const result = call.result == null ? null : typeof call.result === 'string' ? call.result : JSON.stringify(call.result);
+        const refused = call.refused === true;
         return {
-            name: str(call.tool) || str(call.name),
-            args: obj(call.args),
-            result: call.result == null ? null : typeof call.result === 'string' ? call.result : JSON.stringify(call.result),
-            refused: call.refused === true,
+            name, args: obj(call.args), result, refused,
+            // Its mark (F1752); a call saved with none is read by its words, as an older engine's.
+            failed: isFailed({ tool: name, result, refused, ...(call.failed === true ? { failed: true } : {}) }),
             reason: strOrNull(call.reason),
         };
     }).filter(t => t.name);
     if (detailed.length) return detailed;
-    return list(names).map(String).filter(Boolean).map(name => ({ name, args: null, result: null, refused: false, reason: null }));
+    return list(names).map(String).filter(Boolean)
+        .map(name => ({ name, args: null, result: null, refused: false, failed: false, reason: null }));
 }
 
 function turnFrom(said: unknown, answer: Record<string, unknown>, at: unknown): CallTurn {

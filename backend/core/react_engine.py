@@ -3568,13 +3568,20 @@ async def run_agent_step(
 
                 # ── The caller's own tools (VOX1a): its handler answers ──────────
                 if tool_name in _extra_handlers:
+                    _x_failed = False
                     try:
                         _x_result = str(await _extra_handlers[tool_name](tool_args))
                     except Exception as _x_err:  # noqa: BLE001 — told to the model, as any tool error is
-                        _x_result = f"Error: {_x_err}"
+                        _x_result, _x_failed = f"Error: {_x_err}", True
                     current_context_text += f"\n[Turn {turn + 1} — Observation] {tool_name}: {_x_result}\n"
                     tools_used_summary.append(tool_name)
-                    yield {"type": "tool_result", "tool_name": tool_name, "preview": _x_result[:500]}
+                    if _x_failed:
+                        # It ran and raised (F1752): marked, the reason what its preview says after "Error: ".
+                        _open_failure = _x_result[:500].removeprefix("Error: ")
+                        yield {"type": "tool_result", "tool_name": tool_name, "preview": _x_result[:500],
+                               "failed": True, "reason": _open_failure}
+                    else:
+                        yield {"type": "tool_result", "tool_name": tool_name, "preview": _x_result[:500]}
                     if getattr(_extra_handlers[tool_name], "ends_turn", False):
                         _caller_ended = _x_result
                         break
@@ -3587,7 +3594,10 @@ async def run_agent_step(
                         _sk_msg = (f"Unknown skill '{_sk_name}'. Your skills: "
                                    f"{', '.join(_skill_names)}.")
                         current_context_text += f"\nSystem: {_sk_msg}\n"
-                        yield {"type": "tool_result", "tool_name": SKILL_TOOL_NAME, "preview": _sk_msg}
+                        # Not run (F1752): marked, so no screen reads it as loaded; the reason is its own preview.
+                        _open_refusal = _sk_msg
+                        yield {"type": "tool_result", "tool_name": SKILL_TOOL_NAME, "preview": _sk_msg,
+                               "refused": True, "reason": _sk_msg}
                         continue
                     if _sk_name in _loaded_skills:
                         _sk_msg = (f"Skill '{_sk_name}' is already loaded — its instructions "
@@ -3599,7 +3609,9 @@ async def run_agent_step(
                     if _skill_doc is None:
                         _sk_msg = f"Skill '{_sk_name}' could not be read (it may have been deleted)."
                         current_context_text += f"\nSystem: {_sk_msg}\n"
-                        yield {"type": "tool_result", "tool_name": SKILL_TOOL_NAME, "preview": _sk_msg}
+                        _open_refusal = _sk_msg  # not run (F1752)
+                        yield {"type": "tool_result", "tool_name": SKILL_TOOL_NAME, "preview": _sk_msg,
+                               "refused": True, "reason": _sk_msg}
                         continue
                     _sk_body = clip_body(_skill_doc.get("body") or "(this skill has an empty body)")
                     _loaded_skills.add(_sk_name)
@@ -3644,8 +3656,10 @@ async def run_agent_step(
                                           "and saving that to memory needs a person's approval, which nobody "
                                           "can give here. Report it in your answer instead.")
                             current_context_text += f"\nSystem: {_not_saved}\n"
+                            _open_refusal = "needs a person's approval"  # not run (F1752): its preview's words
                             yield {"type": "tool_result", "tool_name": tool_name,
-                                   "preview": "Not saved: needs a person's approval"}
+                                   "preview": "Not saved: needs a person's approval",
+                                   "refused": True, "reason": _open_refusal}
                             continue
                         else:
                             _log.warning("⏸ 'remember' after read content needs approval")
@@ -3744,10 +3758,13 @@ async def run_agent_step(
                     except Exception as _mem_exc:
                         _mem_preview = f"Memory error: {_mem_exc}"
                         current_context_text += f"\nSystem: {_mem_preview}\n"
+                        # It ran and raised (F1752): its preview's words.
+                        _open_failure = str(_mem_exc) or "Memory error"
                     if tool_name in ("remember", "forget_memory"):
                         current_context_text += f"\nSystem: {_mem_preview}.\n"
                     tools_used_summary.append(f"{tool_name}: {_mem_preview}")
-                    yield {"type": "tool_result", "tool_name": tool_name, "preview": _mem_preview}
+                    yield {"type": "tool_result", "tool_name": tool_name, "preview": _mem_preview,
+                           **({"failed": True, "reason": _open_failure} if _open_failure else {})}
                     _log.debug(f"🧠 {tool_name}: {len(_mem_preview)} chars")
                     continue
 
@@ -3946,7 +3963,9 @@ async def run_agent_step(
                 if tool_name == "query_past_conversations":
                     # Tool has been removed — inform the LLM
                     current_context_text += f"\nSystem: The 'query_past_conversations' tool is no longer available. Use the current conversation context instead.\n"
-                    yield {"type": "tool_result", "tool_name": tool_name, "preview": "Tool removed"}
+                    _open_refusal = "tool removed"  # not run (F1752): its preview's words
+                    yield {"type": "tool_result", "tool_name": tool_name, "preview": "Tool removed",
+                           "refused": True, "reason": _open_refusal}
                     continue
 
                 # ===== BUILT-IN EXECUTOR OVERRIDE (e.g. builder) =====
@@ -4004,7 +4023,9 @@ async def run_agent_step(
                     if not target_agent:
                         block_msg = f"Agent '{target_agent_id}' not found or not available for delegation."
                         current_context_text += f"\nSystem: {block_msg}\n"
-                        yield {"type": "tool_result", "tool_name": tool_name, "preview": block_msg}
+                        _open_refusal = block_msg  # not run (F1752): nothing was handed to anyone
+                        yield {"type": "tool_result", "tool_name": tool_name, "preview": block_msg,
+                               "refused": True, "reason": block_msg}
                         continue
 
                     agent_name = target_agent.get("name", target_agent_id)
@@ -4143,7 +4164,12 @@ async def run_agent_step(
                     tools_used_summary.append(f"{tool_name}: {raw_output}")
                     preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
                     _log.debug(f"🏗 Builder tool ({tool_name}): {len(raw_output)} chars")
-                    yield {"type": "tool_result", "tool_name": tool_name, "preview": preview}
+                    # A builder tool that answered in its failure shape, or raised (F1752): marked, by the same reading
+                    # the Tool step and an MCP built-in use. What the model reads is unchanged.
+                    from core.tool_result import built_in_failure as _built_in_failure
+                    _open_failure = _built_in_failure(raw_output)
+                    yield {"type": "tool_result", "tool_name": tool_name, "preview": preview,
+                           **({"failed": True, "reason": _open_failure} if _open_failure else {})}
                     # What the tool actually changed, in full, after the
                     # truncated preview the model sees. This is what the panel
                     # reads instead of running a regex over `preview`.
@@ -4170,6 +4196,7 @@ async def run_agent_step(
 
                         # ── Python Tool ──────────────────────────────────────────
                         if tool_type == "python":
+                            _py_said = False  # its result was said: a raise after it is not the call's failure
                             try:
                                 from core.execution import (
                                     ExecRequest as _ExecRequest,
@@ -4243,13 +4270,22 @@ async def run_agent_step(
                                 tools_used_summary.append(f"{tool_name}: {raw_output}")
                                 _log.debug(f"🐍 Python Tool Result ({tool_name}): {len(raw_output)} chars")
                                 preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
+                                _py_said = True
                                 yield {"type": "tool_result", "tool_name": tool_name, "preview": preview}
                                 last_intent = "custom_tool"
                                 last_data = json.loads(raw_output) if raw_output else {}
                                 continue
                             except Exception as e:
                                 current_context_text += f"\nSystem: Error executing Python tool '{tool_name}': {str(e)}\n"
-                                yield {"type": "tool_result", "tool_name": tool_name, "preview": f"Error: {e}"}
+                                if _py_said:
+                                    # Raised after its result was said (reading a vaulted answer back): the call ran,
+                                    # and is not marked failed.
+                                    yield {"type": "tool_result", "tool_name": tool_name, "preview": f"Error: {e}"}
+                                else:
+                                    # It raised running (F1752): marked, the reason what its preview says.
+                                    _open_failure = f"{e}"[:493] or type(e).__name__
+                                    yield {"type": "tool_result", "tool_name": tool_name, "preview": f"Error: {e}",
+                                           "failed": True, "reason": _open_failure}
                                 continue
 
                         # ── HTTP / Webhook Tool ───────────────────────────────────
@@ -4310,13 +4346,23 @@ async def run_agent_step(
                                       if may_have_reached(e) and not may_repeat(target_tool) else "")
                             current_context_text += (f"\nSystem: Error executing custom tool {tool_name}: "
                                                      f"{str(e) or type(e).__name__}{_maybe}\n")
+                            # It was sent and raised (a timeout, a refused connection) (F1752): its call used to
+                            # end with no result at all, so it read as running until the turn ended. Marked, the
+                            # reason what its preview says. What the model reads is above, unchanged.
+                            _http_preview = f"Error: {str(e) or type(e).__name__}"[:500]
+                            _open_failure = _http_preview.removeprefix("Error: ")
+                            yield {"type": "tool_result", "tool_name": tool_name, "preview": _http_preview,
+                                   "failed": True, "reason": _open_failure}
                             continue
 
                     # A tool it names whose app isn't here now (F1349): its app's reason, never "does not exist".
                     _missing = next((u for u in _unavailable if u.name == tool_name), None)
                     if _missing is not None:
                         current_context_text += f"\nSystem: {_missing.answer()}\n"
-                        yield {"type": "tool_result", "tool_name": tool_name, "preview": f"Error: {_missing.answer()}"}
+                        # Not run (F1752): why, as its preview says it, without what the agent is told to do.
+                        _open_refusal = _missing.why
+                        yield {"type": "tool_result", "tool_name": tool_name, "preview": f"Error: {_missing.answer()}",
+                               "refused": True, "reason": _open_refusal}
                         continue
 
                     # Hallucinated / unknown tool
@@ -4331,7 +4377,9 @@ async def run_agent_step(
                         f"Available tools: {names_str}. "
                         f"Use one of these tools, or respond with plain text if no tool is needed.\n"
                     )
-                    yield {"type": "tool_result", "tool_name": tool_name, "preview": "Error: tool not found"}
+                    _open_refusal = "tool not found"  # not run (F1752): its preview's words
+                    yield {"type": "tool_result", "tool_name": tool_name, "preview": "Error: tool not found",
+                           "refused": True, "reason": _open_refusal}
                     continue
 
                 # ===== MCP TOOLS =====
@@ -4342,7 +4390,10 @@ async def run_agent_step(
                     # Offered, then its app's session went (F1349): said as the app's, never a KeyError.
                     _gone = _tool_availability.why_unavailable(tool_name, server_module, where="this agent")
                     current_context_text += f"\nSystem: {_gone.answer()}\n"
-                    yield {"type": "tool_result", "tool_name": tool_name, "preview": f"Error: {_gone.answer()}"}
+                    # Not run (F1752): why, as its preview says it, without what the agent is told to do.
+                    _open_refusal = _gone.why
+                    yield {"type": "tool_result", "tool_name": tool_name, "preview": f"Error: {_gone.answer()}",
+                           "refused": True, "reason": _open_refusal}
                     continue
 
                 # Before the call, not after: the guard exists so a `db_id` the
@@ -4351,13 +4402,19 @@ async def run_agent_step(
                 if _db_refusal:
                     _log.debug(f"🚫 db allowlist refused '{tool_name}': {_db_refusal}")
                     current_context_text += f"\nSystem: {_db_refusal}\n"
+                    # Not run (F1752): refused before any connection. Its first sentence, as its preview says it,
+                    # without what the agent is told to choose.
+                    _open_refusal = _db_refusal.split(". ", 1)[0]
                     yield {
                         "type": "tool_result",
                         "tool_name": tool_name,
                         "preview": f"Error: {_db_refusal}",
+                        "refused": True,
+                        "reason": _open_refusal,
                     }
                     continue
 
+                _mcp_said = False
                 try:
                     # Force event-loop checkpoint before MCP operations.
                     # The MCP stdio transport uses 0-buffer memory streams
@@ -4386,7 +4443,10 @@ async def run_agent_step(
                             await server_module.mcp_manager._set_status(_mcp_srv_name, "disconnected")
                         except Exception:
                             pass
-                        yield {"type": "tool_result", "tool_name": tool_name, "preview": f"Error: session unresponsive"}
+                        # Not run (F1752): the ping comes before `call_tool`, so the call was never sent.
+                        _open_refusal = "session unresponsive"
+                        yield {"type": "tool_result", "tool_name": tool_name, "preview": f"Error: session unresponsive",
+                               "refused": True, "reason": _open_refusal}
                         continue
 
                     _log.debug(f"MCP: ✓ ping OK [{round(time.time()-_mcp_t0,2)}s] — call_tool starting")
@@ -4518,6 +4578,7 @@ async def run_agent_step(
                         _log.debug(f"📤 Tool Result ({tool_name}): {len(raw_output)} chars")
 
                     # MCP tool results are no longer embedded in ChromaDB
+                    _mcp_said = True  # a raise after this (the pane's events, a hook) is not the call's failure
                     if _mcp_failed:
                         yield {"type": "tool_result", "tool_name": tool_name, "preview": _line[:500],
                                "failed": True, "reason": _mcp_failed}
@@ -4572,7 +4633,14 @@ async def run_agent_step(
                             await server_module.mcp_manager._set_status(_mcp_srv_name, "disconnected")
                     except Exception:
                         pass
-                    yield {"type": "tool_result", "tool_name": tool_name, "preview": f"Error: {error_msg}"}
+                    if _mcp_said:
+                        # Raised after its result was said: the call ran, and is not marked failed.
+                        yield {"type": "tool_result", "tool_name": tool_name, "preview": f"Error: {error_msg}"}
+                    else:
+                        # The call raised (F1752): sent, so it may have run. Marked, the reason its preview's words.
+                        _open_failure = error_msg or type(e).__name__
+                        yield {"type": "tool_result", "tool_name": tool_name, "preview": f"Error: {error_msg}",
+                               "failed": True, "reason": _open_failure}
             _close_call()
             _finished = _finished or _finish_result(_finish_pending, tools_used_summary)
             _finish_pending = None

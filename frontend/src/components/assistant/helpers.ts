@@ -12,6 +12,8 @@
  * `foldHelpers` and draws `HelperLane`.
  */
 
+import { resultOf } from '@/lib/callMarks';
+
 export type HelperStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'timed_out';
 
 export type HelperCall = {
@@ -19,6 +21,8 @@ export type HelperCall = {
     args?: Record<string, unknown> | null;
     result?: string;
     refused?: boolean;
+    /** Ran, and its tool said it failed (F1752): marked on its event and its saved record, with `reason`. */
+    failed?: boolean;
     reason?: string;
 };
 
@@ -64,7 +68,8 @@ export function laneFromRecord(record: Wire): HelperLaneData {
         seconds: typeof record.seconds === 'number' ? record.seconds : undefined,
         calls: Array.isArray(record.calls) ? record.calls.map((c: Wire) => ({
             tool: String(c.tool ?? ''), args: c.args ?? null, result: c.result ?? '',
-            ...(c.refused ? { refused: true, reason: c.reason ?? '' } : {}),
+            ...(c.refused ? { refused: true, reason: c.reason ?? '' }
+                : c.failed ? { failed: true, reason: c.reason ?? '' } : {}),
         })) : [],
         answer: String(record.answer ?? ''),
         error: record.error ? String(record.error) : undefined,
@@ -122,8 +127,8 @@ export function foldLaneEvent<L extends LaneWork>(lane: L, inner: Wire): L {
             const calls = [...lane.calls];
             const at = calls.findLastIndex((c) => c.tool === inner.tool_name && !c.result && !c.refused);
             if (at !== -1) {
-                calls[at] = { ...calls[at], result: String(inner.preview ?? ''),
-                              ...(inner.refused ? { refused: true, reason: String(inner.reason ?? '') } : {}) };
+                // Not run, or ran and failed, with why: as every screen reads a call's event (F1752).
+                calls[at] = { ...calls[at], ...resultOf(inner) } as HelperCall;
             }
             return { ...lane, calls };
         }

@@ -21,6 +21,7 @@ import { useEffect, useState } from 'react';
 import { RunChip } from '@/components/assistant';
 import { TimeOfDay, When, money, useClock, type Clock } from '@/components/run';
 import { Badge, Button, ErrorNote, StatStrip, type StatCell } from '@/components/ui';
+import { callNote, shownResult, type MarkedCall } from '@/lib/callMarks';
 import { cn } from '@/lib/cn';
 
 import { usePhoneHost } from './host';
@@ -63,14 +64,20 @@ function offset(at: string | null, startedAt: string | null): string | null {
     return Number.isNaN(ms) || ms < 0 ? null : clockLength(ms / 1000);
 }
 
+/** A phone tool line as every screen's call reads (F1752). */
+function marked(tool: CallTurn['tools'][number]): MarkedCall {
+    return { tool: tool.name, result: tool.result, refused: tool.refused, failed: tool.failed, reason: tool.reason };
+}
+
 function ToolDetail({ tool }: { tool: CallTurn['tools'][number] }) {
     const args = tool.args && Object.keys(tool.args).length ? JSON.stringify(tool.args) : null;
     return (
         <div className="grid gap-1 rounded-md border border-border bg-surface-2 px-2.5 py-2 font-code text-xs text-text-muted">
             {args && <span className="break-words">{args}</span>}
-            {tool.refused
-                ? <span className="text-text">Refused{tool.reason ? `: ${tool.reason}` : ''}</span>
-                : tool.result && <span className="line-clamp-6 whitespace-pre-wrap break-words text-text">{tool.result}</span>}
+            {/* Not run, or failed, with why (F1752); a failed call's result is what its agent was told, never shown. */}
+            {callNote(marked(tool)) && <span className="text-danger">{callNote(marked(tool))}</span>}
+            {!tool.refused && shownResult(marked(tool))
+                && <span className="line-clamp-6 whitespace-pre-wrap break-words text-text">{shownResult(marked(tool))}</span>}
         </div>
     );
 }
@@ -113,7 +120,7 @@ function Turn({ turn, startedAt, after, clock }: { turn: CallTurn; startedAt: st
                             icon={<Wrench className="size-3.5" />}
                             label={<span className="font-code">{tool.name}</span>}
                             detail={tool.args || tool.result || tool.refused ? <ToolDetail tool={tool} /> : undefined}
-                            tone={tool.refused ? 'danger' : 'default'}
+                            tone={tool.refused || tool.failed ? 'danger' : 'default'}
                             className="w-fit max-w-full"
                         />
                     ))}

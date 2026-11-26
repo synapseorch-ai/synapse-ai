@@ -44,7 +44,7 @@ import {
 import { readWithStallTimeout } from '@/lib/sse';
 import { formatRelativeTime } from '@/lib/relativeTime';
 import { refusedAnswerMessage } from '@/lib/answers';
-import { callNote, resultOf, shownResult, tallyOf } from '@/lib/callMarks';
+import { callNote, isFailed, resultOf, shownResult, tallyOf } from '@/lib/callMarks';
 import { useModelSetup } from '@/components/onboarding/ModelSetupProvider';
 import { KnowledgeCitation, Message, OrchMsgType, SystemStatus } from '@/types';
 import { KnowledgeSources, linkLabels } from '@/components/knowledge/KnowledgeSources';
@@ -313,10 +313,10 @@ function AssistantBubble({ msg, agentName }: { msg: Message; agentName: string }
       {msg.thoughts && msg.thoughts.length > 0 && (
         <ThoughtCollapsible thoughts={msg.thoughts} />
       )}
-      {calls.some(c => c.failed && !c.refused) && (
+      {calls.some(isFailed) && (
         // What this turn ran that failed (F1751): the answer above may say it was sent.
         <ul className="space-y-0.5 text-xs text-danger" aria-label="Calls that failed">
-          {calls.filter(c => c.failed && !c.refused).map((c, i) => (
+          {calls.filter(isFailed).map((c, i) => (
             <li key={i} className="flex gap-1.5">
               <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
               <span>Failed: <span className="font-code" translate="no">{c.tool}</span>{c.reason ? ` — ${c.reason}` : ''}</span>
@@ -378,7 +378,7 @@ function ToolsUsed({ calls }: { calls: SavedCall[] }) {
                 <div className="flex items-baseline gap-2">
                   <span className="font-code text-text" translate="no">{call.tool}</span>
                   {callNote(call) && (
-                    <span className={call.failed && !call.refused ? 'text-danger' : 'text-warning'}>{callNote(call)}</span>
+                    <span className={isFailed(call) ? 'text-danger' : 'text-warning'}>{callNote(call)}</span>
                   )}
                 </div>
                 {call.browser ? (

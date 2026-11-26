@@ -332,6 +332,13 @@ async def _v1_turn_events(chat_request, agent: dict, _server, resume_state: dict
                 if event.get("refused"):
                     # Not run (U68): the answer may still say it was done.
                     frame.update(refused=True, reason=event.get("reason"), category=event.get("category"))
+                elif event.get("failed"):
+                    # Ran and failed (F1752). Its reason only when the frame's preview already says it: a public
+                    # read gains no text it did not carry.
+                    frame["failed"] = True
+                    why, shown = str(event.get("reason") or ""), str(event["preview"] or "")
+                    if why and why.casefold() in shown.casefold():
+                        frame["reason"] = why
                 yield frame
 
             elif etype == "llm_thought":
