@@ -29,3 +29,9 @@ def test_the_run_pages_column_is_as_wide_as_the_page():
     source = (RUN / "RunDetail.tsx").read_text(encoding="utf-8")
     assert '<div className="grid grid-cols-[minmax(0,1fr)] gap-7">' in source, \
         "the run page's column grows to its widest item: a log's unbroken id pushes the card past a phone"
+
+
+def test_the_activity_sections_column_is_as_wide_as_the_section():
+    source = (RUN / "RunActivity.tsx").read_text(encoding="utf-8")
+    assert 'className="grid grid-cols-[minmax(0,1fr)] gap-2.5" id="activity"' in source, \
+        "the Activity section's column grows to the log's widest line and its header passes a phone's screen"

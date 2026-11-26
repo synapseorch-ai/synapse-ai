@@ -214,7 +214,9 @@ export function RunActivity({
 
     return (
         <>
-            <RCollapsible.Root open={open} onOpenChange={setOpen} className="grid gap-2.5" id="activity">
+            {/* One column the section's width decides (F1760): an `auto` one grew to the log's unbroken run id and
+                pushed the header past a phone's screen; the log scrolls a long line in its own box. */}
+            <RCollapsible.Root open={open} onOpenChange={setOpen} className="grid grid-cols-[minmax(0,1fr)] gap-2.5" id="activity">
                 <RCollapsible.Trigger
                     className={cn('-mx-2 flex items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-surface-2', focusRing)}
                 >
