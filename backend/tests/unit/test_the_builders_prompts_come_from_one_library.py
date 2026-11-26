@@ -231,7 +231,9 @@ from core.native_builder import prompt_lint, seed
 #: F1753: plan_steps.md's human bullet and the step cheatsheet say a field the person may change before it goes starts
 #: with what an earlier step wrote (`default`), the step's prompt never repeating it, and one only they type has none,
 #: 08bca3f3… (on F1749's 8ff87166).
-BUNDLE_SHA256 = "08bca3f354b15946d130287b6c3d0b2a517cfa3aeced4d08c8020f2d26992caf"
+#: F1754: plan_steps.md's human bullet says a check before something goes out shows what goes out, each value the send
+#: sends from an earlier step in its prompt or as a field's `default`, 15e5b5c8… (on F1753's 08bca3f3).
+BUNDLE_SHA256 = "15e5b5c8378b4c758d77ade8491c9fcb86cc6eee99981b8f4c8cdee21c4b7ab7"
 
 
 def _sha(definitions) -> str:

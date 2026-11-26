@@ -211,12 +211,91 @@ async def empty_starts(plan: O.Plan, ws: Any, server_module: Any) -> list[EmptyS
     return out
 
 
+# ── What a send after an approval sends, shown by it (F1754) ────────────────────────────────────────────────────────
+#
+# A send whose inputs are set passes F1743, whatever its approval shows: "Here is the email drafted. Please review and
+# approve or decline", with no value of the draft in it, and the draft goes out unseen. So every value such a send sets
+# from an earlier step, who it goes to and what it says, is one the approval shows: in its words, as a field's
+# starting value (F1753), or through the value that holds it. An id is not a thing a person approves.
+
+#: Said once a run, as `SAID` is.
+UNSHOWN_SAID = "_unshown_send_said"
+#: An input that names a thing rather than says something: never asked to be shown.
+_AN_ID = re.compile(r"(^|_)(id|ids|uuid|key)$", re.I)
+
+
+@dataclass(frozen=True)
+class Unshown:
+    send: O.Step
+    approval: O.Step
+    refs: tuple[str, ...]
+    inputs: tuple[str, ...]
+    address: str | None
+
+    def sendback(self) -> str:
+        refs = ", ".join("{{state.%s}}" % r for r in self.refs)
+        them = "it" if len(self.refs) == 1 else "them"
+        name = self.inputs[0]
+        example = "%s: {{state.%s}}" % (name.replace("_", " ").capitalize(), self.refs[0])
+        return (f'step {self.send.id}: it sends {refs} after "{self.approval.name}" is approved, but that step never '
+                f"shows {them}, so the person would approve what they never saw. Show each in its words, e.g. "
+                f'"{example}", or start a field with it as its `default`.')
+
+    def card(self) -> str:
+        said = ["who it goes to" if i == self.address else f"the {i.replace('_', ' ')}" for i in self.inputs]
+        listed = said[0] if len(said) == 1 else f"{', '.join(said[:-1])} and {said[-1]}"
+        return f'"{self.approval.name}" is approved without showing {listed} "{self.send.name}" sends.'
+
+
+def _says_something(name: str, prop: Any) -> bool:
+    """An input a person would judge: text that is not an id, a choice or a formatted value (a date, a link)."""
+    if _AN_ID.search(name):
+        return False
+    if not isinstance(prop, dict):
+        return True
+    return prop.get("type") in (None, "string") and "enum" not in prop and "format" not in prop
+
+
+async def unshown_in(plan: O.Plan, ws: Any, server_module: Any) -> list[Unshown]:
+    """Every send after an approval, its inputs set, that sends a value from an earlier step its approval never
+    shows: never a tool that only reads, never what the person answered on the approval itself."""
+    import json
+
+    out: list[Unshown] = []
+    for steps in (plan.steps, *(w.steps for w in plan.inner_workflows)):
+        for h, s in _set_after_approvals(list(steps)):
+            schema, reads = await _what_it_takes(s.tool or "", plan, ws, server_module)
+            if reads or not isinstance(schema, dict):
+                continue
+            props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+            address = address_input(schema)
+            own = {h.id, str((h.config or {}).get("output_key") or h.id)}
+            shown = _shown(h)
+            refs: list[str] = []
+            inputs: list[str] = []
+            for name, value in (s.config or {}).get("tool_arguments", {}).items():
+                if name != address and not _says_something(name, props.get(name)):
+                    continue
+                for ref in STATE_REF.findall(json.dumps(value, default=str)):
+                    if ref.split(".")[0] in own or any(ref == x or ref.startswith(x + ".") for x in shown):
+                        continue
+                    if ref not in refs:
+                        refs.append(ref)
+                    if name not in inputs:
+                        inputs.append(name)
+            if refs:
+                out.append(Unshown(s, h, tuple(refs), tuple(inputs), address))
+    return out
+
+
 async def issues(plan: O.Plan, ws: Any, state: dict, server_module: Any, notes: list[str] | None) -> list[str]:
     """Sent back once a run, then said on the card while the plan keeps the shape: never a block. Each rule here —
-    a model-filled send after an approval (F1743), a field a send reads that starts empty (F1753) — is asked once."""
+    a model-filled send after an approval (F1743), a field a send reads that starts empty (F1753), a value a send
+    sends that its approval never shows (F1754) — is asked once."""
     out: list[str] = []
     for key, found in ((SAID, await found_in(plan, ws, server_module)),
-                       (EMPTY_SAID, await empty_starts(plan, ws, server_module))):
+                       (EMPTY_SAID, await empty_starts(plan, ws, server_module)),
+                       (UNSHOWN_SAID, await unshown_in(plan, ws, server_module))):
         if not found:
             continue
         if not state.get(key):
