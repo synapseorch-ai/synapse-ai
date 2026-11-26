@@ -8,8 +8,9 @@ same text above it; a field the person must type has none.
 
 Two checks hold the plan to it. A starting value written out that its field cannot take (not one of its options, not a
 number, not an email) is sent back, every time. A field a later send sets as an input that starts empty is sent back
-once ("give it a starting value from the step that wrote it, or leave it empty if the person types it"); kept so, the
-card says the person fills it in, never a block.
+once ("give it a starting value from the step that wrote it, or leave it empty if the person types it"); kept so, it
+is how the plan works: nothing is said on the card, and it is never a block. Fields that carry a draft sit beside the
+step's yes or no, never in its place, so the person can still decline.
 
 Near misses: a field with a starting value, a field only a Print reads, the approval's own Yes / No, a send whose
 inputs read the draft itself, and a starting value written as a reference (checked when the run asks).
@@ -88,6 +89,14 @@ class TestThePlannerIsTold:
         assert '"default": "{{state.<step id>.<field>}}"' in human
         assert "never repeats" in human and "the person types" in human
 
+    def test_fields_that_carry_a_draft_sit_beside_the_approval(self):
+        """The draft's fields never take the place of the step's yes or no: the step still asks its approval, so the
+        person can decline."""
+        from core.native_builder import seed
+
+        human = next(line for line in seed.prompt_fragment("plan_steps").splitlines() if line.startswith("- `human`"))
+        assert "beside the step's approval" in human and "Decline stays" in human
+
     def test_the_field_shape_names_a_starting_value(self):
         from core.native_builder import STEP_TYPE_CHEATSHEET
 
@@ -126,7 +135,7 @@ class TestAStartingValueItsFieldCannotTake:
 
 
 class TestAFieldASendReadsThatStartsEmpty:
-    async def test_is_sent_back_once_then_the_card_says_the_person_fills_it_in(self):
+    async def test_is_sent_back_once_then_kept_with_no_line_on_the_card(self):
         plan = _plan(DRAFT, _without_default(REVIEW, "to"), GATE, SEND)
         state = {"user_message": "Draft each welcome, show it to me to approve, then send it."}
         first = await _examined(plan, state)
@@ -137,7 +146,8 @@ class TestAFieldASendReadsThatStartsEmpty:
             "types it."], first.errors
         again = await _examined(plan, state)
         assert not [e for e in again.errors if MARK in e], "sent back once a run, never a block"
-        assert '"Review the welcome" asks the person to fill in To before "Send the welcome" sends it.' in again.notes
+        assert not [n for n in again.notes if "asks the person to fill in" in n], (
+            "a kept empty start is how the plan works, not something missing or off: no line on the card")
 
     @pytest.mark.parametrize("steps", [
         pytest.param((DRAFT, REVIEW, GATE, SEND), id="every field starts with the draft"),
