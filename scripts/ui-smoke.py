@@ -21239,13 +21239,30 @@ CARD_EDGES = """card => { const vw = document.documentElement.clientWidth; const
   return {vw, out}; }"""
 
 
+#: Whatever in the card's column reaches past the screen, but inside a box of its own that scrolls sideways: the
+#: column is the card's parent, so one wide item there (a log's unbroken id) is caught as the cause it is.
+COLUMN_EDGES = """card => { const vw = document.documentElement.clientWidth; const column = card.parentElement;
+  const scrolls = (el) => { for (let p = el.parentElement; p && p !== column; p = p.parentElement) {
+      if (/(auto|scroll|hidden|clip)/.test(getComputedStyle(p).overflowX)) return true; } return false; };
+  const out = [];
+  for (const el of column.querySelectorAll('*')) {
+    const r = el.getBoundingClientRect();
+    if (!r.width || r.right <= vw + 0.5 || scrolls(el) || card.contains(el)) continue;
+    if ([...el.children].some(c => c.getBoundingClientRect().right > vw + 0.5)) continue;
+    out.push(`${el.tagName.toLowerCase()} "${(el.textContent || '').trim().slice(0, 30)}" to ${Math.round(r.right)}`);
+  }
+  return out; }"""
+
+
 @check
 async def check_cardonphone(browser) -> str:
     """A run's card, and every field and button in it, sits inside a phone's screen (F1760).
 
     The card is a grid item that kept `min-width: auto`, so the column it sits in grew to its content's one-line width:
-    408 px wide on a 390 px screen, the fields and the buttons cut off at the right. On the run page and on Home, at
-    390 and 360 wide, the card's right edge and each control's are inside the viewport."""
+    408 px wide on a 390 px screen, the fields and the buttons cut off at the right; on the run page the column was
+    `auto`, so its widest item, the Activity log's unbroken run id, set it. On the run page and on Home, at 390 and
+    360 wide, the card's right edge and each control's are inside the viewport, and nothing in its column reaches past
+    it but inside a box that scrolls sideways."""
     body = "Hello Harbor & Pine,\n\nYour order ships on Monday.\nThanks for your patience."
     oid = f"orch_uismoke_cardphone_{int(time.time())}"
     api("/api/orchestrations", "POST", {
@@ -21273,6 +21290,9 @@ async def check_cardonphone(browser) -> str:
                     got = await card.first.evaluate(CARD_EDGES)
                     if got["out"]:
                         problems.append(f"{where} at {width}: " + ", ".join(got["out"][:4]))
+                    past = await card.first.evaluate(COLUMN_EDGES)
+                    if past:
+                        problems.append(f"{where} at {width}, beside the card: " + ", ".join(past[:3]))
                 finally:
                     await ctx.close()
     finally:
