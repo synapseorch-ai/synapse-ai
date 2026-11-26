@@ -76,6 +76,17 @@ export function humanFieldType(type: string | null | undefined): HumanFieldType 
     return ALIASES[key] ?? null;
 }
 
+/**
+ * Whether a form draws the field as a box of lines: a Long text, or a Text field whose starting value has a line
+ * break (F1759). A one-line input drops the line breaks of the value it is given, so a draft's paragraphs, approved as
+ * shown, would be sent as one line. Decided by the field, never by what is typed, so the box never changes mid-edit.
+ */
+export function humanFieldDrawsLines(field: HumanField): boolean {
+    const type = humanFieldType(field.type);
+    if (type === 'textarea') return true;
+    return type === 'string' && typeof field.default === 'string' && /[\r\n]/.test(field.default);
+}
+
 /** A dropdown's options, as the step wrote them, blanks left out. */
 export function humanFieldOptions(field: HumanField): string[] {
     return (Array.isArray(field.options) ? field.options : []).map((o) => String(o).trim()).filter(Boolean);

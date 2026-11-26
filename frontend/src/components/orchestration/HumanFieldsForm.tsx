@@ -11,7 +11,14 @@
  */
 
 import { Checkbox, Field, Input, Select, Textarea } from '@/components/ui';
-import { humanFieldLabel, humanFieldOptions, humanFieldType, type HumanField, type HumanValues } from './humanFields';
+import {
+    humanFieldDrawsLines,
+    humanFieldLabel,
+    humanFieldOptions,
+    humanFieldType,
+    type HumanField,
+    type HumanValues,
+} from './humanFields';
 
 /** The browser's input for a typed field: its own keyboard and checks (F455). */
 const INPUT_TYPE: Record<string, string> = { number: 'number', email: 'email', date: 'date', phone: 'tel' };
@@ -48,7 +55,8 @@ export function HumanFieldsForm({
                 const text = typeof value === 'string' ? value : '';
                 return (
                     <Field key={idx} label={label}>
-                        {type === 'textarea' ? (
+                        {/* A Text field starting with lines is a box of lines too: one line would drop them (F1759). */}
+                        {humanFieldDrawsLines(field) ? (
                             <Textarea rows={3} value={text} onChange={(e) => set(field.name, e.target.value)} />
                         ) : type === 'choice' ? (
                             // One option is picked (Naveen, F455): a dropdown, not a list of checkboxes.
