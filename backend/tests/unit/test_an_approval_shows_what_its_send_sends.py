@@ -2,11 +2,12 @@
 
 F1743 asked the plan to set a model-filled send's inputs from what the approval showed. A send whose inputs were set
 already passed whatever the approval showed, or nothing: "Here is the email drafted. Please review and approve or
-decline", with no value from the drafting step in it, then the draft sent to its address unseen. Now every value a
-send after an approval sets from an earlier step, who it goes to and what it says, must be one the approval shows: in
-its words, as a field's starting value (F1753), or through a value that holds it (`{{state.draft}}` shows
-`{{state.draft.body}}`). One it does not show is sent back once, naming it; kept, the card says the person does not
-see it before it goes. Never a block.
+decline", with no value from the drafting step in it, then the draft sent to its address unseen. Now a value a send
+after an approval sets from an earlier step, who it goes to and what it says, that the approval does not show (in its
+words, as a field's starting value, F1753, or through a value that holds it: `{{state.draft}}` shows
+`{{state.draft.body}}`) is sent back once, naming it, saying what would happen and how to show it. The person may have
+asked not to see it: then the plan keeps the step as they asked, and the card says it is approved without showing
+what goes out. The send-back never says the plan must, and nothing states it as a rule. Never a block.
 
 Near misses read as before: everything shown; an input that is an id; a send after no approval; a model-filled send
 (F1743's ask alone, never both); a tool that only reads; a send that reads the approval's own fields (what the person
@@ -38,8 +39,11 @@ ARGS = {"to": "{{state.draft.to}}", "subject": "{{state.draft.subject}}", "text"
 SEND = {"id": "send", "type": "tool", "name": "Send the reply", "does": "Sends it", "tool": "send_email",
         "next": "end", "config": {"tool_arguments": ARGS}}
 LINE = ('step send: it sends {{state.draft.to}}, {{state.draft.subject}}, {{state.draft.body}} after "Check the reply" '
-        "is approved, but that step never shows them, so the person would approve what they never saw. Show each in "
-        'its words, e.g. "To: {{state.draft.to}}", or start a field with it as its `default`.')
+        "is approved, and that step never shows them: the person approves without seeing what goes out. If they want "
+        'to see it, show each in its words, e.g. "To: {{state.draft.to}}", or start a field with it as its `default`. If '
+        "they asked not to see it, keep the step as they asked: the card says so.")
+#: Words a send-back never uses: it says what would happen and how to show it, never that the plan must (F1754).
+RULE_WORDS = ("must", "cannot", "can't", "never saw", "not allowed", "required", "has to")
 CARD = '"Check the reply" is approved without showing who it goes to, the subject and the text "Send the reply" sends.'
 
 
@@ -90,7 +94,20 @@ class TestAnApprovalThatShowsNothing:
         check = _check("To: {{state.draft.to}}\nSubject: {{ state.draft.subject }}\n\nApprove?")
         said, _ = await _said(_plan(DRAFT, check, GATE, SEND))
         assert len(said) == 1 and said[0].startswith("step send: it sends {{state.draft.body}} after"), said
-        assert "never shows it," in said[0]
+        assert "never shows it:" in said[0]
+
+
+class TestThePersonsChoice:
+    async def test_the_send_back_keeps_their_choice_and_states_no_rule(self):
+        said, _ = await _said(_plan(DRAFT, CHECK, GATE, SEND))
+        assert "If they asked not to see it, keep the step as they asked" in said[0]
+        assert not [w for w in RULE_WORDS if w in said[0].lower()], said[0]
+
+    def test_the_planner_keeps_a_step_they_asked_to_be_shown_nothing(self):
+        from core.native_builder import seed
+
+        human = next(line for line in seed.prompt_fragment("plan_steps").splitlines() if line.startswith("- `human`"))
+        assert "unless they asked not to see it" in human and "asks as they asked" in human
 
 
 class TestNearMisses:
