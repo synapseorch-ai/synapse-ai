@@ -666,7 +666,7 @@ export const SchedulesTab = () => {
                                 />
                                 <span>
                                     <span className="block text-[13px] text-text">Start when a task is added</span>
-                                    <span className="block text-xs text-text-faint">A new task starts it within a minute instead of at its next time.</span>
+                                    <span className="block text-xs text-text-faint">A new task starts it early, without waiting for its next check.</span>
                                 </span>
                             </div>
                         )}
