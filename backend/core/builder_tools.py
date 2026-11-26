@@ -1343,7 +1343,7 @@ BUILDER_TOOL_SCHEMAS = [
                     "human_prompt": {"type": "string", "description": "Prompt shown to user (human steps)"},
                     "human_fields_json": {
                         "type": "string",
-                        "description": "JSON string of field definitions. The answer is stored under output_key as a mapping {field name: value}: name the output_key for the step (e.g. `review`), not after a field, type it dict, and read one field as `{{ state.review.feedback }}`. Types: string, textarea, number, boolean, email, date, phone, choice (a dropdown; give it \"options\": [..], one is picked). Example: '[{\"name\":\"feedback\",\"type\":\"textarea\",\"label\":\"Your feedback\"},{\"name\":\"decision\",\"type\":\"choice\",\"label\":\"Decision\",\"options\":[\"Approve\",\"Later\"]}]'",
+                        "description": "JSON string of field definitions. The answer is stored under output_key as a mapping {field name: value}: name the output_key for the step (e.g. `review`), not after a field, type it dict, and read one field as `{{ state.review.feedback }}`. Types: string, textarea, number, boolean, email, date, phone, choice (a dropdown; give it \"options\": [..], one is picked). A field the person may change before it goes starts with what an earlier step wrote, \"default\": \"{{ state.draft.subject }}\"; one only they type has none. Example: '[{\"name\":\"feedback\",\"type\":\"textarea\",\"label\":\"Your feedback\"},{\"name\":\"decision\",\"type\":\"choice\",\"label\":\"Decision\",\"options\":[\"Approve\",\"Later\"]}]'",
                     },
                     "output_fields_json": {
                         "type": "string",
@@ -5328,6 +5328,21 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
                             f"give an earlier step '{key}' as its output_key, or declare it in the state schema."
                         )
                 issues += _file_content_into_code(s, steps)
+        # A Human step's field that starts with a value reads it from the run when it asks (F1753): a key nothing
+        # writes would start it empty on every run, and the person would be left to type what the plan meant to show.
+        if s.get("type") == "human" and isinstance(s.get("human_fields"), list):
+            from core.templating import STATE_REF as _STATE_REF
+
+            for f in s["human_fields"]:
+                if not (isinstance(f, dict) and isinstance(f.get("default"), str)):
+                    continue
+                for ref in _STATE_REF.findall(f["default"]):
+                    key = ref.split(".")[0]
+                    if key not in writable and key not in (orch.get("state_schema") or {}):
+                        issues.append(
+                            f"Human step '{sid}' starts its field '{f.get('name')}' from 'state.{ref}', but nothing "
+                            f"writes '{key}' — start it from what an earlier step wrote, or give it no starting value."
+                        )
         issues += _transform_reads_a_wrapper(s, steps)
         # An Ingest step reads its records from one key. A key the schema
         # declares counts too: a run's caller can fill it, and a list default

@@ -747,6 +747,31 @@ def _unreached(steps: list[Step], where: str) -> list[str]:
             for s in steps if s.id not in seen and s.type != "end"]
 
 
+def _starts_it_cannot_take(step: Step) -> list[str]:
+    """A Human step's field that starts with a value written out that the field cannot take (F1753): the run would
+    start it empty, so the person sees a blank where the plan meant a value. A value read from the run
+    (`{{state.…}}`) is checked when the run asks (`steps.shown_fields`)."""
+    from core.orchestration.human_fields import BadAnswer, check_value, starting_value
+
+    out = []
+    for field in (step.config or {}).get("human_fields") or []:
+        if not isinstance(field, dict) or "default" not in field:
+            continue
+        value = field["default"]
+        if isinstance(value, str) and ("{{" in value or not value.strip()):
+            continue
+        if starting_value(field, value)[0]:
+            continue
+        try:
+            check_value(field, value)
+            why = "it is not a yes or no" if isinstance(value, str) else "it is not one it takes"
+        except BadAnswer as exc:
+            why = str(exc).split(": ", 1)[-1].rstrip(".")
+        out.append(f"step {step.id}: its field `{field.get('name')}` starts as “{value}”, which it cannot take "
+                   f"({why}): give it a starting value it takes, or none.")
+    return out
+
+
 def check_structure(plan: PlanDraft, inventory: Inventory) -> tuple[list[str], list[str]]:
     """(errors, notes). Errors go back to the model for a retry; notes are facts code fills in (a tool nothing
     provides is a note, not an error: finding who does is the lookup's job, not the model's)."""
@@ -781,6 +806,8 @@ def check_structure(plan: PlanDraft, inventory: Inventory) -> tuple[list[str], l
             errors.append(f"step {s.id}: a loop names its body steps")
         if s.type == "human" and not s.prompt:
             errors.append(f"step {s.id}: a human step says what it asks")
+        if s.type == "human":
+            errors += _starts_it_cannot_take(s)
         if s.type == "llm" and not (s.prompt or "").strip():
             # An llm step has no agent's instructions: with no prompt its model has only the step's name (HOT2's read
             # of the Weekly Twitter Post plan). An agent step runs on its agent's instructions, an evaluator on its

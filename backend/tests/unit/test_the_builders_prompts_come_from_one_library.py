@@ -228,7 +228,10 @@ from core.native_builder import prompt_lint, seed
 #: F1749: the planner's Building 5 says a heartbeat's new task starts it early, without waiting for its next check
 #: (`objects.WAKE_WORDS`), never "within a minute", which Cloud's five-minute floor makes untrue, 8ff87166… (on
 #: F1743's 085f2013).
-BUNDLE_SHA256 = "8ff871664fcdbc54d411be700e3f44c9272744badfd333e993726fcc92bad74c"
+#: F1753: plan_steps.md's human bullet and the step cheatsheet say a field the person may change before it goes starts
+#: with what an earlier step wrote (`default`), the step's prompt never repeating it, and one only they type has none,
+#: 08bca3f3… (on F1749's 8ff87166).
+BUNDLE_SHA256 = "08bca3f354b15946d130287b6c3d0b2a517cfa3aeced4d08c8020f2d26992caf"
 
 
 def _sha(definitions) -> str:

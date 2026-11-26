@@ -3087,7 +3087,8 @@ class LoopStepExecutor:
 SECRET_NOT_SHOWN = "(a secret is not shown here)"
 
 
-def render_state_refs(text: str, state: dict, variables: dict | None = None, secrets: Any = ()) -> str:
+def render_state_refs(text: str, state: dict, variables: dict | None = None, secrets: Any = (), *,
+                      whole: bool = False) -> str | None:
     """`{{ state.a.b }}` and `{{ global.x }}` in a person's text, from the run: a Human step's question, its fields'
     labels and options (`shown_fields`) and a Print. The one form (`templating.REF`, F1252), spaced or not.
 
@@ -3103,6 +3104,9 @@ def render_state_refs(text: str, state: dict, variables: dict | None = None, sec
     11-12, replacing D104's rule that none was): the question goes to a channel, an email and the API. A secret is
     one named in `secrets` (`variables.secret_names`, the engine's `secret_variables`) or whose value this task holds
     (`secret_scrub.held_secrets`: `variables.load` holds each a secret reference resolved to).
+
+    `whole` (F1753, a field's starting value): None unless every reference names a value the person can be shown in
+    full, so what names nothing, a secret or a file's excerpt is never offered as a value to send.
     """
     from core import templating as _templating
     from core.secret_scrub import held_secrets
@@ -3115,6 +3119,14 @@ def render_state_refs(text: str, state: dict, variables: dict | None = None, sec
     context = {"state": state, "global": variables or {}}
     held: set[str] | None = None
 
+    class _NotWhole(Exception):
+        """A reference `whole` cannot give in full."""
+
+    def _short(said: str) -> str:
+        if whole:
+            raise _NotWhole(said)
+        return said
+
     def _resolve(match: re.Match) -> str:
         nonlocal held
         parts = match.group(1).split(".")
@@ -3122,42 +3134,55 @@ def render_state_refs(text: str, state: dict, variables: dict | None = None, sec
             return match.group(0)
         if parts[0] == "state":
             if said := ran_zero(state, parts[1]):
-                return f"(nothing: {said})"
+                return _short(f"(nothing: {said})")
             top = state.get(parts[1])
             if top is None or (len(parts) > 2 and not is_ref(top) and top in ("", {}, [])):
-                return f"(no value yet: no step has written state.{parts[1]})"
+                return _short(f"(no value yet: no step has written state.{parts[1]})")
         try:
             found, value = _templating.lookup(match.group(1), context, keep_ref=True)
         except MissingOutput as exc:
-            return f"({exc})"
+            return _short(f"({exc})")
         if not found:
-            return _not_there(parts, context)
+            return _short(_not_there(parts, context))
         if parts[0] == "global":
             if held is None:
                 held = set(held_secrets().values())
             stored = context["global"].get(parts[1])
             if parts[1] in secrets or (isinstance(stored, str) and stored in held):
-                return SECRET_NOT_SHOWN
+                return _short(SECRET_NOT_SHOWN)
         if is_ref(value):
-            return for_person(value)  # an excerpt and the file, never the whole of it
+            return _short(for_person(value))  # an excerpt and the file, never the whole of it
         if isinstance(value, (dict, list)):
             return json.dumps(value, ensure_ascii=False, default=str)
+        if whole and value is None:
+            raise _NotWhole("no value")
         return "" if value is None else str(value)
 
-    return _templating.REF.sub(_resolve, text)
+    try:
+        return _templating.REF.sub(_resolve, text)
+    except _NotWhole:
+        return None
 
 
-def shown_fields(fields: Any, state: dict, variables: dict | None = None, secrets: Any = ()) -> Any:
+def shown_fields(fields: Any, state: dict, variables: dict | None = None, secrets: Any = (),
+                 needed: Any = ()) -> Any:
     """A Human step's fields as the person is asked them (F1556): each label and each dropdown option filled in from
     the run by the renderer its question takes (`render_state_refs`, its variables and secrets alike), every other
     key as the step wrote it.
 
+    A field's starting value (`default`, F1753) is filled in the same way, whole (`whole`), and kept in the form its
+    field stores (`human_fields.starting_value`): one that names nothing, a secret or a file's excerpt, or that its
+    field cannot take, is left out, so the field starts empty. A field named in `needed`, one a later step sends as a
+    tool's required input (`needed_by_a_send`), is asked as `required`.
+
     The run asks with these — its live event and its record, which the app's form, the API's and MCP's waiting
-    payload and the bell read — so an answer is checked against an option as it was shown (`answers` reads
-    `run.human_fields`). The step as saved keeps its templates. What is not a list of fields comes back as it came.
+    payload and the bell read — so an answer is checked against an option as it was shown, and a field left out takes
+    the value it started with as the run recorded it (`answers` reads `run.human_fields`). The step as saved keeps its
+    templates. What is not a list of fields comes back as it came.
     """
     if not isinstance(fields, list):
         return fields or []
+    from .human_fields import starting_value
 
     def fill(text: str) -> str:
         return render_state_refs(text, state, variables, secrets)
@@ -3170,6 +3195,15 @@ def shown_fields(fields: Any, state: dict, variables: dict | None = None, secret
                 field["label"] = fill(field["label"])
             if isinstance(field.get("options"), list):
                 field["options"] = [fill(o) if isinstance(o, str) else o for o in field["options"]]
+            if "default" in field:
+                raw = field.pop("default")
+                rendered = render_state_refs(raw, state, variables, secrets, whole=True) if isinstance(raw, str) \
+                    else raw
+                kept, value = starting_value(field, rendered)
+                if kept:
+                    field["default"] = value
+            if field.get("name") in needed:
+                field["required"] = True
         shown.append(field)
     return shown
 
@@ -3441,6 +3475,59 @@ def asked_context(input_keys: Any, shared_state: dict, step_history: Any) -> tup
     return agent_context, context_key, typed
 
 
+#: The steps an answer leads on through to the step it decides (F1753): as `approved_sends` walks a plan.
+_DECIDES = (StepType.IF_ELSE, StepType.SWITCH, StepType.EVALUATOR)
+
+
+async def needed_by_a_send(step: StepConfig, engine: "OrchestrationEngine") -> set[str]:
+    """The fields of Human step `step` that a Tool step after it, through decisions only, sets as an input its tool
+    requires (F1753): `{{state.<its key>.<field>}}` in that step's `tool_arguments`. Left blank on an approval, the
+    tool would get nothing where it needs something, after the person's yes, so the run asks them as `required`.
+    A tool whose declaration cannot be read requires nothing here; a model-filled step sets nothing."""
+    from core.tools import resolve_one_tool
+
+    from .resolved import resolve_for_run, run_custom_tools
+
+    keys = {step.output_key or "human_response", "human_response"}
+    names = {str(f.get("name")) for f in step.human_fields or [] if isinstance(f, dict) and f.get("name")}
+    if not names:
+        return set()
+    steps = getattr(engine, "step_map", None) or {}
+    needed: set[str] = set()
+    seen: set[str] = set()
+    todo = [step.next_step_id]
+    while todo:
+        sid = todo.pop()
+        if not sid or sid in seen or sid not in steps:
+            continue
+        seen.add(sid)
+        s = steps[sid]
+        if s.type in _DECIDES:
+            todo += [s.next_step_id, s.if_true_step_id, s.if_false_step_id, s.switch_default_step_id,
+                     *(s.switch_cases or {}).values(), *(s.route_map or {}).values()]
+            continue
+        if s.type != StepType.TOOL or not s.forced_tool or not isinstance(s.tool_arguments, dict):
+            continue
+        reads = {arg: {f for ref in STATE_REF.findall(json.dumps(value, default=str))
+                       if (parts := ref.split("."))[0] in keys and len(parts) > 1 and (f := parts[1]) in names}
+                 for arg, value in s.tool_arguments.items()}
+        if not any(reads.values()):
+            continue
+        try:
+            resolved = await resolve_for_run(engine, s.agent_id, tools=False) if s.agent_id else None
+            agent = (resolved.agent if resolved else None) or {}
+            custom = resolved.custom_tools if resolved else await run_custom_tools(engine)
+            tool = await resolve_one_tool(engine.server_module, s.forced_tool, agent or {"tools": [s.forced_tool]},
+                                          custom)
+        except Exception:  # noqa: BLE001 — a tool that cannot be read requires nothing here
+            tool = None
+        schema = getattr(tool, "inputSchema", None)
+        required = schema.get("required") if isinstance(schema, dict) else None
+        for arg in required if isinstance(required, list) else []:
+            needed |= reads.get(arg, set())
+    return needed
+
+
 class HumanStepExecutor:
     """Pause execution and request human input.
 
@@ -3459,7 +3546,9 @@ class HumanStepExecutor:
         prompt = render_state_refs(
             step.human_prompt or "Please provide input to continue.", run.shared_state, variables, secrets)
         # Its fields as the person reads them (F1556): every door reads these, and the answer is checked against them.
-        fields = shown_fields(step.human_fields, run.shared_state, variables, secrets)
+        # A field a later send needs, asked as required (F1753): an approval that leaves it blank is refused.
+        fields = shown_fields(step.human_fields, run.shared_state, variables, secrets,
+                              await needed_by_a_send(step, engine))
 
         run.human_prompt = prompt
         run.human_fields = fields

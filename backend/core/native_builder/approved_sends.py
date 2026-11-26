@@ -134,14 +134,94 @@ async def found_in(plan: O.Plan, ws: Any, server_module: Any) -> list[Found]:
     return out
 
 
+# ── A field a send reads that starts empty (F1753) ──────────────────────────────────────────────────────────────────
+#
+# A Human step's field can start with a value (`default`, filled in from the run when it asks). One a later send sets
+# an input from that starts empty is a blank the person must fill before the yes: right for an address nothing
+# earlier found, wrong for a draft the step shows above it ("edit the fields below if needed", every field blank, the
+# send failing after the yes). The plan is asked once which it means; kept empty, the card says the person fills it in.
+
+#: Said once a run, as `SAID` is.
+EMPTY_SAID = "_empty_start_said"
+
+
+@dataclass(frozen=True)
+class EmptyStart:
+    approval: O.Step
+    send: O.Step
+    field: dict
+
+    def sendback(self) -> str:
+        return (f'step {self.approval.id}: its field `{self.field["name"]}` starts empty, and "{self.send.name}" sends '
+                'it. Give it a starting value from the step that wrote it, as `"default": "{{state.<step id>.<field>}}"`,'
+                " or leave it empty if the person types it.")
+
+    def card(self) -> str:
+        label = str(self.field.get("label") or "").strip().rstrip("?:") or self.field["name"]
+        return f'"{self.approval.name}" asks the person to fill in {label} before "{self.send.name}" sends it.'
+
+
+def _set_after_approvals(steps: list[O.Step]) -> list[tuple[O.Step, O.Step]]:
+    """Each (Human step, Tool step with its inputs set) where the second follows the first through decisions only."""
+    by_id = {s.id: s for s in steps}
+    pairs = []
+    for h in steps:
+        if h.type != "human":
+            continue
+        seen: set[str] = set()
+        todo = [n for n in (h.next, *(h.branches or {}).values()) if n]
+        while todo:
+            sid = todo.pop()
+            if sid in seen or sid not in by_id:
+                continue
+            seen.add(sid)
+            s = by_id[sid]
+            if s.type in _DECIDES:
+                todo += [n for n in (s.next, *(s.branches or {}).values()) if n]
+            elif s.type == "tool" and s.tool and isinstance((s.config or {}).get("tool_arguments"), dict):
+                pairs.append((h, s))
+    return pairs
+
+
+async def empty_starts(plan: O.Plan, ws: Any, server_module: Any) -> list[EmptyStart]:
+    """Every field of an approval that a later send sets an input from and that starts empty: never the approval's
+    own Yes / No, and never for a tool that only reads."""
+    import json
+
+    from core.orchestration.human_fields import approval_field, named
+
+    out: list[EmptyStart] = []
+    said: set[tuple[str, str]] = set()
+    for steps in (plan.steps, *(w.steps for w in plan.inner_workflows)):
+        for h, s in _set_after_approvals(list(steps)):
+            _, reads = await _what_it_takes(s.tool or "", plan, ws, server_module)
+            if reads:
+                continue
+            config = h.config or {}
+            fields = [f for f in named(config.get("human_fields") or []) if isinstance(f, dict) and f.get("name")]
+            decision = approval_field(fields)
+            keys = {h.id, str(config.get("output_key") or h.id)}
+            read = {parts[1] for ref in STATE_REF.findall(json.dumps(s.config["tool_arguments"], default=str))
+                    if len(parts := ref.split(".")) > 1 and parts[0] in keys}
+            for f in fields:
+                if f is decision or "default" in f or f["name"] not in read or (h.id, f["name"]) in said:
+                    continue
+                said.add((h.id, f["name"]))
+                out.append(EmptyStart(h, s, f))
+    return out
+
+
 async def issues(plan: O.Plan, ws: Any, state: dict, server_module: Any, notes: list[str] | None) -> list[str]:
-    """Sent back once a run, then said on the card while the plan keeps the shape: never a block."""
-    found = await found_in(plan, ws, server_module)
-    if not found:
-        return []
-    if not state.get(SAID):
-        state[SAID] = True
-        return [f.sendback() for f in found]
-    if notes is not None:
-        notes += [f.card() for f in found]
-    return []
+    """Sent back once a run, then said on the card while the plan keeps the shape: never a block. Each rule here —
+    a model-filled send after an approval (F1743), a field a send reads that starts empty (F1753) — is asked once."""
+    out: list[str] = []
+    for key, found in ((SAID, await found_in(plan, ws, server_module)),
+                       (EMPTY_SAID, await empty_starts(plan, ws, server_module))):
+        if not found:
+            continue
+        if not state.get(key):
+            state[key] = True
+            out += [f.sendback() for f in found]
+        elif notes is not None:
+            notes += [f.card() for f in found]
+    return out

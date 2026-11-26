@@ -25,6 +25,14 @@ export type HumanField = {
     name: string; type?: string; label?: string; options?: string[]; key?: string;
     /** A Yes / No asked as the Approve and Decline buttons (F1560): `true` asks it so, `false` keeps it in the form. */
     approval?: boolean;
+    /**
+     * What the field starts with (F1753). On a saved step it is written as the step's words are (`{{state.…}}`); on a
+     * run's question it is the value the run filled in when it asked, which a form starts at and an answer that leaves
+     * the field out takes. A value the field cannot take was left out by the run, so the field starts empty.
+     */
+    default?: string | number | boolean;
+    /** On a run's question: a later step sends it as a tool's required input, so an approval cannot leave it blank. */
+    required?: boolean;
 };
 
 /** What the step editor offers, in order. */
@@ -171,11 +179,32 @@ export function humanFieldLabel(field: HumanField): string {
 
 export type HumanValues = Record<string, string | boolean>;
 
-/** An unanswered form: every flag off, every text empty. */
+/**
+ * An unanswered form: each field at the value the run asked it with (F1753), else every flag off and every text
+ * empty. Untouched, a field sends what was shown; cleared, it sends "".
+ */
 export function initialHumanValues(fields: HumanField[]): HumanValues {
     const values: HumanValues = {};
-    for (const field of fields) values[field.name] = humanFieldType(field.type) === 'boolean' ? false : '';
+    for (const field of fields) {
+        const start = field.default;
+        if (humanFieldType(field.type) === 'boolean') values[field.name] = start === true;
+        else values[field.name] = start === undefined || start === null || typeof start === 'boolean' ? '' : String(start);
+    }
     return values;
+}
+
+/**
+ * The step editor's one way to change a field (F1753): `patch` over the field as it is, so every key the editor does
+ * not show (its starting value, `approval`, anything a builder wrote) is kept through every edit and every save. A
+ * starting value cleared to "" is left out rather than kept blank: an empty start is no start.
+ */
+export function humanFieldWith<F extends HumanField>(fields: F[], index: number, patch: Partial<HumanField>): F[] {
+    return fields.map((field, i) => {
+        if (i !== index) return field;
+        const next = { ...field, ...patch } as F;
+        if ('default' in patch && (patch.default === '' || patch.default === undefined)) delete next.default;
+        return next;
+    });
 }
 
 /** The answer the engine stores, keyed by name: numbers as numbers, flags as booleans. */

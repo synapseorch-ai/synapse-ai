@@ -1117,7 +1117,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     boards_rule.with_tools(plan, ws.boards_on)
     answer_notes: list[str] = []
     errors += copy_errors + await _rules(plan, ws, state, answer_notes) + asked
-    # A send after an approval sets its inputs from what the approval showed (F1743): sent back once, then said.
+    # A send after an approval sets its inputs from what the approval showed (F1743), and a field it reads that
+    # starts empty is asked about (F1753): each sent back once, then said.
     errors += await approved_sends.issues(plan, ws, state, server_module, answer_notes)
     # A part of the ask the plan leaves out is said with why, never dropped (F1515, eb's QA B13).
     errors += [f"asked: '{a.part}' is not_done with no why_not: say why this plan does not do it, or plan it"
