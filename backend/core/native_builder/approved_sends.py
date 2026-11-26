@@ -146,7 +146,8 @@ async def found_in(plan: O.Plan, ws: Any, server_module: Any) -> list[Found]:
 # A Human step's field can start with a value (`default`, filled in from the run when it asks). One a later send sets
 # an input from that starts empty is a blank the person must fill before the yes: right for an address nothing
 # earlier found, wrong for a draft the step shows above it ("edit the fields below if needed", every field blank, the
-# send failing after the yes). The plan is asked once which it means; kept empty, the card says the person fills it in.
+# send failing after the yes). The plan is asked once which it means; kept empty, that is how the plan works, and the
+# card says nothing of it (the run's own card asks the person for it).
 
 #: Said once a run, as `SAID` is.
 EMPTY_SAID = "_empty_start_said"
@@ -164,8 +165,8 @@ class EmptyStart:
                 " or leave it empty if the person types it.")
 
     def card(self) -> str:
-        label = str(self.field.get("label") or "").strip().rstrip("?:") or self.field["name"]
-        return f'"{self.approval.name}" asks the person to fill in {label} before "{self.send.name}" sends it.'
+        """Nothing: a field kept for the person to type is how the plan works, not something missing or off."""
+        return ""
 
 
 def _set_after_approvals(steps: list[O.Step]) -> list[tuple[O.Step, O.Step]]:
@@ -309,5 +310,5 @@ async def issues(plan: O.Plan, ws: Any, state: dict, server_module: Any, notes: 
             state[key] = True
             out += [f.sendback() for f in found]
         elif notes is not None:
-            notes += [f.card() for f in found]
+            notes += [said for f in found if (said := f.card())]
     return out
