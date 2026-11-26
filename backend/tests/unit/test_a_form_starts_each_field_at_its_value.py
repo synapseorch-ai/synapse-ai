@@ -105,3 +105,59 @@ class TestTheEditorKeepsIt:
         assert "next[idx] = {" not in block, "a field rebuilt by hand drops what it does not name"
         assert block.count("humanFieldWith(") >= 6, "name, type, label, approval, options and its starting value"
         assert "Starts with" in block
+
+
+MODEL = "components/run/model.ts"
+
+
+def _record(**over) -> dict:
+    record = {"id": "run_1", "workflowId": "o", "workflowName": "Welcomes", "status": "paused", "waitingForHuman": True,
+              "startedAt": None, "endedAt": None, "currentStepId": "review", "tokens": 10, "costUsd": 0.01,
+              "history": [{"step_id": "draft", "status": "completed", "started_at": "2026-01-05T09:00:00Z"},
+                          {"step_id": "review", "status": "paused", "started_at": "2026-01-05T09:00:05Z"}],
+              "sharedState": {}, "tasks": [], "humanPrompt": "Review the welcome.", "humanFields": ASKED,
+              "humanContext": None, "humanContextKey": None, "error": None}
+    return {**record, **over}
+
+
+SECOND = _record(currentStepId="confirm", humanPrompt="Confirm the delivery.",
+                 humanFields=[{"name": "approved", "type": "boolean", "label": "Book it?"},
+                              {"name": "day", "type": "string", "label": "Day", "default": "Tuesday"}],
+                 history=[*_record()["history"][:1],
+                          {"step_id": "review", "status": "completed", "started_at": "2026-01-05T09:00:05Z"},
+                          {"step_id": "confirm", "status": "paused", "started_at": "2026-01-05T09:01:00Z"}])
+
+
+class TestACardIsOneQuestion:
+    """A card's values start once, when it mounts: a card that stayed up while its run moved on to another question,
+    or whose fields arrived after it, would answer with values it never showed (blanks where a field started with a
+    value). So every card is keyed by the question it answers, and a poll that reads the same question again keeps it."""
+
+    def test_a_runs_next_question_is_a_new_card(self, ts):
+        keys = ts(MODEL, f"[M.questionKeyOf({json.dumps(_record())}), M.questionKeyOf({json.dumps(SECOND)})]")
+        assert keys[0] != keys[1]
+
+    def test_the_same_step_asked_again_later_is_a_new_card(self, ts):
+        again = _record(history=[*_record()["history"][:1],
+                                 {"step_id": "review", "status": "completed", "started_at": "2026-01-05T09:00:05Z"},
+                                 {"step_id": "review", "status": "paused", "started_at": "2026-01-05T09:02:00Z"}])
+        keys = ts(MODEL, f"[M.questionKeyOf({json.dumps(_record())}), M.questionKeyOf({json.dumps(again)})]")
+        assert keys[0] != keys[1]
+
+    def test_fields_that_arrive_after_the_card_make_a_new_card(self, ts):
+        keys = ts(MODEL, f"[M.questionKeyOf({json.dumps(_record(humanFields=None))}), "
+                         f"M.questionKeyOf({json.dumps(_record())})]")
+        assert keys[0] != keys[1]
+
+    def test_a_poll_of_the_same_question_keeps_the_card_and_what_was_typed(self, ts):
+        polled = _record(tokens=99, costUsd=0.5, status="paused")
+        keys = ts(MODEL, f"[M.questionKeyOf({json.dumps(_record())}), M.questionKeyOf({json.dumps(polled)})]")
+        assert keys[0] == keys[1]
+
+    def test_the_card_is_keyed_by_its_question(self):
+        """`ApprovalCard` mounts its form under the question's key, so every page that shows it (the run page,
+        Home's Needs you, Synapse AI's card, the editor's setup card) starts a new question at its own values."""
+        card = (SRC / "components/run/ApprovalCard.tsx").read_text()
+        assert "key={questionKeyOf(props.run)}" in card
+        asked = card[card.index("function ApprovalCardFor"):]
+        assert "useState<HumanValues>(() => initialHumanValues(fields))" in asked
