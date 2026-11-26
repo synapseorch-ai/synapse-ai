@@ -21224,6 +21224,67 @@ async def check_textrows(browser) -> str:
         raise AssertionError("; ".join(problems))
     return "a box of lines shows its start up to 14 rows, an empty one keeps 3, and typing does not move it"
 
+
+#: The card's own right and left edges and every control's in it, against the viewport (the page scrolls in an inner
+#: box, so the document's scroll width says nothing).
+CARD_EDGES = """card => { const vw = document.documentElement.clientWidth; const out = [];
+  for (const el of [card, ...card.querySelectorAll('input, textarea, button, label, [role=combobox], p')]) {
+    const r = el.getBoundingClientRect();
+    if (!r.width) continue;
+    if (r.right > vw + 0.5 || r.left < -0.5) {
+      const what = el === card ? 'the card' : (el.getAttribute('aria-label') || el.textContent || el.tagName).trim();
+      out.push(`${what.slice(0, 30)} spans ${Math.round(r.left)}..${Math.round(r.right)}`);
+    }
+  }
+  return {vw, out}; }"""
+
+
+@check
+async def check_cardonphone(browser) -> str:
+    """A run's card, and every field and button in it, sits inside a phone's screen (F1760).
+
+    The card is a grid item that kept `min-width: auto`, so the column it sits in grew to its content's one-line width:
+    408 px wide on a 390 px screen, the fields and the buttons cut off at the right. On the run page and on Home, at
+    390 and 360 wide, the card's right edge and each control's are inside the viewport."""
+    body = "Hello Harbor & Pine,\n\nYour order ships on Monday.\nThanks for your patience."
+    oid = f"orch_uismoke_cardphone_{int(time.time())}"
+    api("/api/orchestrations", "POST", {
+        "id": oid, "name": f"UI smoke phone {oid[-4:]}", "entry_step_id": "ask", "steps": [
+            {"id": "ask", "name": "Approve the note", "type": "human", "human_prompt": "Send this note to the customer?",
+             "output_key": "ask",
+             "human_fields": [{"name": "approved", "type": "boolean", "label": "Send this email?"},
+                              {"name": "to", "type": "email", "label": "To", "default": "orders@example.com"},
+                              {"name": "subject", "type": "text", "label": "Subject", "default": "Ships Monday"},
+                              {"name": "body", "type": "text", "label": "Body", "default": body}],
+             "next_step_id": None, "position_x": 0, "position_y": 0}]})
+    run_id = _start_real_run(oid)
+    await asyncio.sleep(1.5)
+    problems: list[str] = []
+    try:
+        for width in (390, 360):
+            for where, path in (("the run page", f"/runs/{quote(run_id)}"), ("Home", "/dashboard")):
+                ctx = await browser.new_context(viewport={"width": width, "height": 844})
+                page = await ctx.new_page()
+                try:
+                    await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+                    card = page.get_by_role("region", name="Waiting for a person").filter(has_text="Send this note")
+                    await card.first.wait_for(timeout=30_000)
+                    await asyncio.sleep(SETTLE)
+                    got = await card.first.evaluate(CARD_EDGES)
+                    if got["out"]:
+                        problems.append(f"{where} at {width}: " + ", ".join(got["out"][:4]))
+                finally:
+                    await ctx.close()
+    finally:
+        try:
+            api(f"/api/orchestrations/runs/{run_id}/cancel", "POST", {})
+        except Exception:  # noqa: BLE001 — a fixture's run, cleaned up best effort
+            pass
+        drop_fixtures([oid])
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "a run's card and its fields sit inside a 390 and a 360 screen, on the run page and on Home"
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
