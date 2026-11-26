@@ -150,6 +150,9 @@ PRIVATE_STATE_PREFIXES = (
     # The values a Human step's card showed, which a model-filled send is held to (`grounded.SHOWN_KEY`, F1743), and
     # that a send after an approval went back once to set its inputs from them (`approved_sends.SAID`, F1743).
     "_shown_to_person", "_approved_send_said",
+    # That a plan went back once for a field a send reads that starts empty (`approved_sends.EMPTY_SAID`, F1753), and
+    # for a value a send sends that its approval never shows (`approved_sends.UNSHOWN_SAID`, F1754).
+    "_empty_start_said", "_unshown_send_said",
 )
 
 
