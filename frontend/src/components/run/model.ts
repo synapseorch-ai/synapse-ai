@@ -141,6 +141,18 @@ export function decisionField<F extends HumanField>(fields: F[]): F | null {
     return approvalField(fields);
 }
 
+/**
+ * Which question of a run a card answers (F1753). A card's form takes its values once, when it mounts, so a card that
+ * stayed up while its run asked another question, or whose fields came after it, would answer with values it never
+ * showed: a blank where a field started with a value. Each question is its own card: its step, when it began to wait,
+ * its words and its fields as asked. The same question read again (a poll) keeps its key, so what is typed stays.
+ */
+export function questionKeyOf(run: Pick<RunRecord, 'id' | 'history' | 'currentStepId' | 'humanPrompt' | 'humanFields'>): string {
+    const asked = [...(run.history ?? [])].reverse().find((h) => h.status === 'paused');
+    return JSON.stringify([run.id, run.currentStepId ?? '', asked?.step_id ?? '', asked?.started_at ?? '',
+        run.humanPrompt ?? '', run.humanFields ?? null]);
+}
+
 /** One run, as the run page reads it. */
 export type RunRecord = {
     id: string;

@@ -40,7 +40,7 @@ import { browserTurnOf } from '../browser/model';
 import { HumanFieldsForm } from '../orchestration/HumanFieldsForm';
 import { humanAnswer, humanFieldLabel, initialHumanValues, type HumanValues } from '../orchestration/humanFields';
 import { useRunHost } from './host';
-import { DELETED_WORKFLOW, decisionField, type RunRecord } from './model';
+import { DELETED_WORKFLOW, decisionField, questionKeyOf, type RunRecord } from './model';
 import { Took } from './When';
 
 export type ApprovalDraft = {
@@ -50,10 +50,7 @@ export type ApprovalDraft = {
     onValues: (values: HumanValues) => void;
 };
 
-export function ApprovalCard({
-    run, onDone, onCancel, busy, openHref, showWorkflow = false, showStep = true, requireAnswer = true,
-    submitOnEnter = false, draft,
-}: {
+type ApprovalCardProps = {
     run: RunRecord;
     /** After an answer was taken: the message to show. */
     onDone: (message: string) => void;
@@ -71,7 +68,20 @@ export function ApprovalCard({
     submitOnEnter?: boolean;
     /** The answer as typed, held by the page, so it outlives the card. */
     draft?: ApprovalDraft;
-}) {
+};
+
+/**
+ * The card for the question `run` asks now, its form mounted under that question's key (F1753, `questionKeyOf`): a
+ * page that keeps the card up while its run moves on to another question starts that one at its own values.
+ */
+export function ApprovalCard(props: ApprovalCardProps) {
+    return <ApprovalCardFor key={questionKeyOf(props.run)} {...props} />;
+}
+
+function ApprovalCardFor({
+    run, onDone, onCancel, busy, openHref, showWorkflow = false, showStep = true, requireAnswer = true,
+    submitOnEnter = false, draft,
+}: ApprovalCardProps) {
     const host = useRunHost();
     const fields = Array.isArray(run.humanFields) ? run.humanFields : [];
     const decision = decisionField(fields);
