@@ -1751,14 +1751,15 @@ async def check_toolpolicycheck(browser) -> str:
 @check
 async def check_modelnote(browser) -> str:
     """An agent saved on a model this install can't call yet (F1762): the editor keeps the model picked and says under
-    the picker why it can't answer (here: a Mistral model with no Mistral key saved). Light and dark at 1600, and at
-    phone width with the note inside the sheet. With SMOKE_SHOTS, the model field is saved."""
+    the picker why it can't answer (here: Mistral's own model, `mistral.` before its id, with no Mistral key saved; a
+    bare `mistral-small-latest` is Ollama's). Light and dark at 1600, and at phone width with the note inside the
+    sheet. With SMOKE_SHOTS, the model field is saved."""
     shots = os.environ.get("SMOKE_SHOTS")
-    aid, name, model = "agent_uismoke_f1762", "UI smoke model note", "mistral-small-latest"
+    aid, name, model = "agent_uismoke_f1762", "UI smoke model note", "mistral.mistral-small-latest"
     api(f"/api/agents/{aid}", "DELETE")
     saved = api("/api/agents", "POST", {**_agent(aid, name), "model": model})
     if not (saved or {}).get("model_note"):
-        raise Skipped("this install can call mistral-small-latest (a Mistral key is saved): nothing to say")
+        raise Skipped("this install can call mistral.mistral-small-latest (a Mistral key is saved): nothing to say")
     bad: list[str] = []
     try:
         for scheme, (w, h) in (("light", WIDE), ("dark", WIDE), ("light", (390, 844))):
@@ -1772,7 +1773,7 @@ async def check_modelnote(browser) -> str:
                 note = page.locator("[data-model-note]")
                 await note.wait_for(timeout=10_000)
                 said = (await note.inner_text()).strip()
-                if not said.startswith(f"{model} can't answer here yet:"):
+                if not (said.startswith(f"{model} can't answer here yet:") and "Mistral key is saved" in said):
                     bad.append(f"{scheme} {w}: the note says {said[:80]!r}")
                 picker = page.get_by_role("button", name="Model", exact=True)
                 if model not in (await picker.first.inner_text()):

@@ -139,7 +139,12 @@ async def _said(models: list[str]) -> dict[str, tuple[str | None, bool]]:
                 out[model] = (None, False)
                 continue
             served = [m for ms in found.values() for m in ms if detect_provider_from_model(m) == provider]
-            listed = ", ".join(names.get(m, m) for m in served[:_NAMED])
+            # Every offered model said the same way: by its display name with its id, or, when any of them has no
+            # display name, all by their ids, never one form beside the other. The rows with none are logged.
+            unnamed = [m for m in served[:_NAMED] if names.get(m, m) == m]
+            if unnamed:
+                _log.warning("catalogue model has no display name: %s", ", ".join(unnamed))
+            listed = ", ".join(m if unnamed else names[m] for m in served[:_NAMED])
             more = f" and {len(served) - _NAMED} more" if len(served) > _NAMED else ""
             pick = f" You can pick {listed}{more}, or" if listed else " Pick another model, or"
             out[model] = (f"{names.get(model, model)} isn't available on {_closed[provider]} yet, so it can't answer "
