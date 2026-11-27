@@ -685,7 +685,7 @@ def _for_an_api_caller(event: dict) -> dict:
     from core.routes.api_v1 import _failed_workflow, _model_failure
 
     if event.get("code"):
-        return {**event, "message": _model_failure(event["code"])}
+        return {**event, "message": _model_failure(event["code"], reason=str(event.get("message") or ""))}
     if event.get("run_id"):
         return {**event, "message": _failed_workflow(event["run_id"])}
     return event

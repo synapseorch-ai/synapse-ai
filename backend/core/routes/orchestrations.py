@@ -486,6 +486,11 @@ async def create_or_update_orchestration(orch: OrchestrationIn, request: Request
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         data = orch.model_dump()
         await _refuse_to_save(data)
+        # A step's own model the workspace cannot call is said beside the save (F1762), refused only with that switch
+        # on and never one the step already had.
+        from core import model_choices
+        if (refused := await model_choices.step_refusal(data.get("steps") or [], (existing or {}).get("steps"))):
+            raise HTTPException(status_code=422, detail=refused)
         from core.browser.picks import PickRefused
         try:
             await _refuse_step_picks(data, existing)
@@ -494,7 +499,19 @@ async def create_or_update_orchestration(orch: OrchestrationIn, request: Request
         data["updated_at"] = now
         data["created_at"] = (existing or {}).get("created_at", now)
         await save_orchestration(data)
-    return data
+    return {**data, "model_notes": await _step_model_notes(data)}
+
+
+async def _step_model_notes(orch: dict) -> list[dict]:
+    from core import model_choices
+
+    try:
+        return await model_choices.step_notes(orch.get("steps") or [])
+    except Exception:  # noqa: BLE001 — a check that cannot run says nothing; the save stands
+        from core.log import get_logger
+
+        get_logger(__name__).warning("could not check a workflow's step models", exc_info=True)
+        return []
 
 
 async def _refuse_step_picks(orch: dict, existing: dict | None) -> None:

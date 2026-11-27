@@ -407,20 +407,29 @@ async def _v1_turn_events(chat_request, agent: dict, _server, resume_state: dict
         # it does hear is what kind of failure it was (F275), so an integration
         # can tell "top up" from "try again".
         log.error("[v1/chat] Model error session=%s: %s", chat_request.session_id, exc)
-        yield {"type": "error", "message": _model_failure(exc.code),
+        yield {"type": "error", "message": _model_failure(exc.code, exc),
                "code": exc.code, "retryable": exc.retryable}
     except Exception:
         log.exception("[v1/chat] Unhandled error session=%s", chat_request.session_id)
         yield {"type": "error", "message": "An internal error occurred. Check server logs for details."}
 
 
-def _model_failure(code: str | None) -> str:
-    """What v1 says for a model failure (F275): the first sentence every v1 error has said, then its kind's."""
-    from core.model_failures import MODEL_FAILURE
+def _model_failure(code: str | None, exc: BaseException | None = None, *, reason: str | None = None) -> str:
+    """What v1 says for a model failure (F275): the first sentence every v1 error has said, then its kind's. Where the
+    platform's own gateway refused it, its own sentence instead (F1762): "… isn't available on Synapse yet", never a
+    provider's refusal it was not. A provider's words never reach the caller (D118): `failure_sentence` keeps only the
+    gateway's, an unknown id's and our own; `recorded_sentence` reads the same from a turn's recorded reason."""
+    from core.model_failures import MODEL_FAILURE, failure_sentence, recorded_sentence
 
     said = "The agent encountered an error processing your request."
-    if code in MODEL_FAILURE:
-        said += " " + MODEL_FAILURE[code]
+    if exc is not None:
+        told = failure_sentence(exc)
+    elif reason:
+        told = recorded_sentence(reason, code)
+    else:
+        told = MODEL_FAILURE.get(code or "")
+    if told and told != "The model call failed.":
+        said += " " + told
     return said
 
 

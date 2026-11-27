@@ -1749,6 +1749,52 @@ async def check_toolpolicycheck(browser) -> str:
 
 
 @check
+async def check_modelnote(browser) -> str:
+    """An agent saved on a model this install can't call yet (F1762): the editor keeps the model picked and says under
+    the picker why it can't answer (here: a Mistral model with no Mistral key saved). Light and dark at 1600, and at
+    phone width with the note inside the sheet. With SMOKE_SHOTS, the model field is saved."""
+    shots = os.environ.get("SMOKE_SHOTS")
+    aid, name, model = "agent_uismoke_f1762", "UI smoke model note", "mistral-small-latest"
+    api(f"/api/agents/{aid}", "DELETE")
+    saved = api("/api/agents", "POST", {**_agent(aid, name), "model": model})
+    if not (saved or {}).get("model_note"):
+        raise Skipped("this install can call mistral-small-latest (a Mistral key is saved): nothing to say")
+    bad: list[str] = []
+    try:
+        for scheme, (w, h) in (("light", WIDE), ("dark", WIDE), ("light", (390, 844))):
+            ctx = await browser.new_context(viewport={"width": w, "height": h}, color_scheme=scheme)
+            await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{scheme}')}}catch(e){{}}")
+            page = await ctx.new_page()
+            try:
+                await page.goto(f"{APP}/agents", wait_until="domcontentloaded")
+                await asyncio.sleep(SETTLE)
+                await page.get_by_text(name, exact=True).first.click()
+                note = page.locator("[data-model-note]")
+                await note.wait_for(timeout=10_000)
+                said = (await note.inner_text()).strip()
+                if not said.startswith(f"{model} can't answer here yet:"):
+                    bad.append(f"{scheme} {w}: the note says {said[:80]!r}")
+                picker = page.get_by_role("button", name="Model", exact=True)
+                if model not in (await picker.first.inner_text()):
+                    bad.append(f"{scheme} {w}: the picker no longer shows {model}")
+                right = await note.evaluate("e => e.getBoundingClientRect().right")
+                if right > w + 0.5:
+                    bad.append(f"{scheme} {w}: the note runs to {right:.0f} of {w}")
+                if shots:
+                    field = page.get_by_text("Model", exact=True).first.locator("xpath=..")
+                    await field.scroll_into_view_if_needed()
+                    await asyncio.sleep(0.3)
+                    await field.screenshot(path=os.path.join(shots, f"modelnote-{scheme}-{w}.png"))
+            finally:
+                await ctx.close()
+    finally:
+        api(f"/api/agents/{aid}", "DELETE")
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "an agent on a model it can't call keeps it picked and says why under the picker, light, dark and at phone width"
+
+
+@check
 async def check_resultnotes(browser) -> str:
     """A completed run whose steps say what their result lacks reads "with warnings" (F1690): a cut answer, an empty
     result and a CSV with no rows are kept on their step's record, and the run's header counts them, its hover naming
