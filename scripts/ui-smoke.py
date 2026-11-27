@@ -2615,9 +2615,12 @@ async def check_unsaved(browser) -> str:
             await page.click('a[href="/workflows"]')
             await asyncio.sleep(0.8)
             await dialog.get_by_role("button", name=re.compile("discard", re.I)).first.click()
-            await asyncio.sleep(1.5)
-            if not page.url.endswith("/workflows"):
-                problems.append("discarding did not go where the link pointed")
+            # Waited for, not slept: a scratch's first visit to a page compiles it, past any fixed sleep. A discard
+            # that goes nowhere still fails here, at the wait's end.
+            try:
+                await page.wait_for_url(re.compile(r"/workflows(?:[?#].*)?$"), timeout=30_000)
+            except Exception:  # noqa: BLE001
+                problems.append(f"discarding did not go where the link pointed (still at {page.url})")
     finally:
         await ctx.close()
         for aid in (a, b):
