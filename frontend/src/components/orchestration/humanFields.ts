@@ -25,6 +25,14 @@ export type HumanField = {
     name: string; type?: string; label?: string; options?: string[]; key?: string;
     /** A Yes / No asked as the Approve and Decline buttons (F1560): `true` asks it so, `false` keeps it in the form. */
     approval?: boolean;
+    /**
+     * What the field starts with (F1753). On a saved step it is written as the step's words are (`{{state.…}}`); on a
+     * run's question it is the value the run filled in when it asked, which a form starts at and an answer that leaves
+     * the field out takes. A value the field cannot take was left out by the run, so the field starts empty.
+     */
+    default?: string | number | boolean;
+    /** On a run's question: a later step sends it as a tool's required input, so an approval cannot leave it blank. */
+    required?: boolean;
 };
 
 /** What the step editor offers, in order. */
@@ -66,6 +74,33 @@ export function humanFieldType(type: string | null | undefined): HumanFieldType 
     if (!key) return 'string';
     if (HUMAN_FIELD_TYPES.some((t) => t.value === key)) return key as HumanFieldType;
     return ALIASES[key] ?? null;
+}
+
+/**
+ * Whether a form draws the field as a box of lines: a Long text, or a Text field whose starting value has a line
+ * break (F1759). A one-line input drops the line breaks of the value it is given, so a draft's paragraphs, approved as
+ * shown, would be sent as one line. Decided by the field, never by what is typed, so the box never changes mid-edit.
+ */
+export function humanFieldDrawsLines(field: HumanField): boolean {
+    const type = humanFieldType(field.type);
+    if (type === 'textarea') return true;
+    return type === 'string' && typeof field.default === 'string' && /[\r\n]/.test(field.default);
+}
+
+/** The tallest a box of lines grows to show its starting value; past it the box scrolls (F1759). */
+export const HUMAN_FIELD_MAX_ROWS = 14;
+/** An empty or short box of lines is this tall, as every box of lines was before F1759. */
+const MIN_ROWS = 3;
+
+/**
+ * The rows a box of lines starts at: one per line of its starting value, at least 3, at most 14 (F1759). A 3-row box
+ * showed two and a half lines of a draft a person was asked to approve. The form grows it once more, as drawn, to fit
+ * the lines that wrap; never by what is typed, so the card does not jump while a person edits.
+ */
+export function humanFieldRows(field: HumanField): number {
+    const start = typeof field.default === 'string' ? field.default : '';
+    const lines = start ? start.split(/\r\n|\r|\n/).length : 0;
+    return Math.min(HUMAN_FIELD_MAX_ROWS, Math.max(MIN_ROWS, lines));
 }
 
 /** A dropdown's options, as the step wrote them, blanks left out. */
@@ -171,11 +206,32 @@ export function humanFieldLabel(field: HumanField): string {
 
 export type HumanValues = Record<string, string | boolean>;
 
-/** An unanswered form: every flag off, every text empty. */
+/**
+ * An unanswered form: each field at the value the run asked it with (F1753), else every flag off and every text
+ * empty. Untouched, a field sends what was shown; cleared, it sends "".
+ */
 export function initialHumanValues(fields: HumanField[]): HumanValues {
     const values: HumanValues = {};
-    for (const field of fields) values[field.name] = humanFieldType(field.type) === 'boolean' ? false : '';
+    for (const field of fields) {
+        const start = field.default;
+        if (humanFieldType(field.type) === 'boolean') values[field.name] = start === true;
+        else values[field.name] = start === undefined || start === null || typeof start === 'boolean' ? '' : String(start);
+    }
     return values;
+}
+
+/**
+ * The step editor's one way to change a field (F1753): `patch` over the field as it is, so every key the editor does
+ * not show (its starting value, `approval`, anything a builder wrote) is kept through every edit and every save. A
+ * starting value cleared to "" is left out rather than kept blank: an empty start is no start.
+ */
+export function humanFieldWith<F extends HumanField>(fields: F[], index: number, patch: Partial<HumanField>): F[] {
+    return fields.map((field, i) => {
+        if (i !== index) return field;
+        const next = { ...field, ...patch } as F;
+        if ('default' in patch && (patch.default === '' || patch.default === undefined)) delete next.default;
+        return next;
+    });
 }
 
 /** The answer the engine stores, keyed by name: numbers as numbers, flags as booleans. */

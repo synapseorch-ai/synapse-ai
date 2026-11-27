@@ -7,6 +7,7 @@ import { OpenApiImport } from './OpenApiImport';
 import { Badge, Button, buttonStyles, CodeEditor, ConfirmDialog, Label, Select, TemplateInput, TemplateScope, schemaArgs } from '@/components/ui';
 import { AppScreen } from '@/components/app/AppScreen';
 import { defaultsFor, sameTags, tagChips, tagsOf } from '@/lib/toolHints';
+import { derivedName } from '@/lib/toolNameFromTitle';
 import { ToolTagsFields } from './ToolTagsFields';
 import { ToolAnswerSection } from './ToolAnswerSection';
 
@@ -277,7 +278,8 @@ export const CustomToolsTab = ({
                         A tool is one action an agent can take in another system, like “look up an order” or
                         “create an invoice”. Make one, or import an API description to make many at once.
                     </p>
-                    <div className="mt-4 flex justify-center gap-2">{actions}</div>
+                    {/* Wraps (F1740): its two buttons ran past this box on both sides on a phone. */}
+                    <div className="mt-4 flex flex-wrap justify-center gap-2">{actions}</div>
                 </div>
             ) : (
                 /* ── Builder View ────────────────────────────────────────── */
@@ -343,11 +345,9 @@ export const CustomToolsTab = ({
                                 value={draftTool.generalName || ''}
                                 onChange={e => {
                                     const val = e.target.value;
-                                    const update: any = { ...draftTool, generalName: val };
-                                    if (!draftTool.name) {
-                                        update.name = val.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-                                    }
-                                    setDraftTool(update);
+                                    // Made again as it is typed on a new tool, never on a saved one (F1739).
+                                    setDraftTool({ ...draftTool, generalName: val,
+                                        name: derivedName(draftTool, val, openName.current === null) });
                                 }}
                                 className="w-full bg-surface border border-border-strong px-3 py-2 text-sm text-text focus:border-accent focus:outline-none placeholder:text-text-faint rounded-md"
                                 placeholder="e.g. Process Orders"

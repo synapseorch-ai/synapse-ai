@@ -10,8 +10,15 @@ from one step to the next is the step's output, and a known list is a Loop or a 
   and a step's results handed to the next through a board, are sent back with what to do instead.
 * `with_board_lines`: each new agent with board tools gets a section code writes from those tools, after the
   instructions the writer wrote; it is on the card the person approves, and it is what is saved.
+* `with_tools` (F1738): the run gives a board agent the board tools from its workflow's access, whatever its list
+  says; where the planner left them out, code names them, so the card and the saved instructions say what it has.
+* `settle` and `give_line` (F1736): a plan that names several boards keeps them. Each one already here is the
+  person's to give (`yours`): the build makes at most one board itself and gives the rest nothing, and the card says
+  which boards to open on the Boards screen and what to add there.
 """
 from __future__ import annotations
+
+import re
 
 from core.native_builder import objects as O
 
@@ -97,6 +104,164 @@ def board_lines(agent_tools: set[str], board: str) -> str:
 def with_board_lines(plan: O.PlanDraft, prompts: dict[str, str]) -> dict[str, str]:
     """Each new agent's instructions, with its board section after them when it has board tools."""
     tools = _board_tools(plan)
-    board = f'the board "{plan.boards[0].name}"' if plan.boards else "this workflow's own board"
+    names = [b.name for b in plan.boards]
+    board = (f'the shared boards {listed(names)}; each card goes on one of them, naming the board it belongs on'
+             if len(names) > 1 else f'the board "{names[0]}"' if names else "this workflow's own board")
     return {name: (f"{text.rstrip()}\n\n{board_lines(tools[name], board)}" if tools.get(name) else text)
             for name, text in prompts.items()}
+
+
+# ── several boards named (F1736) ────────────────────────────────────────────────────────────────────────────────────
+#: The Boards screen's words for a board's access list and its first access (frontend/src/components/boards:
+#: AccessList.tsx's heading, board.ts's ACCESS_LABEL), so the card names what the person sees there.
+ACCESS_LIST = "Who can use this board"
+ACCESS_WORDS = {"add": "Add cards", "work": "Read, claim and update"}
+
+
+def listed(names: list[str]) -> str:
+    """'"A"', '"A" and "B"', '"A", "B" and "C"'."""
+    quoted = [f'"{n}"' for n in names]
+    return quoted[0] if len(quoted) == 1 else f"{', '.join(quoted[:-1])} and {quoted[-1]}"
+
+
+def _named_as_boards(text: str, shared: list[str]) -> list[str]:
+    """The shared boards the words name as boards: '"Sales" board', 'Sales board', 'board "Sales"'. A name used as a
+    word alone ("the sales follow-up", "a support reply") names no board."""
+    quote = "[\"'\u201c\u201d\u2018\u2019]"
+    found = []
+    for name in shared:
+        n = re.escape(name)
+        if m := re.search(rf"(?<!\w){quote}?{n}{quote}?\s+board\b|\bboard\s+{quote}{n}{quote}", text, re.I):
+            found.append((m.start(), name))
+    return [name for _, name in sorted(found)]  # in the order the words name them
+
+
+def settle(plan: O.PlanDraft, shared: list[str]) -> None:
+    """Each board the plan names, as it is here: `existing` with this workspace's name for it, and, where it names
+    more than one, each one already here `yours`. A plan with no board that names several shared boards as boards in
+    its words names those. Code alone decides both, every time: whatever the planner wrote for them is replaced."""
+    here = {b.lower(): b for b in shared}
+    if not plan.boards and here:
+        text = " ".join([plan.title, plan.summary, *(f"{s.name} {s.does} {s.prompt or ''}" for s in plan.steps)])
+        if len(named := _named_as_boards(text, list(here.values()))) > 1:
+            plan.boards = [O.BoardPart(name=n) for n in named]
+    for b in plan.boards:
+        b.existing = b.name.lower() in here
+        b.name = here.get(b.name.lower(), b.name)
+        b.yours = b.existing and len(plan.boards) > 1
+
+
+#: The board tools that work a card rather than only add one: an agent holding any of them needs "Read, claim and
+#: update".
+_WORKING = {"board_list", "board_read", "board_claim", "board_update"}
+
+
+def board_access(plan: O.PlanDraft) -> dict[str, str]:
+    """The access each board the person gives needs (F1746), `ACCESS_WORDS`' key by board: "work" where a step's
+    clause naming it works it and its agent holds a working tool ("Claim the Onboarding card"), "add" where the
+    clauses naming it only add ("add one to Deliveries"). A board no clause names takes what its agents hold."""
+    tools = _board_tools(plan)
+    steps = [s for s in plan.steps if s.type == "agent" and s.agent]
+    out: dict[str, str] = {}
+    for b in [b for b in plan.boards if b.yours]:
+        naming = [(c, s.agent) for s in steps for c in _clauses(_step_words(s)) if _names_a_board(c, b.name)]
+        if naming:
+            works = any(_WORK.search(c) and tools.get(agent, set()) & _WORKING for c, agent in naming)
+        else:
+            works = bool(set().union(*tools.values()) & _WORKING) if tools else False
+        out[b.name] = "work" if works else "add"
+    return out
+
+
+def give_line(plan: O.PlanDraft) -> list[str]:
+    """What the card says about the boards the person gives access to: which, where, and with what access, per board
+    where they differ (F1746)."""
+    yours = [b.name for b in plan.boards if b.yours]
+    if not yours:
+        return []
+    access = board_access(plan)
+    one = len(yours) == 1
+    if len(set(access.values())) <= 1:
+        given = f"\"{ACCESS_WORDS[next(iter(access.values()), 'add')]}\""
+    else:
+        given = listed_with([f"\"{ACCESS_WORDS[access[n]]}\" on \"{n}\"" for n in yours])
+    return [f"It works the shared board{'' if one else 's'} {listed(yours)}, which {'is' if one else 'are'} already "
+            f"here. Give it access{'' if one else ' to each'} on the Boards screen: open the board and, under "
+            f"\"{ACCESS_LIST}\", add \"{plan.title}\" with {given}. Until then, its agents can't post there."]
+
+
+def listed_with(parts: list[str]) -> str:
+    """'a', 'a and b', 'a, b and c', for parts already quoted."""
+    return parts[0] if len(parts) == 1 else f"{', '.join(parts[:-1])} and {parts[-1]}"
+
+
+# ── the board tools a board agent has (F1738) ───────────────────────────────────────────────────────────────────────
+#: A board in this sense, or a task card: never a board meeting, the board of directors or its members, and never a
+#: card of another kind (a customer's card, a thank-you, business or gift card), whose agent has no board work.
+_WORKS_BOARD = re.compile(
+    r"\bboards?\b(?!\s+(?:meetings?|of\s+directors|members?|room)\b)|\btask\s+cards?\b", re.I)
+
+
+def _names_a_board(words: str, name: str) -> bool:
+    """The board's name as it is written (so a board called Sales is not "the sales follow-up"), or in a board's
+    shape: '"Sales"', 'Sales board', 'board "Sales"'."""
+    n = re.escape(name)
+    quote = "[\"'\u201c\u201d\u2018\u2019]"
+    return bool(re.search(rf"(?<!\w){n}(?!\w)", words) or re.search(
+        rf"{quote}{n}{quote}|(?<!\w){n}\s+board\b|\bboard\s+{quote}?{n}(?!\w)", words, re.I))
+
+
+#: A verb that works a card rather than only adding one (F1746), read only in a clause whose object is board work.
+_WORK = re.compile(r"\b(?:claim(?:s|ed|ing)?|clos(?:e|es|ed|ing)|updat(?:e|es|ed|ing)|mov(?:e|es|ed|ing)|"
+                   r"read(?:s|ing)?|work(?:s|ed|ing)?|finish(?:es|ed|ing)?|complet(?:e|es|ed|ing)|mark(?:s|ed|ing)?|"
+                   r"pick(?:s|ed|ing)?\s+up)\b", re.I)
+#: Where a step's words split into clauses: "Claim the Onboarding card, close it, and add one to Deliveries".
+_CLAUSE = re.compile(r"[.;,:]|\band\b|\bthen\b", re.I)
+
+
+def _step_words(s: O.Step) -> str:
+    """A step's name, what it does and its prompt, each its own sentence: run together, the end of one and the start
+    of the next read as one clause ("… add one to Deliveries Claim the Onboarding card")."""
+    return ". ".join([s.name, s.does, s.prompt or ""])
+
+
+def _clauses(words: str) -> list[str]:
+    return [c for c in _CLAUSE.split(words) if c.strip()]
+
+
+def _works_a_board(words: str, boards: list) -> bool:
+    """Whether a clause of `words` works a board: a work verb whose clause's object is board work (a board, a task
+    card, one of the plan's boards by name). "Reads the enquiry" and "Close the deal" are not."""
+    return any(_WORK.search(c) and (_WORKS_BOARD.search(c) or any(_names_a_board(c, b.name) for b in boards))
+               for c in _clauses(words))
+
+
+def with_tools(plan: O.PlanDraft, boards_on: bool) -> bool:
+    """Name the board tools in each new agent that works the plan's board and has none in its list, as the run will
+    give them: `board_add` where a board is the person's to give (they choose its access, and the card asks for "Add
+    cards"), and all five where the build gives or makes it. An agent works it where its step's words say board or
+    card in a board's sense or name one of the plan's boards, or where it has the plan's only agent step; one doing
+    something else is left as it is. An agent the planner gave a board tool keeps its list as written, and nothing is
+    named while Boards are off or the plan names no board. Where a board is the person's to give, an agent whose
+    steps work a card (claim, close, update, move, read: `_works_a_board`) gets all five, and one that only adds gets
+    `board_add` (F1746). Whether any agent was given them."""
+    from core.boards import TOOL_NAMES
+
+    if not boards_on or not plan.boards:
+        return False
+    persons = any(b.yours for b in plan.boards)
+    steps = [s for s in plan.steps if s.type == "agent" and s.agent]
+    given = False
+    for agent in plan.agents:
+        if set(agent.tools) & set(TOOL_NAMES):
+            continue
+        own = [s for s in steps if s.agent == agent.name]
+        if not own:
+            continue
+        words = [_step_words(s) for s in own]
+        if len(steps) == 1 or any(_WORKS_BOARD.search(w) or any(_names_a_board(w, b.name) for b in plan.boards)
+                                  for w in words):
+            works = not persons or any(_works_a_board(w, plan.boards) for w in words)
+            agent.tools = [*agent.tools, *(TOOL_NAMES if works else ("board_add",))]
+            given = True
+    return given

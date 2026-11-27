@@ -31,7 +31,7 @@ from core.builder_registry import register_builder_tool
 from core.log import get_logger
 from core import feature_census
 from core.native_builder import boards_rule, charts, imitation, objects as O, one_writer, own_api, periods
-from core.native_builder import schedule_clock
+from core.native_builder import approved_sends, schedule_clock
 from core.native_builder.change_tools import _caller, _run
 from core.product_tools.approved import PLACEHOLDER
 
@@ -1111,8 +1111,15 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         # A step no step leads to in the workflow as it is now is not this change's to fix (SAI2's review, 23).
         before, _ = O.check_structure(base, ws.inventory())
         errors = [e for e in errors if not ("no step leads to it" in e and e in before)]
+    # The boards it names, as they are here, before the rules count them (F1736), and the board tools of the agents
+    # that work them, before the card says what each agent has (F1738).
+    boards_rule.settle(plan, ws.shared_boards)
+    boards_rule.with_tools(plan, ws.boards_on)
     answer_notes: list[str] = []
     errors += copy_errors + await _rules(plan, ws, state, answer_notes) + asked
+    # A send after an approval sets its inputs from what the approval showed (F1743), a field it reads that starts
+    # empty is asked about (F1753), and what it sends is shown by the approval (F1754): each sent back once, then said.
+    errors += await approved_sends.issues(plan, ws, state, server_module, answer_notes)
     # A part of the ask the plan leaves out is said with why, never dropped (F1515, eb's QA B13).
     errors += [f"asked: '{a.part}' is not_done with no why_not: say why this plan does not do it, or plan it"
                for a in plan.asked if a.how == "not_done" and not (a.why_not or "").strip()]
@@ -1120,6 +1127,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     errors += charts.issues(plan, ws, _request_words(state))
     # A website widget they asked for, which a build doesn't make, is said as not done (F1668).
     errors += _widget_left_out(plan, state)
+    # A line of `assumed` saying a thing here is missing (F1763): sent back once with what is true.
+    errors += await _said_missing(plan, ws, state)
     errors += await _knowledge_parts(plan, ws)
     errors += _knowledge_unread(plan, ws)
     # The person's own server first (F1225): a connected one's name is what its agents' `servers` are held to.
@@ -1931,9 +1940,9 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict, notes: list[str] | No
     # missing tool (F866b's invented "Board" provider; SAI2's review, 7).
     # When a board is the right thing at all (F1254): not for a hand-off, and never one nothing reads.
     errors += boards_rule.issues(plan)
-    if len(plan.boards) > 1:
-        # A workflow's agents post to its own board (no product tool gives a workflow a shared board yet; SAI2's
-        # review, 20): the one board a plan names is that board, under the person's name for it (F1214).
+    if len([b for b in plan.boards if not b.yours]) > 1:
+        # The build gives or makes one board itself (F1214): two new boards are one too many. Several boards already
+        # here are the person's to give, and the card says where (F1736), never a plan refused for them.
         errors.append("boards: a build has one board, the workflow's own; name only the one the person asked for")
     if state.get("intent") == "update" and plan.kind == "create" and _base(state) is not None:
         errors.append("kind: the person asked to change the workflow open here: write kind update, with edits by its "
@@ -3154,6 +3163,10 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     stronger = list(dict.fromkeys([*(prior.get("stronger") or []),
                                    *((answer.get("stronger") or []) if answer.get("outcome") == "stronger" else [])]))
     base["stronger"] = stronger
+    # The person's pick for a new base that started empty (F1742): held in code, whatever the planner wrote again.
+    draft = knowledge_picked(draft, asked, ws)
+    # The person's base for a source they named that the plan gave none (F1763): held in code, as F1742's pick is.
+    draft = source_picked(draft, asked, ws)
     found = await examine(draft, server_module, ws=ws, state=state, without=without, alone=alone)
     plan = found.plan
     if plan is None:
@@ -3182,19 +3195,33 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
                                                            events)):
         return {**base, "outcome": "said", "say": held}  # one chat writes a workflow at a time (TABS2, F1063)
     # The board the person asked for is a shared board this workflow is given to work (F1214): the one the plan names,
-    # or the one already here its steps name. One already here is not made again; its new agents post there.
+    # or the one already here its steps name. One already here is not made again; its new agents post there. Of
+    # several boards named, the ones already here are the person's to give, and the card says where (F1736).
+    boards_rule.settle(plan, ws.shared_boards)
     shared = {b.lower(): b for b in ws.shared_boards}
     text = " ".join([plan.title, plan.summary, *(f"{s.name} {s.does} {s.prompt or ''}" for s in plan.steps)]).lower()
     mentioned = [name for low, name in shared.items() if low in text]
     if not plan.boards and len(mentioned) == 1:
         plan.boards = [O.BoardPart(name=mentioned[0])]
-    for b in plan.boards:
-        b.existing = b.name.lower() in shared
-        b.name = shared.get(b.name.lower(), b.name)
+        boards_rule.settle(plan, ws.shared_boards)
+    if boards_rule.with_tools(plan, ws.boards_on):
+        # A board found only here gives its agents their board tools now: the card's words are said again from them.
+        from core.native_builder import parts_words
+
+        try:
+            plan.step_words, plan.part_words, plan.off = parts_words.describe(
+                plan, titles=await parts_words.tool_titles(server_module), agents=ws.agents,
+                kb_names=await parts_words.kb_names())
+        except Exception as exc:  # noqa: BLE001 — words it cannot read leave the card as it was (as `O.fill` does)
+            _log.warning("the plan's parts were not said again: %s", exc)
     board_notes = [f'Its cards go on the shared board "{b.name}" (on the Boards screen)'
                    + (", which this workflow is given to work" if b.existing else ", made with it, for it to work")
                    + ". Its new agents post there; an agent already here posts there when its instructions name it."
-                   for b in plan.boards]
+                   for b in plan.boards if not b.yours] + boards_rule.give_line(plan)
+    # A new base that still starts empty (F1742: kept, or past the questions' cap) is said, with where to fill it.
+    board_notes += [empty_said(n) for n in empty_new_knowledge({
+        **plan.model_dump(), "knowledge": [{**k.model_dump(), "files": [f for f in k.files if f not in k.files_missing]}
+                                           for k in plan.knowledge if not k.existing]}, ws)]
     findings = _obj(state.get(FINDINGS_KEY))
     looked = isinstance(findings, dict) and bool(findings.get("options"))
     # What code could name instead is the planner's, never research's (F950, F1043).
@@ -3330,6 +3357,8 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     plan.assumed = caps_as_code_says(list(dict.fromkeys([
         *plan.assumed, *cap_assumed,
         *(own_terms_assumed(step, thing) for step, thing in own_terms_unsaid(plan))])), plan.knowledge)
+    # A line still saying a thing here is missing after it was sent back says what is true instead (F1763).
+    plan.assumed = await assumed_as_here(plan, ws)
     plan.off += [off_a_path_words(p, arm) for p, arm in parts_off_a_path(plan)]
     # The start they asked for that it cannot make, said with why (F1645).
     plan.off += [o for o in start_off(plan) if o not in plan.off]
@@ -3549,6 +3578,317 @@ def unnamed_knowledge(draft: dict, ws: Workspace, said: list[Any]) -> list[str]:
     return sorted(n for n in used & names if n.lower() not in words)
 
 
+# ── F1742: a new knowledge base that starts empty, and the bases already here ────────────────────────────────────────
+#: The planner sees only bases' names, so asked to answer "from our office plans" it made a new, empty "Office plans"
+#: base beside the "Help centre" that held them, and each run said it had no details. Code asks, never guesses.
+_EMPTY_LABEL = re.compile(r'^The plan makes a new knowledge base "(.+)", which starts empty, so its agents ')
+
+
+def _empty_label(name: str) -> str:
+    return (f'The plan makes a new knowledge base "{name}", which starts empty, so its agents can\'t answer from it '
+            "until documents are added. Answer from one you already have instead?")
+
+
+def _keep_option(name: str) -> str:
+    return f'Keep "{name}" new and add documents to it'
+
+
+def empty_said(name: str) -> str:
+    """The card's line for a new base that starts empty, in the Knowledge screen's words (`render.missing_file_line`)."""
+    return (f"\u201c{name}\u201d is new and empty: its agents can't answer from it until you add documents to it on the "
+            "Knowledge screen.")
+
+
+def _bases_here(ws: Workspace) -> list[str]:
+    """Every active base here by its name, sorted: each is offered, however many (a pick never hides one)."""
+    return sorted({str(kb.name) for kb in (ws.kbs or {}).values()
+                   if getattr(kb, "name", "") and getattr(kb, "status", "active") == "active"}, key=str.lower)
+
+
+def _all_steps_of(draft: dict) -> list[dict]:
+    steps = [s for s in draft.get("steps") or [] if isinstance(s, dict)]
+    for inner in draft.get("inner_workflows") or []:
+        if isinstance(inner, dict):
+            steps += [s for s in inner.get("steps") or [] if isinstance(s, dict)]
+    return steps
+
+
+def _step_config(step: dict, key: str) -> dict:
+    config = step.get("config") if isinstance(step.get("config"), dict) else {}
+    return config.get(key) if isinstance(config.get(key), dict) else {}
+
+
+def empty_new_knowledge(draft: dict, ws: Workspace) -> list[str]:
+    """Each knowledge base the plan makes that starts empty while other bases are here (F1742): new (no base here of
+    its name), given no files and no pages, and filled by no ingest step of the plan (one a step fills is meant to
+    start empty). None while Knowledge is off (F1203) or with no other base here: as before."""
+    if not ws.kbs:
+        return []
+    here = {str(getattr(kb, "name", "") or "").lower() for kb in ws.kbs.values()}
+    filled = {str(_step_config(s, "ingest").get("kb_id") or "").strip().lower() for s in _all_steps_of(draft)}
+    out = []
+    for part in draft.get("knowledge") or []:
+        name = " ".join(str(part.get("name") or "").split()) if isinstance(part, dict) else ""
+        if (not name or name.lower() in here or part.get("files") or part.get("urls") or name.lower() in filled
+                or not [b for b in _bases_here(ws) if b.lower() != name.lower()]):
+            continue
+        out.append(name)
+    return out
+
+
+def knowledge_picked(draft: dict, asked: list[Any], ws: Workspace) -> dict:
+    """The plan with each new, empty base the person swapped for one here (F1742's question) in that base's place: its
+    part, its agents' knowledge, and its retrieve and ingest steps, inner workflows' too. The part then names a base
+    here, so the build uses it and makes none. Keep, or an answer naming no base here, leaves the plan as it is."""
+    here = {b.lower(): b for b in _bases_here(ws)}
+    picks: dict[str, str] = {}
+    for a in asked:
+        found = _EMPTY_LABEL.match(str(a.get("question") or "")) if isinstance(a, dict) else None
+        base = here.get(str(a.get("answer") or "").strip().lower()) if found else None
+        if base:
+            picks[found.group(1).lower()] = base
+    if not picks:
+        return draft
+    out = json.loads(json.dumps(draft, default=str))
+
+    def swap(name: Any) -> Any:
+        return picks.get(str(name).strip().lower(), name) if isinstance(name, str) else name
+
+    parts, seen = [], set()
+    for part in out.get("knowledge") or []:
+        if isinstance(part, dict):
+            part["name"] = swap(part.get("name"))
+            if str(part["name"]).lower() in seen:
+                continue  # the plan already used that base: named once
+            seen.add(str(part["name"]).lower())
+        parts.append(part)
+    out["knowledge"] = parts
+    for agent in out.get("agents") or []:
+        if isinstance(agent, dict) and agent.get("knowledge"):
+            agent["knowledge"] = list(dict.fromkeys(swap(k) for k in agent["knowledge"]))
+    for step in _all_steps_of(out):
+        retrieve, ingest = _step_config(step, "retrieve"), _step_config(step, "ingest")
+        if retrieve.get("kb_ids"):
+            retrieve["kb_ids"] = list(dict.fromkeys(swap(k) for k in retrieve["kb_ids"]))
+        if ingest.get("kb_id"):
+            ingest["kb_id"] = swap(ingest["kb_id"])
+    return out
+
+
+# ── F1763: a source the person named, and no base for the agent that works from it ──────────────────────────────────
+#: Asked to draft replies "from our office plans" with a "Help centre" base here that held them, the planner, which sees
+#: only bases' names, gave its agent no base at all, wrote that the plans were "not yet in a knowledge base", and every
+#: run drafted with no facts. A source of their own the person names, while the plan gives its agents no base at all and
+#: bases are here, goes on F1302's form: every base here by its name, or none. Code never picks one.
+_OWN_SOURCE = re.compile(r"\b(?:from|using|based on|according to|in line with|drawing on|out of)\s+(?:our|my)\s+"
+                         r"(?:own\s+)?((?:[a-z][\w'&-]*)(?:\s+[a-z][\w'&-]*){0,3})", re.I)
+#: The words that end a source's name: "from our office plans and closes the card" names "office plans".
+_SOURCE_STOP = frozenset("and or to for then when so but in on with at by of if as the a an that which while".split())
+#: A verb that writes or answers from what it reads, in the same sentence before the source.
+_WRITES = re.compile(r"\b(?:draft|write|repl(?:y|ies)|answer|respond|quote|compose|prepare|explain|summari[sz]e)\w*\b",
+                     re.I)
+#: What a run is given, or wires another way, a person or a place, a sender's own details, a manner: never a source a
+#: base holds ("from our team", "from our Sales board", "using our brand voice", "from our account").
+_NOT_A_SOURCE = frozenset((
+    "card cards board boards task tasks ticket tickets lead leads enquiry enquiries inquiry inquiries message messages "
+    "email emails mail inbox form forms file files upload uploads attachment attachments sheet sheets spreadsheet "
+    "spreadsheets database databases db calendar calendars website websites site sites page pages link links url urls "
+    "run runs chat chats conversation conversations crm team teams staff people manager managers colleague colleagues "
+    "customer customers client clients user users member members agent agents side end behalf account accounts "
+    "address addresses domain number phone tone voice style words perspective view").split())
+
+
+def _source_name(found: re.Match) -> str:
+    words = []
+    for w in found.group(1).split():
+        if w.lower() in _SOURCE_STOP:
+            break
+        words.append(w)
+    return " ".join(words)
+
+
+def _drafting_agents(draft: dict) -> list[str]:
+    """The plan's new agents a step has write or answer, else every new agent a step uses: the ones a base is for."""
+    new = {str(a.get("name") or ""): a for a in draft.get("agents") or [] if isinstance(a, dict) and a.get("name")}
+    used = [s for s in _all_steps_of(draft) if s.get("type") == "agent" and str(s.get("agent") or "") in new]
+    writing = [str(s["agent"]) for s in used if _WRITES.search(f"{s.get('does') or ''} {s.get('prompt') or ''}")]
+    return list(dict.fromkeys(writing or [str(s["agent"]) for s in used]))
+
+
+def _uses_a_base(draft: dict) -> bool:
+    if [k for k in draft.get("knowledge") or [] if isinstance(k, dict) and k.get("name")]:
+        return True
+    if any(isinstance(a, dict) and a.get("knowledge") for a in draft.get("agents") or []):
+        return True
+    return any(_step_config(s, "retrieve").get("kb_ids") or _step_config(s, "ingest").get("kb_id")
+               for s in _all_steps_of(draft))
+
+
+def unbased_sources(draft: dict, ws: Workspace, said: list[Any]) -> list[tuple[str, list[str]]]:
+    """Each source of their own the person named ("from our office plans") that the plan gives no base for, with the
+    agents that work from it (F1763): only while bases are here, the plan uses no base at all (one it makes, one here,
+    a retrieve or an ingest step), and a new agent of the plan writes or answers. A run's own input ("from the form",
+    "from each card"), a person ("from our team"), a board, tool, agent or workflow here by its name, and a manner
+    ("using our brand voice") are never one."""
+    if not _bases_here(ws) or _uses_a_base(draft):
+        return []
+    agents = _drafting_agents(draft)
+    if not agents:
+        return []
+    here = {" ".join(str(n).replace("_", " ").lower().split())
+            for n in [*ws.shared_boards, *(t.get("name") or "" for t in ws.tools),
+                      *(a.get("name") or "" for a in ws.agents.values()),
+                      *(w.get("name") or "" for w in ws.workflows.values())] if n}
+    out: list[tuple[str, list[str]]] = []
+    for text in (str(t) for t in said if isinstance(t, str) and t.strip()):
+        for sentence in re.split(r"(?<=[.!?])\s+", text):
+            for found in _OWN_SOURCE.finditer(sentence):
+                name = _source_name(found)
+                if (not name or name.split()[-1].lower() in _NOT_A_SOURCE or name.lower() in here
+                        or not _WRITES.search(sentence[:found.start()])):
+                    continue
+                phrase = f"{found.group(0)[:found.start(1) - found.start(0)]}{name}".strip()
+                if phrase.lower() not in {p.lower() for p, _ in out}:
+                    out.append((phrase, agents))
+    return out
+
+
+_SOURCE_LABEL = re.compile(r'^You said "(.+)", but the plan gives (.+) no knowledge base to work from\. ')
+
+
+def _named(agents: list[str]) -> str:
+    quoted = [f'"{a}"' for a in agents]
+    return quoted[0] if len(quoted) == 1 else f"{', '.join(quoted[:-1])} and {quoted[-1]}"
+
+
+def _source_label(phrase: str, agents: list[str]) -> str:
+    return (f'You said "{phrase}", but the plan gives {_named(agents)} no knowledge base to work from. Use one you '
+            "already have?")
+
+
+#: The answer that leaves the plan with no base: what its agents then work from.
+NO_BASE = "None: it works only from what each run gives it"
+
+
+def source_unbased_said(phrase: str, agents: list[str]) -> str:
+    """The card's line for a named source the plan still gives no base (past the questions' cap, F1763)."""
+    return (f'You said "{phrase}", but {_named(agents)} has no knowledge base to work from: give '
+            f'{"it" if len(agents) == 1 else "them"} one before a run, or it works only from what each run gives it.')
+
+
+def source_picked(draft: dict, asked: list[Any], ws: Workspace) -> dict:
+    """The plan with the base the person picked for a source they named (F1763's question) on the agents that work
+    from it, as a base here the build uses and never makes; and without the planner's line saying that source is in
+    no knowledge base. "None", or an answer naming no base here, leaves the plan as it is."""
+    here = {b.lower(): b for b in _bases_here(ws)}
+    picks: list[tuple[str, str, list[str]]] = []
+    for a in asked:
+        found = _SOURCE_LABEL.match(str(a.get("question") or "")) if isinstance(a, dict) else None
+        base = here.get(str(a.get("answer") or "").strip().lower()) if found else None
+        if base:
+            picks.append((found.group(1), base, re.findall(r'"([^"]+)"', found.group(2))))
+    if not picks:
+        return draft
+    out = json.loads(json.dumps(draft, default=str))
+    names = {str(k.get("name") or "").lower() for k in out.get("knowledge") or [] if isinstance(k, dict)}
+    for phrase, base, agents in picks:
+        if base.lower() not in names:
+            out.setdefault("knowledge", []).append({"name": base})
+            names.add(base.lower())
+        for agent in out.get("agents") or []:
+            if isinstance(agent, dict) and agent.get("name") in agents:
+                agent["knowledge"] = list(dict.fromkeys([*(agent.get("knowledge") or []), base]))
+        source = _OWN_SOURCE.match(phrase)
+        head = (_source_name(source) if source else phrase).lower()
+        out["assumed"] = [line for line in out.get("assumed") or []
+                          if not (head in str(line).lower() and "knowledge base" in str(line).lower())]
+    return out
+
+
+# ── F1763: "What I assumed" never says a thing is missing that the workspace has ────────────────────────────────────
+#: A line saying something is not connected, set up, available or here; "there is no …"; "… doesn't exist yet".
+_SAYS_MISSING = re.compile(
+    r"\b(?:is|are)(?:\s+not|n't)\s+(?:yet\s+)?(?:connected|set\s+up|available|added|configured|here|in\s+(?:a|any|your)\s+"
+    r"knowledge\s+base)\b|\bnot\s+yet\s+(?:connected|set\s+up|available|added)\b|\bthere(?:\s+is|'s)\s+no\b"
+    r"|\bdo(?:es)?(?:\s+not|n't)\s+(?:yet\s+)?exist\b", re.I)
+#: A plan sent back once for a line of `assumed` saying a thing here is missing (F1763): then code says what is true.
+MISSING_SENT_BACK = "_said_missing_sent_back"
+
+
+async def things_here(plan: O.Plan, ws: Workspace) -> list[tuple[re.Pattern, str]]:
+    """What is here by every name a line may give it, each with the words that say it is here, as its screen names
+    it: a tool a run can call now (by its id in words, and a custom tool by its own name), a knowledge base, a shared
+    board. Never a tool whose app is set up but not connected now, and never one the plan makes."""
+    try:
+        from core.routes.tools import load_custom_tools
+
+        own = {c["name"]: str(c.get("generalName") or "").strip() for c in await load_custom_tools()
+               if isinstance(c, dict) and c.get("name")}
+    except Exception as exc:  # noqa: BLE001 — a tool's own name not read: it is found by its id alone
+        _log.warning("the custom tools' names were not read: %s", exc)
+        own = {}
+    away = {t.name for t in plan.tools if t.status != "present" or (t.detail or "").strip()}
+    out: list[tuple[re.Pattern, str]] = []
+    for t in ws.tools:
+        name = str(t.get("name") or "")
+        if not name or name in away:
+            continue
+        shown = own.get(name) or name.replace("_", " ")
+        words = {name, name.replace("_", " "), *([own[name]] if own.get(name) else [])}
+        out.append((_any_of(words), f"{shown[:1].upper()}{shown[1:]} is a tool here already."))
+    for b in _bases_here(ws):
+        out.append((_any_of({b}), f"“{b}” is a knowledge base here already."))
+    for b in ws.shared_boards:
+        out.append((_any_of({b}), f'The board "{b}" is here already.'))
+    return out
+
+
+def _any_of(words: set[str]) -> re.Pattern:
+    return re.compile("|".join(rf"(?<![\w]){re.escape(w)}(?![\w])" for w in sorted(words, key=len, reverse=True)), re.I)
+
+
+def _missing_but_here(lines: list[str], here: list[tuple[re.Pattern, str]]) -> list[tuple[str, str]]:
+    """Each line of `assumed` that says a thing is missing which is here, with code's line saying what is true. The
+    thing is what the clause says is missing: named before "is not connected" (and its kin), after "there is no";
+    "there is no card on the Sales board" says nothing of the board."""
+    out = []
+    for line in lines:
+        text = str(line)
+        hit = None
+        for clause in re.split(r"[.;:\u2014\u2013]|\s-\s|,\s+(?:so|but|and)\s", text):
+            for said in _SAYS_MISSING.finditer(clause):
+                after = said.group(0).lower().startswith("there")
+                # "there is no Send email tool yet": the thing is the next words, never one further on.
+                span = " ".join(clause[said.end():].split()[:3]) if after else clause[:said.start()]
+                hit = next((true for named, true in here if named.search(span)), None)
+                if hit:
+                    break
+            if hit:
+                break
+        if hit:
+            out.append((text, hit))
+    return out
+
+
+async def _said_missing(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
+    """A plan whose `assumed` says a thing here is missing, sent back once with what is true (F1763); a second plan
+    in the run is built, and code says what is true in that line's place (`assumed_as_here`)."""
+    if state.get(MISSING_SENT_BACK):
+        return []
+    wrong = _missing_but_here(plan.assumed, await things_here(plan, ws))
+    if not wrong:
+        return []
+    state[MISSING_SENT_BACK] = True
+    return [f'assumed: "{line}" says something is missing that is here: {true} Say what is true, or use it.'
+            for line, true in wrong]
+
+
+async def assumed_as_here(plan: O.Plan, ws: Workspace) -> list[str]:
+    """`plan.assumed` with each line saying a thing here is missing replaced by code's line saying it is here."""
+    wrong = dict(_missing_but_here(plan.assumed, await things_here(plan, ws)))
+    return list(dict.fromkeys(wrong.get(str(line), line) for line in plan.assumed))
+
+
 # ── F1600: every part of the ask on every path; their own terms never assumed silently ──────────────────────────────
 _END = "\x00end"
 #: A check against something of the person's own, by what it is called (F1600: a tester's "our terms").
@@ -3670,12 +4010,36 @@ FORM_TOOL_SAID = (f"`{FORM_TOOL}` is an agent's way to ask for fields in a chat,
                   "someone fills it in")
 #: A request for a form: "on a form", "fills in a form", "a form where…" — never "in the form of".
 _FORM_ASKED = re.compile(r"\bforms?\b(?!\s+of\b)", re.I)
+#: A form that lives somewhere else, by the words around it (F1737): told to start from a form there, a planner that
+#: complies puts a person's form in front of a workflow items arrive at, and every run waits for someone to fill it
+#: in. Right before the word, with nothing between, where it is: a contact, website or Google form, "the website's
+#: form", "our X form", "their form", tax or PDF forms. Only adjacent: "give our new hires a form" still asks for one.
+_FORM_ELSEWHERE_BEFORE = re.compile(
+    r"(?:\b(?:contact|website|web|site|google|microsoft|ms|their|tax|pdf)(?:['\u2019]s)?|\bour\s+\w+)[\s-]+$", re.I)
+#: After it, what arrives from it (enquiries, submissions, responses, entries, data), the form as the one that acts
+#: ("the form sends…"), a document someone gives ("forms I upload"), and a form letter.
+_FORM_ELSEWHERE_AFTER = re.compile(
+    r"^(?:[\s-]+(?:enquir(?:y|ies)|inquir(?:y|ies)|submissions?|responses?|entries|data|letters?)\b"
+    r"|\s+(?:sends?|posts?|emails?)\b|\s+(?:that\s+)?(?:i|we)\s+(?:upload|attach|send)\b)", re.I)
+
+
+def form_asked(words: str) -> bool:
+    """Whether the request asks for a form this workflow shows: the word, as F1616 reads it, at least once where the
+    words around it don't say the form is somewhere else (F1737). A missed nudge costs little; a wrong one can put a
+    person's form in front of a workflow that never needed one."""
+    return any(not (_FORM_ELSEWHERE_BEFORE.search(words[:m.start()])
+                    or _FORM_ELSEWHERE_AFTER.match(words[m.end():]))
+               for m in _FORM_ASKED.finditer(words))
 
 
 def form_not_first(plan: O.Plan, state: dict) -> O.Step | None:
     """The step a new workflow starts with when the person asked for a form and that step is no form (F1616): a
-    `human` step first is the form the card says it starts from (`render.start_words`). None otherwise."""
-    if plan.kind != "create" or plan.schedule is not None or not _FORM_ASKED.search(_request_words(state)):
+    `human` step first is the form the card says it starts from (`render.start_words`). None otherwise, and none
+    where the plan has said it cannot start the way they asked, and why (F1645): its card says that instead."""
+    if plan.kind != "create" or plan.schedule is not None or not form_asked(_request_words(state)):
+        return None
+    started = getattr(plan, "asked_start", None)
+    if started is not None and started.made == "cannot" and (started.why_not or "").strip():
         return None
     first = next((s for s in plan.steps if s.type != "end"), None)
     return first if first is not None and first.type != "human" else None
@@ -3756,11 +4120,18 @@ async def _asked_first(base: dict, draft: dict, carried: list[str], ws: Workspac
                                                   if isinstance(a, dict)]
     kbs = [n for n in unnamed_knowledge(draft, ws, said)
            if asked_before(state, "which", f"knowledge base {n}", _knowledge_label(n)) is None]
-    if not (unsaid or questions or kbs):
+    # A new base that starts empty while others are here (F1742): every base here, or keep it, on the same form.
+    empties = [n for n in empty_new_knowledge(draft, ws)
+               if asked_before(state, "which", f"empty knowledge base {n}", _empty_label(n)) is None]
+    # A source of their own they named that the plan gives no base (F1763): every base here, or none.
+    sources = [(p, a) for p, a in unbased_sources(draft, ws, said)
+               if asked_before(state, "which", f"source {p.lower()}", _source_label(p, a)) is None]
+    if not (unsaid or questions or kbs or empties or sources):
         return None, []
     if questions_asked(state, run) >= QUESTIONS:
         return None, [a.said() for a in unsaid] + [
-            f'The plan answers from "{n}", which you didn\'t name: check it before you build.' for n in kbs]
+            f'The plan answers from "{n}", which you didn\'t name: check it before you build.' for n in kbs] + [
+            source_unbased_said(p, a) for p, a in sources]
     form = []
     for a in unsaid[:FORM_MAX]:
         form.append({"name": f"q{len(form) + 1}", "type": addresses.FIELD_TYPE[a.kind], "label": a.label(),
@@ -3769,10 +4140,18 @@ async def _asked_first(base: dict, draft: dict, carried: list[str], ws: Workspac
     for n in kbs[:max(0, FORM_MAX - len(form))]:
         form.append({"name": f"q{len(form) + 1}", "type": "string", "label": _knowledge_label(n), "value": n})
         note_question(state, "which", f"knowledge base {n}", _knowledge_label(n), field=form[-1]["name"])
+    for n in empties[:max(0, FORM_MAX - len(form))]:
+        options = [*(b for b in _bases_here(ws) if b.lower() != n.lower()), _keep_option(n)]
+        form.append({"name": f"q{len(form) + 1}", "type": "choice", "label": _empty_label(n), "options": options})
+        note_question(state, "which", f"empty knowledge base {n}", _empty_label(n), field=form[-1]["name"])
+    for p, a in sources[:max(0, FORM_MAX - len(form))]:
+        form.append({"name": f"q{len(form) + 1}", "type": "choice", "label": _source_label(p, a),
+                     "options": [*_bases_here(ws), NO_BASE]})
+        note_question(state, "which", f"source {p.lower()}", _source_label(p, a), field=form[-1]["name"])
     for q in questions[:max(0, FORM_MAX - len(form))]:
         form.append({"name": f"q{len(form) + 1}", "type": "string", "label": q.strip()})
         note_question(state, "what", "", q.strip(), field=form[-1]["name"])
-    lead = UNSAID_LEAD if unsaid or kbs else FORM_LEAD
+    lead = UNSAID_LEAD if unsaid or kbs or empties or sources else FORM_LEAD
     return {**base, "outcome": "ask", "question": form_text(lead, form), "form": form}, []
 
 
@@ -3796,6 +4175,10 @@ async def _connect_first(base: dict, plan: O.Plan, waiting: list[O.McpServerPart
     return out
 
 
+#: What the review says when its build's card could not be kept on the person's board (F1750).
+NOT_KEPT = "This build's record on your board couldn't be saved; the build itself is unaffected."
+
+
 async def _card(checked: dict) -> None:
     """Keep this build on Synapse AI's board, as its person's card (F776), waiting for them; a failure to write it
     never stops the build itself."""
@@ -3812,6 +4195,8 @@ async def _card(checked: dict) -> None:
                             data={"plan": {k: v for k, v in checked.items() if k != "review"}}, run_id=run_id)
     except Exception as exc:  # noqa: BLE001 — the board is the record, not the build
         _log.warning("build card for run %s not written: %s", run_id, exc)
+        # Said to the person too (F1750), never stopping the build: a record lost without a word is lost twice.
+        checked["say"] = " ".join(p for p in (checked.get("say") or "", NOT_KEPT) if p)
 
 
 # ── a review answer that is not a yes ─────────────────────────────────────────────────────────────────────────────

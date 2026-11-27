@@ -221,7 +221,23 @@ from core.native_builder import prompt_lint, seed
 #: one read, b40af047… (on F1675's 486f8e21).
 #: F1704: plan_steps.md's transform bullet says a page read answers an object, to go through its list field
 #: (scrape_structured: data; extract_links: links), never the answer itself, f2fb27f2… (on b40af047).
-BUNDLE_SHA256 = "f2fb27f2e0b5d184204f4a8c7df5a40724360bdd051afa79280d8b03543fc6df"
+#: F1728: the planner's rules 5 and 18 name a schedule's run_when has_work (a heartbeat), its wake and its daily
+#: limit, 91652a57… (on f2fb27f2).
+#: F1743: plan_steps.md's tool bullet says a step that sends what a human step approved sets every input in
+#: `config.tool_arguments` from what that step showed, never left to a model, 085f2013… (on F1728's 91652a57).
+#: F1749: the planner's Building 5 says a heartbeat's new task starts it early, without waiting for its next check
+#: (`objects.WAKE_WORDS`), never "within a minute", which Cloud's five-minute floor makes untrue, 8ff87166… (on
+#: F1743's 085f2013).
+#: F1753: plan_steps.md's human bullet and the step cheatsheet say a field the person may change before it goes starts
+#: with what an earlier step wrote (`default`), the step's prompt never repeating it, and one only they type has none,
+#: 08bca3f3… (on F1749's 8ff87166).
+#: F1754: plan_steps.md's human bullet says a check before something goes out shows what goes out, each value the send
+#: sends from an earlier step in its prompt or as a field's `default`, 15e5b5c8… (on F1753's 08bca3f3).
+#: F1753 (2): plan_steps.md's human bullet says the fields that carry a draft sit beside the step's approval, never in
+#: its place, so Decline stays, edb987e9… (on F1754's 15e5b5c8).
+#: F1754 (2): plan_steps.md's human bullet says a step the person asked to be shown nothing asks as they asked, and the
+#: card says it is approved without showing what goes out, 2ecce51d… (on F1753's edb987e9).
+BUNDLE_SHA256 = "2ecce51d2862a826fe79f4a0bf7fc286ad71d5c81c6bfd1c144e017b20214f1c"
 
 
 def _sha(definitions) -> str:

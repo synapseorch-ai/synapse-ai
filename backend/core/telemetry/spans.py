@@ -240,8 +240,10 @@ class _ToolCalls:
             rec.set(A.TOOL_REFUSAL_KIND, refusal_kind(event.get("reason")))
             outcome = "refused"
         else:
+            # A call its tool said failed is marked (F1752); an unmarked "Error…" preview is an older engine's.
             preview = event.get("preview")
-            outcome = "error" if isinstance(preview, str) and preview.startswith("Error") else "ok"
+            failed = event.get("failed") is True or (isinstance(preview, str) and preview.startswith("Error"))
+            outcome = "error" if failed else "ok"
         metrics.tool_call(category, outcome)
         self._end()
 

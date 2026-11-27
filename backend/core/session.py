@@ -200,6 +200,9 @@ def calls_from_events(events: list[dict]) -> list[dict]:
             if event.get("refused"):
                 # Not run, and why (U68) — as the engine's own record says.
                 calls[-1].update(refused=True, reason=event.get("reason") or "")
+            elif event.get("failed"):
+                # Run, and its tool said it failed (F1751).
+                calls[-1].update(failed=True, reason=event.get("reason") or "")
     return calls
 
 

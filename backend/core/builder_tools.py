@@ -21,6 +21,7 @@ from core.expressions import vocabulary_sentence
 from core.store import collections
 from core.store.resources import load_mcp_servers
 from core import agent_knowledge
+from core.native_builder.objects import WAKE_WORDS as _WAKE_WORDS  # one wording on every host (F1749)
 from core.store.ids import new_id as _mint_id
 
 
@@ -1342,7 +1343,7 @@ BUILDER_TOOL_SCHEMAS = [
                     "human_prompt": {"type": "string", "description": "Prompt shown to user (human steps)"},
                     "human_fields_json": {
                         "type": "string",
-                        "description": "JSON string of field definitions. The answer is stored under output_key as a mapping {field name: value}: name the output_key for the step (e.g. `review`), not after a field, type it dict, and read one field as `{{ state.review.feedback }}`. Types: string, textarea, number, boolean, email, date, phone, choice (a dropdown; give it \"options\": [..], one is picked). Example: '[{\"name\":\"feedback\",\"type\":\"textarea\",\"label\":\"Your feedback\"},{\"name\":\"decision\",\"type\":\"choice\",\"label\":\"Decision\",\"options\":[\"Approve\",\"Later\"]}]'",
+                        "description": "JSON string of field definitions. The answer is stored under output_key as a mapping {field name: value}: name the output_key for the step (e.g. `review`), not after a field, type it dict, and read one field as `{{ state.review.feedback }}`. Types: string, textarea, number, boolean, email, date, phone, choice (a dropdown; give it \"options\": [..], one is picked). A field the person may change before it goes starts with what an earlier step wrote, \"default\": \"{{ state.draft.subject }}\"; one only they type has none. Example: '[{\"name\":\"feedback\",\"type\":\"textarea\",\"label\":\"Your feedback\"},{\"name\":\"decision\",\"type\":\"choice\",\"label\":\"Decision\",\"options\":[\"Approve\",\"Later\"]}]'",
                     },
                     "output_fields_json": {
                         "type": "string",
@@ -1863,6 +1864,16 @@ BUILDER_TOOL_SCHEMAS = [
                         "one the person named, else their own. Leave it out for UTC")},
                     "missed_run_policy": {"type": "string", "enum": ["run_immediately", "skip"], "description": (
                         "A time it missed (the machine was off): run it once as soon as it can, or skip it")},
+                    "run_when": {"type": "string", "enum": ["always", "has_work"], "description": (
+                        "'always' (the default) runs at its time. 'has_work' is a heartbeat: at its time it runs only "
+                        "while a board its run works on (its own board, or a shared board it may work) has an open "
+                        "task, and costs nothing when there is none. For 'whenever a new request comes in, handle "
+                        "it'. Needs Boards on")},
+                    "wake_on_new_task": {"type": "boolean", "description": (
+                        f"A heartbeat only: {_WAKE_WORDS} (on unless turned off)")},
+                    "max_runs_per_day": {"type": "integer", "description": (
+                        "The most runs it starts in a day on its own clock, 0 for no limit. Set one on a heartbeat "
+                        "so a burst of tasks cannot become a burst of spend")},
                 },
                 "required": ["name", "target_type", "target_id", "prompt", "schedule_type"],
             },
@@ -1944,6 +1955,16 @@ BUILDER_TOOL_SCHEMAS = [
                         "one the person named, else their own. Leave it out for UTC")},
                     "missed_run_policy": {"type": "string", "enum": ["run_immediately", "skip"], "description": (
                         "A time it missed (the machine was off): run it once as soon as it can, or skip it")},
+                    "run_when": {"type": "string", "enum": ["always", "has_work"], "description": (
+                        "'always' (the default) runs at its time. 'has_work' is a heartbeat: at its time it runs only "
+                        "while a board its run works on (its own board, or a shared board it may work) has an open "
+                        "task, and costs nothing when there is none. For 'whenever a new request comes in, handle "
+                        "it'. Needs Boards on")},
+                    "wake_on_new_task": {"type": "boolean", "description": (
+                        f"A heartbeat only: {_WAKE_WORDS} (on unless turned off)")},
+                    "max_runs_per_day": {"type": "integer", "description": (
+                        "The most runs it starts in a day on its own clock, 0 for no limit. Set one on a heartbeat "
+                        "so a burst of tasks cannot become a burst of spend")},
                 },
                 "required": ["schedule_id"],
             },
@@ -2529,6 +2550,7 @@ async def execute_builder_tool_with_events(
         for_a_person = caller is not None and caller.via == "workflow"
         with acting_for(caller), _the_act_of(caller if for_a_person else None):
             result = await _dispatch(tool_name, args, server_module, events)
+        result = await _said_of_models(result, events)
         if for_a_person:
             # An ordinary run's build write, audited once as its person (F1319).
             from core.product_tools.build import audit_from_a_run
@@ -2663,10 +2685,79 @@ async def _workspace_catalogue(server_module) -> list:
     return (await aggregate_all_tools(server_module, catalogue_holder(), await load_custom_tools()))[0]
 
 
+async def _door_model(model: Any, before: Any = None, *, has_tools: bool = False) -> tuple[str | None, str | None]:
+    """The model an agent door saves, or why not: Synapse AI's own check in its own run (F1250), then the one every
+    door asks (`model_choices.save_check`, F1762), which refuses only with its switch on. What the door says of a model
+    that cannot answer is added to its answer once, from what it saved (`_said_of_models`)."""
+    from core import model_choices
+    from core.native_builder.models_menu import builder_model_refusal
+
+    wrong, saved = await builder_model_refusal(model, before, has_tools=has_tools)
+    if wrong is not None:
+        return wrong, None
+    refused, _note = await model_choices.save_check(saved, before)
+    return refused, saved
+
+
+class StepModelRefused(Exception):
+    """A step's model refused at save (F1762, with `model_choices.REFUSE_UNSERVED` on): the call answers its words."""
+
+
+async def _step_models_refused(orch: dict) -> None:
+    """Every door that saves a workflow's steps asks of each step's own model what an agent's door asks (F1762); a
+    model the step already had is never refused."""
+    from core import model_choices
+    from core.store.resources import get_orchestration
+
+    if not model_choices.REFUSE_UNSERVED:
+        return
+    stored = await get_orchestration(orch["id"]) if orch.get("id") else None
+    if (refused := await model_choices.step_refusal(orch.get("steps") or [], (stored or {}).get("steps"))):
+        raise StepModelRefused(refused)
+
+
+async def _said_of_models(result: Any, events: list[dict]) -> Any:
+    """A door's answer with why each model it saved cannot answer here yet (F1762): `model_note` for one agent,
+    `model_notes` for several agents or for a workflow's steps. Read from what the call saved, so every door says it."""
+    from core import model_choices
+
+    if not isinstance(result, dict) or "error" in result:
+        return result
+    agents = [e["resource"] for e in events if e.get("kind") == "agent" and e.get("action") in ("created", "updated")
+              and isinstance(e.get("resource"), dict) and "model" in e["resource"]]
+    steps = [(e["resource"], s) for e in events if e.get("kind") == "orchestration"
+             and e.get("action") in ("created", "updated") and isinstance(e.get("resource"), dict)
+             for s in e["resource"].get("steps") or [] if isinstance(s, dict) and s.get("model")]
+    models = [a.get("model") for a in agents] + [s.get("model") for _o, s in steps]
+    if not any(models):
+        return result
+    try:
+        said = await model_choices.notes([m for m in models if m])
+    except Exception:  # noqa: BLE001 — a check that cannot run says nothing; the save stands
+        from core.log import get_logger
+
+        get_logger(__name__).warning("could not check saved models", exc_info=True)
+        return result
+    out = dict(result)
+    if len(agents) == 1 and agents[0].get("model"):
+        out["model_note"] = said.get(str(agents[0]["model"]).strip())
+    elif len(agents) > 1:
+        out["model_notes"] = [{"agent_id": a.get("id"), "name": a.get("name"), "model": a.get("model"), "note": n}
+                              for a in agents if (n := said.get(str(a.get("model") or "").strip()))]
+    if steps:
+        out["model_notes"] = [*out.get("model_notes", []),
+                              *[{"step_id": s.get("id"), "model": s.get("model"), "note": n}
+                                for _o, s in steps if (n := said.get(str(s.get("model") or "").strip()))]]
+    return out
+
+
 async def _steps_as_run_calls(orch: dict, server_module: Any) -> dict:
     """A workflow's Tool steps saved with their tool as a run calls it (F1035): a step the builder wrote as
-    `web_scraper.scrape_url`, or with an external server's bare name, would fail its first run."""
+    `web_scraper.scrape_url`, or with an external server's bare name, would fail its first run. A step's own model is
+    asked about first (F1762)."""
     from core import builder_guard
+
+    await _step_models_refused(orch)
 
     steps = [s for s in orch.get("steps") or [] if isinstance(s, dict) and isinstance(s.get("forced_tool"), str)
              and s.get("forced_tool")]
@@ -2745,8 +2836,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             return wrong
         if (wrong := await agent_knowledge.refusal(args.get("knowledge"))) is not None:
             return {"error": wrong}
-        from core.native_builder.models_menu import builder_model_refusal  # F1250: Synapse AI's own, callable
-        wrong, model = await builder_model_refusal(args.get("model"), has_tools=bool(args.get("tools")))
+        wrong, model = await _door_model(args.get("model"), has_tools=bool(args.get("tools")))  # F1250, F1762
         if wrong is not None:
             return {"error": wrong}
         args = {**args, "model": model}
@@ -2847,8 +2937,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                 if (wrong := await agent_knowledge.refusal(spec.get("knowledge"))) is not None:
                     errors.append({"index": i, "role": spec.get("role"), "error": wrong})
                     continue
-                from core.native_builder.models_menu import builder_model_refusal  # F1250
-                wrong, model = await builder_model_refusal(spec.get("model"), has_tools=bool(spec.get("tools")))
+                wrong, model = await _door_model(spec.get("model"), has_tools=bool(spec.get("tools")))  # F1250, F1762
                 if wrong is not None:
                     errors.append({"index": i, "role": spec.get("role"), "error": wrong})
                     continue
@@ -2934,9 +3023,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             if refused:
                 return refused
         if "model" in fields:
-            from core.native_builder.models_menu import builder_model_refusal  # F1250: only one it did not have
-            wrong, fields["model"] = await builder_model_refusal(fields["model"], agent.get("model"),
-                                                         has_tools=bool(fields.get("tools", agent.get("tools"))))
+            # F1250, F1762: only one it did not have is refused.
+            wrong, fields["model"] = await _door_model(fields["model"], agent.get("model"),
+                                                       has_tools=bool(fields.get("tools", agent.get("tools"))))
             if wrong is not None:
                 return {"error": wrong}
         if "tools" in fields:
@@ -4176,7 +4265,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         except ValidationError as exc:
             return {"error": f"Invalid schedule: {exc.errors()[0]['msg']}"}
         if not patch:
-            return {"error": "Nothing to change: give the time, prompt, name or target that changes."}
+            return {"error": "Nothing to change: give the time, prompt, name, target or when it runs that changes."}
         patched = {**schedule, **patch}
         if {"target_type", "target_id"} & patch.keys():
             if patched.get("target_type") == "agent":
@@ -4185,7 +4274,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                     return {"error": f"Agent '{patched.get('target_id')}' not found"}
             elif await _visible_orchestration(str(patched.get("target_id") or "")) is None:
                 return {"error": f"Orchestration '{patched.get('target_id')}' not found"}
-        if {"schedule_type", "interval_value", "interval_unit", "cron_expression", "timezone"} & patch.keys():
+        if {"schedule_type", "interval_value", "interval_unit", "cron_expression", "timezone", "run_when",
+                "max_runs_per_day"} & patch.keys():
             try:
                 validate_timing(patched)
                 patched["next_run_at"] = _iso(compute_next_run(patched, _utc_now()))
@@ -5306,6 +5396,21 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
                             f"give an earlier step '{key}' as its output_key, or declare it in the state schema."
                         )
                 issues += _file_content_into_code(s, steps)
+        # A Human step's field that starts with a value reads it from the run when it asks (F1753): a key nothing
+        # writes would start it empty on every run, and the person would be left to type what the plan meant to show.
+        if s.get("type") == "human" and isinstance(s.get("human_fields"), list):
+            from core.templating import STATE_REF as _STATE_REF
+
+            for f in s["human_fields"]:
+                if not (isinstance(f, dict) and isinstance(f.get("default"), str)):
+                    continue
+                for ref in _STATE_REF.findall(f["default"]):
+                    key = ref.split(".")[0]
+                    if key not in writable and key not in (orch.get("state_schema") or {}):
+                        issues.append(
+                            f"Human step '{sid}' starts its field '{f.get('name')}' from 'state.{ref}', but nothing "
+                            f"writes '{key}' — start it from what an earlier step wrote, or give it no starting value."
+                        )
         issues += _transform_reads_a_wrapper(s, steps)
         # An Ingest step reads its records from one key. A key the schema
         # declares counts too: a run's caller can fill it, and a list default

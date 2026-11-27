@@ -44,6 +44,7 @@ import {
 import { readWithStallTimeout } from '@/lib/sse';
 import { formatRelativeTime } from '@/lib/relativeTime';
 import { refusedAnswerMessage } from '@/lib/answers';
+import { callNote, isFailed, resultOf, shownResult, tallyOf } from '@/lib/callMarks';
 import { useModelSetup } from '@/components/onboarding/ModelSetupProvider';
 import { KnowledgeCitation, Message, OrchMsgType, SystemStatus } from '@/types';
 import { KnowledgeSources, linkLabels } from '@/components/knowledge/KnowledgeSources';
@@ -312,6 +313,17 @@ function AssistantBubble({ msg, agentName }: { msg: Message; agentName: string }
       {msg.thoughts && msg.thoughts.length > 0 && (
         <ThoughtCollapsible thoughts={msg.thoughts} />
       )}
+      {calls.some(isFailed) && (
+        // What this turn ran that failed (F1751): the answer above may say it was sent.
+        <ul className="space-y-0.5 text-xs text-danger" aria-label="Calls that failed">
+          {calls.filter(isFailed).map((c, i) => (
+            <li key={i} className="flex gap-1.5">
+              <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+              <span>Failed: <span className="font-code" translate="no">{c.tool}</span>{c.reason ? ` — ${c.reason}` : ''}</span>
+            </li>
+          ))}
+        </ul>
+      )}
       {msg.refused && msg.refused.length > 0 && (
         // What this turn did not run (U68): the answer above may say it was done.
         <ul className="space-y-0.5 text-xs text-warning" aria-label="Calls not run">
@@ -351,11 +363,12 @@ function AssistantBubble({ msg, agentName }: { msg: Message; agentName: string }
  * the calls its turn saved (F242, U60); a live one from the events it streamed.
  */
 function ToolsUsed({ calls }: { calls: SavedCall[] }) {
-  const refused = calls.filter(c => c.refused).length;
+  const { notRun: refused, failed } = tallyOf(calls);
   return (
     <RunChip
       icon={<Wrench className="h-3.5 w-3.5" />}
-      label={<>Tools used · {calls.length}{refused > 0 && <span className="text-warning"> · {refused} not run</span>}</>}
+      label={<>Tools used · {calls.length}{refused > 0 && <span className="text-warning"> · {refused} not run</span>}
+        {failed > 0 && <span className="text-danger"> · {failed} failed</span>}</>}
       detail={(
         <ul className="space-y-2 border-l border-border pl-3 text-xs">
           {calls.map((call, i) => {
@@ -364,7 +377,9 @@ function ToolsUsed({ calls }: { calls: SavedCall[] }) {
               <li key={i} className="min-w-0">
                 <div className="flex items-baseline gap-2">
                   <span className="font-code text-text" translate="no">{call.tool}</span>
-                  {call.refused && <span className="text-warning">not run{call.reason ? ` — ${call.reason}` : ''}</span>}
+                  {callNote(call) && (
+                    <span className={isFailed(call) ? 'text-danger' : 'text-warning'}>{callNote(call)}</span>
+                  )}
                 </div>
                 {call.browser ? (
                   <BrowserActionLine
@@ -373,9 +388,9 @@ function ToolsUsed({ calls }: { calls: SavedCall[] }) {
                     shot={call.browser.shot_ref ? OSS_BROWSER_HOST.shotUrl(call.browser.session_id, call.browser.shot_ref) : null}
                   />
                 ) : args && <div className="truncate font-code text-2xs text-text-faint" title={args}>{args}</div>}
-                {call.result && (
+                {shownResult(call) && (
                   <div className="line-clamp-2 whitespace-pre-wrap break-words text-2xs text-text-faint">
-                    {call.result.slice(0, 300)}
+                    {shownResult(call).slice(0, 300)}
                   </div>
                 )}
               </li>
@@ -408,8 +423,10 @@ type SessionSummary = {
   first_user_message: string | null;
 };
 
-/** One tool call as a saved turn keeps it (F242); `refused` marks a call that was not run (U68). */
-type SavedCall = { tool: string; args: Record<string, unknown> | null; result: string; refused?: boolean; reason?: string;
+/** One tool call as a saved turn keeps it (F242); `refused` marks a call that was not run (U68), `failed` one that ran
+ *  and whose tool said it failed (F1751). */
+type SavedCall = { tool: string; args: Record<string, unknown> | null; result: string; refused?: boolean; failed?: boolean;
+                   reason?: string;
                    /** What a browser tool did in the page, while the turn is on screen (BRW2, F1074). */
                    browser?: BrowserAction };
 
@@ -2398,11 +2415,7 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
           const at = calls.findLastIndex(c => c.tool === rawToolName && !c.result && !c.refused);
           if (at !== -1) {
             const next = [...calls];
-            next[at] = {
-              ...next[at],
-              result: String(data.preview ?? ''),
-              ...(data.refused ? { refused: true, reason: String(data.reason ?? '') } : {}),
-            };
+            next[at] = { ...next[at], ...resultOf(data) };
             liveCallsRef.current = next;
           }
         }

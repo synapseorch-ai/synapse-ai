@@ -27,7 +27,7 @@ import { cn } from '@/lib/cn';
 import { type Clock } from './model';
 import { RUN_DOT } from './RunList';
 import { useClock, When } from './When';
-import { lastRunBucket, matchSchedule, type ScheduleListRow } from './scheduleRows';
+import { lastRunBucket, matchSchedule, type ScheduleListRow, WAITS } from './scheduleRows';
 
 export function ScheduleList({
     rows, onOpen, actions, actionsWidth = '120px', runHref, empty, toolbar, className, onEnabledChange, enabledBusy,
@@ -111,7 +111,7 @@ function TargetLabel({ row }: { row: ScheduleListRow }) {
 }
 
 function WordsChip({ row }: { row: ScheduleListRow }) {
-    return (
+    const chip = (
         <span
             data-schedule-words
             title={row.detail}
@@ -119,6 +119,14 @@ function WordsChip({ row }: { row: ScheduleListRow }) {
         >
             <CalendarClock aria-hidden className="size-3.5 shrink-0" />
             <span className="truncate">{row.words}</span>
+        </span>
+    );
+    if (!row.waits) return chip;
+    // A heartbeat (F1729): its own line under the time, never cut off by the chip's width.
+    return (
+        <span className="inline-flex min-w-0 max-w-full flex-col items-start gap-0.5">
+            {chip}
+            <span data-schedule-waits className="pl-0.5 text-[11px] leading-4 text-text-faint">{WAITS}</span>
         </span>
     );
 }

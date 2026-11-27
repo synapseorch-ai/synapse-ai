@@ -136,6 +136,9 @@ PRIVATE_STATE_PREFIXES = (
     "_long_fetch_sent_back",
     # That a plan went back once for a website widget it left unsaid (`build_plan.WIDGET_SENT_BACK`, F1668).
     "_widget_sent_back",
+    # That a plan went back once for a line of `assumed` saying a thing here is missing
+    # (`build_plan.MISSING_SENT_BACK`, F1763).
+    "_said_missing_sent_back",
     # That a plan went back once for a step reading a tool's whole answer with no fields named
     # (`build_plan.USES_FIELDS_SENT_BACK`, F1705).
     "_uses_fields_sent_back",
@@ -147,6 +150,12 @@ PRIVATE_STATE_PREFIXES = (
     "_answer_walk_sent_back",
     # How often a plan went back for what its practice run found (`build_plan.PRACTICE_SENT_BACK`, F1619).
     "_practice_sent_back",
+    # The values a Human step's card showed, which a model-filled send is held to (`grounded.SHOWN_KEY`, F1743), and
+    # that a send after an approval went back once to set its inputs from them (`approved_sends.SAID`, F1743).
+    "_shown_to_person", "_approved_send_said",
+    # That a plan went back once for a field a send reads that starts empty (`approved_sends.EMPTY_SAID`, F1753), and
+    # for a value a send sends that its approval never shows (`approved_sends.UNSHOWN_SAID`, F1754).
+    "_empty_start_said", "_unshown_send_said",
 )
 
 

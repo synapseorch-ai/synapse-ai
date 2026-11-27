@@ -65,7 +65,8 @@ async def test_a_run_is_measured_by_type_and_status_never_by_id(metered, fake_ll
     points = _points(metered)
     assert points["synapse.runs.completed"] == [{A.STATUS: "completed"}]
     assert {A.STEP_TYPE: "agent", A.STATUS: "completed"} in points["synapse.step.duration"]
-    assert points["synapse.tool.calls"] == [{A.TOOL_CATEGORY: "none", "outcome": "error"}]
+    # A tool that does not exist never ran: counted refused, not an error (F1752).
+    assert points["synapse.tool.calls"] == [{A.TOOL_CATEGORY: "none", "outcome": "refused"}]
     for name, attribute_sets in points.items():
         for attributes in attribute_sets:
             assert not IDS & set(attributes), (name, attributes)

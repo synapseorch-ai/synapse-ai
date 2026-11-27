@@ -12,10 +12,15 @@ parallel-call pseudo-format, which OpenAI's own tool runner uses internally, as 
 `calls_in` is what `react_engine._scan_tool_calls` and `answer_filter` both ask, so a shape one of them reads is a
 shape the other holds back. A reply that is only JSON objects names no call (`bare_objects`); the engine decides,
 from the tools it offered, whether those are a call's arguments (F551).
+
+The pseudo-format is read only in its own shape (F1745): `recipient_name` and a `parameters` object and nothing else,
+its name namespaced (`functions.…`), listed inside `tool_uses`, or one the turn offers. Read loosely, an agent's answer
+that names a recipient (`{"welcome_email_body": …, "recipient_name": "Ana", …}`) reads as a call to a tool named
+"Ana", and the agent, giving the same answer each time, is stopped for repeating that call.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Container
 
 #: OpenAI's namespace for a function in its pseudo-format.
 _NAMESPACE = "functions."
@@ -28,30 +33,34 @@ def is_engine_call(obj: Any) -> bool:
     return isinstance(obj, dict) and isinstance(obj.get("tool"), str) and bool(obj["tool"].strip())
 
 
-def _recipient(use: Any) -> list[dict] | None:
-    """One `{"recipient_name", "parameters"}` entry as engine calls; None when it is not one."""
-    if not isinstance(use, dict):
+#: A pseudo-format entry's keys, all of them (F1745): an object with any other key is not one.
+_ENTRY = frozenset(("recipient_name", "parameters"))
+
+
+def _recipient(use: Any, offered: Container[str] | None = None, *, listed: bool = False) -> list[dict] | None:
+    """One `{"recipient_name", "parameters"}` entry as engine calls; None when it is not one: any other key, no
+    `parameters` object, or a bare name that is neither listed in `tool_uses` nor one of the `offered` tools."""
+    if not isinstance(use, dict) or set(use) != _ENTRY:
         return None
-    name = use.get("recipient_name")
-    if not isinstance(name, str) or not name.strip():
-        return None
-    params = use.get("parameters", {})
-    if not isinstance(params, dict):
+    name, params = use.get("recipient_name"), use.get("parameters")
+    if not isinstance(name, str) or not name.strip() or not isinstance(params, dict):
         return None
     name = name.strip()
     if name == _PARALLEL:
-        return _uses(params.get("tool_uses"))
+        return _uses(params.get("tool_uses"), offered)
     if name.startswith(_NAMESPACE):
         name = name[len(_NAMESPACE):]
+    elif not listed and not (offered is not None and name in offered):
+        return None
     return [{"tool": name, "arguments": params}] if name else None
 
 
-def _uses(uses: Any) -> list[dict] | None:
+def _uses(uses: Any, offered: Container[str] | None = None) -> list[dict] | None:
     if not isinstance(uses, list) or not uses:
         return None
     calls: list[dict] = []
     for use in uses:
-        got = _recipient(use)
+        got = _recipient(use, offered, listed=True)
         if got is None:
             return None
         calls.extend(got)
@@ -83,16 +92,17 @@ def _with_arguments(call: dict) -> dict:
     return {"tool": call["tool"], "arguments": rest}
 
 
-def calls_in(obj: Any) -> list[dict]:
-    """The tool calls `obj` is, in the engine's shape; [] when it is not a call."""
+def calls_in(obj: Any, offered: Container[str] | None = None) -> list[dict]:
+    """The tool calls `obj` is, in the engine's shape; [] when it is not a call. `offered`, the turn's tool names
+    when the caller has them, lets a pseudo-format call with a bare name be one."""
     if is_engine_call(obj):
         return [_with_arguments(obj)]
     if not isinstance(obj, dict):
         return []
     if "tool_uses" in obj:
-        return _uses(obj["tool_uses"]) or []
+        return _uses(obj["tool_uses"], offered) or []
     if "recipient_name" in obj:
-        return _recipient(obj) or []
+        return _recipient(obj, offered) or []
     return []
 
 

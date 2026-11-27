@@ -127,6 +127,8 @@ export const AgentsTab = ({
     const [toolQuery, setToolQuery] = useState('');
     // Tools the agent names that nothing here provides (F526): run without them, so said here.
     const [unknownTools, setUnknownTools] = useState<{ name: string; nearest: string[] }[]>([]);
+    // Why the agent's model can't answer here yet (F1762): saved as picked, and said under the picker.
+    const [modelNote, setModelNote] = useState<string | null>(null);
     const [aiBuilderDesc, setAiBuilderDesc] = useState('');
     const [agentQuery, setAgentQuery] = useState('');
     const [isBuilding, setIsBuilding] = useState(false);
@@ -173,8 +175,9 @@ export const AgentsTab = ({
                 body: JSON.stringify(copy),
             });
             if (res.ok) {
-                const { unknown_tools, ...saved } = await res.json();
+                const { unknown_tools, model_note, ...saved } = await res.json();
                 setUnknownTools(Array.isArray(unknown_tools) ? unknown_tools : []);
+                setModelNote(typeof model_note === 'string' ? model_note : null);
                 dispatch(addAgent(saved));
                 setSelectedAgentId(saved.id);
                 loadDraftAgent(saved);
@@ -247,8 +250,9 @@ export const AgentsTab = ({
             });
             if (res.ok) {
                 setRefused(null);
-                const { unknown_tools, ...saved } = await res.json();
+                const { unknown_tools, model_note, ...saved } = await res.json();
                 setUnknownTools(Array.isArray(unknown_tools) ? unknown_tools : []);
+                setModelNote(typeof model_note === 'string' ? model_note : null);
                 const isNew = !agents.some((a: any) => a.id === draftAgent.id);
                 if (isNew) {
                     dispatch(addAgent(saved));
@@ -314,6 +318,21 @@ export const AgentsTab = ({
         // Asked when an agent opens, not on every tick of a box: a save answers for the rest.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [openedId]);
+
+    // The agent's model asked about when it opens and when another is picked (F1762): one saved by a script, the API
+    // or MCP never went through this page's save, and a platform model the workspace can't call fails its first chat.
+    const pickedModel: string | null = draftAgent?.model || null;
+    useEffect(() => {
+        if (!openedId || !pickedModel) { setModelNote(null); return; }
+        let gone = false;
+        fetch('/api/agents/model-check', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: pickedModel }),
+        })
+            .then(r => (r.ok ? r.json() : { model_note: null }))
+            .then(body => { if (!gone) setModelNote(typeof body.model_note === 'string' ? body.model_note : null); })
+            .catch(() => { if (!gone) setModelNote(null); });
+        return () => { gone = true; };
+    }, [openedId, pickedModel]);
 
     // Reset the sub-tab whenever the selected agent changes, and read its
     // channels: the setup's "Where it works" names them, as the two tabs do.
@@ -800,6 +819,11 @@ export const AgentsTab = ({
                                                             ...withUnreachable(modelOptions(providers ?? {}), draftAgent.model || undefined),
                                                         ], modelFacts)}
                                                     />
+                                                    {modelNote && (
+                                                        <p role="note" data-model-note className="mt-1.5 rounded-md border border-person/40 bg-person-subtle px-3 py-2 text-xs text-text">
+                                                            {modelNote}
+                                                        </p>
+                                                    )}
                                                     <p className="mt-1 text-xs text-text-faint">Override the default model for this agent. Leave empty to use the system default. {chooseForTheJob('agent')}</p>
                                                 </div>
                                             </div>

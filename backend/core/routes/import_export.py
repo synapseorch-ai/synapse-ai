@@ -510,16 +510,16 @@ async def _warnings(orchs: List[dict], agents: List[dict], tool_names: List[str]
                                    if isinstance(s, dict) and s.get("model")):
             uses.setdefault(model, []).append(("orchestrations", orch))
     if uses:
+        # The one check every door asks (F1762): a host's catalogue model it does not serve, one its provider refused,
+        # or one missing a key or a server; imported as it is, and said.
         try:
-            from core.config import load_settings
-            from core.model_readiness import model_problems
-            problems = await model_problems(dict(load_settings()), list(uses))
+            from core import model_choices
+            problems = await model_choices.notes(list(uses))
         except Exception:  # noqa: BLE001
             problems = {}
         for model, problem in problems.items():
             for kind, entity in uses.get(model, []) if problem else []:
-                out.append(_warning(kind, entity, f"Its model {model} can't answer on this install: "
-                                                  f"{problem} Pick a model for it."))
+                out.append(_warning(kind, entity, f"Its model: {problem}"))
 
     # Tools: an agent's tool this install doesn't have, now or in this file.
     available = await _available_tool_names() | set(tool_names)

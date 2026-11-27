@@ -22,7 +22,7 @@ import {
 import { ExpressionVocabulary } from './ExpressionVocabulary';
 import { PythonEditor } from './PythonEditor';
 import { agentEditHref, agentKind, agentOptions, KIND_WORD, memberNames, teamSettings, type KindAgent } from '../agentKind';
-import { HUMAN_FIELD_TYPES, branchCondition, branchFields, branchPicked, humanFieldOptions, humanFieldType, isApproval, nextHumanFieldName, type BranchField } from '../humanFields';
+import { HUMAN_FIELD_TYPES, branchCondition, branchFields, branchPicked, humanFieldOptions, humanFieldType, humanFieldWith, isApproval, nextHumanFieldName, type BranchField } from '../humanFields';
 import { type AnswerField } from '../answerFields';
 import { chooseForTheJob } from '../modelChoice';
 import { nextFreeName } from '../nextName';
@@ -1014,11 +1014,7 @@ function HumanSection({ step, update }: StepSectionProps) {
                                 value={field.name}
                                 aria-label={`Field ${idx + 1} name`}
                                 placeholder="field_name"
-                                onCommit={(name) => {
-                                    const next = [...fields];
-                                    next[idx] = { ...field, name };
-                                    update({ human_fields: next });
-                                }}
+                                onCommit={(name) => update({ human_fields: humanFieldWith(fields, idx, { name }) })}
                             />
                             <Select
                                 size="sm"
@@ -1028,11 +1024,7 @@ function HumanSection({ step, update }: StepSectionProps) {
                                 // spelling it knows (`text`) reads as its type without being
                                 // rewritten; one it does not is shown as itself, never blank.
                                 value={humanFieldType(field.type) ?? field.type}
-                                onChange={(type) => {
-                                    const next = [...fields];
-                                    next[idx] = { ...field, type };
-                                    update({ human_fields: next });
-                                }}
+                                onChange={(type) => update({ human_fields: humanFieldWith(fields, idx, { type }) })}
                                 options={humanFieldType(field.type) === null
                                     ? [...HUMAN_FIELD_TYPES, { value: field.type!, label: `unknown type \u201C${field.type}\u201D`, disabled: true }]
                                     : HUMAN_FIELD_TYPES}
@@ -1050,12 +1042,19 @@ function HumanSection({ step, update }: StepSectionProps) {
                             value={field.label}
                             aria-label={`Field ${idx + 1} label`}
                             placeholder="Label shown to the person"
-                            onCommit={(label) => {
-                                const next = [...fields];
-                                next[idx] = { ...field, label };
-                                update({ human_fields: next });
-                            }}
+                            onCommit={(label) => update({ human_fields: humanFieldWith(fields, idx, { label }) })}
                         />
+                        {humanFieldType(field.type) !== 'boolean' && (
+                            // What the field starts with (F1753): the run fills it in when it asks, the form starts
+                            // at it, and an answer that leaves the field out sends it. Empty, the person types it.
+                            <LocalInput
+                                className="font-code"
+                                value={field.default === undefined ? '' : String(field.default)}
+                                aria-label={`Field ${idx + 1} starts with`}
+                                placeholder="Starts with (optional), e.g. {{ state.draft.subject }}"
+                                onCommit={(text) => update({ human_fields: humanFieldWith(fields, idx, { default: text }) })}
+                            />
+                        )}
                         {humanFieldType(field.type) === 'boolean' && (
                             // The run asks an approval with Approve and Decline, any other Yes / No in the form (F1560):
                             // named like one (approved) it is, unless its author says otherwise here.
@@ -1063,11 +1062,7 @@ function HumanSection({ step, update }: StepSectionProps) {
                                 <Checkbox
                                     id={`${step.id}-field-${idx}-approval`}
                                     checked={isApproval(field)}
-                                    onChange={(checked) => {
-                                        const next = [...fields];
-                                        next[idx] = { ...field, approval: checked };
-                                        update({ human_fields: next });
-                                    }}
+                                    onChange={(checked) => update({ human_fields: humanFieldWith(fields, idx, { approval: checked }) })}
                                     label={`Field ${idx + 1}: ask as Approve / Decline`}
                                 />
                                 <label htmlFor={`${step.id}-field-${idx}-approval`} className="cursor-pointer text-xs text-text-muted">
@@ -1081,11 +1076,9 @@ function HumanSection({ step, update }: StepSectionProps) {
                                 value={humanFieldOptions(field).join(', ')}
                                 aria-label={`Field ${idx + 1} options`}
                                 placeholder="Options, comma-separated: Approve, Later"
-                                onCommit={(text) => {
-                                    const next = [...fields];
-                                    next[idx] = { ...field, options: text.split(',').map((o) => o.trim()).filter(Boolean) };
-                                    update({ human_fields: next });
-                                }}
+                                onCommit={(text) => update({
+                                    human_fields: humanFieldWith(fields, idx, { options: text.split(',').map((o) => o.trim()).filter(Boolean) }),
+                                })}
                             />
                         )}
                     </div>

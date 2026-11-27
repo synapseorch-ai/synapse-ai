@@ -84,8 +84,12 @@ async def get_agents():
 
     # Each with its row's stamp, which the editor's save says it read (F891).
     stamps = await row_stamps("agents")
-    return [{**a, "updated_at": stamps.get(a.get("id"))} for a in await load_workspace_agents()
-            if not (a.get("id") == DEFAULT_AGENT_ID and a.get("type") == "builder")]
+    agents = [a for a in await load_workspace_agents()
+              if not (a.get("id") == DEFAULT_AGENT_ID and a.get("type") == "builder")]
+    # Why an agent's model cannot answer here yet (F1762): one saved by a script or the API is told on its page too.
+    notes = await _model_notes([a.get("model") for a in agents])
+    return [{**a, "updated_at": stamps.get(a.get("id")), "model_note": notes.get(str(a.get("model") or "").strip())}
+            for a in agents]
 
 
 #: What a workflow agent saved with a workflow that does not exist is told (F408).
@@ -133,7 +137,8 @@ async def create_agent(agent: Agent, request: Request = None):  # type: ignore[a
         except PickRefused as refused:
             return JSONResponse(status_code=422, content=refused.body())
     return {**saved, "updated_at": (await row_stamps("agents", [agent.id])).get(agent.id),
-            "unknown_tools": await _unknown_tools(saved.get("tools") or [])}
+            "unknown_tools": await _unknown_tools(saved.get("tools") or []),
+            "model_note": (await _model_notes([saved.get("model")])).get(str(saved.get("model") or "").strip())}
 
 
 #: The types an agent may be given (F1069). `builder` is the system agent's, set by
@@ -161,6 +166,14 @@ async def _save_agent(agent: Agent) -> dict:
 
     document = agent.dict()
     await _check_type(document)
+    # A model the workspace cannot call is said beside the save (F1762); refused only when that switch is on, and
+    # never one the agent already had.
+    from core import model_choices
+    from core.store.resources import get_agent as _stored
+    had = await _stored(document["id"]) if document.get("id") else None
+    refused, _note = await model_choices.save_check(document.get("model"), (had or {}).get("model"))
+    if refused is not None:
+        raise HTTPException(status_code=422, detail=refused)
     from core.builder_access import run_only_named
     if (own := run_only_named(document.get("tools"))) is not None:  # only Synapse AI's own run takes these (F1315)
         raise HTTPException(status_code=422, detail=own)
@@ -214,6 +227,27 @@ async def check_agent_tools(body: ToolCheck):
     """The tools in a list that nothing here provides, with the nearest real names (F526): the agent's page marks
     them when it opens, since an agent saved by a script or the API never went through the editor's save."""
     return {"unknown_tools": await _unknown_tools(body.tools)}
+
+
+class ModelCheck(BaseModel):
+    model: str | None = None
+
+
+@router.post("/api/agents/model-check")
+async def check_agent_model(body: ModelCheck):
+    """Why a model cannot answer here yet, or None (F1762): the agent's page asks when it opens, as it asks of its
+    tools, since an agent saved by a script or the API never went through the editor's save."""
+    return {"model_note": (await _model_notes([body.model])).get(str(body.model or "").strip())}
+
+
+async def _model_notes(models: list) -> dict[str, str | None]:
+    from core import model_choices
+
+    try:
+        return await model_choices.notes([m for m in models if m])
+    except Exception as exc:  # noqa: BLE001 — a check that cannot run says nothing, never fails a list or a save
+        logger.warning("could not check agents' models: %s", exc)
+        return {}
 
 
 async def _unknown_tools(names: list) -> list[dict]:

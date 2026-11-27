@@ -65,6 +65,10 @@ def parked_payload(event: dict, *, message: str, progress: dict | None,
         "message": message or "",
         "progress": progress or {},
     }
+    if event.get("unseen") is not None:
+        # The guard's pause (F1744): what the call would use that the turn does not hold, for a reopened card's words.
+        payload["unseen"] = list(event["unseen"])
+        payload["corrected"] = bool(event.get("corrected"))
     if event.get("run_id"):
         # A workflow's call, asked in a chat with its agent: the answer resumes
         # that run (F290). Re-running the chat turn started the workflow again.
@@ -97,7 +101,9 @@ def questions_of(pending: dict | None) -> list[dict[str, Any]]:
     return [{"question_id": question_id(None, pending.get("approval_id")),
              "approval_id": pending.get("approval_id"), "member_id": None, "member_name": None,
              "tool_name": pending.get("tool_name"), "tool_args": pending.get("tool_args") or {},
-             "category": pending.get("category")}]
+             "category": pending.get("category"),
+             **({"unseen": list(pending["unseen"]), "corrected": bool(pending.get("corrected"))}
+                if pending.get("unseen") is not None else {})}]
 
 
 def to_ring(pending: dict | None) -> list[dict[str, Any]]:
@@ -129,19 +135,32 @@ def find_question(pending: dict | None, *, question: str | None = None,
     return found[0] if len(found) == 1 else None
 
 
-def approval_prompt(tool_name: str | None, category: str | None) -> str:
+def approval_prompt(tool_name: str | None, category: str | None, *, unseen: list[str] | None = None,
+                    corrected: bool = False) -> str:
     """The question the approval card asks — live, and again on a reopened page.
 
     `explain()` returns an independent clause beginning with "it", so it is
     joined with a dash rather than spliced after "which": "…run **scrape_url**,
     which it reaches systems outside this workspace" is what a live approval
-    card once said.
+    card once said. A call the address guard stopped (F1744, `unseen` given) says what it would use that the turn
+    does not hold, and how to send it somewhere else.
     """
     from core import tool_policy, turn_limit
     if tool_name == turn_limit.KIND:
         # Not a call: whether an agent at its turn limit keeps going (F1219). The live card says how many turns.
         return turn_limit.REOPENED_WORDS
+    if unseen is not None:
+        from core.orchestration.grounded import agent_card
+
+        return agent_card(str(tool_name), list(unseen), corrected=corrected)
     return f"The agent wants to run **{tool_name}** — {tool_policy.explain(category)}. Allow it?"
+
+
+def question_words(q: dict | None) -> str:
+    """`approval_prompt` for a parked call or one question of it, read from what it keeps."""
+    q = q or {}
+    return approval_prompt(q.get("tool_name"), q.get("category"), unseen=q.get("unseen"),
+                           corrected=bool(q.get("corrected")))
 
 
 def public_view(pending: dict | None) -> dict[str, Any] | None:
@@ -159,10 +178,10 @@ def public_view(pending: dict | None) -> dict[str, Any] | None:
         "category": pending.get("category"),
         "approval_id": pending.get("approval_id"),
         "message": pending.get("message") or "",
-        "prompt": approval_prompt(pending.get("tool_name"), pending.get("category")),
+        "prompt": question_words(pending),
         **({"turn_limit": dict(pending["turn_limit"])} if isinstance(pending.get("turn_limit"), dict) else {}),
         # Every question it asks, each answered by its own id (TEAM1c); a member's names its lane.
-        "questions": [{**q, "prompt": approval_prompt(q.get("tool_name"), q.get("category"))}
+        "questions": [{**q, "prompt": question_words(q)}
                       for q in questions_of(pending)],
     }
 

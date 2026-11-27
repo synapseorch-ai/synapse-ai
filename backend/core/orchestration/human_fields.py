@@ -19,7 +19,14 @@ either; there is no field to check it against.
 `check_answer` returns the answer with each checked value in its stored form (an
 email trimmed, a date as `YYYY-MM-DD`, a dropdown's option as the step wrote it) and
 raises `BadAnswer` naming the field otherwise. Every door that answers a run calls it
-through `answer_paused_run` (`core/orchestration/answers.py`).
+through `answer_paused_run` (`core/orchestration/answers.py`), v2 on its own.
+
+**A field can start with a value (F1753).** A field's `default`, filled in from the run
+when it asks and recorded so (`steps.shown_fields`), is what a field the answer leaves
+out takes: approved as shown, what was shown goes. A blank the person sent stays blank
+(F232): they cleared it. A field a later step sends as a tool's required input is asked
+as `required`, and an answer that would send it (an approval, or a step with none) is
+refused while it is blank, naming it; a Decline is taken whatever is blank.
 """
 from __future__ import annotations
 
@@ -216,6 +223,65 @@ def check_value(field: dict[str, Any], value: Any) -> Any:
     raise BadAnswer(name, f"{label}: choose one of {', '.join(options)}.")
 
 
+def starting_value(field: dict[str, Any], value: Any) -> tuple[bool, Any]:
+    """`(True, value)` in the form `field` stores it, when the field can start with `value` (F1753); `(False, None)`
+    when it cannot: nothing, a blank, a Yes / No that says neither, or a value the field's check refuses (not one of
+    its options, not a number, not an email, …). A field that cannot take it starts empty."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return False, None
+    if field_type(field.get("type")) == "boolean":
+        flag = as_flag(value)
+        return (True, flag) if isinstance(flag, bool) else (False, None)
+    if isinstance(value, (dict, list)):
+        return False, None
+    try:
+        return True, check_value(field, value)
+    except BadAnswer:
+        return False, None
+
+
+#: A word of a name that makes a Yes / No an approval, as the app's form reads it (`humanFields.ts` APPROVAL_WORDS).
+_APPROVAL_WORDS = frozenset({"approve", "approved", "approval", "accept", "accepted", "confirm", "confirmed"})
+
+
+def _name_words(name: str) -> list[str]:
+    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", name).lower()
+    return [w for w in re.split(r"[^a-z0-9]+", spaced) if w]
+
+
+def is_approval(field: Any) -> bool:
+    """Whether a Yes / No is the step's approval, as the app's card asks it with Approve and Decline (F1560): its
+    author says so (`approval`), else its name does. The browser's twin is `humanFields.isApproval`."""
+    if not isinstance(field, dict) or field_type(field.get("type")) != "boolean":
+        return False
+    if isinstance(field.get("approval"), bool):
+        return field["approval"]
+    words = _name_words(str(field.get("name") or ""))
+    joined = " ".join(words)
+    return any(w in _APPROVAL_WORDS for w in words) or "sign off" in joined or "signed off" in joined
+
+
+def approval_field(fields: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The one approval a step asks, or None: two approvals are neither (`humanFields.approvalField`)."""
+    found = [f for f in fields if is_approval(f)]
+    return found[0] if len(found) == 1 else None
+
+
+def _blank_needed(fields: list[dict[str, Any]], answer: dict[str, Any]) -> None:
+    """Refuse an answer that would send a required field blank (F1753): an approval, or any answer to a step that
+    asks none. A Decline, or an answer that says no approval at all, sends nothing and is taken."""
+    decision = approval_field(fields)
+    if decision is not None and answer.get(decision["name"]) is not True:
+        return
+    for field in fields:
+        if field.get("required") is True and field is not decision:
+            value = answer.get(field["name"])
+            if value is None or (isinstance(value, str) and not value.strip()):
+                label = str(field.get("label") or "").strip().rstrip("?:") or field["name"]
+                raise BadAnswer(field["name"], f"{label} is empty, and a later step sends it: fill it in"
+                                               + (", or decline." if decision is not None else "."))
+
+
 def check_answer(fields: Any, response: Any, *, form: bool = False) -> Any:
     """`response` with each checked field's value in its stored form; `BadAnswer` if one is not.
 
@@ -248,6 +314,10 @@ def check_answer(fields: Any, response: Any, *, form: bool = False) -> Any:
     for field in named_fields:
         if field["name"] in checked:
             checked[field["name"]] = check_value(field, checked[field["name"]])
+        elif "default" in field:
+            # Left out, it is what the run showed when it asked (F1753), as recorded then: never rendered again.
+            checked[field["name"]] = field["default"]
+    _blank_needed(named_fields, checked)
     return checked
 
 
@@ -293,12 +363,31 @@ def asked_in_words(prompt: str, fields: Any) -> str:
         return prompt
     if len(shown) == 1:
         field = shown[0]
-        if field_type(field.get("type")) not in _PLAIN_REPLY:
-            return prompt
         label = str(field.get("label") or "").strip() or field["name"]
-        return f"{prompt}\n\nReply with {what_it_takes(field)} — {label}{'' if label[-1] in '?.!' else '.'}"
-    lines = [f"- `{f['name']}` — {str(f.get('label') or '').strip() or f['name']} ({what_it_takes(f)})" for f in shown]
-    return f"{prompt}\n\nAnswer each on its own line, as `name: value`:\n" + "\n".join(lines)
+        if field_type(field.get("type")) not in _PLAIN_REPLY:
+            return prompt if "default" not in field else f"{prompt}\n\n{label}, now:{_now(field['default'])}"
+        now = f" It is now {_said_as(field['default'])}." if "default" in field else ""
+        return f"{prompt}\n\nReply with {what_it_takes(field)} — {label}{'' if label[-1] in '?.!' else '.'}{now}"
+    lines = [f"- `{f['name']}` — {str(f.get('label') or '').strip() or f['name']} ({what_it_takes(f)})"
+             + (f", now:{_now(f['default'])}" if "default" in f else "") for f in shown]
+    left_out = " A field you leave out is sent as it is now." if any("default" in f for f in shown) else ""
+    return (f"{prompt}\n\nAnswer each on its own line, as `name: value`{'.' + left_out if left_out else ':'}\n"
+            + "\n".join(lines))
+
+
+def _said_as(value: Any) -> str:
+    """A starting value in a channel's words: a Yes / No as yes or no, anything else as written."""
+    return ("yes" if value else "no") if isinstance(value, bool) else str(value)
+
+
+def _now(value: Any) -> str:
+    """A field's starting value after "now:" (F1753): one line on the same line, more as a quote of their own, whole —
+    a channel sends a long question in parts (`messaging.markdown`), never cut."""
+    said = _said_as(value)
+    if "\n" not in said:
+        return f" {said}"
+    quoted = "\n".join(f"> {line}" if line else ">" for line in said.split("\n"))
+    return f"\n\n{quoted}\n"
 
 
 def read_reply(fields: list[dict[str, Any]], text: str) -> dict[str, Any] | None:

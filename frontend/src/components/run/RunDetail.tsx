@@ -165,7 +165,9 @@ export function RunDetail({
             // timeline and the log get the room.
             width="wide"
         >
-            <div className="grid gap-7">
+            {/* One column the page's width decides (F1760): an `auto` column grew to its widest item's smallest
+                width, the Activity log's unbroken run id, and pushed the card's fields and buttons past a phone. */}
+            <div className="grid grid-cols-[minmax(0,1fr)] gap-7">
                 {notices}
 
                 {/* Each fact keeps to one line; the strip wraps between them, never inside one (F898). */}

@@ -19,6 +19,8 @@ export type ScheduleListRow = {
     words: string;
     /** The expression itself, for the chip's title when the words differ from it. */
     detail?: string;
+    /** A heartbeat (F1729): it runs at its time only while its board has work, said under the chip. */
+    waits?: boolean;
     nextAt: string | null;
     lastAt: string | null;
     /** The last run's status, when the product could match it. */
@@ -46,6 +48,7 @@ export function scheduleRow(
         target: { kind: s.target_type === 'agent' ? 'agent' : 'orchestration', name: targetName },
         words,
         detail: expr && expr !== words ? expr : undefined,
+        waits: s.run_when === 'has_work',
         nextAt: s.next_run_at ?? null,
         lastAt: s.last_run_at ?? null,
         last: last ?? null,
@@ -56,11 +59,15 @@ export function lastRunBucket(row: ScheduleListRow): RunBucket | null {
     return row.last ? bucketOf(row.last.status, row.last.waitingForHuman) : null;
 }
 
-/** Every word of the query appears in the name, the target, the words, the expression or line 2. */
+/** What a heartbeat's row says under its time (F1729). */
+export const WAITS = "when there's work";
+
+/** Every word of the query appears in the name, the target, the words, the expression, a heartbeat's words or line 2. */
 export function matchSchedule(row: ScheduleListRow, query: string): boolean {
     const words = query.toLowerCase().split(/\s+/).filter(Boolean);
     if (words.length === 0) return true;
-    const hay = [row.name, row.target.name, row.words, row.detail, row.sub].filter(Boolean).join(' ').toLowerCase();
+    const hay = [row.name, row.target.name, row.words, row.detail, row.waits ? WAITS : '', row.sub]
+        .filter(Boolean).join(' ').toLowerCase();
     return words.every((w) => hay.includes(w));
 }
 

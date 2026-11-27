@@ -222,6 +222,44 @@ async def set_last_run(schedule_id: str, when: datetime | None) -> None:
     await _update_column(schedule_id, "last_run_at", when)
 
 
+async def bring_forward(item: dict, when: datetime) -> None:
+    """Move one schedule's next run to `when`: a heartbeat woken by a new task (F1727). The save observer is told,
+    as of a save, so a host that arms each occurrence instead of polling arms this one too; its failure
+    propagates, as a save's does."""
+    await set_next_run(item["id"], when)
+    if _saved_observer is not None:
+        await _saved_observer({**item, "next_run_at": _iso(when)})
+
+
+async def take_run_slot(schedule_id: str, day: str, limit: int) -> bool:
+    """Count one occurrence against `day`'s limit (F1727): whether it may start. One UPDATE that holds only while
+    the count for `day` is under `limit` (a new day starts at one), so two workers firing at once cannot both
+    take the last slot."""
+    from sqlalchemy import case, func, or_, update
+
+    from core.store import session
+    from core.store.models import ScheduleDB
+
+    if not schedule_id:
+        return False
+    count = func.coalesce(ScheduleDB.runs_today, 0)
+    async with session() as s:
+        result = await s.execute(
+            update(ScheduleDB)
+            .where(
+                ScheduleDB.id == schedule_id,
+                ScheduleDB.tenant_id == get_tenant(),
+                or_(ScheduleDB.runs_on.is_(None), ScheduleDB.runs_on != day, count < limit),
+            )
+            .values(
+                runs_today=case((ScheduleDB.runs_on == day, count + 1), else_=1),
+                runs_on=day,
+            )
+            .execution_options(synchronize_session=False)
+        )
+    return bool(result.rowcount)
+
+
 async def _update_column(schedule_id: str, column: str, when: datetime | None) -> None:
     from sqlalchemy import update
 

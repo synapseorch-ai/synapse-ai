@@ -397,6 +397,9 @@ async def run(helper: Helper, *, server_module, session_id: str, source: str, ru
                 calls[-1]["result"] = _clip(event.get("preview") or "", CALL_RESULT_CHARS)
                 if event.get("refused"):
                     calls[-1].update(refused=True, reason=event.get("reason") or "")
+                elif event.get("failed"):
+                    # Ran, and its tool said it failed (F1752), as a turn's own calls keep it.
+                    calls[-1].update(failed=True, reason=event.get("reason") or "")
             if kind in SHOWN:
                 yield helper.tag(event)
         helper.status = "completed"

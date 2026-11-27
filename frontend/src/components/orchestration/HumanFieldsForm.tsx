@@ -10,11 +10,45 @@
  * name (F75).
  */
 
+import { useLayoutEffect, useRef, type ComponentProps } from 'react';
 import { Checkbox, Field, Input, Select, Textarea } from '@/components/ui';
-import { humanFieldLabel, humanFieldOptions, humanFieldType, type HumanField, type HumanValues } from './humanFields';
+import {
+    HUMAN_FIELD_MAX_ROWS,
+    humanFieldDrawsLines,
+    humanFieldLabel,
+    humanFieldOptions,
+    humanFieldRows,
+    humanFieldType,
+    type HumanField,
+    type HumanValues,
+} from './humanFields';
 
 /** The browser's input for a typed field: its own keyboard and checks (F455). */
 const INPUT_TYPE: Record<string, string> = { number: 'number', email: 'email', date: 'date', phone: 'tel' };
+
+/**
+ * A box of lines as tall as the value it starts with (F1759): a row per line of it, then, as drawn, a row more for each
+ * line that wraps, up to `HUMAN_FIELD_MAX_ROWS`, past which it scrolls. Sized by the starting value only, never by what
+ * is typed, so the card does not jump while a person edits; an empty box keeps its 3 rows.
+ */
+function LinesBox({
+    field,
+    onChange,
+    ...props
+}: Omit<ComponentProps<typeof Textarea>, 'onChange' | 'rows' | 'ref'> & {
+    field: HumanField;
+    value: string;
+    onChange: (value: string) => void;
+}) {
+    const box = useRef<HTMLTextAreaElement>(null);
+    const start = typeof field.default === 'string' ? field.default : '';
+    useLayoutEffect(() => {
+        const el = box.current;
+        while (el && el.scrollHeight > el.clientHeight && el.rows < HUMAN_FIELD_MAX_ROWS) el.rows += 1;
+    }, [start]);
+    // What a Field threads onto its control (a hint's aria-describedby, an error's invalid) goes on to the box.
+    return <Textarea {...props} ref={box} rows={humanFieldRows(field)} onChange={(e) => onChange(e.target.value)} />;
+}
 
 export function HumanFieldsForm({
     fields,
@@ -48,8 +82,9 @@ export function HumanFieldsForm({
                 const text = typeof value === 'string' ? value : '';
                 return (
                     <Field key={idx} label={label}>
-                        {type === 'textarea' ? (
-                            <Textarea rows={3} value={text} onChange={(e) => set(field.name, e.target.value)} />
+                        {/* A Text field starting with lines is a box of lines too: one line would drop them (F1759). */}
+                        {humanFieldDrawsLines(field) ? (
+                            <LinesBox field={field} value={text} onChange={(lines) => set(field.name, lines)} />
                         ) : type === 'choice' ? (
                             // One option is picked (Naveen, F455): a dropdown, not a list of checkboxes.
                             <Select

@@ -1749,6 +1749,53 @@ async def check_toolpolicycheck(browser) -> str:
 
 
 @check
+async def check_modelnote(browser) -> str:
+    """An agent saved on a model this install can't call yet (F1762): the editor keeps the model picked and says under
+    the picker why it can't answer (here: Mistral's own model, `mistral.` before its id, with no Mistral key saved; a
+    bare `mistral-small-latest` is Ollama's). Light and dark at 1600, and at phone width with the note inside the
+    sheet. With SMOKE_SHOTS, the model field is saved."""
+    shots = os.environ.get("SMOKE_SHOTS")
+    aid, name, model = "agent_uismoke_f1762", "UI smoke model note", "mistral.mistral-small-latest"
+    api(f"/api/agents/{aid}", "DELETE")
+    saved = api("/api/agents", "POST", {**_agent(aid, name), "model": model})
+    if not (saved or {}).get("model_note"):
+        raise Skipped("this install can call mistral.mistral-small-latest (a Mistral key is saved): nothing to say")
+    bad: list[str] = []
+    try:
+        for scheme, (w, h) in (("light", WIDE), ("dark", WIDE), ("light", (390, 844))):
+            ctx = await browser.new_context(viewport={"width": w, "height": h}, color_scheme=scheme)
+            await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{scheme}')}}catch(e){{}}")
+            page = await ctx.new_page()
+            try:
+                await page.goto(f"{APP}/agents", wait_until="domcontentloaded")
+                await asyncio.sleep(SETTLE)
+                await page.get_by_text(name, exact=True).first.click()
+                note = page.locator("[data-model-note]")
+                await note.wait_for(timeout=10_000)
+                said = (await note.inner_text()).strip()
+                if not (said.startswith(f"{model} can't answer here yet:") and "Mistral key is saved" in said):
+                    bad.append(f"{scheme} {w}: the note says {said[:80]!r}")
+                picker = page.get_by_role("button", name="Model", exact=True)
+                if model not in (await picker.first.inner_text()):
+                    bad.append(f"{scheme} {w}: the picker no longer shows {model}")
+                right = await note.evaluate("e => e.getBoundingClientRect().right")
+                if right > w + 0.5:
+                    bad.append(f"{scheme} {w}: the note runs to {right:.0f} of {w}")
+                if shots:
+                    field = page.get_by_text("Model", exact=True).first.locator("xpath=..")
+                    await field.scroll_into_view_if_needed()
+                    await asyncio.sleep(0.3)
+                    await field.screenshot(path=os.path.join(shots, f"modelnote-{scheme}-{w}.png"))
+            finally:
+                await ctx.close()
+    finally:
+        api(f"/api/agents/{aid}", "DELETE")
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "an agent on a model it can't call keeps it picked and says why under the picker, light, dark and at phone width"
+
+
+@check
 async def check_resultnotes(browser) -> str:
     """A completed run whose steps say what their result lacks reads "with warnings" (F1690): a cut answer, an empty
     result and a CSV with no rows are kept on their step's record, and the run's header counts them, its hover naming
@@ -2569,9 +2616,12 @@ async def check_unsaved(browser) -> str:
             await page.click('a[href="/workflows"]')
             await asyncio.sleep(0.8)
             await dialog.get_by_role("button", name=re.compile("discard", re.I)).first.click()
-            await asyncio.sleep(1.5)
-            if not page.url.endswith("/workflows"):
-                problems.append("discarding did not go where the link pointed")
+            # Waited for, not slept: a scratch's first visit to a page compiles it, past any fixed sleep. A discard
+            # that goes nowhere still fails here, at the wait's end.
+            try:
+                await page.wait_for_url(re.compile(r"/workflows(?:[?#].*)?$"), timeout=30_000)
+            except Exception:  # noqa: BLE001
+                problems.append(f"discarding did not go where the link pointed (still at {page.url})")
     finally:
         await ctx.close()
         for aid in (a, b):
@@ -4653,52 +4703,68 @@ async def check_humanfields(browser) -> str:
 
 @check
 async def check_humanyesno(browser) -> str:
-    """A field the planner wrote as `yes_no` is the yes/no field, and its answer is true (F1434).
+    """A field the planner wrote as `yes_no` is a Yes / No, and its answer is true (F1434), drawn as today's rule
+    draws a Yes / No (F1560), both ways (F1755).
 
     Neither field table knew `yes_no` — only the clarify form did — so the step's card drew a text box, a person
     typed "yes", and a later condition that reads true/false never met it (cap-05's shape). The editor names it
-    Yes / No, and the card's lone yes/no is its label's button (D218), which answers `true`.
+    Yes / No. Since F1560 only an approval is the card's two buttons (its label and Decline); any other Yes / No is a
+    checkbox in the form, sent with Send answer. This check held the card to the older rule (every lone Yes / No its
+    label's button) and failed from F1560 on: a `yes_no` that is no approval is ticked and sent as true, and one named
+    as an approval is its label's button, which answers true.
     """
-    oid = f"orch_uismoke_yesno_{int(time.time())}"
-    orch = human_gate_orchestration(oid)
-    orch["steps"][-1]["human_fields"] = [{"name": "ok", "type": "yes_no", "label": "Go ahead?"}]
-    api("/api/orchestrations", "POST", orch)
     problems: list[str] = []
-    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
-    page = await ctx.new_page()
-    sent: list[dict] = []
-    page.on("request", lambda r: sent.append(json.loads(r.post_data or "{}"))
-            if r.method == "POST" and "/human-input" in r.url else None)
-    try:
-        await open_step(page, oid, "Approve")
-        shown = (await page.get_by_role("combobox", name="Field 1 type").inner_text()).strip()
-        if shown != "Yes / No":
-            problems.append(f"the editor shows a yes_no field as {shown!r}, not 'Yes / No'")
-        await page.keyboard.press("Escape")
-        await page.get_by_role("button", name="Run now", exact=True).click()
-        for _ in range(25):
-            await asyncio.sleep(1.0)
-            if await page.get_by_text("Waiting for your input").count():
-                break
-        await page.get_by_text("Waiting for your input").first.click()
-        await asyncio.sleep(0.6)
-        card = page.locator(CARD_QUESTION)
-        if await card.get_by_role("textbox").count():
-            problems.append("the card draws the yes_no field as a text box")
+    for name, approval in (("ok", False), ("approved", True)):
+        oid = f"orch_uismoke_yesno_{name}_{int(time.time())}"
+        orch = human_gate_orchestration(oid)
+        orch["steps"][-1]["human_fields"] = [{"name": name, "type": "yes_no", "label": "Go ahead?"}]
+        api("/api/orchestrations", "POST", orch)
+        ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+        page = await ctx.new_page()
+        sent: list[dict] = []
+        page.on("request", lambda r: sent.append(json.loads(r.post_data or "{}"))
+                if r.method == "POST" and "/human-input" in r.url else None)
         try:
-            await card.get_by_role("button", name="Go ahead", exact=True).click()
-            await asyncio.sleep(1.5)
-            got = sent[-1].get("response") if sent else None
-            if got != {"ok": True} or got.get("ok") is not True:
-                problems.append(f"the card answered {got!r}, not {{'ok': True}}")
-        except Exception as e:
-            problems.append(f"the card has no 'Go ahead' button for the yes_no field ({type(e).__name__})")
-    finally:
-        await ctx.close()
-        drop_fixture(oid)
+            await open_step(page, oid, "Approve")
+            shown = (await page.get_by_role("combobox", name="Field 1 type").inner_text()).strip()
+            if shown != "Yes / No":
+                problems.append(f"the editor shows a yes_no field named {name!r} as {shown!r}, not 'Yes / No'")
+            await page.keyboard.press("Escape")
+            await page.get_by_role("button", name="Run now", exact=True).click()
+            for _ in range(25):
+                await asyncio.sleep(1.0)
+                if await page.get_by_text("Waiting for your input").count():
+                    break
+            await page.get_by_text("Waiting for your input").first.click()
+            await asyncio.sleep(0.6)
+            card = page.locator(CARD_QUESTION)
+            if await card.get_by_role("textbox").count():
+                problems.append(f"the card draws the yes_no field {name!r} as a text box")
+            try:
+                if approval:
+                    if not await card.get_by_role("button", name="Decline", exact=True).count():
+                        problems.append("the approval's card has no Decline beside its button")
+                    await card.get_by_role("button", name="Go ahead", exact=True).click(timeout=5000)
+                else:
+                    if await card.get_by_role("button", name="Go ahead", exact=True).count():
+                        problems.append("a yes_no that is no approval became the card's button")
+                    await card.get_by_role("checkbox", name="Go ahead?").click(timeout=5000)
+                    await card.get_by_role("button", name="Send answer").click(timeout=5000)
+                await asyncio.sleep(1.5)
+                got = sent[-1].get("response") if sent else None
+                if not isinstance(got, dict) or got.get(name) is not True:
+                    problems.append(f"the card answered {got!r} for {name!r}, not {{{name!r}: True}}")
+            except Exception as e:
+                problems.append(f"the card's control for the yes_no field {name!r} was not there "
+                                f"({'its label button' if approval else 'a checkbox and Send answer'}; "
+                                f"{type(e).__name__})")
+        finally:
+            await ctx.close()
+            drop_fixture(oid)
     if problems:
         raise AssertionError("; ".join(problems))
-    return "a yes_no field is Yes / No in the editor and its card's button answers true"
+    return ("a yes_no field is Yes / No in the editor; one that is no approval is a checkbox sent with Send answer, "
+            "one named as an approval its label's button beside Decline, each answering true")
 
 
 @check
@@ -15579,6 +15645,49 @@ async def check_workflowboard(browser) -> str:
     return "Board opens the workflow's board in the card, and a person's card lands there"
 
 
+#: A heartbeat (F1729): an interval schedule that runs only while its board has work, woken by a new task, 40 a day.
+_HB_SCHEDULE = {"id": "sch_hb", "name": "Smoke heartbeat", "enabled": False, "created_at": _NOW,
+                "target_type": "agent", "target_id": "agent_x", "prompt": "Work the open tasks", "schedule_type": "interval",
+                "interval_value": 15, "interval_unit": "minutes", "run_when": "has_work", "wake_on_new_task": True,
+                "max_runs_per_day": 40, "next_run_at": _NOW, "last_run_at": None}
+
+
+@check
+async def check_heartbeat(browser) -> str:
+    """A heartbeat schedule (F1729) says "when there's work" on its own line under its time, whole (the chip's width
+    cut it off when it was part of the time), and its drawer's Heartbeat holds what it was saved with: waiting for
+    work, woken by a new task, at most 40 runs a day."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route("**/api/schedules", _answer([_HB_SCHEDULE]))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/schedules", wait_until="domcontentloaded")
+        row = page.locator('[data-schedule-row="sch_hb"]')
+        await row.wait_for(timeout=30_000)
+        await asyncio.sleep(1.0)
+        chip = (await row.locator("[data-schedule-words]:visible").inner_text()).strip()
+        if chip != "Every 15 minutes":
+            raise AssertionError(f"the time's chip says {chip!r}")
+        waits = row.locator("[data-schedule-waits]:visible")
+        said = (await waits.inner_text()).strip()
+        if said != "when there's work":
+            raise AssertionError(f"under the time: {said!r}")
+        if not await waits.evaluate("e => e.scrollWidth <= e.clientWidth + 1"):
+            raise AssertionError("'when there's work' is cut off")
+        await page.get_by_role("button", name="Open Smoke heartbeat").click()
+        dialog = page.get_by_role("dialog")
+        await dialog.get_by_role("heading", name="Edit schedule").wait_for(timeout=10_000)
+        heartbeat = dialog.locator("fieldset[data-heartbeat]")
+        for name in ("Run only when there's work", "Start when a task is added"):
+            if await heartbeat.get_by_role("switch", name=name).get_attribute("aria-checked") != "true":
+                raise AssertionError(f"the drawer's {name!r} is off")
+        if await dialog.locator("#sched-max-runs").input_value() != "40":
+            raise AssertionError("the drawer lost its daily limit")
+    finally:
+        await ctx.close()
+    return "Every 15 minutes, with when there's work whole beneath it; the drawer waits for work, wakes, 40 a day"
+
+
 @check
 async def check_scheduleboard(browser) -> str:
     """A scheduled agent's board in its schedule's drawer (C7), folded until opened (Naveen, 2026-10-16: optional),
@@ -21029,6 +21138,222 @@ async def check_approvalcard(browser) -> str:
     if problems:
         raise AssertionError("; ".join(problems))
     return "a step's Urgent? stays in its form with Send answer; a sign-off keeps Approve / Decline, light/dark, wide/phone"
+
+
+@check
+async def check_textlines(browser) -> str:
+    """A Text field whose starting value has line breaks is a box of lines, and sends them (F1759).
+
+    A draft's body typed "text" was drawn as a one-line input, which drops the line breaks of the value it is given:
+    approved as shown, untouched, the paragraphs went out as one line. On the run page, a real run's Body starts with
+    its paragraphs in a box of lines and is sent with them, untouched and edited; its one-line Subject is still a
+    one-line input."""
+    body = "Hello Harbor & Pine,\n\nYour order ships on Monday.\nThanks for your patience."
+    edited = "Hello Harbor & Pine,\n\nIt ships on Tuesday now."
+    oid = f"orch_uismoke_textlines_{int(time.time())}"
+    api("/api/orchestrations", "POST", {
+        "id": oid, "name": f"UI smoke lines {oid[-4:]}", "entry_step_id": "ask", "steps": [
+            {"id": "ask", "name": "Ask", "type": "human", "human_prompt": "Send this draft?", "output_key": "ask",
+             "human_fields": [{"name": "approved", "type": "boolean", "label": "Send this email?"},
+                              {"name": "subject", "type": "text", "label": "Subject", "default": "Ships Monday"},
+                              {"name": "body", "type": "text", "label": "Body", "default": body}],
+             "next_step_id": None, "position_x": 0, "position_y": 0}]})
+    runs = [_start_real_run(oid), _start_real_run(oid)]
+    await asyncio.sleep(1.5)
+    problems: list[str] = []
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    sent: list[dict] = []
+    page.on("request", lambda r: sent.append(json.loads(r.post_data or "{}"))
+            if r.method == "POST" and "/human-input" in r.url else None)
+    try:
+        for run_id, typed in zip(runs, (None, edited)):
+            await page.goto(f"{APP}/runs/{quote(run_id)}", wait_until="domcontentloaded")
+            card = page.get_by_role("region", name="Waiting for a person")
+            await card.wait_for(timeout=30_000)
+            await asyncio.sleep(SETTLE)
+            box = card.get_by_role("textbox", name="Body", exact=True)
+            subject = card.get_by_role("textbox", name="Subject", exact=True)
+            tags = (await box.evaluate("e => e.tagName"), await subject.evaluate("e => e.tagName"))
+            if tags != ("TEXTAREA", "INPUT"):
+                problems.append(f"Body is a {tags[0]} and Subject a {tags[1]}, not a box of lines and one line")
+            shown = await box.input_value()
+            if shown != body:
+                problems.append(f"Body shows {shown!r}, not {body!r}")
+            if typed is not None:
+                await box.fill(typed)
+            before = len(sent)
+            await card.get_by_role("button", name="Send this email", exact=True).click()
+            for _ in range(20):
+                if len(sent) > before:
+                    break
+                await asyncio.sleep(0.25)
+            got = (sent[before].get("response") or {}) if len(sent) > before else {}
+            want = typed if typed is not None else body
+            if got.get("body") != want or got.get("subject") != "Ships Monday":
+                problems.append(f"{'edited' if typed else 'untouched'}, it sent {got!r}, not the body {want!r}")
+    finally:
+        await ctx.close()
+        for run_id in runs:
+            try:
+                api(f"/api/orchestrations/runs/{run_id}/cancel", "POST", {})
+            except Exception:  # noqa: BLE001 — a fixture's run, cleaned up best effort
+                pass
+        drop_fixtures([oid])
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "a Text field's paragraphs are a box of lines and sent with them, untouched and edited; one line stays one"
+
+
+#: A box's height against its rows: lines of its own line height, with its padding and border.
+BOX_ROWS = """e => { const s = getComputedStyle(e); const lh = parseFloat(s.lineHeight);
+  const pad = parseFloat(s.paddingTop) + parseFloat(s.paddingBottom) + parseFloat(s.borderTopWidth)
+    + parseFloat(s.borderBottomWidth);
+  return {rows: e.rows, shown: (e.offsetHeight - pad) / lh, fits: e.scrollHeight <= e.clientHeight + 1,
+          height: e.offsetHeight}; }"""
+
+
+@check
+async def check_textrows(browser) -> str:
+    """A box of lines is as tall as the value it starts with, up to 14 rows, then it scrolls (F1759).
+
+    A 3-row box showed two and a half lines of the draft a person was asked to approve. On the run page at a phone's
+    width and a wide one, a draft whose body has a paragraph that wraps shows all of it; a 30-line log stops at 14 rows
+    and scrolls; an empty Long text keeps its 3 rows; and typing twenty more lines into the body does not change its
+    height, so the card does not jump while a person edits."""
+    body = ("Hello Harbor & Pine,\n\nYour order of twelve cedar planters left our yard this morning and ships Monday "
+            "with the regional carrier; the tracking number follows by email once the carrier scans it at the depot, "
+            "usually by the end of the day.\n\nThanks for your patience,\nThe order desk")
+    log = "\n".join(f"Line {n}: checked" for n in range(1, 31))
+    oid = f"orch_uismoke_textrows_{int(time.time())}"
+    api("/api/orchestrations", "POST", {
+        "id": oid, "name": f"UI smoke rows {oid[-4:]}", "entry_step_id": "ask", "steps": [
+            {"id": "ask", "name": "Ask", "type": "human", "human_prompt": "Send this draft?", "output_key": "ask",
+             "human_fields": [{"name": "approved", "type": "boolean", "label": "Send this email?"},
+                              {"name": "body", "type": "text", "label": "Body", "default": body},
+                              {"name": "log", "type": "text", "label": "Log", "default": log},
+                              {"name": "notes", "type": "textarea", "label": "Notes"}],
+             "next_step_id": None, "position_x": 0, "position_y": 0}]})
+    run_id = _start_real_run(oid)
+    await asyncio.sleep(1.5)
+    problems: list[str] = []
+    try:
+        for width, height in ((390, 844), WIDE):
+            ctx = await browser.new_context(viewport={"width": width, "height": height})
+            page = await ctx.new_page()
+            try:
+                await page.goto(f"{APP}/runs/{quote(run_id)}", wait_until="domcontentloaded")
+                card = page.get_by_role("region", name="Waiting for a person")
+                await card.wait_for(timeout=30_000)
+                await asyncio.sleep(SETTLE)
+                boxes = {name: card.get_by_role("textbox", name=name, exact=True) for name in ("Body", "Log", "Notes")}
+                got = {name: await box.evaluate(BOX_ROWS) for name, box in boxes.items()}
+                if not got["Body"]["fits"]:
+                    problems.append(f"at {width}, the Body shows {got['Body']['shown']:.1f} lines of its draft and "
+                                    "scrolls for the rest")
+                if got["Log"]["fits"] or got["Log"]["shown"] > 14.5 or got["Log"]["shown"] < 13.5:
+                    problems.append(f"at {width}, the 30-line Log shows {got['Log']['shown']:.1f} lines, not 14 "
+                                    "and a scroll")
+                if got["Notes"]["rows"] != 3 or got["Notes"]["shown"] > 3.5:
+                    problems.append(f"at {width}, the empty Notes is {got['Notes']['shown']:.1f} lines, not 3")
+                await boxes["Body"].fill(body + "".join(f"\nMore {n}" for n in range(20)))
+                await asyncio.sleep(0.5)
+                after = await boxes["Body"].evaluate(BOX_ROWS)
+                if abs(after["height"] - got["Body"]["height"]) > 1:
+                    problems.append(f"at {width}, typing moved the Body from {got['Body']['height']}px to "
+                                    f"{after['height']}px")
+            finally:
+                await ctx.close()
+    finally:
+        try:
+            api(f"/api/orchestrations/runs/{run_id}/cancel", "POST", {})
+        except Exception:  # noqa: BLE001 — a fixture's run, cleaned up best effort
+            pass
+        drop_fixtures([oid])
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "a box of lines shows its start up to 14 rows, an empty one keeps 3, and typing does not move it"
+
+
+#: The card's own right and left edges and every control's in it, against the viewport (the page scrolls in an inner
+#: box, so the document's scroll width says nothing).
+CARD_EDGES = """card => { const vw = document.documentElement.clientWidth; const out = [];
+  for (const el of [card, ...card.querySelectorAll('input, textarea, button, label, [role=combobox], p')]) {
+    const r = el.getBoundingClientRect();
+    if (!r.width) continue;
+    if (r.right > vw + 0.5 || r.left < -0.5) {
+      const what = el === card ? 'the card' : (el.getAttribute('aria-label') || el.textContent || el.tagName).trim();
+      out.push(`${what.slice(0, 30)} spans ${Math.round(r.left)}..${Math.round(r.right)}`);
+    }
+  }
+  return {vw, out}; }"""
+
+
+#: Whatever in the card's column reaches past the screen, but inside a box of its own that scrolls sideways: the
+#: column is the card's parent, so one wide item there (a log's unbroken id) is caught as the cause it is.
+COLUMN_EDGES = """card => { const vw = document.documentElement.clientWidth; const column = card.parentElement;
+  const scrolls = (el) => { for (let p = el.parentElement; p && p !== column; p = p.parentElement) {
+      if (/(auto|scroll|hidden|clip)/.test(getComputedStyle(p).overflowX)) return true; } return false; };
+  const out = [];
+  for (const el of column.querySelectorAll('*')) {
+    const r = el.getBoundingClientRect();
+    if (!r.width || r.right <= vw + 0.5 || scrolls(el) || card.contains(el)) continue;
+    if ([...el.children].some(c => c.getBoundingClientRect().right > vw + 0.5)) continue;
+    out.push(`${el.tagName.toLowerCase()} "${(el.textContent || '').trim().slice(0, 30)}" to ${Math.round(r.right)}`);
+  }
+  return out; }"""
+
+
+@check
+async def check_cardonphone(browser) -> str:
+    """A run's card, and every field and button in it, sits inside a phone's screen (F1760).
+
+    The card is a grid item that kept `min-width: auto`, so the column it sits in grew to its content's one-line width:
+    408 px wide on a 390 px screen, the fields and the buttons cut off at the right; on the run page the column was
+    `auto`, so its widest item, the Activity log's unbroken run id, set it. On the run page and on Home, at 390 and
+    360 wide, the card's right edge and each control's are inside the viewport, and nothing in its column reaches past
+    it but inside a box that scrolls sideways."""
+    body = "Hello Harbor & Pine,\n\nYour order ships on Monday.\nThanks for your patience."
+    oid = f"orch_uismoke_cardphone_{int(time.time())}"
+    api("/api/orchestrations", "POST", {
+        "id": oid, "name": f"UI smoke phone {oid[-4:]}", "entry_step_id": "ask", "steps": [
+            {"id": "ask", "name": "Approve the note", "type": "human", "human_prompt": "Send this note to the customer?",
+             "output_key": "ask",
+             "human_fields": [{"name": "approved", "type": "boolean", "label": "Send this email?"},
+                              {"name": "to", "type": "email", "label": "To", "default": "orders@example.com"},
+                              {"name": "subject", "type": "text", "label": "Subject", "default": "Ships Monday"},
+                              {"name": "body", "type": "text", "label": "Body", "default": body}],
+             "next_step_id": None, "position_x": 0, "position_y": 0}]})
+    run_id = _start_real_run(oid)
+    await asyncio.sleep(1.5)
+    problems: list[str] = []
+    try:
+        for width in (390, 360):
+            for where, path in (("the run page", f"/runs/{quote(run_id)}"), ("Home", "/dashboard")):
+                ctx = await browser.new_context(viewport={"width": width, "height": 844})
+                page = await ctx.new_page()
+                try:
+                    await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+                    card = page.get_by_role("region", name="Waiting for a person").filter(has_text="Send this note")
+                    await card.first.wait_for(timeout=30_000)
+                    await asyncio.sleep(SETTLE)
+                    got = await card.first.evaluate(CARD_EDGES)
+                    if got["out"]:
+                        problems.append(f"{where} at {width}: " + ", ".join(got["out"][:4]))
+                    past = await card.first.evaluate(COLUMN_EDGES)
+                    if past:
+                        problems.append(f"{where} at {width}, beside the card: " + ", ".join(past[:3]))
+                finally:
+                    await ctx.close()
+    finally:
+        try:
+            api(f"/api/orchestrations/runs/{run_id}/cancel", "POST", {})
+        except Exception:  # noqa: BLE001 — a fixture's run, cleaned up best effort
+            pass
+        drop_fixtures([oid])
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "a run's card and its fields sit inside a 390 and a 360 screen, on the run page and on Home"
 
 async def main() -> int:
     global APP, API

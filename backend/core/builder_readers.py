@@ -27,7 +27,8 @@ Reader = Callable[[dict], Awaitable[dict]]
 
 TOPICS: dict[str, str] = {
     "schedules": "every schedule: on or paused, when it runs, what it starts, what it does with a time it missed "
-                 "(run_immediately or skip), when it last ran and how that went",
+                 "(run_immediately or skip), whether it runs only while its board has an open task (run_when "
+                 "has_work) and its daily limit, when it last ran and how that went",
     "runs": "recent workflow runs, newest first, with why each failed one failed (status=failed for only those)",
     "channels": "connected chat channels (Slack, Telegram, Discord…): on or off, and which agents answer",
     "phone": "phone numbers: the number, on or off, and the agent that answers",
@@ -86,7 +87,9 @@ TOPICS: dict[str, str] = {
 #: shape as the self-hosted one; `shape_problems` names any drift, and both hosts' tests hold their readers to it.
 SHAPES: dict[str, dict[str, list[str]]] = {
     "schedules": {"keys": ["items", "note"],
-                  "item": ["name", "on", "runs", "starts", "if_missed", "last_run_at", "next_run_at", "last_run"]},
+                  # Its Heartbeat (F1728): optional, so a host whose reader predates it still holds the shape.
+                  "item": ["name", "on", "runs", "starts", "if_missed", "run_when?", "wake_on_new_task?",
+                           "max_runs_per_day?", "last_run_at", "next_run_at", "last_run"]},
     "runs": {"keys": ["items", "note"],
              "item": ["workflow", "status", "started_at", "ended_at", "error", "waiting_for_a_person", "run_id"]},
     "channels": {"keys": ["items", "note"], "item": ["name", "id", "platform", "on", "status", "agents"]},
@@ -297,6 +300,11 @@ async def _schedules(args: dict) -> dict:
             "starts": f'{s.get("target_type")} "{target or s.get("target_id")}"',
             # What it does with a time it missed (F1267), as the Schedules screen sets it.
             "if_missed": s.get("missed_run_policy") or "skip",
+            # Its Heartbeat (F1728): whether it waits for a task on its board, is woken by one, and its daily limit.
+            "run_when": s.get("run_when") or "always",
+            **({"wake_on_new_task": s.get("wake_on_new_task", True) is not False}
+               if s.get("run_when") == "has_work" else {}),
+            "max_runs_per_day": int(s.get("max_runs_per_day") or 0),
             "last_run_at": s.get("last_run_at"), "next_run_at": s.get("next_run_at"),
             "last_run": ({"status": last.get("status"), "error": last.get("error"), "started_at": last.get("started_at")}
                          if last else None),

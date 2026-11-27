@@ -13,6 +13,7 @@ import { CalendarClock, X } from 'lucide-react';
 import { Field, IconButton, Input, controlStyles } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import type { Orchestration } from '@/types/orchestration';
+import { WAITS } from '@/components/run/scheduleRows';
 import { zoneWords } from '@/components/run/workflowRows';
 
 /** The card's frame for the settings: a header with close, and a scrolling body of sections. */
@@ -254,6 +255,8 @@ export type WorkflowSchedule = {
     interval_unit?: string | null;
     cron_expression?: string | null;
     timezone?: string | null;
+    /** `has_work`: it runs at its time only while its board has an open task (F1729). */
+    run_when?: string | null;
 };
 
 /** The schedules that start this workflow, read-only, with the way to change them. */
@@ -280,6 +283,10 @@ export function SchedulesList({ schedules, workflowId, href }: {
                                         ? `${s.cron_expression ?? ''}${s.timezone ? ` · ${zoneWords(s.timezone)}` : ''}`
                                         : `every ${s.interval_value ?? '?'} ${s.interval_unit ?? ''}`.trim()}
                                 </span>
+                                {/* A heartbeat (F1729): its own line, never cut off with the time. */}
+                                {s.run_when === 'has_work' && (
+                                    <span data-schedule-waits className="block text-xs text-text-faint">{WAITS}</span>
+                                )}
                             </span>
                             {s.enabled === false && <span className="text-xs text-text-faint">Off</span>}
                         </li>

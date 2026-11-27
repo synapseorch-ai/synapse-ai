@@ -613,15 +613,19 @@ def compile_plan(plan: Plan, *, existing_agents: dict[str, dict] | None = None,
                     # What it does with a time it missed, as its plan says (D340 F; the screen's two values, F1267).
                     "missed_run_policy": plan.schedule.missed_run_policy,
                     # Read on the person's clock (F948): the one they named, else their own; none is UTC.
-                    "timezone": plan.schedule.timezone or None}
+                    "timezone": plan.schedule.timezone or None,
+                    # A heartbeat waits for a task on its board (F1728); a new one wakes it.
+                    "run_when": plan.schedule.run_when, "max_runs_per_day": plan.schedule.max_runs_per_day}
         from core.models_schedule import ScheduleCreate, ScheduleInvalid, validate_timing
 
         try:
             validate_timing(ScheduleCreate.model_validate(schedule).model_dump())
         except (ScheduleInvalid, ValueError) as e:
             issues.append(f"The schedule cannot run: {e}")
+    # A board the person gives access to (F1736) is theirs to give: the build neither makes it nor gives it.
     boards = [{"name": b.name, "description": b.purpose, "existing": b.existing,
-               "access": [{"kind": "workflow", "id": orch_id, "access": "work"}]} for b in plan.boards]
+               "access": [{"kind": "workflow", "id": orch_id, "access": "work"}]}
+              for b in plan.boards if not b.yours]
     knowledge = [{"name": p.name, "description": p.purpose, "existing": p.existing, "id": kb_ids[p.name],
                   "files": [f for f in dict.fromkeys(f.strip().lstrip("/") for f in p.files if f.strip())
                             if f not in p.files_missing],

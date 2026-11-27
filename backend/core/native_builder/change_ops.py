@@ -176,6 +176,8 @@ _SCHEDULE_TIME = ("schedule_type", "cron_expression", "interval_value", "interva
 #: What a schedule does with a time it missed (the machine was off, the fleet was down), as the Schedules screen sets
 #: it (F1267): run it once as soon as it can, or skip it.
 MISSED = ("run_immediately", "skip")
+#: When a schedule runs at its time and how often a day, as the Schedules screen's Heartbeat sets it (F1728).
+_SCHEDULE_WHEN = ("run_when", "wake_on_new_task", "max_runs_per_day")
 
 _WRITES = (
     Op("rename_workflow", "write", "workflow", "set_orchestration_meta", ("name",), ("name",), verb="Rename"),
@@ -185,14 +187,16 @@ _WRITES = (
        verb="Change the settings of"),
     Op("delete_workflow", "delete", "workflow", "delete_orchestration", verb="Delete"),
     Op("set_schedule", "write", "schedule", "update_schedule",
-       (*_SCHEDULE_TIME, "prompt", "description", "missed_run_policy"), any_of=True, verb="Change"),
+       (*_SCHEDULE_TIME, "prompt", "description", "missed_run_policy", *_SCHEDULE_WHEN), any_of=True,
+       verb="Change"),
     # What it starts, another workflow or agent (F1267): the same schedule, its id, history and time kept.
     Op("retarget_schedule", "write", "schedule", "update_schedule", ("runs",), ("runs",),
        verb="Change what runs on"),
     Op("rename_schedule", "write", "schedule", "update_schedule", ("name",), ("name",), verb="Rename"),
     Op("delete_schedule", "delete", "schedule", "delete_schedule", verb="Delete"),
     Op("create_schedule", "create", "schedule", "create_schedule",
-       ("runs", "prompt", *_SCHEDULE_TIME, "description", "missed_run_policy"), ("runs", "prompt"), verb="Make"),
+       ("runs", "prompt", *_SCHEDULE_TIME, "description", "missed_run_policy", *_SCHEDULE_WHEN), ("runs", "prompt"),
+       verb="Make"),
     # A model's id, or what the agent needs, or the person's own words for one (F966): code fills the id.
     Op("set_agent_model", "write", "agent", "update_agent", ("model", "needs", "wish"), any_of=True,
        verb="Change the model of"),
@@ -430,6 +434,15 @@ def _field_issue(op: Op, key: str, value: Any) -> str | None:
         return None if ok else "`runs` is {kind: workflow | agent, id or name} of what the schedule starts"
     if key == "missed_run_policy":
         return None if value in MISSED else f"`missed_run_policy` is {' or '.join(MISSED)}"
+    if key == "run_when":
+        from core.models_schedule import RUN_WHEN
+        return None if value in RUN_WHEN else f"`run_when` is {' or '.join(RUN_WHEN)}"
+    if key == "wake_on_new_task":
+        return None if isinstance(value, bool) else "`wake_on_new_task` is true or false"
+    if key == "max_runs_per_day":
+        from core.models_schedule import MAX_RUNS_PER_DAY
+        ok = isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= MAX_RUNS_PER_DAY
+        return None if ok else f"`max_runs_per_day` is a whole number from 0 to {MAX_RUNS_PER_DAY:,} (0 is no limit)"
     if key == "schedule_type":
         return None if value in ("cron", "interval") else "`schedule_type` is cron or interval"
     if key == "timezone":
@@ -648,10 +661,16 @@ def _settings_issues(fields: dict[str, Any]) -> list[str]:
 def _saved_as(op: Op, fields: dict[str, Any]) -> list[str]:
     """What the save itself would refuse, by the product's own rules, said before the review rather than after the
     yes (the branch review's finding 10): a schedule's time, a run cap."""
-    from core.models_schedule import ScheduleInvalid, validate_timing
+    from core.models_schedule import ScheduleInvalid, validate_heartbeat, validate_timing
     from core.orchestration.run_cap import clean
 
     out: list[str] = []
+    if op.name in ("set_schedule", "create_schedule") and fields.get("run_when") == "has_work":
+        # Waiting for work needs Boards on (F1728): said before the yes, not as the save's refusal after it.
+        try:
+            validate_heartbeat({k: fields[k] for k in _SCHEDULE_WHEN if k in fields})
+        except ScheduleInvalid as why:
+            out.append(str(why))
     if op.name in ("set_schedule", "create_schedule"):
         time = _schedule_time(fields)
         whole = "cron_expression" in time or ("interval_value" in time and "interval_unit" in time)
@@ -771,7 +790,8 @@ def expected(op: Op, fields: dict[str, Any], live: dict[str, Any] | None) -> dic
         return {"text": str(live.get("text") or "").replace(fields["find"], fields.get("replace") or "", 1)}
     if name == "set_schedule":
         return {**_schedule_time(fields),
-                **{k: fields[k] for k in ("prompt", "description", "missed_run_policy") if k in fields}}
+                **{k: fields[k] for k in ("prompt", "description", "missed_run_policy", *_SCHEDULE_WHEN)
+                   if k in fields}}
     if name == "retarget_schedule":
         return _starts(fields["runs"])
     if name == "update_python_tool":
@@ -796,7 +816,8 @@ def expected(op: Op, fields: dict[str, Any], live: dict[str, Any] | None) -> dic
                 **({"body": args["body_template"]} if "body_template" in args else {})}
     if name == "create_schedule":
         return {**_starts(fields["runs"]), "prompt": fields["prompt"], **_schedule_time(fields),
-                **{k: fields[k] for k in ("description", "missed_run_policy") if fields.get(k)}}
+                **{k: fields[k] for k in ("description", "missed_run_policy") if fields.get(k)},
+                **{k: fields[k] for k in _SCHEDULE_WHEN if k in fields}}
     if name == "set_agent_model":
         return {"model": str(fields["model"]).strip()}
     if name == "set_agent_tools":

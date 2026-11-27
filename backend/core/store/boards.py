@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -709,6 +710,24 @@ async def held_cards(holder: Holder, *, now: datetime | None = None) -> list[Car
     return [_card(row, now) for row in rows]
 
 
+async def has_open_task(board_ids: list[str], *, now: datetime | None = None) -> bool:
+    """Whether any of `board_ids` holds a task someone could claim now: open, or claimed on a lapsed lease. A
+    heartbeat's whole check (F1727), so one row at most."""
+    from core.store import session
+    from core.store.models import BoardCardDB
+
+    if not board_ids:
+        return False
+    now = now or _now()
+    async with session() as s:
+        row = (await s.execute(
+            select(BoardCardDB.id).where(
+                BoardCardDB.tenant_id == get_tenant(), BoardCardDB.board_id.in_(board_ids),
+                BoardCardDB.kind == "task", _status_filter(BoardCardDB, ("open",), now))
+            .limit(1))).first()
+    return row is not None
+
+
 async def live_count(board_id: str) -> int:
     """Open and claimed cards on a board: what its cap counts."""
     from core.store import session
@@ -819,6 +838,17 @@ async def _explain(card_id: str, holder: Holder | None, version: int | None) -> 
     return StaleCard(card)
 
 
+#: Told of each task card `add_card` writes, after it commits (F1727): `core/boards/heartbeat.py` installs one that
+#: wakes the heartbeat schedules working that board. None until a scheduler installs it.
+_task_added_observer: Callable[[Board, Card], Awaitable[None]] | None = None
+
+
+def set_task_added_observer(observer: Callable[[Board, Card], Awaitable[None]] | None) -> None:
+    """Install the callable told of each new task card. ``None`` removes it."""
+    global _task_added_observer
+    _task_added_observer = observer
+
+
 async def add_card(board_id: str, *, title: str, body: str = "", kind: str = "task", key: str | None = None,
                    by: Actor, tainted: bool = False, max_open: int = 0, stage: str | None = None,
                    data: dict[str, Any] | None = None, owner_id: str | None = None) -> tuple[Card, bool]:
@@ -873,6 +903,13 @@ async def add_card(board_id: str, *, title: str, body: str = "", kind: str = "ta
         break
     card = await get_card(card_id)
     assert card is not None
+    if kind == "task" and _task_added_observer is not None:
+        # A heartbeat that works this board is woken (F1727). After the commit, and never the card's failure:
+        # a wake that did not happen is found at the schedule's next check.
+        try:
+            await _task_added_observer(board, card)
+        except Exception as exc:  # noqa: BLE001 — the card is written; the wake is best effort
+            logger.warning("a new task on board %s woke no schedule (its next check finds it): %s", board_id, exc)
     return card, True
 
 

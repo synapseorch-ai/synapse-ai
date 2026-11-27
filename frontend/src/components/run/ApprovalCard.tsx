@@ -40,7 +40,7 @@ import { browserTurnOf } from '../browser/model';
 import { HumanFieldsForm } from '../orchestration/HumanFieldsForm';
 import { humanAnswer, humanFieldLabel, initialHumanValues, type HumanValues } from '../orchestration/humanFields';
 import { useRunHost } from './host';
-import { DELETED_WORKFLOW, decisionField, type RunRecord } from './model';
+import { DELETED_WORKFLOW, decisionField, questionKeyOf, type RunRecord } from './model';
 import { Took } from './When';
 
 export type ApprovalDraft = {
@@ -50,10 +50,7 @@ export type ApprovalDraft = {
     onValues: (values: HumanValues) => void;
 };
 
-export function ApprovalCard({
-    run, onDone, onCancel, busy, openHref, showWorkflow = false, showStep = true, requireAnswer = true,
-    submitOnEnter = false, draft,
-}: {
+type ApprovalCardProps = {
     run: RunRecord;
     /** After an answer was taken: the message to show. */
     onDone: (message: string) => void;
@@ -71,7 +68,20 @@ export function ApprovalCard({
     submitOnEnter?: boolean;
     /** The answer as typed, held by the page, so it outlives the card. */
     draft?: ApprovalDraft;
-}) {
+};
+
+/**
+ * The card for the question `run` asks now, its form mounted under that question's key (F1753, `questionKeyOf`): a
+ * page that keeps the card up while its run moves on to another question starts that one at its own values.
+ */
+export function ApprovalCard(props: ApprovalCardProps) {
+    return <ApprovalCardFor key={questionKeyOf(props.run)} {...props} />;
+}
+
+function ApprovalCardFor({
+    run, onDone, onCancel, busy, openHref, showWorkflow = false, showStep = true, requireAnswer = true,
+    submitOnEnter = false, draft,
+}: ApprovalCardProps) {
     const host = useRunHost();
     const fields = Array.isArray(run.humanFields) ? run.humanFields : [];
     const decision = decisionField(fields);
@@ -105,7 +115,7 @@ export function ApprovalCard({
     if (turn) {
         const href = `${openHref ?? host.links.run(run.id)}#live-browser`;
         return (
-            <section aria-label="Waiting for a person" className="grid grid-cols-[minmax(0,1fr)] gap-3">
+            <section aria-label="Waiting for a person" className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3">
                 <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[12.5px] text-text-muted">
                     <Badge tone="person">Waiting for a person</Badge>
                     {showWorkflow && <span className="font-medium text-text">{run.workflowName ?? DELETED_WORKFLOW}</span>}
@@ -141,7 +151,10 @@ export function ApprovalCard({
         // One column that may shrink: a grid item is as wide as its longest word,
         // so a context of unbroken text (a model's `Q8\u202fC7…`) widened the
         // whole card past its frame and cut the prompt and its buttons (M3b).
-        <section aria-label="Waiting for a person" className="grid grid-cols-[minmax(0,1fr)] gap-3 rounded-[14px] border border-person/40 bg-person-subtle px-[22px] py-5">
+        // And `min-w-0` on the card itself: it is a grid item in the run page's
+        // column too, and kept at its content's one-line width there it grew
+        // past a phone's screen, fields and buttons cut off (F1760).
+        <section aria-label="Waiting for a person" className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3 rounded-[14px] border border-person/40 bg-person-subtle px-[22px] py-5">
             <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[12.5px] text-text-muted">
                 <Badge tone="person">Waiting for a person</Badge>
                 {showWorkflow && <span className="font-medium text-text">{run.workflowName ?? DELETED_WORKFLOW}</span>}

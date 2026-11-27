@@ -644,7 +644,7 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
                 <EmptyState
                     title="Vault is empty"
                     action={
-                        <div className="flex justify-center gap-2">
+                        <div className="flex flex-wrap justify-center gap-2">
                             <Button variant="secondary" onClick={() => newAt('folder')}><FolderPlus className="size-4" aria-hidden /> New folder</Button>
                             <Button onClick={() => newAt('file')}><Plus className="size-4" aria-hidden /> New file</Button>
                         </div>

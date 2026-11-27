@@ -132,6 +132,18 @@ def _existing(wall: datetime, zone: "ZoneInfo") -> datetime:
     return wall.replace(tzinfo=zone)
 
 
+def day_of(schedule: dict, now: datetime) -> str:
+    """The day `now` falls on, on the schedule's own clock, as YYYY-MM-DD: what its daily limit counts against
+    (F1727). Public, so a host that fires schedules its own way counts the same day."""
+    tz = (schedule.get("timezone") or "").strip()
+    if tz and tz.upper() != "UTC":
+        try:
+            return now.astimezone(ZoneInfo(tz)).date().isoformat()
+        except Exception:  # noqa: BLE001 — a zone the save refused never reaches here; UTC if one did
+            pass
+    return now.astimezone(timezone.utc).date().isoformat()
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -202,11 +214,16 @@ class ScheduleManager:
         self._manual_runs: set[asyncio.Task] = set()
         #: When the boards were last swept (monotonic); the first tick sweeps.
         self._boards_swept = float("-inf")
+        #: Heartbeats running now (F1727): one never runs twice at once, so a check due mid-run waits for it.
+        self._beating: set[str] = set()
 
     async def start(self, server_module) -> None:
         """Called from server lifespan. Evaluates overdue schedules and starts the loop."""
         self._server_module = server_module
         self._running = True
+        # A task added to a board wakes the heartbeats that work it (F1727).
+        from core.boards import heartbeat
+        heartbeat.install()
         # Handle any schedules that were overdue while the server was offline
         try:
             await self._on_startup()
@@ -218,6 +235,8 @@ class ScheduleManager:
     async def stop(self) -> None:
         """Called from server lifespan shutdown."""
         self._running = False
+        from core.boards import heartbeat
+        heartbeat.uninstall()
         if self._loop_task and not self._loop_task.done():
             self._loop_task.cancel()
             try:
@@ -391,17 +410,37 @@ class ScheduleManager:
             await self._turn_off(s, gone)
             return
 
+        from core.boards import heartbeat
+        beats = heartbeat.waits_for_work(s)
+        if beats and schedule_id in self._beating:
+            # Still due, untouched: the first tick after this run ends fires it (F1727).
+            return
+
         now = _utc_now()
         next_dt = compute_next_run(s, now)
         await schedule_store.set_next_run(schedule_id, next_dt)
         s["next_run_at"] = _iso(next_dt)
+
+        # A heartbeat with nothing to do passes: no run, no log, no model call (F1727).
+        if beats and not await heartbeat.has_work(s):
+            return
+        limit = int(s.get("max_runs_per_day") or 0)
+        if limit and not await schedule_store.take_run_slot(schedule_id, day_of(s, now), limit):
+            logger.info("[Scheduler] Schedule '%s' (id=%s) started its %d runs today; next check %s",
+                        s.get("name"), schedule_id, limit, s["next_run_at"])
+            return
 
         logger.info(
             "[Scheduler] Running schedule '%s' (id=%s), next=%s",
             s.get("name"), schedule_id, s["next_run_at"],
         )
 
-        await self._run(s, await self._open_log(s))
+        if beats:
+            self._beating.add(schedule_id)
+        try:
+            await self._run(s, await self._open_log(s))
+        finally:
+            self._beating.discard(schedule_id)
 
         # Record when this occurrence started. One row update — the whole-file
         # rewrite this used to be clobbered any edit made through the API while
@@ -587,7 +626,7 @@ class ScheduleManager:
         from core.session import _clip_args
         from core.store import sessions as _sessions
 
-        from core.chat_approval import to_ring
+        from core.chat_approval import question_words, to_ring
 
         name = s.get("name") or s["id"]
         expires_at = (_utc_now() + APPROVAL_TTL).isoformat()
@@ -600,7 +639,9 @@ class ScheduleManager:
             who = q.get("member_name")
             hub.publish(
                 "tool_approval", f"{name}: {who} needs approval" if who else f"{name} needs approval",
-                body=(f"{'It' if not who else who} wants to run {q.get('tool_name')} — "
+                # A call the address guard stopped says what it would use (F1744), as the card does.
+                body=question_words(q).replace("**", "") if q.get("unseen") is not None else
+                     (f"{'It' if not who else who} wants to run {q.get('tool_name')} — "
                       f"{tool_policy.explain(q.get('category'))}.") if who else
                      f"The agent wants to run {q.get('tool_name')} — {tool_policy.explain(q.get('category'))}.",
                 data={"schedule_id": s["id"], "schedule_run_id": run_id, "approval_id": q.get("approval_id"),

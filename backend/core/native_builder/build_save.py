@@ -132,7 +132,8 @@ async def submit_prompts(args: dict, server_module: Any, events: list[dict]) -> 
 
 _CAPS = ("max_total_turns", "timeout_minutes", "max_run_credits", "max_run_usd")
 _SCHEDULE_ARGS = ("name", "description", "target_type", "target_id", "prompt", "schedule_type", "cron_expression",
-                  "interval_value", "interval_unit", "timezone", "missed_run_policy")
+                  "interval_value", "interval_unit", "timezone", "missed_run_policy", "run_when", "wake_on_new_task",
+                  "max_runs_per_day")
 
 
 def _workflow_call(tool: str, doc: dict, *, update: bool = False) -> dict:

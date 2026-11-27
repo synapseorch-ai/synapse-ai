@@ -14,7 +14,7 @@ from typing import Any
 
 from collections.abc import Set as AbstractSet
 
-from core.native_builder.objects import Gate, Plan, Step
+from core.native_builder.objects import WAKE_WORDS, Gate, Plan, Step
 
 _TYPE_WORDS = {"agent": "agent", "llm": "llm", "tool": "tool", "evaluator": "evaluator", "parallel": "parallel",
                "merge": "merge", "loop": "loop", "human": "human", "transform": "transform",
@@ -370,6 +370,12 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
         text += ("\n**If a time is missed** (the machine was off): "
                  + ("it runs once as soon as it can" if plan.schedule.missed_run_policy == "run_immediately"
                     else "it is skipped, and it runs at the next time"))
+        if plan.schedule.run_when == "has_work":
+            # A heartbeat (F1728): what it costs when idle is the person's question, so the card answers it.
+            text += ("\n**Only when there's work:** at each time it checks its board and runs only while a task is "
+                     f"open, so a quiet day costs nothing; {WAKE_WORDS}.")
+            if plan.schedule.max_runs_per_day:
+                text += f" At most {plan.schedule.max_runs_per_day} runs a day."
         text += "\nIt is made paused: turn it on under Schedules once you have checked what each run starts with."
         parts.append(f"## Schedule\n{text}")
 

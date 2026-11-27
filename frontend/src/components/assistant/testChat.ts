@@ -12,6 +12,7 @@
  * answer, and says when a turn stops for a person instead of answering it here
  * (that is chat's job, and the conversation is in chat's history).
  */
+import { isFailed } from '@/lib/callMarks';
 import type { KnowledgeCitation } from '@/lib/knowledge';
 
 export interface TestCall {
@@ -53,10 +54,6 @@ export function newTurn(id: string, question: string, images = 0): TestTurn {
     return { id, question, ...(images ? { images } : {}), calls: [], answer: '', status: '', state: 'streaming' };
 }
 
-/** Whether a `tool_result` preview is the engine reporting a failure (cloud's `turn.ts` reads it the same way). */
-function isFailure(preview: string): boolean {
-    return /^(error|blocked|tool removed|tool not found)/i.test(preview.trim());
-}
 
 const text = (v: unknown) => (typeof v === 'string' ? v : v == null ? '' : String(v));
 
@@ -101,9 +98,13 @@ export function reduceTest(turn: TestTurn, event: TestEvent): TestTurn {
                 const call = turn.calls[i];
                 if (call.name !== name || call.result !== null) continue;
                 const calls = [...turn.calls];
+                // Its mark says what happened (F1752); a call with none is read by its words, as an older engine's.
+                const marked = event.failed === true;
                 calls[i] = event.refused === true
                     ? { ...call, result: preview, refused: true, reason: text(event.reason) }
-                    : { ...call, result: preview, failed: isFailure(preview) };
+                    : { ...call, result: preview,
+                        failed: isFailed({ tool: name, result: preview, ...(marked ? { failed: true } : {}) }),
+                        ...(marked ? { reason: text(event.reason) } : {}) };
                 return { ...turn, calls, status: '' };
             }
             return turn;

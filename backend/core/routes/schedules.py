@@ -28,6 +28,8 @@ def _get_manager(request: Request):
 
 _TIMING_KEYS = {"schedule_type", "interval_value", "interval_unit", "cron_expression", "timezone"}
 _TARGET_KEYS = {"target_type", "target_id"}
+#: When it runs at its time and how often a day (F1727): checked like its timing, without moving its next run.
+_WHEN_KEYS = {"run_when", "max_runs_per_day"}
 
 
 def _check_timing(schedule: dict) -> None:
@@ -144,7 +146,7 @@ async def patch_schedule(schedule_id: str, body: ScheduleUpdate, request: Reques
 
     patched = {**s, **patch}
     retimed = bool(_TIMING_KEYS.intersection(patch))
-    if retimed or re_enabling:
+    if retimed or re_enabling or _WHEN_KEYS.intersection(patch):
         _check_timing(patched)
     if _TARGET_KEYS.intersection(patch):
         await _check_target(patched)

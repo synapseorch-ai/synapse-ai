@@ -540,6 +540,8 @@ class AgentStepExecutor:
                 global_variables=getattr(engine, "global_variables", None),
                 # The step's own words, without what its placeholders brought in (V2-CONTRACT "Final buttons").
                 own_words=[re.sub(r"\{\{.*?\}\}", "\n", step.prompt_template or "", flags=re.S)],
+                # Its answer's fields (F1553): an answer naming them is the answer, never read as a call (F1745).
+                answer_fields=list(_answer.names(fields)) or None,
                 # Kept sessions picked for this step and for the run (F1140); the agent's own join them in the engine.
                 browser_picks={"step": list(step.browser_sessions or []),
                                "run": list(run.shared_state.get("_browser_sessions") or []),
@@ -650,8 +652,10 @@ class AgentStepExecutor:
                         "memory_tainted": event.get("memory_tainted"),
                         "attempt": resume_attempt,
                         # Past its turn limit (F1219): the turns it has, how often it went on, what it spent.
-                        # The repeat guard's reads since the last call that could change things (F1236), too.
-                        **{k: event[k] for k in ("turns_given", "turn_extensions", "turn_spent_usd", "repeat_window")
+                        # The repeat guard's reads since the last call that could change things (F1236), too, and
+                        # the address guard's record (F1744): what its tools answered, what a person declined.
+                        **{k: event[k] for k in ("turns_given", "turn_extensions", "turn_spent_usd", "repeat_window",
+                                                 "ground_keys", "guard_declined", "guard_parked", "guard_again")
                            if k in event},
                     }
                     # A delegate's question the step is about to pause on (F286):
@@ -1178,8 +1182,16 @@ class ToolStepExecutor:
         # A person's answer to a pause this step made: the call they allowed is
         # the one that runs — the model is not asked again, it might ask for
         # something else — and a refusal fails the step with their reason.
+        from . import grounded
+
         _answered = (run.step_progress.get(step.id) or {}).get("pending_call")
+        # A guard pause's record (F1743): what it named and what a person declined.
+        _guard = (run.step_progress.get(step.id) or {}).get(grounded.GUARD_KEY)
         _replay: dict | None = None
+        # A person declined a call the guard stopped and wrote the right address in their reason: one attempt with
+        # their words, and its call is shown to them again before anything goes out.
+        _correction: dict | None = None
+        _declined: set[str] = set()
         if _answered:
             run.step_progress.pop(step.id, None)
             # Spent before the call runs, and saved: a crash mid-call must not
@@ -1190,11 +1202,18 @@ class ToolStepExecutor:
                 _log.warning(f"tool-approval checkpoint failed: {ckpt_err}")
             if not _answered.get("approved"):
                 reason = _answered.get("reason") or ""
-                message = (f"Tool step '{step.name}' did not run '{tool_name}': a person refused it"
-                           + (f": {reason}" if reason else ""))
-                yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
-                raise RuntimeError(message)
-            _replay = {"tool": tool_name, "arguments": _answered.get("arguments") or {}}
+                if isinstance(_guard, dict):
+                    # A no is never a source again: every address in the declined call, and those declined before.
+                    _declined = grounded.declined_keys(_answered.get("arguments") or {}, _guard.get("declined") or [])
+                    if grounded.correction(reason, _declined):
+                        _correction = {"arguments": _answered.get("arguments") or {}, "reason": reason}
+                if _correction is None:
+                    message = (f"Tool step '{step.name}' did not run '{tool_name}': a person refused it"
+                               + (f": {reason}" if reason else ""))
+                    yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
+                    raise RuntimeError(message)
+            else:
+                _replay = {"tool": tool_name, "arguments": _answered.get("arguments") or {}}
         elif _decision == "deny":
             # Refused before the model is asked for arguments.
             message = (f"Tool step '{step.name}' did not run '{tool_name}': the tool policy blocks it "
@@ -1235,6 +1254,10 @@ class ToolStepExecutor:
         }
 
         max_turns = max(1, step.max_turns or 3)
+        if _correction is not None:
+            # One attempt with the person's words: its call is shown to them, never retried on its own.
+            max_turns = 1
+            tool_prompt += "\n\n" + grounded.correction_prompt(_correction["arguments"], _correction["reason"])
         last_error = None
         final_response = None
         unavailable: ToolUnavailable | None = None  # its tool isn't available now: said in its own words (F1349)
@@ -1252,6 +1275,9 @@ class ToolStepExecutor:
         else:
             _h = tool_hints(tool_obj)
             _repeatable = not _h.declared or _h.read_only or _h.idempotent
+        # A link a tool that only reads is given is where it reads, not where anything goes (F1743).
+        _reads_only = grounded.reads_only(tool_obj, _own)
+        _held: set[str] | None = None  # what the run holds, read once and only when a call names an address
 
         for turn in range(max_turns):
             attempts = turn + 1
@@ -1335,7 +1361,32 @@ class ToolStepExecutor:
             called_tool = tool_obj.name
             last_tool_args = tool_args
 
-            if _decision == "confirm" and not _replaying:
+            # What a model wrote (F1743): never set arguments (rendered from state, held when the plan is built), never
+            # an approved call (the call the person saw).
+            _ask_words: str | None = None
+            _guarding: dict | None = None
+            if not _replaying and _set_args is None:
+                _misfit = grounded.misfits(called_tool, tool_obj.inputSchema, tool_args)
+                if _misfit:
+                    # Before the call: the model is told, within its attempts, and nothing reaches the tool.
+                    last_error = "; ".join(_misfit) + ". Nothing was sent."
+                    continue
+                _values = grounded.values_in(tool_args, tool_obj.inputSchema, reads_only=_reads_only)
+                if _values and _held is None:
+                    _held = grounded.held(run.shared_state, prompt,
+                                          extra=[_correction["reason"]] if _correction is not None else [])
+                _missing = grounded.unseen(_values, _held or set(), _declined)
+                if _missing or _correction is not None:
+                    # Stopped and asked: an address the run does not hold is never sent or tried again, and a
+                    # corrected call is always seen before it goes out. Said with the policy's own ask when it asks.
+                    _ask_words = grounded.card(called_tool, _missing, corrected=_correction is not None,
+                                               policy_words=(approval_prompt(called_tool, _category)
+                                                             if _decision == "confirm" else ""))
+                    _guarding = {"named": [v.said for v in _missing], "declined": sorted(_declined)}
+            if _ask_words is None and _decision == "confirm" and not _replaying:
+                _ask_words = approval_prompt(called_tool, _category)
+
+            if _ask_words is not None:
                 # Held for a person, exactly as an Agent step's gated call is: the
                 # run pauses here with the call, and the resume re-enters this
                 # step with the answer (`OrchestrationEngine._resume_tool_approval`).
@@ -1345,6 +1396,10 @@ class ToolStepExecutor:
                     "approval_id": approval_id, "tool_name": called_tool,
                     "tool_args": tool_args, "category": _category,
                 }
+                if _guarding is not None:
+                    progress[grounded.GUARD_KEY] = _guarding
+                else:
+                    progress.pop(grounded.GUARD_KEY, None)
                 run.step_progress[step.id] = progress
                 try:
                     await SharedState(run).checkpoint(columns=("step_progress",))
@@ -1352,7 +1407,7 @@ class ToolStepExecutor:
                     _log.warning(f"tool-approval checkpoint failed: {ckpt_err}")
                 yield {
                     "type": "human_input_required", "kind": "tool_approval",
-                    "prompt": approval_prompt(called_tool, _category),
+                    "prompt": _ask_words,
                     "tool_name": called_tool, "tool_args": tool_args, "category": _category,
                     "approval_id": approval_id,
                     "fields": [
@@ -1651,8 +1706,12 @@ class ToolStepExecutor:
                 timeout=HTTP_TOOL_TIMEOUT,
             )
         if resp.status_code >= 400:
+            # The response's words, as an agent's call says them (F1751): an HTML error page as its title and text,
+            # never its markup.
+            from core.tool_result import words_of
+
             raise ToolCallFailed(
-                f"HTTP {resp.status_code} from '{tool.get('name', 'tool')}': {(resp.text or '')[:500]}",
+                f"HTTP {resp.status_code} from '{tool.get('name', 'tool')}': {words_of(resp.text, 500)}",
                 retryable=resp.status_code < 500)
 
         _, text = http_tool.decode(resp, tool)
@@ -3028,7 +3087,8 @@ class LoopStepExecutor:
 SECRET_NOT_SHOWN = "(a secret is not shown here)"
 
 
-def render_state_refs(text: str, state: dict, variables: dict | None = None, secrets: Any = ()) -> str:
+def render_state_refs(text: str, state: dict, variables: dict | None = None, secrets: Any = (), *,
+                      whole: bool = False) -> str | None:
     """`{{ state.a.b }}` and `{{ global.x }}` in a person's text, from the run: a Human step's question, its fields'
     labels and options (`shown_fields`) and a Print. The one form (`templating.REF`, F1252), spaced or not.
 
@@ -3044,6 +3104,9 @@ def render_state_refs(text: str, state: dict, variables: dict | None = None, sec
     11-12, replacing D104's rule that none was): the question goes to a channel, an email and the API. A secret is
     one named in `secrets` (`variables.secret_names`, the engine's `secret_variables`) or whose value this task holds
     (`secret_scrub.held_secrets`: `variables.load` holds each a secret reference resolved to).
+
+    `whole` (F1753, a field's starting value): None unless every reference names a value the person can be shown in
+    full, so what names nothing, a secret or a file's excerpt is never offered as a value to send.
     """
     from core import templating as _templating
     from core.secret_scrub import held_secrets
@@ -3056,6 +3119,14 @@ def render_state_refs(text: str, state: dict, variables: dict | None = None, sec
     context = {"state": state, "global": variables or {}}
     held: set[str] | None = None
 
+    class _NotWhole(Exception):
+        """A reference `whole` cannot give in full."""
+
+    def _short(said: str) -> str:
+        if whole:
+            raise _NotWhole(said)
+        return said
+
     def _resolve(match: re.Match) -> str:
         nonlocal held
         parts = match.group(1).split(".")
@@ -3063,42 +3134,55 @@ def render_state_refs(text: str, state: dict, variables: dict | None = None, sec
             return match.group(0)
         if parts[0] == "state":
             if said := ran_zero(state, parts[1]):
-                return f"(nothing: {said})"
+                return _short(f"(nothing: {said})")
             top = state.get(parts[1])
             if top is None or (len(parts) > 2 and not is_ref(top) and top in ("", {}, [])):
-                return f"(no value yet: no step has written state.{parts[1]})"
+                return _short(f"(no value yet: no step has written state.{parts[1]})")
         try:
             found, value = _templating.lookup(match.group(1), context, keep_ref=True)
         except MissingOutput as exc:
-            return f"({exc})"
+            return _short(f"({exc})")
         if not found:
-            return _not_there(parts, context)
+            return _short(_not_there(parts, context))
         if parts[0] == "global":
             if held is None:
                 held = set(held_secrets().values())
             stored = context["global"].get(parts[1])
             if parts[1] in secrets or (isinstance(stored, str) and stored in held):
-                return SECRET_NOT_SHOWN
+                return _short(SECRET_NOT_SHOWN)
         if is_ref(value):
-            return for_person(value)  # an excerpt and the file, never the whole of it
+            return _short(for_person(value))  # an excerpt and the file, never the whole of it
         if isinstance(value, (dict, list)):
             return json.dumps(value, ensure_ascii=False, default=str)
+        if whole and value is None:
+            raise _NotWhole("no value")
         return "" if value is None else str(value)
 
-    return _templating.REF.sub(_resolve, text)
+    try:
+        return _templating.REF.sub(_resolve, text)
+    except _NotWhole:
+        return None
 
 
-def shown_fields(fields: Any, state: dict, variables: dict | None = None, secrets: Any = ()) -> Any:
+def shown_fields(fields: Any, state: dict, variables: dict | None = None, secrets: Any = (),
+                 needed: Any = ()) -> Any:
     """A Human step's fields as the person is asked them (F1556): each label and each dropdown option filled in from
     the run by the renderer its question takes (`render_state_refs`, its variables and secrets alike), every other
     key as the step wrote it.
 
+    A field's starting value (`default`, F1753) is filled in the same way, whole (`whole`), and kept in the form its
+    field stores (`human_fields.starting_value`): one that names nothing, a secret or a file's excerpt, or that its
+    field cannot take, is left out, so the field starts empty. A field named in `needed`, one a later step sends as a
+    tool's required input (`needed_by_a_send`), is asked as `required`.
+
     The run asks with these — its live event and its record, which the app's form, the API's and MCP's waiting
-    payload and the bell read — so an answer is checked against an option as it was shown (`answers` reads
-    `run.human_fields`). The step as saved keeps its templates. What is not a list of fields comes back as it came.
+    payload and the bell read — so an answer is checked against an option as it was shown, and a field left out takes
+    the value it started with as the run recorded it (`answers` reads `run.human_fields`). The step as saved keeps its
+    templates. What is not a list of fields comes back as it came.
     """
     if not isinstance(fields, list):
         return fields or []
+    from .human_fields import starting_value
 
     def fill(text: str) -> str:
         return render_state_refs(text, state, variables, secrets)
@@ -3111,6 +3195,15 @@ def shown_fields(fields: Any, state: dict, variables: dict | None = None, secret
                 field["label"] = fill(field["label"])
             if isinstance(field.get("options"), list):
                 field["options"] = [fill(o) if isinstance(o, str) else o for o in field["options"]]
+            if "default" in field:
+                raw = field.pop("default")
+                rendered = render_state_refs(raw, state, variables, secrets, whole=True) if isinstance(raw, str) \
+                    else raw
+                kept, value = starting_value(field, rendered)
+                if kept:
+                    field["default"] = value
+            if field.get("name") in needed:
+                field["required"] = True
         shown.append(field)
     return shown
 
@@ -3382,6 +3475,59 @@ def asked_context(input_keys: Any, shared_state: dict, step_history: Any) -> tup
     return agent_context, context_key, typed
 
 
+#: The steps an answer leads on through to the step it decides (F1753): as `approved_sends` walks a plan.
+_DECIDES = (StepType.IF_ELSE, StepType.SWITCH, StepType.EVALUATOR)
+
+
+async def needed_by_a_send(step: StepConfig, engine: "OrchestrationEngine") -> set[str]:
+    """The fields of Human step `step` that a Tool step after it, through decisions only, sets as an input its tool
+    requires (F1753): `{{state.<its key>.<field>}}` in that step's `tool_arguments`. Left blank on an approval, the
+    tool would get nothing where it needs something, after the person's yes, so the run asks them as `required`.
+    A tool whose declaration cannot be read requires nothing here; a model-filled step sets nothing."""
+    from core.tools import resolve_one_tool
+
+    from .resolved import resolve_for_run, run_custom_tools
+
+    keys = {step.output_key or "human_response", "human_response"}
+    names = {str(f.get("name")) for f in step.human_fields or [] if isinstance(f, dict) and f.get("name")}
+    if not names:
+        return set()
+    steps = getattr(engine, "step_map", None) or {}
+    needed: set[str] = set()
+    seen: set[str] = set()
+    todo = [step.next_step_id]
+    while todo:
+        sid = todo.pop()
+        if not sid or sid in seen or sid not in steps:
+            continue
+        seen.add(sid)
+        s = steps[sid]
+        if s.type in _DECIDES:
+            todo += [s.next_step_id, s.if_true_step_id, s.if_false_step_id, s.switch_default_step_id,
+                     *(s.switch_cases or {}).values(), *(s.route_map or {}).values()]
+            continue
+        if s.type != StepType.TOOL or not s.forced_tool or not isinstance(s.tool_arguments, dict):
+            continue
+        reads = {arg: {f for ref in STATE_REF.findall(json.dumps(value, default=str))
+                       if (parts := ref.split("."))[0] in keys and len(parts) > 1 and (f := parts[1]) in names}
+                 for arg, value in s.tool_arguments.items()}
+        if not any(reads.values()):
+            continue
+        try:
+            resolved = await resolve_for_run(engine, s.agent_id, tools=False) if s.agent_id else None
+            agent = (resolved.agent if resolved else None) or {}
+            custom = resolved.custom_tools if resolved else await run_custom_tools(engine)
+            tool = await resolve_one_tool(engine.server_module, s.forced_tool, agent or {"tools": [s.forced_tool]},
+                                          custom)
+        except Exception:  # noqa: BLE001 — a tool that cannot be read requires nothing here
+            tool = None
+        schema = getattr(tool, "inputSchema", None)
+        required = schema.get("required") if isinstance(schema, dict) else None
+        for arg in required if isinstance(required, list) else []:
+            needed |= reads.get(arg, set())
+    return needed
+
+
 class HumanStepExecutor:
     """Pause execution and request human input.
 
@@ -3400,7 +3546,9 @@ class HumanStepExecutor:
         prompt = render_state_refs(
             step.human_prompt or "Please provide input to continue.", run.shared_state, variables, secrets)
         # Its fields as the person reads them (F1556): every door reads these, and the answer is checked against them.
-        fields = shown_fields(step.human_fields, run.shared_state, variables, secrets)
+        # A field a later send needs, asked as required (F1753): an approval that leaves it blank is refused.
+        fields = shown_fields(step.human_fields, run.shared_state, variables, secrets,
+                              await needed_by_a_send(step, engine))
 
         run.human_prompt = prompt
         run.human_fields = fields

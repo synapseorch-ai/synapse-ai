@@ -22,6 +22,8 @@ export type ScheduleLike = {
     cron_expression?: string | null;
     /** The clock its cron is read on, like America/New_York; none is UTC (F948). */
     timezone?: string | null;
+    /** `has_work`: a heartbeat, run at its time only while its board has an open task (F1729). */
+    run_when?: string | null;
 };
 
 /** A timezone in a card's words: "New York time"; UTC for none. */

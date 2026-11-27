@@ -84,8 +84,9 @@ export interface Message {
     // turn shows its tool chip before a reload as well as after (M2c). A
     // reopened turn has the same list, saved, in `data.calls`.
     // A browser tool's call carries what it did in the page, with its screenshot (BRW2, F1074).
-    toolCalls?: { tool: string; args: Record<string, unknown> | null; result: string; refused?: boolean; reason?: string;
-                  browser?: BrowserAction }[];
+    // A call whose tool said it failed carries `failed` and why (F1751).
+    toolCalls?: { tool: string; args: Record<string, unknown> | null; result: string; refused?: boolean; failed?: boolean;
+                  reason?: string; browser?: BrowserAction }[];
     // The helpers its turn sent (SUB1a): each one's lane, live or as saved.
     helpers?: HelperLaneData[];
     // A Team agent's turn (TEAM1b): its task list, notes and members' lanes, live or as saved.

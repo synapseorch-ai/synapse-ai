@@ -1029,6 +1029,9 @@ def _show_schedule(out: Output, s: dict, names: dict | None = None) -> None:
                 ("When", _schedule_when(s)), ("State", "on" if s.get("enabled") else "paused"),
                 ("Next run", _when(s.get("next_run_at")) if s.get("enabled") else None),
                 ("Last run", _when(s.get("last_run_at"))), ("If missed", s.get("missed_run_policy")),
+                ("Heartbeat", "runs only while its board has an open task" if s.get("run_when") == "has_work"
+                 else None),
+                ("Runs a day", f"at most {s['max_runs_per_day']}" if s.get("max_runs_per_day") else None),
                 ("Prompt", s.get("prompt"))])
 
 
@@ -1080,6 +1083,12 @@ def schedules_create(args, api: ApiClient, out: Output):
     }
     if args.missed:
         body["missed_run_policy"] = args.missed
+    if args.run_when:
+        body["run_when"] = args.run_when
+    if args.no_wake:
+        body["wake_on_new_task"] = False
+    if args.max_runs_per_day is not None:
+        body["max_runs_per_day"] = args.max_runs_per_day
     made = api.post("/schedules", body)
     if out.json_mode:
         return out.document(made)
@@ -1088,15 +1097,18 @@ def schedules_create(args, api: ApiClient, out: Output):
 
 @_handler
 def schedules_update(args, api: ApiClient, out: Output):
-    """Change a schedule: its timing, prompt, name or missed-run policy (F717)."""
+    """Change a schedule: its timing, prompt, name, missed-run policy (F717) or Heartbeat (F1728)."""
     body = {**_timing(args)}
     for key, value in (("name", args.name), ("prompt", args.prompt), ("description", args.description),
-                       ("missed_run_policy", args.missed)):
+                       ("missed_run_policy", args.missed), ("run_when", args.run_when),
+                       ("max_runs_per_day", args.max_runs_per_day)):
         if value is not None:
             body[key] = value
+    if args.wake is not None:
+        body["wake_on_new_task"] = args.wake == "on"
     if not body:
-        raise CliError("Say what to change: --every, --cron, --prompt, --name, --description or --missed.",
-                       errors.USAGE)
+        raise CliError("Say what to change: --every, --cron, --prompt, --name, --description, --missed, --run-when, "
+                       "--wake or --max-runs-per-day.", errors.USAGE)
     s = api.patch(f"/schedules/{args.schedule_id}", body)
     if out.json_mode:
         return out.document(s)
@@ -1373,6 +1385,10 @@ def register(sub) -> None:
     p.add_argument("--name")
     p.add_argument("--missed", type=_missed, metavar=_MISSED_SHOWN,
                    help="what to do about runs missed while stopped: skip them, or run once as soon as it can")
+    p.add_argument("--run-when", choices=["always", "has_work"],
+                   help="has_work: run at its time only while its board has an open task")
+    p.add_argument("--no-wake", action="store_true", help="has_work: wait for its time even when a task is added")
+    p.add_argument("--max-runs-per-day", type=int, metavar="N", help="the most runs it starts in a day; 0 is no limit")
     p.add_argument("--paused", action="store_true", help="create it paused")
     p = add(scheds, "update", schedules_update, "Change a schedule's timing, prompt or name")
     p.add_argument("schedule_id")
@@ -1383,6 +1399,10 @@ def register(sub) -> None:
     p.add_argument("--name")
     p.add_argument("--description")
     p.add_argument("--missed", type=_missed, metavar=_MISSED_SHOWN)
+    p.add_argument("--run-when", choices=["always", "has_work"])
+    p.add_argument("--wake", choices=["on", "off"],
+                   help="has_work: whether a new task starts it early, without waiting for its next check")
+    p.add_argument("--max-runs-per-day", type=int, metavar="N")
     add(scheds, "pause", _set_enabled(False), "Pause a schedule").add_argument("schedule_id")
     add(scheds, "resume", _set_enabled(True), "Turn a paused schedule back on").add_argument("schedule_id")
     add(scheds, "trigger", schedules_trigger, "Run a schedule now, as a test").add_argument("schedule_id")

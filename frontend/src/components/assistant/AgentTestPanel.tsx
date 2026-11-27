@@ -19,6 +19,7 @@ import * as React from 'react';
 
 import { KnowledgeSources, linkLabels } from '@/components/knowledge/KnowledgeSources';
 import { Button, IconButton, Markdown } from '@/components/ui';
+import { shownResult } from '@/lib/callMarks';
 import { cn } from '@/lib/cn';
 
 import { Composer, composerPillClass, PillAvatar } from './Composer';
@@ -181,8 +182,13 @@ function CallChip({ call }: { call: TestCall }) {
     const detail = args || call.result || call.reason ? (
         <div className="space-y-1 border-l border-border pl-3 text-2xs text-text-faint">
             {args && <div className="break-all font-code" title={args}>{args.slice(0, 400)}</div>}
-            {call.refused && call.reason && <div className="text-warning">{call.reason}</div>}
-            {call.result && <div className="line-clamp-4 whitespace-pre-wrap break-words">{call.result.slice(0, 400)}</div>}
+            {(call.refused || call.failed) && call.reason && (
+                <div className={call.refused ? 'text-warning' : 'text-danger'}>{call.reason}</div>
+            )}
+            {/* A failed call's result is what its agent was told, never shown (F1752); its reason is above. */}
+            {shownResult({ tool: call.name, ...call }) && (
+                <div className="line-clamp-4 whitespace-pre-wrap break-words">{shownResult({ tool: call.name, ...call }).slice(0, 400)}</div>
+            )}
         </div>
     ) : undefined;
     return (

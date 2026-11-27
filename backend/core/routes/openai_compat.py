@@ -317,7 +317,7 @@ async def _oai_turn_events(chat_request, agent: dict, conv: Conversation, _serve
         log.error("[openai] model error session=%s: %s", chat_request.session_id, exc)
         status = 429 if exc.code in ("rate_limited", "quota_exhausted") else 502
         yield {"type": "error", "status": status, "code": exc.code or "model_error",
-               "message": _model_failure(exc.code)}
+               "message": _model_failure(exc.code, exc)}
     except asyncio.CancelledError:
         raise
     except Exception:

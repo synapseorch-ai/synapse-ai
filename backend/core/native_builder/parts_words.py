@@ -126,19 +126,35 @@ class AgentParts:
     mode: str = "read_only"
     recordings: list[str] = field(default_factory=list)
     action_budget: int | None = None
+    #: A team's members by name, and how they work (`mode`, `at_once`, `spend_limit_usd`), for its Team line (F1747).
+    members: list[str] = field(default_factory=list)
+    team: Any = None
 
 
 def _get(obj: Any, key: str, default: Any = None) -> Any:
     return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
 
 
-def agent_parts(agent: Any, *, kb_names: dict[str, str] | None = None) -> AgentParts:
+def agent_parts(agent: Any, *, kb_names: dict[str, str] | None = None,
+                agent_names: dict[str, str] | None = None) -> AgentParts:
     """A plan's new agent (`NewAgent`) or one already here (its saved dict) as its parts. BLD1's switches (F1223:
-    `memory`, `knowledge`, `browser`, `servers`) are read where the agent has them, and are nothing where not."""
+    `memory`, `knowledge`, `browser`, `servers`) are read where the agent has them, and are nothing where not. A
+    team's members (F1747): a new team's as the plan names them, one already here's from its `delegate_agent_ids`,
+    each named as the agent here is (`agent_names`, by id), and an id with no agent here said as itself."""
     browser = _get(agent, "browser")
     kbs = [str(k) for k in _get(agent, "knowledge", None) or []]
+    kind = str(_get(agent, "type", "agent") or "agent")
+    named = agent_names or {}
+    members = _get(agent, "members", None)
+    if members is None and kind == "delegate":
+        members, kind = _get(agent, "delegate_agent_ids", None) or [], "team"  # a saved team is a delegate
+    team = _get(agent, "team", None)
     return AgentParts(
-        name=str(_get(agent, "name", "") or _get(agent, "id", "")), type=str(_get(agent, "type", "agent") or "agent"),
+        name=str(_get(agent, "name", "") or _get(agent, "id", "")), type=kind,
+        members=[named.get(str(m), str(m)) for m in members or []],
+        team=None if team is None else SimpleNamespace(mode=_get(team, "mode", "team") or "team",
+                                                       at_once=_get(team, "at_once", None),
+                                                       spend_limit_usd=_get(team, "spend_limit_usd", None)),
         tools=[str(t) for t in _get(agent, "tools", None) or []], memory=bool(_get(agent, "memory", False)),
         knowledge=[(kb_names or {}).get(k, k) for k in kbs],
         sites=[str(s) for s in _get(browser, "sites", None) or []],
@@ -157,7 +173,8 @@ def _tools_words(a: AgentParts, titles: dict[str, str]) -> str:
         return "with every tool here"
     if not own:
         return ""
-    return "with tools: " + "; ".join(titles.get(t) or title_of(t) for t in own)
+    # Each title once: the four board tools that read and update share one (F1738).
+    return "with tools: " + "; ".join(dict.fromkeys(titles.get(t) or title_of(t) for t in own))
 
 
 def switches(a: AgentParts) -> list[str]:
@@ -167,8 +184,10 @@ def switches(a: AgentParts) -> list[str]:
 
     browser = SimpleNamespace(sites=a.sites, sessions=a.sessions, mode=a.mode, sessions_missing=a.sessions_missing,
                               recordings=a.recordings, action_budget=a.action_budget)
+    # The team's members and way of working go in too (F1747): without them every team step said "no members yet".
     shim = SimpleNamespace(memory=a.memory, knowledge=a.knowledge, servers=a.servers,
-                           type="browser" if a.browser else a.type, browser=browser if a.browser else None)
+                           type="browser" if a.browser else a.type, browser=browser if a.browser else None,
+                           members=a.members, team=a.team)
     missing = {missing_session_line(site) for site in a.sessions_missing}
     return [line for line in switch_lines(shim) if line not in missing]
 
@@ -285,7 +304,9 @@ def _step_words(s: Step, ctx: _Ctx) -> str:
 # ── the plan's own parts ─────────────────────────────────────────────────────────────────────────────────────────
 
 def _boards(plan: Plan, _ctx: _Ctx) -> list[str]:
-    return [f'the board "{b.name}" ({"already here" if b.existing else "made with it"}): it holds '
+    return [f'the board "{b.name}" ('
+            f'{"already here: you give it access" if b.yours else "already here" if b.existing else "made with it"}'
+            f'): it holds '
             f"{_kinds_words()}, nothing else" for b in plan.boards]
 
 
@@ -373,11 +394,12 @@ def _all_steps(plan: Plan) -> list[Step]:
 def _context(plan: Plan, titles: dict[str, str], agents: dict[str, dict] | None,
              kb_names: dict[str, str] | None) -> _Ctx:
     parts: dict[str, AgentParts] = {}
+    names = {aid: str(saved.get("name") or aid) for aid, saved in (agents or {}).items() if isinstance(saved, dict)}
     for aid, saved in (agents or {}).items():
         if aid in plan.reuse_agents or any(s.agent == aid for s in _all_steps(plan)):
-            parts[aid] = agent_parts(saved, kb_names=kb_names)
+            parts[aid] = agent_parts(saved, kb_names=kb_names, agent_names=names)
     for new in plan.agents:
-        parts[new.name] = agent_parts(new, kb_names=kb_names)
+        parts[new.name] = agent_parts(new, kb_names=kb_names, agent_names=names)
     return _Ctx(titles=titles, agents=parts, names={s.id: s.name for s in _all_steps(plan)},
                 fills=set(plan.model_fills))
 

@@ -81,7 +81,9 @@ export function PageHeader({
           whole text block they wrapped under a long description on a phone. */}
       <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
         <h1 className={cn(titleClass, "min-w-0 max-sm:text-2xl")}>{title}</h1>
-        <div className="flex shrink-0 flex-wrap items-center gap-2 empty:hidden">
+        {/* Never wider than the row (F1740): a cluster that cannot shrink is as wide as its buttons on one line, so
+            on a phone they ran past the edge instead of wrapping under the title. */}
+        <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2 empty:hidden">
           <PageHeaderSlot />
           {actions}
         </div>

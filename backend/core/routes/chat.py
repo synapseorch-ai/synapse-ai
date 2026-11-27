@@ -372,6 +372,9 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
                 if event.get('refused'):
                     # Not run (U68): the page marks it rather than ticking it.
                     frame.update(refused=True, reason=event.get('reason'))
+                elif event.get('failed'):
+                    # Ran and failed (F1752): the page says it failed, live, as it does once the chat is reopened.
+                    frame.update(failed=True, reason=event.get('reason'))
                 if event.get('subtask_name'):
                     # Which helper's result this is (the page names it).
                     frame['subtask_name'] = event['subtask_name']
