@@ -26,6 +26,8 @@ from core.native_builder import models_menu
 UNSERVED = "synapse.claude-haiku-5-5"
 SERVED = "synapse.claude-sonnet-4-6"
 SAID = "Claude Haiku 5.5 (synapse.claude-haiku-5-5) isn't available on Synapse yet"
+#: Each platform model's display name, as the host's catalogue gives it.
+NAMES = {UNSERVED: "Claude Haiku 5.5", SERVED: "Claude Sonnet 4.6", "synapse.claude-haiku-4-5": "Claude Haiku 4.5"}
 
 
 @pytest.fixture(autouse=True)
@@ -36,8 +38,7 @@ async def host():
         return {"model_gateway": [SERVED, "synapse.claude-haiku-4-5"], "anthropic": ["claude-haiku-4-5"]}
 
     async def facts(ids):
-        names = {UNSERVED: "Claude Haiku 5.5", SERVED: "Claude Sonnet 4.6"}
-        return {i: {"name": names[i]} for i in ids if i in names}
+        return {i: {"name": NAMES[i]} for i in ids if i in NAMES}
 
     model_choices.set_model_choices(choices)
     model_choices.set_closed_providers({"model_gateway": "Synapse"})
@@ -79,7 +80,19 @@ class TestTheOneCheck:
         refusal, note = await model_choices.save_check(UNSERVED)
         assert refusal is None
         assert note.startswith(SAID), note
-        assert "Claude Sonnet 4.6 (synapse.claude-sonnet-4-6)" in note and "synapse.claude-haiku-4-5" in note
+        assert ("You can pick Claude Sonnet 4.6 (synapse.claude-sonnet-4-6), Claude Haiku 4.5 (synapse.claude-haiku-4-5),"
+                " or leave the model out") in note, note
+
+    async def test_one_offered_model_with_no_name_says_them_all_by_their_ids(self, client, caplog):
+        """Never one form beside another: a catalogue row with no display name has every offered model said by its id,
+        and the rows that have none are named in the log."""
+        async def facts(ids):
+            return {i: {"name": NAMES[i]} for i in ids if i in NAMES and i != "synapse.claude-haiku-4-5"}
+
+        models_menu.set_model_facts(facts)
+        _refusal, note = await model_choices.save_check(UNSERVED)
+        assert "You can pick synapse.claude-sonnet-4-6, synapse.claude-haiku-4-5, or leave the model out" in note, note
+        assert "has no display name" in caplog.text and "synapse.claude-haiku-4-5" in caplog.text
 
     async def test_a_model_it_serves_says_nothing(self, client):
         assert await model_choices.save_check(SERVED) == (None, None)
